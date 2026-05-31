@@ -240,6 +240,7 @@ class TelegramToolbox:
         self._client = client
         self._agent_id = agent_id
         self._session_factory = session_factory
+        self._last_send_text_message: dict[str, datetime] = {}
 
     async def _resolve_peer(self, peer: Any, as_input: bool = True) -> Any:
         """Resolve a peer string/int to a Telethon entity."""
@@ -274,11 +275,23 @@ class TelegramToolbox:
         self, peer: str, message: str, reply_to_msg_id: int | None = None
     ) -> dict[str, Any]:
         """Send a text message (markdown supported)."""
+        now = datetime.now()
+        last = self._last_send_text_message.get(peer)
+        if last is not None and (now - last) < timedelta(minutes=5):
+            remaining = 300 - (now - last).total_seconds()
+            return {
+                "success": False,
+                "error": (
+                    f"send_text_message for this peer was already used {int((now - last).total_seconds())}s ago. "
+                    f"Cooldown: {int(remaining)}s remaining. Use your main reply instead of this tool."
+                ),
+            }
         try:
             entity = await self._resolve_peer(peer)
             msg = await self._client.send_message(
                 entity, message, reply_to=reply_to_msg_id, parse_mode=CustomMarkdown()
             )
+            self._last_send_text_message[peer] = now
             return {"success": True, "message_id": msg.id}
         except Exception as e:
             return {"success": False, "error": str(e)}

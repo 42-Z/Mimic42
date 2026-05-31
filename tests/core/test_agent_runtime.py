@@ -73,14 +73,21 @@ class FakeLangChainAgent:
 
     async def ainvoke(self, input_data: dict[str, object]) -> dict[str, object]:
         self.inputs.append(input_data)
+        # Build structured response from response text if not explicitly provided
+        sr = self.structured_response
+        if sr is None:
+            sr = {
+                "text": self.response,
+                "send_any_message": bool(self.response),
+                "reply_to": None,
+            }
         result: dict[str, object] = {
             "messages": [
                 {"role": "user", "content": "ignored"},
                 {"role": "assistant", "content": self.response},
-            ]
+            ],
+            "structured_response": sr,
         }
-        if self.structured_response is not None:
-            result["structured_response"] = self.structured_response
         return result
 
 

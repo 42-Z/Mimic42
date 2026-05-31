@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from mimic42.core.memory import MemoryServiceLike, RuntimeMemoryService
 
 logger = logging.getLogger("mimic42.agent_runtime")
+logger.setLevel(logging.INFO)
 
 
 class TelegramAuthorizationRequired(RuntimeError):
@@ -323,35 +324,23 @@ class MimicAgentRuntime:
                         "messages": messages,
                     }
                 )
-                logger.debug(f"Agent response: {response}")
             except Exception as e:
                 logger.error(f"Error invoking agent: {e}", exc_info=True)
                 raise
 
-            # Convert output BaseMessage objects to plain dicts for storage/comparison.
             output_messages = _messages_to_dicts(response)
 
-            # Prefer validated structured_response from LangChain's response_format.
-            # Fallback to legacy _interpret_agent_response for backward compat.
             structured = _extract_structured_response(response)
             if structured is not None:
                 send_any = bool(structured.get("send_any_message", True))
                 response_text = structured.get("text", "")
                 reply_to = structured.get("reply_to")
-                logger.debug(
-                    "Structured response: send_any=%s, text=%s, reply_to=%s",
-                    send_any,
-                    response_text[:100] if response_text else "None",
-                    reply_to,
-                )
             else:
                 send_any, response_text, reply_to = _interpret_agent_response(response)
-                display_text = response_text[:100] if response_text else "None"
-                logger.debug(f"Interpreted response: send_any={send_any}, text={display_text}")
 
             # Don't send empty messages
             if send_any and not response_text:
-                logger.debug("Agent generated empty response, not sending")
+                logger.info("Agent generated empty response, not sending")
                 send_any = False
 
             # Convert stringified numeric peer ID to integer for Telethon compatibility
@@ -438,8 +427,8 @@ class MimicAgentRuntime:
         self._message_handler_registered = True
 
     async def _handle_incoming_message(self, event: object) -> None:
-        logger.debug("Incoming message event received")
-        logger.debug(
+        logger.info("Incoming message event received")
+        logger.info(
             "Incoming message event: chat_id=%s, text=%s",
             getattr(event, "chat_id", None),
             getattr(event, "raw_text", "")[:50],

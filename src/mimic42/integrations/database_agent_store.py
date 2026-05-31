@@ -92,7 +92,11 @@ class DatabaseAgentStore:
                     if self._cipher and telegram_session.session_ciphertext
                     else telegram_session.session_ciphertext
                 ),
-                llm_model=self._llm_model,
+                llm_model=(
+                    agent.settings.get("model", self._llm_model)
+                    if agent.settings
+                    else self._llm_model
+                ),
                 reasoning_effort=agent.settings.get("reasoning_effort", "high")
                 if agent.settings
                 else "high",
