@@ -254,15 +254,34 @@ class MimicAgentRuntime:
                     pass
 
         # Send the actual message
+        sent_message = None
         try:
-            if reply_to is not None:
-                sent_message = await self._telegram_client.send_message(
-                    peer,
-                    text,
-                    reply_to=reply_to,
-                )
+            # Telegram text limit is 4096 characters.
+            # Use telethon.utils.split_text to respect markdown entities.
+            if len(text) > 4096:
+                from telethon.extensions import markdown as _md
+
+                parsed_text, entities = _md.parse(text)
+                from telethon import utils as _utils
+
+                parts = list(_utils.split_text(parsed_text, entities, limit=4096))
+                for i, (part_text, part_entities) in enumerate(parts):
+                    part_reply_to = reply_to if i == 0 else None
+                    sent_message = await self._telegram_client.send_message(
+                        peer,
+                        part_text,
+                        formatting_entities=part_entities,
+                        reply_to=part_reply_to,
+                    )
             else:
-                sent_message = await self._telegram_client.send_message(peer, text)
+                if reply_to is not None:
+                    sent_message = await self._telegram_client.send_message(
+                        peer,
+                        text,
+                        reply_to=reply_to,
+                    )
+                else:
+                    sent_message = await self._telegram_client.send_message(peer, text)
         except Exception:
             logger.exception("Failed to send message in _humanized_send")
             sent_message = None

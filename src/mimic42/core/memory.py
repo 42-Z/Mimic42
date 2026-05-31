@@ -163,11 +163,21 @@ class RuntimeMemoryService:
             if not assistant_text and structured_response is not None:
                 assistant_text = structured_response.get("text", "")
             if user_text or assistant_text:
-                await self._long_term.save_turn(
-                    agent_id=agent_id,
-                    user_text=user_text,
-                    assistant_text=assistant_text,
-                )
+                try:
+                    await self._long_term.save_turn(
+                        agent_id=agent_id,
+                        user_text=user_text,
+                        assistant_text=assistant_text,
+                    )
+                except Exception:
+                    import logging
+
+                    logger = logging.getLogger("mimic42.memory")
+                    logger.warning(
+                        "Failed to save turn to long-term memory (agent_id=%s)",
+                        agent_id,
+                        exc_info=True,
+                    )
 
     async def _load_short_term_context(
         self,

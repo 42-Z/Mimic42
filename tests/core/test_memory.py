@@ -169,3 +169,36 @@ async def test_memory_service_saves_turn_to_short_and_long_term() -> None:
     assert len(short_term.saved_messages) == 1
     assert short_term.saved_messages[0] == [{"role": "assistant", "content": "hi"}]
     assert long_term.saved == [(str(agent_id), "hello", "hi")]
+
+
+class FailingLongTermMemory:
+    async def search(self, *, agent_id: UUID, query: str) -> list[str]:
+        return []
+
+    async def save_turn(self, *, agent_id, user_text: str, assistant_text: str) -> None:  # noqa: ANN001
+        raise RuntimeError("Mem0 is down")
+
+
+@pytest.mark.asyncio
+async def test_memory_service_gracefully_handles_long_term_error() -> None:
+    agent_id = uuid4()
+    short_term = FakeShortTermMemory([])
+    service = RuntimeMemoryService(
+        short_term=short_term,
+        long_term=FailingLongTermMemory(),
+    )
+
+    input_msgs = [{"role": "user", "content": "hello"}]
+    output_msgs = [
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "hi"},
+    ]
+    # Should not raise — short-term memory still saved
+    await service.save_messages(
+        agent_id=agent_id,
+        peer="chat",
+        input_messages=input_msgs,
+        output_messages=output_msgs,
+    )
+
+    assert len(short_term.saved_messages) == 1
