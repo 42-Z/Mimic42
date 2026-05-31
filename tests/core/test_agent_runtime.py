@@ -73,14 +73,21 @@ class FakeLangChainAgent:
 
     async def ainvoke(self, input_data: dict[str, object]) -> dict[str, object]:
         self.inputs.append(input_data)
+        # Build structured response from response text if not explicitly provided
+        sr = self.structured_response
+        if sr is None:
+            sr = {
+                "text": self.response,
+                "send_any_message": bool(self.response),
+                "reply_to": None,
+            }
         result: dict[str, object] = {
             "messages": [
                 {"role": "user", "content": "ignored"},
                 {"role": "assistant", "content": self.response},
-            ]
+            ],
+            "structured_response": sr,
         }
-        if self.structured_response is not None:
-            result["structured_response"] = self.structured_response
         return result
 
 
@@ -965,6 +972,55 @@ async def test_typing_interrupt_chance(monkeypatch: pytest.MonkeyPatch) -> None:
     ]
     assert len(cancel_requests) >= 2
     await runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_long_message_split_into_multiple_parts(monkeypatch: pytest.MonkeyPatch) -> None:
+    from unittest.mock import MagicMock
+
+    from telethon.tl import functions
+
+    class TypedFakeClient(FakeTelegramClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.requests: list[Any] = []
+
+        async def __call__(self, request: Any) -> Any:
+            self.requests.append(request)
+            return MagicMock()
+
+    long_text = "A" * 5000
+    telegram = TypedFakeClient()
+    runtime = MimicAgentRuntime(
+        config=make_config(),
+        telegram_client=telegram,
+        langchain_agent=FakeLangChainAgent(response=long_text),
+    )
+    await runtime.start()
+
+    fake_time = 0.0
+
+    def fake_loop_time() -> float:
+        return fake_time
+
+    async def fake_sleep(delta: float) -> None:
+        nonlocal fake_time
+        fake_time += delta
+
+    monkeypatch.setattr(
+        "mimic42.core.agent_runtime.asyncio.get_event_loop",
+        lambda: MagicMock(time=fake_loop_time),
+    )
+    monkeypatch.setattr("mimic42.core.agent_runtime.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("mimic42.core.agent_runtime.random.random", lambda: 1.0)
+
+    result = await runtime.trigger_message(AgentTrigger(peer="me", text="Ping"))
+    assert result.response_text == long_text
+    assert len(telegram.sent_messages) >= 2
+    total_chars = sum(len(msg[1]) for msg in telegram.sent_messages)
+    assert total_chars == len(long_text)
+    await runtime.stop()
+
 
 def test_combined_prompt() -> None:
     config = AgentRuntimeConfig(
