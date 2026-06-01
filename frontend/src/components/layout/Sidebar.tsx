@@ -7,17 +7,15 @@ import { cn } from '@/lib/utils';
 import {
   LayoutDashboard,
   Bot,
-  Settings,
   LogOut,
   ChevronLeft,
   ChevronRight,
   Zap,
-  Activity,
+  X,
 } from 'lucide-react';
 import { getSupabaseClient } from '@/lib/supabase/client';
 import { useRouter } from 'next/navigation';
 import { useAgents } from '@/hooks/useAgents';
-import { AgentStatusBadge } from '@/components/agents/AgentStatusBadge';
 import type { AgentState } from '@/types';
 
 interface NavItem {
@@ -33,9 +31,11 @@ const mainNav: NavItem[] = [
 
 interface SidebarProps {
   className?: string;
+  mobileOpen?: boolean;
+  onMobileClose?: () => void;
 }
 
-export function Sidebar({ className }: SidebarProps) {
+export function Sidebar({ className, mobileOpen = false, onMobileClose }: SidebarProps) {
   const pathname = usePathname();
   const router = useRouter();
   const [collapsed, setCollapsed] = React.useState(false);
@@ -53,15 +53,29 @@ export function Sidebar({ className }: SidebarProps) {
   };
 
   return (
-    <aside
-      className={cn(
-        'relative flex flex-col h-screen',
-        'bg-void-900 border-r border-void-700',
-        'transition-[width] duration-300 ease-spring',
-        collapsed ? 'w-16' : 'w-64',
-        className
+    <>
+      {/* Mobile backdrop */}
+      {mobileOpen && (
+        <div
+          className="fixed inset-0 bg-black/50 z-40 md:hidden"
+          onClick={onMobileClose}
+          aria-hidden="true"
+        />
       )}
-    >
+
+      <aside
+        className={cn(
+          'relative flex flex-col h-screen',
+          'bg-void-900 border-r border-void-700',
+          'transition-[width] duration-300 ease-spring',
+          'md:translate-x-0',
+          collapsed ? 'md:w-16' : 'md:w-64',
+          // Mobile: fixed drawer
+          'fixed inset-y-0 left-0 z-50 w-64 transform transition-transform duration-300 md:relative',
+          mobileOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0',
+          className
+        )}
+      >
       {/* Top scan line */}
       <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-plasma-600/40 to-transparent" />
 
@@ -69,7 +83,7 @@ export function Sidebar({ className }: SidebarProps) {
       <div
         className={cn(
           'flex items-center h-16 px-4 border-b border-void-800',
-          collapsed ? 'justify-center' : 'gap-3'
+          collapsed ? 'md:justify-center' : 'gap-3'
         )}
       >
         <div className="relative shrink-0">
@@ -88,6 +102,14 @@ export function Sidebar({ className }: SidebarProps) {
             </span>
           </div>
         )}
+        {/* Mobile close button */}
+        <button
+          onClick={onMobileClose}
+          className="ml-auto md:hidden text-void-500 hover:text-void-300 transition-colors"
+          aria-label="Закрыть меню"
+        >
+          <X className="h-5 w-5" />
+        </button>
       </div>
 
       {/* Navigation */}
@@ -165,19 +187,20 @@ export function Sidebar({ className }: SidebarProps) {
         </button>
       </div>
 
-      {/* Collapse toggle */}
+      {/* Collapse toggle (desktop only) */}
       <button
         onClick={() => setCollapsed(!collapsed)}
         className={cn(
           'absolute -right-3 top-20',
           'h-6 w-6 rounded-full',
           'bg-void-700 border border-void-600',
-          'flex items-center justify-center',
+          'items-center justify-center',
           'text-void-400 hover:text-void-100',
           'transition-all duration-150',
           'hover:bg-void-600 hover:border-void-500',
           'shadow-void',
-          'z-10'
+          'z-10',
+          'hidden md:flex'
         )}
         aria-label={collapsed ? 'Развернуть панель' : 'Свернуть панель'}
       >

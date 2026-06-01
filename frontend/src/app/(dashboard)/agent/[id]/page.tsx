@@ -386,7 +386,7 @@ function TabLogs({ agentId }: { agentId: string }) {
 
       {/* Log container */}
       <Card variant="glass" padding="none">
-        <div className="h-[600px] overflow-y-auto p-2 space-y-0.5 font-mono text-xs">
+        <div className="h-[60vh] min-h-[400px] max-h-[600px] overflow-y-auto p-2 space-y-0.5 font-mono text-xs">
           {(mlLoading || alLoading) ? (
             <div className="flex items-center justify-center h-full">
               <Spinner />

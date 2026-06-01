@@ -203,7 +203,7 @@ function LiveFeed({ agentId }: { agentId: string }) {
   const { feedItems, isConnected, clearFeed } = useRealtimeFeed(agentId);
 
   return (
-    <Card variant="glass" padding="none" className="flex flex-col h-[480px]">
+    <Card variant="glass" padding="none" className="flex flex-col h-[50vh] min-h-[300px] max-h-[480px]">
       {/* Header */}
       <div className="flex items-center justify-between px-5 py-4 border-b border-void-700">
         <div className="flex items-center gap-2">
@@ -345,7 +345,7 @@ function DashboardSkeleton() {
           <Skeleton key={i} className="h-24 rounded-sm" />
         ))}
       </div>
-      <Skeleton className="h-[480px] rounded-sm" />
+      <Skeleton className="h-[50vh] min-h-[300px] max-h-[480px] rounded-sm" />
     </div>
   );
 }
