@@ -27,6 +27,12 @@ export const queryKeys = {
       [...queryKeys.actions.byAgent(agentId), { limit }] as const,
   },
 
+  // Conversation turns (grouped messages)
+  conversation: {
+    all: ['conversation'] as const,
+    byAgent: (agentId: string) => [...queryKeys.conversation.all, agentId] as const,
+  },
+
   // Onboarding session
   onboarding: {
     all: ['onboarding'] as const,

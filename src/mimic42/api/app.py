@@ -20,7 +20,13 @@ from mimic42.core.agent_runtime import (
     AgentTriggerResult,
     TelegramAuthorizationRequired,
 )
-from mimic42.core.agent_store import AgentActivity, AgentMessageRecord, AgentRecord, AgentStore
+from mimic42.core.agent_store import (
+    AgentActivity,
+    AgentMessageRecord,
+    AgentRecord,
+    AgentStore,
+    ConversationTurn,
+)
 from mimic42.core.crypto import FernetSecretCipher
 from mimic42.core.manager import AgentManager, AgentNotFoundError
 from mimic42.core.memory import RuntimeMemoryService
@@ -401,6 +407,19 @@ def create_app(
             return []
         await _ensure_agent_owner(store, agent_id=agent_id, user_id=current_user.user_id)
         return await store.list_activities(agent_id=agent_id, limit=limit, offset=offset)
+
+    @app.get("/api/v1/agents/{agent_id}/conversation", response_model=list[ConversationTurn])
+    async def get_agent_conversation(
+        agent_id: UUID,
+        current_user: CurrentUserDep,
+        limit: Annotated[int, Query(ge=1, le=1000)] = 50,
+        offset: Annotated[int, Query(ge=0)] = 0,
+    ) -> list[ConversationTurn]:
+        store = _get_agent_store(app)
+        if store is None:
+            return []
+        await _ensure_agent_owner(store, agent_id=agent_id, user_id=current_user.user_id)
+        return await store.get_conversation(agent_id=agent_id, limit=limit, offset=offset)
 
     @app.post(
         "/api/v1/agents",

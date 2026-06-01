@@ -49,6 +49,18 @@ export interface AgentMessageRecord {
   payload?: Record<string, any>;
 }
 
+export interface ConversationTurn {
+  id: string;
+  agent_id: string;
+  timestamp: string;
+  peer_id: string;
+  peer_name: string;
+  agent_name: string;
+  incoming: string;
+  outgoing: string;
+  direction: 'incoming' | 'outgoing' | 'both';
+}
+
 /**
  * Event/action status
  */

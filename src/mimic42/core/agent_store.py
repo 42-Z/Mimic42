@@ -40,6 +40,20 @@ class AgentActivity(BaseModel):
     error: str | None = None
 
 
+class ConversationTurn(BaseModel):
+    """A single conversation turn: incoming + outgoing + metadata."""
+
+    id: UUID = Field(default_factory=uuid4)
+    agent_id: UUID
+    timestamp: datetime
+    peer_id: str
+    peer_name: str = ""
+    agent_name: str = ""
+    incoming: str = ""  # user message
+    outgoing: str = ""  # agent response
+    direction: str = ""  # "incoming" | "outgoing" | "both"
+
+
 class AgentStore(Protocol):
     async def create_from_onboarding(self, session: OnboardingSession) -> AgentRecord: ...
 
@@ -58,6 +72,14 @@ class AgentStore(Protocol):
     ) -> list[AgentMessageRecord]: ...
 
     async def list_activities(self, *, agent_id: UUID, limit: int = 50, offset: int = 0) -> list[AgentActivity]: ...
+
+    async def get_conversation(
+        self,
+        *,
+        agent_id: UUID,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[ConversationTurn]: ...
 
 
 class InMemoryAgentStore:
@@ -133,3 +155,54 @@ class InMemoryAgentStore:
         start = max(0, len(filtered) - offset - limit)
         end = max(0, len(filtered) - offset)
         return filtered[start:end]
+
+    async def get_conversation(
+        self,
+        *,
+        agent_id: UUID,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[ConversationTurn]:
+        # Simplistic grouping for in-memory store: pair incoming + outgoing
+        filtered = [msg for msg in self._messages if msg.agent_id == agent_id]
+        turns: list[ConversationTurn] = []
+        i = 0
+        while i < len(filtered):
+            msg = filtered[i]
+            if msg.direction == "incoming":
+                turn = ConversationTurn(
+                    id=msg.id,
+                    agent_id=agent_id,
+                    timestamp=msg.created_at,
+                    peer_id=msg.peer,
+                    peer_name=msg.peer_name,
+                    agent_name=msg.agent_name,
+                    incoming=msg.content,
+                )
+                # Look ahead for an outgoing response
+                if i + 1 < len(filtered) and filtered[i + 1].direction == "agent_response":
+                    turn.outgoing = filtered[i + 1].content
+                    turn.direction = "both"
+                    i += 1
+                else:
+                    turn.direction = "incoming"
+                turns.append(turn)
+            elif msg.direction == "agent_response":
+                # Orphan outgoing (e.g. proactive message)
+                turns.append(
+                    ConversationTurn(
+                        id=msg.id,
+                        agent_id=agent_id,
+                        timestamp=msg.created_at,
+                        peer_id=msg.peer,
+                        peer_name=msg.peer_name,
+                        agent_name=msg.agent_name,
+                        outgoing=msg.content,
+                        direction="outgoing",
+                    )
+                )
+            i += 1
+        # Apply offset/limit
+        start = max(0, len(turns) - offset - limit)
+        end = max(0, len(turns) - offset)
+        return turns[start:end]
