@@ -87,7 +87,9 @@ export default function AgentPage() {
             <p className="font-mono text-xs text-void-600 mt-0.5">{agentId}</p>
           </div>
         </div>
-        <AgentControls agentId={agentId} state={status?.state} />
+        <div className="hidden sm:block">
+          <AgentControls agentId={agentId} state={status?.state} />
+        </div>
       </div>
 
       {/* Tabs */}
@@ -311,6 +313,8 @@ function TabLogs({ agentId }: { agentId: string }) {
   const {
     data: messages,
     isLoading: mlLoading,
+    isError: msgError,
+    error: msgErrorObj,
     fetchNextPage: fetchMessages,
     hasNextPage: hasMoreMessages,
     isFetchingNextPage: isFetchingMessages,
@@ -318,6 +322,8 @@ function TabLogs({ agentId }: { agentId: string }) {
   const {
     data: actions,
     isLoading: alLoading,
+    isError: actError,
+    error: actErrorObj,
     fetchNextPage: fetchActions,
     hasNextPage: hasMoreActions,
     isFetchingNextPage: isFetchingActions,
@@ -399,6 +405,10 @@ function TabLogs({ agentId }: { agentId: string }) {
   const isLoading = mlLoading || alLoading;
   const isFetchingMore = isFetchingMessages || isFetchingActions;
   const hasMore = hasMoreMessages || hasMoreActions;
+  const isError = msgError || actError;
+  const errorMessage = (msgErrorObj as { message?: string })?.message
+    || (actErrorObj as { message?: string })?.message
+    || 'Не удалось загрузить логи';
 
   return (
     <div className="space-y-4">
@@ -442,6 +452,12 @@ function TabLogs({ agentId }: { agentId: string }) {
           {isLoading ? (
             <div className="flex items-center justify-center h-full">
               <Spinner />
+            </div>
+          ) : isError ? (
+            <div className="flex flex-col items-center justify-center h-full text-crimson-500 gap-2">
+              <AlertTriangle className="h-8 w-8 opacity-50" />
+              <p className="font-mono text-sm">{errorMessage}</p>
+              <p className="font-mono text-xs text-void-600">Проверьте соединение и попробуйте позже</p>
             </div>
           ) : filtered.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full text-void-600 gap-2">

@@ -44,7 +44,7 @@ export default function DashboardPage() {
         <div className="lg:col-span-2">
           <LiveFeed agentId={agent.agent_id} />
         </div>
-        <div>
+        <div className="hidden md:block">
           <QuickActions agent={agent} />
         </div>
       </div>
@@ -126,12 +126,12 @@ function DashboardHeader({
         >
           Стоп
         </Button>
-        <Link href={`/agent/${agent.agent_id}`}>
+        <Link href={`/agent/${agent.agent_id}`} className="hidden md:inline-flex">
           <Button variant="ghost" size="sm">Настройки →</Button>
         </Link>
         <Link href="/onboarding">
           <Button variant="outline" size="sm" leftIcon={<Plus className="h-3.5 w-3.5" />}>
-            Новый
+            <span className="hidden sm:inline">Новый</span>
           </Button>
         </Link>
       </div>
