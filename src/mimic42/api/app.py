@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from typing import Annotated, Any, Protocol
 from uuid import UUID, uuid4
 
-from fastapi import Depends, FastAPI, HTTPException, Response, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -302,11 +302,16 @@ def create_app(
     ) -> OnboardingPublicStatus:
         try:
             status_result = await _get_onboarding_service(app).get_status(onboarding_id)
+        except OnboardingNotFoundError:
+            raise _onboarding_not_found(onboarding_id)
+        # Unified owner check — do not leak session existence via status codes
+        try:
             _ensure_owner(status_result.owner_id, current_user.user_id)
+        except HTTPException:
+            raise _onboarding_not_found(onboarding_id)
+        try:
             result = await _get_onboarding_service(app).verify_telegram_code(onboarding_id, payload)
             return result
-        except OnboardingNotFoundError as exc:
-            raise _onboarding_not_found(exc.onboarding_id) from exc
         except TelegramPasswordRequiredError as exc:
             raise HTTPException(
                 status_code=status.HTTP_428_PRECONDITION_REQUIRED,
@@ -355,11 +360,16 @@ def create_app(
     ) -> AgentStatus:
         try:
             status_result = await _get_onboarding_service(app).get_status(onboarding_id)
+        except OnboardingNotFoundError:
+            raise _onboarding_not_found(onboarding_id)
+        # Unified owner check — do not leak session existence via status codes
+        try:
             _ensure_owner(status_result.owner_id, current_user.user_id)
+        except HTTPException:
+            raise _onboarding_not_found(onboarding_id)
+        try:
             result = await _get_onboarding_service(app).finalize_agent(onboarding_id, payload)
             return result
-        except OnboardingNotFoundError as exc:
-            raise _onboarding_not_found(exc.onboarding_id) from exc
         except TelegramAuthorizationIncompleteError as exc:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -370,8 +380,8 @@ def create_app(
     async def list_agent_messages(
         agent_id: UUID,
         current_user: CurrentUserDep,
-        limit: int = 50,
-        offset: int = 0,
+        limit: Annotated[int, Query(ge=1, le=1000)] = 50,
+        offset: Annotated[int, Query(ge=0)] = 0,
     ) -> list[AgentMessageRecord]:
         store = _get_agent_store(app)
         if store is None:
@@ -383,8 +393,8 @@ def create_app(
     async def list_agent_actions(
         agent_id: UUID,
         current_user: CurrentUserDep,
-        limit: int = 50,
-        offset: int = 0,
+        limit: Annotated[int, Query(ge=1, le=1000)] = 50,
+        offset: Annotated[int, Query(ge=0)] = 0,
     ) -> list[AgentActivity]:
         store = _get_agent_store(app)
         if store is None:

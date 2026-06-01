@@ -354,11 +354,12 @@ function TabLogs({ agentId }: { agentId: string }) {
     ...feedItems,
   ].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
 
-  // Deduplicate by id
+  // Deduplicate by composite key (type + id) to avoid collisions across tables
   const seen = new Set<string>();
   const deduped = allItems.filter(item => {
-    if (seen.has(item.id)) return false;
-    seen.add(item.id);
+    const key = `${item.type}:${item.id}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
     return true;
   });
 
@@ -458,8 +459,9 @@ function TabLogs({ agentId }: { agentId: string }) {
                     <MemoLogRow
                       key={item.id}
                       item={item}
+                      itemId={item.id}
                       expanded={item.type === 'event' && item.error ? expandedErrors.has(item.id) : false}
-                      onToggleError={item.type === 'event' && item.error ? () => toggleError(item.id) : undefined}
+                      onToggleError={item.type === 'event' && item.error ? toggleError : undefined}
                     />
                   ))}
                 </div>
@@ -490,11 +492,12 @@ function TabLogs({ agentId }: { agentId: string }) {
 
 interface LogRowProps {
   item: FeedItem;
+  itemId: string;
   expanded?: boolean;
-  onToggleError?: () => void;
+  onToggleError?: (id: string) => void;
 }
 
-const MemoLogRow = React.memo(function LogRow({ item, expanded, onToggleError }: LogRowProps) {
+const MemoLogRow = React.memo(function LogRow({ item, itemId, expanded, onToggleError }: LogRowProps) {
   const time = format(new Date(item.timestamp), 'HH:mm:ss');
 
   if (item.type === 'message') {
@@ -533,7 +536,7 @@ const MemoLogRow = React.memo(function LogRow({ item, expanded, onToggleError }:
       </div>
       {item.error && (
         <div
-          onClick={onToggleError}
+          onClick={() => onToggleError?.(itemId)}
           className={cn(
             'ml-[88px] text-crimson-500 text-[10px] cursor-pointer',
             expanded ? '' : 'truncate max-w-[300px]'

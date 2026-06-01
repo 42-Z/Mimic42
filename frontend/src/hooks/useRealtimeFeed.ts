@@ -7,7 +7,7 @@ import { queryKeys } from '@/lib/queryClient';
 import type { AgentMessageRow, AgentEventRow, FeedItem, RealtimePayload } from '@/types';
 import type { RealtimeChannel } from '@supabase/supabase-js';
 
-const MAX_FEED_ITEMS = {}
+const MAX_FEED_ITEMS = 200
 
 /**
  * Manages Supabase Realtime subscriptions for an agent's messages and events.
@@ -45,6 +45,12 @@ export function useRealtimeFeed(agentId: string) {
     });
     qc.invalidateQueries({ queryKey: queryKeys.actions.byAgent(agentId) });
   }, [agentId, qc]);
+
+  // Reset feed when agent changes to prevent stale data from previous agent
+  useEffect(() => {
+    setNewMessages([]);
+    setNewEvents([]);
+  }, [agentId]);
 
   useEffect(() => {
     if (!agentId) return;

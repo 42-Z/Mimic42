@@ -33,7 +33,12 @@ class DatabaseAgentStore:
             raise ValueError("Onboarding session is missing agent profile fields")
 
         async with self._session_factory() as db_session:
-            agent = await db_session.get(AgentModel, session.onboarding_id)
+            # Acquire row-level lock to prevent TOCTOU race on concurrent finalization
+            agent = await db_session.scalar(
+                select(AgentModel)
+                .where(AgentModel.id == session.onboarding_id)
+                .with_for_update()
+            )
             if agent is None:
                 agent = AgentModel(id=session.onboarding_id)
                 db_session.add(agent)
@@ -44,9 +49,9 @@ class DatabaseAgentStore:
             agent.soul_prompt = session.soul_prompt
 
             telegram_session = await db_session.scalar(
-                select(TelegramSessionModel).where(
-                    TelegramSessionModel.agent_id == session.onboarding_id
-                )
+                select(TelegramSessionModel)
+                .where(TelegramSessionModel.agent_id == session.onboarding_id)
+                .with_for_update()
             )
             if telegram_session is None:
                 telegram_session = TelegramSessionModel(agent_id=session.onboarding_id)
