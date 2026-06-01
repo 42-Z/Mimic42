@@ -8,7 +8,12 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field
 
-from mimic42.core.agent_runtime import AgentRuntimeConfig, AgentRuntimeState, AgentStatus
+from mimic42.core.agent_runtime import (
+    DEFAULT_LLM_MODEL,
+    AgentRuntimeConfig,
+    AgentRuntimeState,
+    AgentStatus,
+)
 from mimic42.core.agent_store import AgentStore
 
 
@@ -168,13 +173,12 @@ class AgentOnboardingService:
         telegram_factory: TelegramAuthClientFactory,
         cipher: SecretCipher | None = None,
         agent_store: AgentStore | None = None,
-        llm_model: str = "mistralai/mistral-small-2603",
     ) -> None:
         self._repository = repository or InMemoryOnboardingRepository()
         self._telegram_factory = telegram_factory
         self._cipher = cipher or PlainTextCipher()
         self._agent_store = agent_store
-        self._llm_model = llm_model
+        self._llm_model = DEFAULT_LLM_MODEL
 
     async def request_telegram_code(
         self,

@@ -56,4 +56,5 @@ async def test_database_agent_store_creates_agent_session_and_runtime_config(
     assert agents[0].name == "Mimic"
     assert runtime_config.telegram_api_hash == "encrypted-hash"
     assert runtime_config.telegram_session_string == "encrypted-session"
+    assert runtime_config.llm_model == "google/gemini-3.1-flash-lite"
     assert updated_agents[0].state is AgentRuntimeState.RUNNING

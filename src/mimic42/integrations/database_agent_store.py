@@ -6,7 +6,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from mimic42.core.agent_runtime import AgentRuntimeConfig, AgentRuntimeState
+from mimic42.core.agent_runtime import DEFAULT_LLM_MODEL, AgentRuntimeConfig, AgentRuntimeState
 from mimic42.core.agent_store import AgentActivity, AgentMessageRecord, AgentRecord
 from mimic42.core.onboarding import OnboardingSession, SecretCipher
 from mimic42.integrations.database_models import (
@@ -23,11 +23,10 @@ class DatabaseAgentStore:
         session_factory: async_sessionmaker[AsyncSession],
         *,
         cipher: SecretCipher | None = None,
-        llm_model: str = "mistralai/mistral-small-2603",
     ) -> None:
         self._session_factory = session_factory
         self._cipher = cipher
-        self._llm_model = llm_model
+        self._llm_model = DEFAULT_LLM_MODEL
 
     async def create_from_onboarding(self, session: OnboardingSession) -> AgentRecord:
         if not session.name or not session.soul_prompt:

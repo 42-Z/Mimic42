@@ -29,6 +29,9 @@ class AgentRuntimeState(StrEnum):
     ERROR = "error"
 
 
+DEFAULT_LLM_MODEL = "google/gemini-3.1-flash-lite"
+
+
 class AgentRuntimeConfig(BaseModel):
     agent_id: UUID
     owner_id: UUID
@@ -36,7 +39,7 @@ class AgentRuntimeConfig(BaseModel):
     telegram_api_id: int = Field(gt=0)
     telegram_api_hash: str = Field(min_length=1)
     telegram_session_string: str | None = Field(default=None, min_length=1)
-    llm_model: str = Field(default="mistralai/mistral-small-2603", min_length=1)
+    llm_model: str = Field(default=DEFAULT_LLM_MODEL, min_length=1)
     reasoning_effort: str = Field(default="high")
     system_prompt: str = Field(min_length=1)
     soul_prompt: str = Field(default="", max_length=20_000)
