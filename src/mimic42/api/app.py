@@ -122,7 +122,6 @@ def create_app(
     app_onboarding_service = onboarding_service or AgentOnboardingService(
         telegram_factory=TelethonAuthClientFactory(),
         agent_store=agent_store,
-        llm_model=app_settings.llm_model,
     )
 
     @asynccontextmanager
@@ -142,7 +141,6 @@ def create_app(
             database_agent_store = agent_store or DatabaseAgentStore(
                 session_factory,
                 cipher=cipher,
-                llm_model=app_settings.llm_model,
             )
             app.state.agent_store = database_agent_store
             if onboarding_service is None:
@@ -151,7 +149,6 @@ def create_app(
                     telegram_factory=TelethonAuthClientFactory(),
                     cipher=cipher,
                     agent_store=database_agent_store,
-                    llm_model=app_settings.llm_model,
                 )
             if manager is None:
                 long_term_memory = build_mem0_memory(app_settings.mem0_api_key)
