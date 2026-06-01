@@ -589,8 +589,11 @@ class MimicAgentRuntime:
                 sender_str = f"{name_str}{details_str}"
             else:
                 chat = await event.get_chat()
-                chat_title = getattr(chat, "title", "Unknown")
-                sender_str = chat_title
+                if isinstance(chat, str):
+                    sender_str = chat
+                else:
+                    chat_title = getattr(chat, "title", None)
+                    sender_str = chat_title if isinstance(chat_title, str) else "Unknown"
 
             # Check role/title
             title = None

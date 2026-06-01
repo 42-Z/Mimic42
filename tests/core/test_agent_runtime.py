@@ -120,6 +120,9 @@ class FakeRuntimeMemoryService:
         input_messages: list[dict[str, Any]],
         output_messages: list[dict[str, Any]],
         structured_response: dict[str, Any] | None = None,
+        peer_name: str = "",
+        agent_name: str = "",
+        raw_user_text: str = "",
     ) -> None:
         self.saved_messages.append(
             (agent_id, peer, input_messages, output_messages, structured_response)

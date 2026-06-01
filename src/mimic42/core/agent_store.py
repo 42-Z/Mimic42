@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field
@@ -40,8 +40,19 @@ class AgentActivity(BaseModel):
     error: str | None = None
 
 
+class ToolCallRecord(BaseModel):
+    id: UUID = Field(default_factory=uuid4)
+    name: str
+    status: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+    result: dict[str, Any] | None = None
+    error: str | None = None
+    duration_ms: float = 0.0
+    created_at: datetime
+
+
 class ConversationTurn(BaseModel):
-    """A single conversation turn: incoming + outgoing + metadata."""
+    """A single conversation turn: incoming + outgoing + metadata + tools."""
 
     id: UUID = Field(default_factory=uuid4)
     agent_id: UUID
@@ -51,7 +62,8 @@ class ConversationTurn(BaseModel):
     agent_name: str = ""
     incoming: str = ""  # user message
     outgoing: str = ""  # agent response
-    direction: str = ""  # "incoming" | "outgoing" | "both"
+    direction: str = ""  # "incoming" | "outgoing" | "both" | "tools"
+    tools: list[ToolCallRecord] = Field(default_factory=list)
 
 
 class AgentStore(Protocol):

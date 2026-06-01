@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mimic42.core.agent_runtime import DEFAULT_LLM_MODEL, AgentRuntimeConfig, AgentRuntimeState
-from mimic42.core.agent_store import AgentActivity, AgentMessageRecord, AgentRecord, ConversationTurn
+from mimic42.core.agent_store import AgentActivity, AgentMessageRecord, AgentRecord, ConversationTurn, ToolCallRecord
 from mimic42.core.onboarding import OnboardingSession, SecretCipher
 from mimic42.integrations.database_models import (
     AgentEventModel,
@@ -197,58 +197,97 @@ class DatabaseAgentStore:
             )
             all_messages = list(messages)
 
+            events = await db_session.scalars(
+                select(AgentEventModel)
+                .where(AgentEventModel.agent_id == agent_id)
+                .where(AgentEventModel.event_type.not_in(["start_agent", "stop_agent"]))
+                .order_by(AgentEventModel.created_at.asc())
+            )
+            all_events = list(events)
+
+            # Build unified timeline
+            timeline: list[tuple[str, datetime, Any]] = []
+            for msg in all_messages:
+                timeline.append(("msg", msg.created_at, msg))
+            for evt in all_events:
+                timeline.append(("evt", evt.created_at, evt))
+            timeline.sort(key=lambda x: x[1])
+
             turns: list[ConversationTurn] = []
-            i = 0
-            while i < len(all_messages):
-                msg = all_messages[i]
+            current_turn: ConversationTurn | None = None
+
+            def _message_content(msg: AgentMessageModel) -> str:
                 content = msg.content
                 if not content and msg.role == "assistant":
                     structured = msg.payload.get("structured_response")
                     if isinstance(structured, dict):
                         content = structured.get("text", "")
+                return content
 
-                if msg.direction == "incoming":
-                    turn = ConversationTurn(
-                        id=msg.id,
-                        agent_id=agent_id,
-                        timestamp=msg.created_at,
-                        peer_id=str(msg.payload.get("peer", "")),
-                        peer_name=str(msg.payload.get("peer_name", "")),
-                        agent_name=str(msg.payload.get("agent_name", "")),
-                        incoming=content,
-                    )
-                    # Look ahead for outgoing response
-                    if (
-                        i + 1 < len(all_messages)
-                        and all_messages[i + 1].direction in ("agent_response", "outgoing")
-                    ):
-                        next_msg = all_messages[i + 1]
-                        next_content = next_msg.content
-                        if not next_content and next_msg.role == "assistant":
-                            structured = next_msg.payload.get("structured_response")
-                            if isinstance(structured, dict):
-                                next_content = structured.get("text", "")
-                        turn.outgoing = next_content
-                        turn.direction = "both"
-                        i += 1
-                    else:
-                        turn.direction = "incoming"
-                    turns.append(turn)
-                elif msg.direction in ("agent_response", "outgoing"):
-                    # Orphan outgoing
-                    turns.append(
-                        ConversationTurn(
+            for item_type, _timestamp, item in timeline:
+                if item_type == "msg":
+                    msg = item
+                    content = _message_content(msg)
+                    if msg.direction == "incoming":
+                        if current_turn is not None:
+                            turns.append(current_turn)
+                        current_turn = ConversationTurn(
                             id=msg.id,
                             agent_id=agent_id,
                             timestamp=msg.created_at,
                             peer_id=str(msg.payload.get("peer", "")),
                             peer_name=str(msg.payload.get("peer_name", "")),
                             agent_name=str(msg.payload.get("agent_name", "")),
-                            outgoing=content,
-                            direction="outgoing",
+                            incoming=content,
+                            direction="incoming",
                         )
+                    elif msg.direction in ("agent_response", "outgoing"):
+                        if current_turn is not None and current_turn.direction == "incoming":
+                            current_turn.outgoing = content
+                            current_turn.direction = "both"
+                        else:
+                            if current_turn is not None:
+                                turns.append(current_turn)
+                            current_turn = ConversationTurn(
+                                id=msg.id,
+                                agent_id=agent_id,
+                                timestamp=msg.created_at,
+                                peer_id=str(msg.payload.get("peer", "")),
+                                peer_name=str(msg.payload.get("peer_name", "")),
+                                agent_name=str(msg.payload.get("agent_name", "")),
+                                outgoing=content,
+                                direction="outgoing",
+                            )
+                elif item_type == "evt":
+                    evt = item
+                    duration_ms = 0.0
+                    if evt.started_at and evt.completed_at:
+                        duration_ms = (evt.completed_at - evt.started_at).total_seconds() * 1000
+                    tool = ToolCallRecord(
+                        id=evt.id,
+                        name=evt.event_type,
+                        status=evt.status,
+                        payload=evt.payload or {},
+                        result=evt.result,
+                        error=evt.error,
+                        duration_ms=duration_ms,
+                        created_at=evt.created_at,
                     )
-                i += 1
+                    if current_turn is not None:
+                        current_turn.tools.append(tool)
+                    else:
+                        # Orphan event — create a tools-only turn
+                        current_turn = ConversationTurn(
+                            id=evt.id,
+                            agent_id=agent_id,
+                            timestamp=evt.created_at,
+                            peer_id=str((evt.payload or {}).get("parent_peer", "")),
+                            direction="tools",
+                            tools=[tool],
+                        )
+
+            if current_turn is not None:
+                turns.append(current_turn)
 
             # Reverse so newest first, then apply offset/limit
             turns.reverse()

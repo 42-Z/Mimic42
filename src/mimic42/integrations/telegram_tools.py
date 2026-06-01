@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import base64
+import functools
+import inspect
 import json
+import logging
+import time
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta
 from typing import Any, Literal, ParamSpec, Protocol, TypeVar
@@ -241,6 +245,100 @@ class TelegramToolbox:
         self._agent_id = agent_id
         self._session_factory = session_factory
         self._last_send_text_message: dict[str, datetime] = {}
+        self._wrap_tool_methods()
+
+    def _wrap_tool_methods(self) -> None:
+        """Wrap all public coroutine methods with automatic tool-call logging."""
+        for name in dir(self):
+            if name.startswith("_"):
+                continue
+            method = getattr(self, name)
+            if not inspect.iscoroutinefunction(method):
+                continue
+            wrapped = self._make_logged_method(method, name)
+            setattr(self, name, wrapped)
+
+    def _make_logged_method(
+        self,
+        coro: Callable[..., Awaitable[Any]],
+        name: str,
+    ) -> Callable[..., Awaitable[Any]]:
+        """Return a wrapper that logs the tool call to agent_events."""
+
+        @functools.wraps(coro)
+        async def wrapper(*args: Any, **kwargs: Any) -> Any:
+            bound = inspect.signature(coro).bind(*args, **kwargs)
+            bound.apply_defaults()
+            all_kwargs = dict(bound.arguments)
+            all_kwargs.pop("self", None)
+            start = time.time()
+            try:
+                result = await coro(*args, **kwargs)
+                await self._log_tool_call(
+                    name, all_kwargs, result, (time.time() - start) * 1000
+                )
+                return result
+            except Exception as exc:
+                await self._log_tool_call(
+                    name, all_kwargs, None, (time.time() - start) * 1000, str(exc)
+                )
+                raise
+
+        wrapper.__signature__ = inspect.signature(coro)  # type: ignore[attr-defined]
+        return wrapper
+
+    async def _log_tool_call(
+        self,
+        name: str,
+        args: dict[str, Any],
+        result: Any,
+        duration_ms: float,
+        error: str | None = None,
+    ) -> None:
+        """Persist a tool call to the agent_events table."""
+        if not self._session_factory or not self._agent_id:
+            return
+        logger = logging.getLogger("mimic42.telegram_tools")
+        try:
+            safe_args = {
+                k: v
+                for k, v in args.items()
+                if k not in ("session_string", "api_hash", "phone_code_hash", "password")
+            }
+            parent_peer = (
+                safe_args.get("peer")
+                or safe_args.get("entity")
+                or safe_args.get("channel")
+                or safe_args.get("user")
+                or safe_args.get("from_peer")
+                or safe_args.get("to_peer")
+            )
+            payload: dict[str, Any] = {"args": safe_args}
+            if parent_peer:
+                payload["parent_peer"] = str(parent_peer)
+
+            result_data: dict[str, Any] | None = None
+            if isinstance(result, dict):
+                result_data = result
+            elif result is not None:
+                result_data = {"value": str(result)[:500]}
+
+            now = datetime.now()
+            async with self._session_factory() as db_session:
+                event = AgentEventModel(
+                    agent_id=self._agent_id,
+                    event_type=name,
+                    status="failed" if error else "succeeded",
+                    payload=payload,
+                    result=result_data,
+                    error=error,
+                    started_at=now - timedelta(milliseconds=duration_ms),
+                    completed_at=now,
+                )
+                db_session.add(event)
+                await db_session.commit()
+        except Exception:
+            logger.exception("Failed to log tool call %s", name)
 
     async def _resolve_peer(self, peer: Any, as_input: bool = True) -> Any:
         """Resolve a peer string/int to a Telethon entity."""
@@ -2407,35 +2505,6 @@ def _serialize_tool(coro: Callable[P, Awaitable[R]]) -> Callable[P, Awaitable[st
         if isinstance(result, str):
             return result
         if isinstance(result, (dict, list)):
-            return json.dumps(result, ensure_ascii=False)
-        return str(result)
-
-    import inspect
-
-    wrapper.__signature__ = inspect.signature(coro)  # type: ignore[attr-defined]
-    wrapper.__name__ = getattr(coro, "__name__", "wrapper")
-    wrapper.__doc__ = getattr(coro, "__doc__", None)
-    return wrapper
-
-
-P = ParamSpec("P")
-R = TypeVar("R")
-
-
-def _serialize_tool(coro: Callable[P, Awaitable[R]]) -> Callable[P, Awaitable[str]]:
-    """
-    Wrap a toolbox method so it always returns a JSON string.
-    This is required for OpenRouter SDK compatibility, which expects
-    ToolMessage.content to be a string.
-    """
-
-    async def wrapper(*args: P.args, **kwargs: P.kwargs) -> str:
-        result = await coro(*args, **kwargs)
-        if isinstance(result, str):
-            return result
-        if isinstance(result, (dict, list)):
-            import json
-
             return json.dumps(result, ensure_ascii=False)
         return str(result)
 
