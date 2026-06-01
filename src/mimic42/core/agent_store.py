@@ -52,9 +52,10 @@ class AgentStore(Protocol):
         *,
         agent_id: UUID,
         limit: int = 50,
+        offset: int = 0,
     ) -> list[AgentMessageRecord]: ...
 
-    async def list_activities(self, *, agent_id: UUID, limit: int = 50) -> list[AgentActivity]: ...
+    async def list_activities(self, *, agent_id: UUID, limit: int = 50, offset: int = 0) -> list[AgentActivity]: ...
 
 
 class InMemoryAgentStore:
@@ -118,8 +119,15 @@ class InMemoryAgentStore:
         if agent_id in self._agents:
             self._agents[agent_id] = self._agents[agent_id].model_copy(update={"state": state})
 
-    async def list_messages(self, *, agent_id: UUID, limit: int = 50) -> list[AgentMessageRecord]:
-        return [message for message in self._messages if message.agent_id == agent_id][-limit:]
+    async def list_messages(self, *, agent_id: UUID, limit: int = 50, offset: int = 0) -> list[AgentMessageRecord]:
+        filtered = [message for message in self._messages if message.agent_id == agent_id]
+        # In-memory store keeps ascending order; return from the end for DESC semantics
+        start = max(0, len(filtered) - offset - limit)
+        end = max(0, len(filtered) - offset)
+        return filtered[start:end]
 
-    async def list_activities(self, *, agent_id: UUID, limit: int = 50) -> list[AgentActivity]:
-        return [activity for activity in self._activities if activity.agent_id == agent_id][-limit:]
+    async def list_activities(self, *, agent_id: UUID, limit: int = 50, offset: int = 0) -> list[AgentActivity]:
+        filtered = [activity for activity in self._activities if activity.agent_id == agent_id]
+        start = max(0, len(filtered) - offset - limit)
+        end = max(0, len(filtered) - offset)
+        return filtered[start:end]

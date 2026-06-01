@@ -1,11 +1,10 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useParams, useSearchParams, useRouter } from 'next/navigation';
 import { agentIdSchema } from '@/lib/validators';
 import { useAgentStatus, useAgentDetails, useUpdateAgentSettings } from '@/hooks/useAgent';
-import { useAgentMessages } from '@/hooks/useAgentMessages';
-import { useAgentActions as useAgentActionsQuery } from '@/hooks/useAgentMessages';
+import { useAgentMessages, useAgentActions } from '@/hooks/useAgentMessages';
 import { useRealtimeFeed, useAgentStatusRealtime } from '@/hooks/useRealtimeFeed';
 import { useTelegramSession, useAnalyticsData } from '@/hooks/useTelegramSession';
 import { useStartAgent, useStopAgent, useTriggerMessage } from '@/hooks/useAgents';
@@ -26,7 +25,7 @@ import {
   Play, Square, Send, Wifi, WifiOff, AlertTriangle, RefreshCw,
   Bot, Clock, CheckCircle, XCircle, Loader2, Search,
 } from 'lucide-react';
-import { formatDistanceToNow, format } from 'date-fns';
+import { formatDistanceToNow, format, isToday, isYesterday } from 'date-fns';
 import { ru } from 'date-fns/locale';
 import { cn } from '@/lib/utils';
 import {
@@ -292,25 +291,62 @@ function SettingsSkeleton() {
 }
 
 // ── Tab: Logs ─────────────────────────────────────────────────────────────────
+
+/** Human-readable labels for backend event types */
+const EVENT_LABELS: Record<string, string> = {
+  start_agent: 'Запуск агента',
+  stop_agent: 'Остановка агента',
+  trigger_message: 'Триггер сообщения',
+  telegram_auth: 'Авторизация Telegram',
+};
+
+function formatDateHeader(dateStr: string): string {
+  const date = new Date(dateStr);
+  if (isToday(date)) return 'Сегодня';
+  if (isYesterday(date)) return 'Вчера';
+  return format(date, 'd MMMM', { locale: ru });
+}
+
 function TabLogs({ agentId }: { agentId: string }) {
-  const { data: messages, isLoading: mlLoading } = useAgentMessages(agentId, 50);
-  const { data: actions, isLoading: alLoading }  = useAgentActionsQuery(agentId, 50);
+  const {
+    data: messages,
+    isLoading: mlLoading,
+    fetchNextPage: fetchMessages,
+    hasNextPage: hasMoreMessages,
+    isFetchingNextPage: isFetchingMessages,
+  } = useAgentMessages(agentId);
+  const {
+    data: actions,
+    isLoading: alLoading,
+    fetchNextPage: fetchActions,
+    hasNextPage: hasMoreActions,
+    isFetchingNextPage: isFetchingActions,
+  } = useAgentActions(agentId);
   const { feedItems, isConnected } = useRealtimeFeed(agentId);
 
   const [filter, setFilter] = useState<'all' | 'messages' | 'events' | 'errors'>('all');
   const [search, setSearch] = useState('');
-  const [autoScroll, setAutoScroll] = useState(true);
+  const [expandedErrors, setExpandedErrors] = useState<Set<string>>(new Set());
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  const toggleError = useCallback((id: string) => {
+    setExpandedErrors(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
 
   // Merge initial + realtime
   const allItems = [
     ...(messages ?? []).map(m => ({
-      type: 'message' as const, id: m.id ?? m.created_at,
+      type: 'message' as const, id: String(m.id ?? m.created_at),
       timestamp: m.created_at, peer: m.peer, role: m.role,
       content: m.content, direction: m.direction,
     })),
     ...(actions ?? []).map(a => ({
-      type: 'event' as const, id: a.id ?? a.created_at,
+      type: 'event' as const, id: String(a.id ?? a.created_at),
       timestamp: a.created_at, event_type: a.event_type,
       status: a.status, error: a.error,
     })),
@@ -327,8 +363,8 @@ function TabLogs({ agentId }: { agentId: string }) {
 
   const filtered = deduped.filter(item => {
     if (filter === 'messages' && item.type !== 'message') return false;
-    if (filter === 'events'   && item.type !== 'event')   return false;
-    if (filter === 'errors'   && !(item.type === 'event' && item.status === 'failed')) return false;
+    if (filter === 'events' && item.type !== 'event') return false;
+    if (filter === 'errors' && !(item.type === 'event' && item.status === 'failed')) return false;
     if (search) {
       const q = search.toLowerCase();
       if (item.type === 'message') return item.content.toLowerCase().includes(q) || item.peer.toLowerCase().includes(q);
@@ -337,9 +373,30 @@ function TabLogs({ agentId }: { agentId: string }) {
     return true;
   });
 
-  useEffect(() => {
-    if (autoScroll) bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [filtered.length, autoScroll]);
+  // Group by date for sticky headers
+  const grouped = useMemo(() => {
+    const groups: { date: string; items: typeof filtered }[] = [];
+    let currentDate = '';
+    for (const item of filtered) {
+      const date = formatDateHeader(item.timestamp);
+      if (date !== currentDate) {
+        currentDate = date;
+        groups.push({ date, items: [item] });
+      } else {
+        groups[groups.length - 1].items.push(item);
+      }
+    }
+    return groups;
+  }, [filtered]);
+
+  const handleLoadMore = useCallback(() => {
+    if (hasMoreMessages) fetchMessages();
+    if (hasMoreActions) fetchActions();
+  }, [hasMoreMessages, hasMoreActions, fetchMessages, fetchActions]);
+
+  const isLoading = mlLoading || alLoading;
+  const isFetchingMore = isFetchingMessages || isFetchingActions;
+  const hasMore = hasMoreMessages || hasMoreActions;
 
   return (
     <div className="space-y-4">
@@ -368,13 +425,6 @@ function TabLogs({ agentId }: { agentId: string }) {
           ))}
         </div>
         <div className="flex items-center gap-2 ml-auto">
-          <button
-            onClick={() => setAutoScroll(v => !v)}
-            className={cn('font-mono text-xs px-3 py-1.5 rounded-sm border transition-colors',
-              autoScroll ? 'border-neon-800 text-neon-500' : 'border-void-700 text-void-600')}
-          >
-            {autoScroll ? '⬇ Авто-скролл' : '— Авто-скролл'}
-          </button>
           <div className="flex items-center gap-1.5">
             {isConnected ? <Wifi className="h-3.5 w-3.5 text-neon-400" /> : <WifiOff className="h-3.5 w-3.5 text-void-600" />}
             <span className={cn('font-mono text-[10px]', isConnected ? 'text-neon-500' : 'text-void-600')}>
@@ -387,7 +437,7 @@ function TabLogs({ agentId }: { agentId: string }) {
       {/* Log container */}
       <Card variant="glass" padding="none">
         <div className="h-[60vh] min-h-[400px] max-h-[600px] overflow-y-auto p-2 space-y-0.5 font-mono text-xs">
-          {(mlLoading || alLoading) ? (
+          {isLoading ? (
             <div className="flex items-center justify-center h-full">
               <Spinner />
             </div>
@@ -397,9 +447,34 @@ function TabLogs({ agentId }: { agentId: string }) {
               <p>Нет записей</p>
             </div>
           ) : (
-            filtered.map(item => (
-              <LogRow key={item.id} item={item} />
-            ))
+            <>
+              {grouped.map(group => (
+                <div key={group.date}>
+                  <div className="sticky top-0 z-10 px-3 py-1 bg-void-900/90 border-y border-void-800">
+                    <span className="text-[10px] text-void-500 uppercase tracking-wider">{group.date}</span>
+                  </div>
+                  {group.items.map(item => (
+                    <MemoLogRow
+                      key={item.id}
+                      item={item}
+                      expanded={item.type === 'event' && item.error ? expandedErrors.has(item.id) : false}
+                      onToggleError={item.type === 'event' && item.error ? () => toggleError(item.id) : undefined}
+                    />
+                  ))}
+                </div>
+              ))}
+            </>
+          )}
+          {hasMore && (
+            <div className="py-3 flex justify-center">
+              <button
+                onClick={handleLoadMore}
+                disabled={isFetchingMore}
+                className="px-4 py-1.5 rounded-sm font-mono text-xs border border-void-700 text-void-400 hover:text-void-200 hover:border-void-600 transition-colors disabled:opacity-50"
+              >
+                {isFetchingMore ? 'Загрузка...' : 'Загрузить ещё'}
+              </button>
+            </div>
           )}
           <div ref={bottomRef} />
         </div>
@@ -412,12 +487,17 @@ function TabLogs({ agentId }: { agentId: string }) {
   );
 }
 
-function LogRow({ item }: { item: FeedItem }) {
-  const time = format(new Date((item as { timestamp: string }).timestamp), 'HH:mm:ss');
+interface LogRowProps {
+  item: FeedItem;
+  expanded?: boolean;
+  onToggleError?: () => void;
+}
 
-  if ((item as { type: string }).type === 'message') {
-    const m = item as { peer: string; role: string; content: string; direction?: string };
-    const isIn = m.direction === 'incoming' || m.role === 'user';
+const MemoLogRow = React.memo(function LogRow({ item, expanded, onToggleError }: LogRowProps) {
+  const time = format(new Date(item.timestamp), 'HH:mm:ss');
+
+  if (item.type === 'message') {
+    const isIn = item.direction === 'incoming' || item.role === 'user';
     return (
       <div className={cn(
         'flex gap-3 px-3 py-1.5 rounded-[2px] hover:bg-void-800/40',
@@ -425,31 +505,45 @@ function LogRow({ item }: { item: FeedItem }) {
       )}>
         <span className="text-void-600 w-16 shrink-0 tabular-nums">{time}</span>
         <span className={cn('w-8 shrink-0 uppercase text-[10px]', isIn ? 'text-plasma-600' : 'text-neon-700')}>
-          {isIn ? '←IN' : '→OUT'}
+          {isIn ? '← IN' : '→ OUT'}
         </span>
-        <span className="text-void-500 shrink-0 max-w-[100px] truncate">{m.peer}</span>
-        <span className="text-void-300 flex-1">{sanitizeText(m.content)}</span>
+        <span className="text-void-500 shrink-0 max-w-[100px] truncate">{item.peer}</span>
+        <span className="text-void-300 flex-1">{sanitizeText(item.content)}</span>
       </div>
     );
   }
 
-  const e = item as { event_type: string; status: string; error: string | null };
   const statusColor: Record<string, string> = {
     succeeded: 'text-neon-600', failed: 'text-crimson-500',
     running: 'text-plasma-500', pending: 'text-void-500', cancelled: 'text-void-600',
   };
+
+  const label = EVENT_LABELS[item.event_type] || item.event_type;
+
   return (
-    <div className="flex gap-3 px-3 py-1.5 rounded-[2px] hover:bg-void-800/40 border-l-2 border-void-800">
-      <span className="text-void-600 w-16 shrink-0 tabular-nums">{time}</span>
-      <span className="text-void-700 w-8 shrink-0">EVT</span>
-      <span className={cn('w-20 shrink-0', statusColor[e.status] ?? 'text-void-500')}>
-        [{e.status.toUpperCase()}]
-      </span>
-      <span className="text-void-400 flex-1">{e.event_type}</span>
-      {e.error && <span className="text-crimson-500 truncate max-w-[150px]">{e.error}</span>}
+    <div className="flex flex-col gap-1 px-3 py-1.5 rounded-[2px] hover:bg-void-800/40 border-l-2 border-void-800">
+      <div className="flex gap-3">
+        <span className="text-void-600 w-16 shrink-0 tabular-nums">{time}</span>
+        <span className="text-void-700 w-8 shrink-0">EVT</span>
+        <span className={cn('w-20 shrink-0', statusColor[item.status] ?? 'text-void-500')}>
+          [{item.status.toUpperCase()}]
+        </span>
+        <span className="text-void-400 flex-1">{label}</span>
+      </div>
+      {item.error && (
+        <div
+          onClick={onToggleError}
+          className={cn(
+            'ml-[88px] text-crimson-500 text-[10px] cursor-pointer',
+            expanded ? '' : 'truncate max-w-[300px]'
+          )}
+        >
+          {item.error}
+        </div>
+      )}
     </div>
   );
-}
+});
 
 // ── Tab: Actions ──────────────────────────────────────────────────────────────
 function TabActions({ agentId }: { agentId: string }) {

@@ -123,12 +123,13 @@ class DatabaseAgentStore:
                 agent.last_stopped_at = _now()
             await db_session.commit()
 
-    async def list_messages(self, *, agent_id: UUID, limit: int = 50) -> list[AgentMessageRecord]:
+    async def list_messages(self, *, agent_id: UUID, limit: int = 50, offset: int = 0) -> list[AgentMessageRecord]:
         async with self._session_factory() as db_session:
             messages = await db_session.scalars(
                 select(AgentMessageModel)
                 .where(AgentMessageModel.agent_id == agent_id)
                 .order_by(AgentMessageModel.created_at.desc())
+                .offset(offset)
                 .limit(limit)
             )
             records = []
@@ -153,12 +154,13 @@ class DatabaseAgentStore:
                 )
             return records
 
-    async def list_activities(self, *, agent_id: UUID, limit: int = 50) -> list[AgentActivity]:
+    async def list_activities(self, *, agent_id: UUID, limit: int = 50, offset: int = 0) -> list[AgentActivity]:
         async with self._session_factory() as db_session:
             activities = await db_session.scalars(
                 select(AgentEventModel)
                 .where(AgentEventModel.agent_id == agent_id)
                 .order_by(AgentEventModel.created_at.desc())
+                .offset(offset)
                 .limit(limit)
             )
             return [

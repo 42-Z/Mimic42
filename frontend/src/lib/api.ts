@@ -140,15 +140,15 @@ export const agentsApi = {
     apiClient.post<void>(`/agents/${id}/stop`).then(() => undefined),
 
   /** GET /api/v1/agents/:id/messages */
-  getMessages: (id: string, limit = 50) =>
+  getMessages: (id: string, limit = 50, offset = 0) =>
     apiClient
-      .get<AgentMessageRecord[]>(`/agents/${id}/messages`, { params: { limit } })
+      .get<AgentMessageRecord[]>(`/agents/${id}/messages`, { params: { limit, offset } })
       .then((r) => r.data),
 
   /** GET /api/v1/agents/:id/actions */
-  getActions: (id: string, limit = 50) =>
+  getActions: (id: string, limit = 50, offset = 0) =>
     apiClient
-      .get<AgentActivity[]>(`/agents/${id}/actions`, { params: { limit } })
+      .get<AgentActivity[]>(`/agents/${id}/actions`, { params: { limit, offset } })
       .then((r) => r.data),
 
   /** POST /api/v1/agents/:id/messages/trigger */

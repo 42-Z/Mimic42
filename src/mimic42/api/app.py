@@ -371,24 +371,26 @@ def create_app(
         agent_id: UUID,
         current_user: CurrentUserDep,
         limit: int = 50,
+        offset: int = 0,
     ) -> list[AgentMessageRecord]:
         store = _get_agent_store(app)
         if store is None:
             return []
         await _ensure_agent_owner(store, agent_id=agent_id, user_id=current_user.user_id)
-        return await store.list_messages(agent_id=agent_id, limit=limit)
+        return await store.list_messages(agent_id=agent_id, limit=limit, offset=offset)
 
     @app.get("/api/v1/agents/{agent_id}/actions", response_model=list[AgentActivity])
     async def list_agent_actions(
         agent_id: UUID,
         current_user: CurrentUserDep,
         limit: int = 50,
+        offset: int = 0,
     ) -> list[AgentActivity]:
         store = _get_agent_store(app)
         if store is None:
             return []
         await _ensure_agent_owner(store, agent_id=agent_id, user_id=current_user.user_id)
-        return await store.list_activities(agent_id=agent_id, limit=limit)
+        return await store.list_activities(agent_id=agent_id, limit=limit, offset=offset)
 
     @app.post(
         "/api/v1/agents",
