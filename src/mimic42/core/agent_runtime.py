@@ -62,6 +62,9 @@ class AgentStatus(BaseModel):
 class AgentTrigger(BaseModel):
     peer: str = Field(min_length=1)
     text: str = Field(min_length=1)
+    raw_text: str = Field(default="")
+    peer_name: str = Field(default="")
+    chat_name: str = Field(default="")
     message_id: int | None = Field(default=None, gt=0)
 
 
@@ -403,6 +406,8 @@ class MimicAgentRuntime:
                 input_messages=messages,
                 output_messages=output_messages,
                 structured_response=structured,
+                peer_name=trigger.peer_name,
+                agent_name=self.config.name,
             )
 
         return AgentTriggerResult(
@@ -711,6 +716,9 @@ class MimicAgentRuntime:
                 AgentTrigger(
                     peer=peer,
                     text=text,
+                    raw_text=raw_text,
+                    peer_name=sender_str,
+                    chat_name=chat_type_str,
                     message_id=_extract_incoming_message_id(event),
                 )
             )

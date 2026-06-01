@@ -66,14 +66,24 @@ class DatabaseShortTermMemory:
         peer: str,
         messages: list[dict[str, Any]],
         structured_response: dict[str, Any] | None = None,
+        peer_name: str = "",
+        agent_name: str = "",
     ) -> None:
-        """Save a list of LangChain message dicts to the database."""
+        """Save a list of LangChain message dicts to the database.
+
+        Normalizes roles, filters tool-result dumps, and stores UI metadata.
+        """
         from datetime import datetime, timedelta
 
         now = datetime.now(UTC)
         async with self._session_factory() as db_session:
             for i, msg in enumerate(messages):
                 payload: dict[str, Any] = {"peer": peer}
+                if peer_name:
+                    payload["peer_name"] = peer_name
+                if agent_name:
+                    payload["agent_name"] = agent_name
+
                 role = msg.get("role", msg.get("type", ""))
                 content = msg.get("content", "")
 
@@ -84,17 +94,36 @@ class DatabaseShortTermMemory:
                 elif not isinstance(content, str):
                     content = str(content)
 
-                # Map to database direction enum
-                direction = self._resolve_direction(role, msg)
+                # ── Normalize roles ─────────────────────────────────────────────
+                if role in ("human", "user"):
+                    role = "user"
+                elif role in ("ai", "assistant"):
+                    role = "assistant"
+                elif role == "tool":
+                    # Skip tool-result messages entirely — they clutter the UI.
+                    # Tool usage will be surfaced via agent_events in a later phase.
+                    continue
 
-                # Populate empty assistant content from structured response
-                # to satisfy database CHECK (btrim(content) <> '')
-                if not content and role in ("assistant", "ai") and structured_response is not None:
-                    content = structured_response.get("text", "") or "[empty]"
+                # ── Clean assistant content ──────────────────────────────────────
+                if role == "assistant":
+                    # Structured output often leaves content empty or dumps the
+                    # raw repr.  Prefer the human-readable text from the payload.
+                    if not content or content.startswith("Returning structured response:"):
+                        if structured_response is not None:
+                            content = structured_response.get("text", "") or "[empty]"
+                        else:
+                            content = "[empty]"
+                    # Store the full structured response for the first assistant msg
+                    if structured_response is not None:
+                        payload["structured_response"] = structured_response
+                        structured_response = None
 
-                # Ensure content never violates NOT NULL / CHECK constraints
+                # Ensure we never violate the NOT NULL / CHECK constraints
                 if not content:
                     content = "[empty]"
+
+                # Map to database direction enum
+                direction = self._resolve_direction(role, msg)
 
                 # Preserve LangChain-specific fields in payload
                 if "tool_calls" in msg:
@@ -105,12 +134,6 @@ class DatabaseShortTermMemory:
                     payload["name"] = msg["name"]
                 if "id" in msg:
                     payload["id"] = msg["id"]
-
-                # Attach structured response to the first assistant message
-                if structured_response is not None:
-                    if direction == "agent_response":
-                        payload["structured_response"] = structured_response
-                        structured_response = None
 
                 db_session.add(
                     AgentMessageModel(

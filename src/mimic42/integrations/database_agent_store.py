@@ -151,6 +151,8 @@ class DatabaseAgentStore:
                         id=message.id,
                         agent_id=message.agent_id,
                         peer=str(message.payload.get("peer", "")),
+                        peer_name=str(message.payload.get("peer_name", "")),
+                        agent_name=str(message.payload.get("agent_name", "")),
                         role=message.role,
                         content=content,
                         direction=message.direction,

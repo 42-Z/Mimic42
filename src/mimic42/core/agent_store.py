@@ -23,6 +23,8 @@ class AgentMessageRecord(BaseModel):
     id: UUID = Field(default_factory=uuid4)
     agent_id: UUID
     peer: str
+    peer_name: str = ""
+    agent_name: str = ""
     role: str
     content: str
     direction: str = "inbound"

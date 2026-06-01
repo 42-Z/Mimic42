@@ -143,6 +143,8 @@ class RuntimeMemoryService:
         input_messages: list[dict[str, Any]],
         output_messages: list[dict[str, Any]],
         structured_response: dict[str, Any] | None = None,
+        peer_name: str = "",
+        agent_name: str = "",
     ) -> None:
         new_messages = _extract_new_messages(input_messages, output_messages)
 
@@ -153,6 +155,8 @@ class RuntimeMemoryService:
                     peer=peer,
                     messages=new_messages,
                     structured_response=structured_response,
+                    peer_name=peer_name,
+                    agent_name=agent_name,
                 )
             except Exception:
                 import logging

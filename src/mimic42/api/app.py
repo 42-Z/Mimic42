@@ -100,7 +100,7 @@ class TriggerMessageRequest(BaseModel):
     text: str = Field(min_length=1)
 
     def to_trigger(self) -> AgentTrigger:
-        return AgentTrigger(peer=self.peer, text=self.text)
+        return AgentTrigger(peer=self.peer, text=self.text, raw_text=self.text)
 
 
 class TelegramLoginRequest(BaseModel):

@@ -39,6 +39,8 @@ export interface AgentMessageRecord {
   id: string;
   agent_id: string;
   peer: string;        // telegram peer id/username
+  peer_name: string;    // human-readable sender name (e.g. "Саша")
+  agent_name: string;   // human-readable agent name (e.g. "Акакий 42")
   role: 'user' | 'assistant' | string;
   content: string;
   created_at: string;  // ISO 8601
