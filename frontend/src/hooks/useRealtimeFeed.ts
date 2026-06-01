@@ -4,7 +4,7 @@ import { useEffect, useRef, useCallback, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { getSupabaseClient } from '@/lib/supabase/client';
 import { queryKeys } from '@/lib/queryClient';
-import type { AgentMessageRow, AgentEventRow, ConversationTurn } from '@/types';
+import type { AgentMessageRow, AgentEventRow, ConversationTurn, ToolCallRecord } from '@/types';
 import type { RealtimeChannel } from '@supabase/supabase-js';
 
 const MAX_FEED_ITEMS = 200;
@@ -37,22 +37,33 @@ export function useRealtimeFeed(agentId: string) {
       incoming: msg.direction === 'incoming' ? msg.content : '',
       outgoing: msg.direction === 'agent_response' ? msg.content : '',
       direction: msg.direction === 'incoming' ? 'incoming' : 'outgoing',
+      tools: [],
     };
     addTurn(turn);
   }, [agentId, addTurn]);
 
   const addEvent = useCallback((event: AgentEventRow) => {
-    // Tool calls shown as turns with tools (Phase 4 - tool cards)
+    const tool: ToolCallRecord = {
+      id: event.id,
+      name: event.event_type,
+      status: event.status,
+      payload: event.payload ?? undefined,
+      result: event.result,
+      error: event.error,
+      duration_ms: 0,
+      created_at: event.created_at,
+    };
     const turn: ConversationTurn = {
       id: event.id,
       agent_id: agentId,
       timestamp: event.created_at,
-      peer_id: '',
+      peer_id: String(event.payload?.parent_peer ?? ''),
       peer_name: '',
       agent_name: '',
       incoming: '',
-      outgoing: `[${event.event_type}] ${event.status}`,
-      direction: 'outgoing',
+      outgoing: '',
+      direction: 'tools',
+      tools: [tool],
     };
     addTurn(turn);
   }, [agentId, addTurn]);
@@ -128,12 +139,22 @@ export function useRealtimeFeed(agentId: string) {
         direction: 'incoming' as const,
       };
     }
-    // Outgoing or tool call
+    if (t.direction === 'tools' && t.tools.length > 0) {
+      const first = t.tools[0]!;
+      return {
+        type: 'event' as const,
+        id: t.id,
+        timestamp: t.timestamp,
+        event_type: first.name,
+        status: first.status,
+        error: first.error,
+      };
+    }
     return {
       type: 'event' as const,
       id: t.id,
       timestamp: t.timestamp,
-      event_type: t.outgoing?.startsWith('[') ? (t.outgoing.match(/^\[(.+?)\]/)?.[1] || 'tool') : 'response',
+      event_type: 'response',
       status: 'succeeded' as const,
       error: null,
     };

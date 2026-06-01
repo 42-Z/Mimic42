@@ -49,6 +49,17 @@ export interface AgentMessageRecord {
   payload?: Record<string, any>;
 }
 
+export interface ToolCallRecord {
+  id: string;
+  name: string;
+  status: EventStatus;
+  payload?: Record<string, any>;
+  result?: Record<string, any> | null;
+  error: string | null;
+  duration_ms: number;
+  created_at: string;
+}
+
 export interface ConversationTurn {
   id: string;
   agent_id: string;
@@ -58,7 +69,8 @@ export interface ConversationTurn {
   agent_name: string;
   incoming: string;
   outgoing: string;
-  direction: 'incoming' | 'outgoing' | 'both';
+  direction: 'incoming' | 'outgoing' | 'both' | 'tools';
+  tools: ToolCallRecord[];
 }
 
 /**
@@ -184,8 +196,9 @@ export interface AgentEventRow {
   agent_id: string;
   event_type: string;
   status: EventStatus;
+  payload: Record<string, unknown> | null;
+  result: Record<string, unknown> | null;
   error: string | null;
-  metadata: Record<string, unknown> | null;
   created_at: string;
 }
 

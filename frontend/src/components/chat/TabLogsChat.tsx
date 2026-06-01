@@ -6,6 +6,7 @@ import { useRealtimeFeed } from '@/hooks/useRealtimeFeed';
 import { ConversationThread } from '@/components/chat/ConversationThread';
 import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
+import { getToolLabel } from '@/lib/toolLabels';
 
 const FILTERS = [
   { id: 'all', label: 'Все' },
@@ -40,16 +41,20 @@ export function TabLogsChat({ agentId }: { agentId: string }) {
       return turn.direction === 'both' || turn.direction === 'incoming' || turn.direction === 'outgoing';
     }
     if (filter === 'tools') {
-      return turn.outgoing?.startsWith('[') && turn.outgoing?.includes(']');
+      return turn.tools.length > 0 || turn.direction === 'tools';
     }
     return true;
   }).filter((turn) => {
     if (!search) return true;
     const q = search.toLowerCase();
-    return (
+    const inMessages =
       turn.incoming.toLowerCase().includes(q) ||
-      turn.outgoing.toLowerCase().includes(q)
-    );
+      turn.outgoing.toLowerCase().includes(q);
+    const inTools = turn.tools.some((tool) => {
+      const label = getToolLabel(tool.name, tool.payload?.args ?? {});
+      return label.toLowerCase().includes(q);
+    });
+    return inMessages || inTools;
   });
 
   const handleLoadMore = useCallback(() => {

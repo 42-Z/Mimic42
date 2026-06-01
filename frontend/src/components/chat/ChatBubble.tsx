@@ -2,49 +2,89 @@
 
 import React, { useState } from 'react';
 import { cn } from '@/lib/utils';
-import type { ConversationTurn } from '@/types';
+import type { ConversationTurn, ToolCallRecord } from '@/types';
+import { getToolLabel } from '@/lib/toolLabels';
 import { format } from 'date-fns';
-import { Zap, ChevronDown, ChevronUp } from 'lucide-react';
+import { Zap, ChevronDown, ChevronUp, CheckCircle2, XCircle } from 'lucide-react';
 
-interface ChatBubbleProps {
-  turn: ConversationTurn;
-}
-
-function ToolCard({ name, status }: { name: string; status: string }) {
+function ToolCard({ tool }: { tool: ToolCallRecord }) {
   const [expanded, setExpanded] = useState(false);
+  const label = getToolLabel(tool.name, tool.payload?.args ?? {});
+  const isFailed = tool.status === 'failed';
 
   return (
-    <div
-      onClick={() => setExpanded(!expanded)}
-      className={cn(
-        'flex items-center gap-2 mt-1 px-2 py-1 rounded-md text-[11px] cursor-pointer transition-colors',
-        status === 'succeeded'
-          ? 'bg-amber-950/40 border border-amber-900/60 text-amber-400'
-          : 'bg-crimson-950/40 border border-crimson-900/60 text-crimson-400',
+    <div className="space-y-1">
+      <div
+        onClick={() => setExpanded(!expanded)}
+        className={cn(
+          'flex items-center gap-2 px-3 py-1.5 rounded-md text-xs cursor-pointer transition-colors select-none',
+          isFailed
+            ? 'bg-crimson-950/40 border border-crimson-900/60 text-crimson-300'
+            : 'bg-amber-950/40 border border-amber-900/60 text-amber-300',
+        )}
+      >
+        {isFailed ? (
+          <XCircle className="h-3.5 w-3.5 shrink-0" />
+        ) : (
+          <Zap className="h-3.5 w-3.5 shrink-0" />
+        )}
+        <span className="truncate flex-1 font-medium">{label}</span>
+        {tool.duration_ms > 0 && (
+          <span className="text-[10px] opacity-60 tabular-nums">
+            {Math.round(tool.duration_ms)} мс
+          </span>
+        )}
+        {expanded ? <ChevronUp className="h-3.5 w-3.5 shrink-0" /> : <ChevronDown className="h-3.5 w-3.5 shrink-0" />}
+      </div>
+
+      {expanded && (
+        <div className="bg-void-900/60 border border-void-800 rounded-md px-3 py-2 space-y-1.5 text-[11px] text-void-400">
+          <div className="flex items-center gap-2">
+            <span className="text-void-500 shrink-0">Тулз:</span>
+            <code className="text-amber-400/80">{tool.name}</code>
+          </div>
+          {tool.payload?.args && (
+            <div>
+              <span className="text-void-500">Аргументы:</span>
+              <pre className="mt-0.5 bg-void-950 rounded px-2 py-1 overflow-x-auto text-[10px] text-void-300">
+                {JSON.stringify(tool.payload.args, null, 2)}
+              </pre>
+            </div>
+          )}
+          {tool.result && (
+            <div>
+              <span className="text-void-500">Результат:</span>
+              <pre className="mt-0.5 bg-void-950 rounded px-2 py-1 overflow-x-auto text-[10px] text-void-300">
+                {JSON.stringify(tool.result, null, 2)}
+              </pre>
+            </div>
+          )}
+          {tool.error && (
+            <div className="flex items-start gap-2">
+              <XCircle className="h-3 w-3 text-crimson-400 mt-0.5 shrink-0" />
+              <span className="text-crimson-300">{tool.error}</span>
+            </div>
+          )}
+          <div className="text-[10px] text-void-600 pt-0.5">
+            {format(new Date(tool.created_at), 'HH:mm:ss')}
+          </div>
+        </div>
       )}
-    >
-      <Zap className="h-3 w-3 shrink-0" />
-      <span className="truncate flex-1">{name}</span>
-      <span className="text-[10px] opacity-60">{status}</span>
-      {expanded ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
     </div>
   );
 }
 
-export function ChatBubble({ turn }: ChatBubbleProps) {
+export function ChatBubble({ turn }: { turn: ConversationTurn }) {
   const time = format(new Date(turn.timestamp), 'HH:mm');
 
-  // Check if this is a tool call turn (starts with [ and has ])
-  const isToolCall = turn.outgoing?.startsWith('[') && turn.outgoing?.includes(']');
-
-  if (isToolCall) {
-    const match = turn.outgoing.match(/^\[(.+?)\]\s*(.+?)?$/);
-    const toolName = match?.[1] || 'tool';
-    const status = match?.[2]?.trim() || 'unknown';
+  // Tools-only turn
+  if (turn.direction === 'tools') {
     return (
       <div className="flex justify-center mb-2">
-        <div className="max-w-[70%]">
-          <ToolCard name={toolName} status={status} />
+        <div className="max-w-[70%] sm:max-w-[60%] w-full space-y-1">
+          {turn.tools.map((tool) => (
+            <ToolCard key={tool.id} tool={tool} />
+          ))}
           <div className="text-[10px] text-void-600 text-center mt-0.5">{time}</div>
         </div>
       </div>
@@ -81,7 +121,7 @@ export function ChatBubble({ turn }: ChatBubbleProps) {
     );
   }
 
-  // Both: incoming + outgoing
+  // Both: incoming + tools + outgoing
   return (
     <div className="space-y-2 mb-4">
       {/* Incoming */}
@@ -93,6 +133,17 @@ export function ChatBubble({ turn }: ChatBubbleProps) {
           </div>
         </div>
       </div>
+
+      {/* Tool calls */}
+      {turn.tools.length > 0 && (
+        <div className="flex justify-center">
+          <div className="max-w-[70%] sm:max-w-[60%] w-full space-y-1">
+            {turn.tools.map((tool) => (
+              <ToolCard key={tool.id} tool={tool} />
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Outgoing */}
       <div className="flex justify-end">
