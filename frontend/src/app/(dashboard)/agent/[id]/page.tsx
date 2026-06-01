@@ -4,8 +4,8 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useParams, useSearchParams, useRouter } from 'next/navigation';
 import { agentIdSchema } from '@/lib/validators';
 import { useAgentStatus, useAgentDetails, useUpdateAgentSettings } from '@/hooks/useAgent';
-import { useAgentMessages, useAgentActions } from '@/hooks/useAgentMessages';
 import { useRealtimeFeed, useAgentStatusRealtime } from '@/hooks/useRealtimeFeed';
+import { TabLogsChat } from '@/components/chat/TabLogsChat';
 import { useTelegramSession, useAnalyticsData } from '@/hooks/useTelegramSession';
 import { useStartAgent, useStopAgent, useTriggerMessage } from '@/hooks/useAgents';
 import { useAgentMemories, useAgentMemoryHistory } from '@/hooks/useMemory';
@@ -25,7 +25,7 @@ import {
   Play, Square, Send, Wifi, WifiOff, AlertTriangle, RefreshCw,
   Bot, Clock, CheckCircle, XCircle, Loader2, Search,
 } from 'lucide-react';
-import { formatDistanceToNow, format, isToday, isYesterday } from 'date-fns';
+import { formatDistanceToNow, format } from 'date-fns';
 import { ru } from 'date-fns/locale';
 import { cn } from '@/lib/utils';
 import {
@@ -116,7 +116,7 @@ export default function AgentPage() {
       {/* Tab content */}
       <div>
         {activeTab === 'settings'  && <TabSettings  agentId={agentId} />}
-        {activeTab === 'logs'      && <TabLogs       agentId={agentId} />}
+        {activeTab === 'logs'      && <TabLogsChat   agentId={agentId} />}
         {activeTab === 'actions'   && <TabActions    agentId={agentId} />}
         {activeTab === 'telegram'  && <TabTelegram   agentId={agentId} />}
         {activeTab === 'analytics' && <TabAnalytics  agentId={agentId} />}
@@ -292,278 +292,7 @@ function SettingsSkeleton() {
   );
 }
 
-// ── Tab: Logs ─────────────────────────────────────────────────────────────────
 
-/** Human-readable labels for backend event types */
-const EVENT_LABELS: Record<string, string> = {
-  start_agent: 'Запуск агента',
-  stop_agent: 'Остановка агента',
-  trigger_message: 'Триггер сообщения',
-  telegram_auth: 'Авторизация Telegram',
-};
-
-function formatDateHeader(dateStr: string): string {
-  const date = new Date(dateStr);
-  if (isToday(date)) return 'Сегодня';
-  if (isYesterday(date)) return 'Вчера';
-  return format(date, 'd MMMM', { locale: ru });
-}
-
-function TabLogs({ agentId }: { agentId: string }) {
-  const {
-    data: messages,
-    isLoading: mlLoading,
-    isError: msgError,
-    error: msgErrorObj,
-    fetchNextPage: fetchMessages,
-    hasNextPage: hasMoreMessages,
-    isFetchingNextPage: isFetchingMessages,
-  } = useAgentMessages(agentId);
-  const {
-    data: actions,
-    isLoading: alLoading,
-    isError: actError,
-    error: actErrorObj,
-    fetchNextPage: fetchActions,
-    hasNextPage: hasMoreActions,
-    isFetchingNextPage: isFetchingActions,
-  } = useAgentActions(agentId);
-  const { feedItems, isConnected } = useRealtimeFeed(agentId);
-
-  const [filter, setFilter] = useState<'all' | 'messages' | 'events' | 'errors'>('all');
-  const [search, setSearch] = useState('');
-  const [expandedErrors, setExpandedErrors] = useState<Set<string>>(new Set());
-  const bottomRef = useRef<HTMLDivElement>(null);
-
-  const toggleError = useCallback((id: string) => {
-    setExpandedErrors(prev => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }, []);
-
-  // Merge initial + realtime
-  const allItems = [
-    ...(messages ?? []).map(m => ({
-      type: 'message' as const, id: String(m.id ?? m.created_at),
-      timestamp: m.created_at, peer: m.peer, role: m.role,
-      content: m.content,
-      direction: m.direction as 'incoming' | 'outgoing' | undefined,
-    })),
-    ...(actions ?? []).map(a => ({
-      type: 'event' as const, id: String(a.id ?? a.created_at),
-      timestamp: a.created_at, event_type: a.event_type,
-      status: a.status, error: a.error,
-    })),
-    ...feedItems,
-  ].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
-
-  // Deduplicate by composite key (type + id) to avoid collisions across tables
-  const seen = new Set<string>();
-  const deduped = allItems.filter(item => {
-    const key = `${item.type}:${item.id}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-
-  const filtered = deduped.filter(item => {
-    if (filter === 'messages' && item.type !== 'message') return false;
-    if (filter === 'events' && item.type !== 'event') return false;
-    if (filter === 'errors' && !(item.type === 'event' && item.status === 'failed')) return false;
-    if (search) {
-      const q = search.toLowerCase();
-      if (item.type === 'message') return item.content.toLowerCase().includes(q) || item.peer.toLowerCase().includes(q);
-      return item.event_type.toLowerCase().includes(q);
-    }
-    return true;
-  });
-
-  // Group by date for sticky headers
-  const grouped = useMemo(() => {
-    const groups: { date: string; items: typeof filtered }[] = [];
-    let currentDate = '';
-    for (const item of filtered) {
-      const date = formatDateHeader(item.timestamp);
-      if (date !== currentDate) {
-        currentDate = date;
-        groups.push({ date, items: [item] });
-      } else {
-        groups[groups.length - 1].items.push(item);
-      }
-    }
-    return groups;
-  }, [filtered]);
-
-  const handleLoadMore = useCallback(() => {
-    if (hasMoreMessages) fetchMessages();
-    if (hasMoreActions) fetchActions();
-  }, [hasMoreMessages, hasMoreActions, fetchMessages, fetchActions]);
-
-  const isLoading = mlLoading || alLoading;
-  const isFetchingMore = isFetchingMessages || isFetchingActions;
-  const hasMore = hasMoreMessages || hasMoreActions;
-  const isError = msgError || actError;
-  const errorMessage = (msgErrorObj as { message?: string })?.message
-    || (actErrorObj as { message?: string })?.message
-    || 'Не удалось загрузить логи';
-
-  return (
-    <div className="space-y-4">
-      {/* Controls */}
-      <div className="flex flex-col sm:flex-row gap-3">
-        <Input
-          placeholder="Поиск по содержимому..."
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          className="sm:max-w-xs"
-        />
-        <div className="flex items-center gap-1">
-          {(['all', 'messages', 'events', 'errors'] as const).map((f) => (
-            <button
-              key={f}
-              onClick={() => setFilter(f)}
-              className={cn(
-                'px-3 py-1.5 rounded-sm font-mono text-xs border transition-colors',
-                filter === f
-                  ? 'bg-plasma-950 border-plasma-800 text-plasma-400'
-                  : 'border-void-700 text-void-500 hover:text-void-300 hover:border-void-600',
-              )}
-            >
-              {{ all: 'Все', messages: 'Сообщения', events: 'События', errors: 'Ошибки' }[f]}
-            </button>
-          ))}
-        </div>
-        <div className="flex items-center gap-2 ml-auto">
-          <div className="flex items-center gap-1.5">
-            {isConnected ? <Wifi className="h-3.5 w-3.5 text-neon-400" /> : <WifiOff className="h-3.5 w-3.5 text-void-600" />}
-            <span className={cn('font-mono text-[10px]', isConnected ? 'text-neon-500' : 'text-void-600')}>
-              {isConnected ? 'LIVE' : 'OFFLINE'}
-            </span>
-          </div>
-        </div>
-      </div>
-
-      {/* Log container */}
-      <Card variant="glass" padding="none">
-        <div className="h-[60vh] min-h-[400px] max-h-[600px] overflow-y-auto p-2 space-y-0.5 font-mono text-xs">
-          {isLoading ? (
-            <div className="flex items-center justify-center h-full">
-              <Spinner />
-            </div>
-          ) : isError ? (
-            <div className="flex flex-col items-center justify-center h-full text-crimson-500 gap-2">
-              <AlertTriangle className="h-8 w-8 opacity-50" />
-              <p className="font-mono text-sm">{errorMessage}</p>
-              <p className="font-mono text-xs text-void-600">Проверьте соединение и попробуйте позже</p>
-            </div>
-          ) : filtered.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-full text-void-600 gap-2">
-              <ScrollText className="h-8 w-8 opacity-30" />
-              <p>Нет записей</p>
-            </div>
-          ) : (
-            <>
-              {grouped.map(group => (
-                <div key={group.date}>
-                  <div className="sticky top-0 z-10 px-3 py-1 bg-void-900/90 border-y border-void-800">
-                    <span className="text-[10px] text-void-500 uppercase tracking-wider">{group.date}</span>
-                  </div>
-                  {group.items.map(item => (
-                    <MemoLogRow
-                      key={item.id}
-                      item={item}
-                      itemId={item.id}
-                      expanded={item.type === 'event' && item.error ? expandedErrors.has(item.id) : false}
-                      onToggleError={item.type === 'event' && item.error ? toggleError : undefined}
-                    />
-                  ))}
-                </div>
-              ))}
-            </>
-          )}
-          {hasMore && (
-            <div className="py-3 flex justify-center">
-              <button
-                onClick={handleLoadMore}
-                disabled={isFetchingMore}
-                className="px-4 py-1.5 rounded-sm font-mono text-xs border border-void-700 text-void-400 hover:text-void-200 hover:border-void-600 transition-colors disabled:opacity-50"
-              >
-                {isFetchingMore ? 'Загрузка...' : 'Загрузить ещё'}
-              </button>
-            </div>
-          )}
-          <div ref={bottomRef} />
-        </div>
-      </Card>
-
-      <p className="font-mono text-xs text-void-600 text-right">
-        {filtered.length} записей
-      </p>
-    </div>
-  );
-}
-
-interface LogRowProps {
-  item: FeedItem;
-  itemId: string;
-  expanded?: boolean;
-  onToggleError?: (id: string) => void;
-}
-
-const MemoLogRow = React.memo(function LogRow({ item, itemId, expanded, onToggleError }: LogRowProps) {
-  const time = format(new Date(item.timestamp), 'HH:mm:ss');
-
-  if (item.type === 'message') {
-    const isIn = item.direction === 'incoming' || item.role === 'user';
-    return (
-      <div className={cn(
-        'flex gap-3 px-3 py-1.5 rounded-[2px] hover:bg-void-800/40',
-        isIn ? 'border-l-2 border-plasma-800' : 'border-l-2 border-neon-900',
-      )}>
-        <span className="text-void-600 w-16 shrink-0 tabular-nums">{time}</span>
-        <span className={cn('w-8 shrink-0 uppercase text-[10px]', isIn ? 'text-plasma-600' : 'text-neon-700')}>
-          {isIn ? '← IN' : '→ OUT'}
-        </span>
-        <span className="text-void-500 shrink-0 max-w-[100px] truncate">{item.peer}</span>
-        <span className="text-void-300 flex-1">{sanitizeText(item.content)}</span>
-      </div>
-    );
-  }
-
-  const statusColor: Record<string, string> = {
-    succeeded: 'text-neon-600', failed: 'text-crimson-500',
-    running: 'text-plasma-500', pending: 'text-void-500', cancelled: 'text-void-600',
-  };
-
-  const label = EVENT_LABELS[item.event_type] || item.event_type;
-
-  return (
-    <div className="flex flex-col gap-1 px-3 py-1.5 rounded-[2px] hover:bg-void-800/40 border-l-2 border-void-800">
-      <div className="flex gap-3">
-        <span className="text-void-600 w-16 shrink-0 tabular-nums">{time}</span>
-        <span className="text-void-700 w-8 shrink-0">EVT</span>
-        <span className={cn('w-20 shrink-0', statusColor[item.status] ?? 'text-void-500')}>
-          [{item.status.toUpperCase()}]
-        </span>
-        <span className="text-void-400 flex-1">{label}</span>
-      </div>
-      {item.error && (
-        <div
-          onClick={() => onToggleError?.(itemId)}
-          className={cn(
-            'ml-[88px] text-crimson-500 text-[10px] cursor-pointer',
-            expanded ? '' : 'truncate max-w-[300px]'
-          )}
-        >
-          {item.error}
-        </div>
-      )}
-    </div>
-  );
-});
 
 // ── Tab: Actions ──────────────────────────────────────────────────────────────
 function TabActions({ agentId }: { agentId: string }) {
