@@ -408,6 +408,7 @@ class MimicAgentRuntime:
                 structured_response=structured,
                 peer_name=trigger.peer_name,
                 agent_name=self.config.name,
+                raw_user_text=trigger.raw_text,
             )
 
         return AgentTriggerResult(

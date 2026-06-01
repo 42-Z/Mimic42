@@ -145,10 +145,11 @@ class RuntimeMemoryService:
         structured_response: dict[str, Any] | None = None,
         peer_name: str = "",
         agent_name: str = "",
+        raw_user_text: str = "",
     ) -> None:
         new_messages = _extract_new_messages(input_messages, output_messages)
 
-        if self._short_term is not None and new_messages:
+        if self._short_term is not None:
             try:
                 await self._short_term.save_messages(
                     agent_id=agent_id,
@@ -157,6 +158,7 @@ class RuntimeMemoryService:
                     structured_response=structured_response,
                     peer_name=peer_name,
                     agent_name=agent_name,
+                    raw_user_text=raw_user_text,
                 )
             except Exception:
                 import logging

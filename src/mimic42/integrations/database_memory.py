@@ -68,15 +68,36 @@ class DatabaseShortTermMemory:
         structured_response: dict[str, Any] | None = None,
         peer_name: str = "",
         agent_name: str = "",
+        raw_user_text: str = "",
     ) -> None:
         """Save a list of LangChain message dicts to the database.
 
         Normalizes roles, filters tool-result dumps, and stores UI metadata.
+        Also persists the incoming user message so the UI can display the full
+        conversation thread (incoming + outgoing).
         """
         from datetime import datetime, timedelta
 
         now = datetime.now(UTC)
         async with self._session_factory() as db_session:
+            # ── Persist incoming user message first ──────────────────────────
+            if raw_user_text:
+                user_payload: dict[str, Any] = {"peer": peer}
+                if peer_name:
+                    user_payload["peer_name"] = peer_name
+                if agent_name:
+                    user_payload["agent_name"] = agent_name
+                db_session.add(
+                    AgentMessageModel(
+                        agent_id=agent_id,
+                        direction="incoming",
+                        role="user",
+                        content=raw_user_text,
+                        payload=user_payload,
+                        created_at=now,
+                    )
+                )
+
             for i, msg in enumerate(messages):
                 payload: dict[str, Any] = {"peer": peer}
                 if peer_name:
