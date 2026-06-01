@@ -4,52 +4,62 @@ import { useEffect, useRef, useCallback, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { getSupabaseClient } from '@/lib/supabase/client';
 import { queryKeys } from '@/lib/queryClient';
-import type { AgentMessageRow, AgentEventRow, FeedItem, RealtimePayload } from '@/types';
+import type { AgentMessageRow, AgentEventRow, ConversationTurn } from '@/types';
 import type { RealtimeChannel } from '@supabase/supabase-js';
 
-const MAX_FEED_ITEMS = 200
+const MAX_FEED_ITEMS = 200;
 
-/**
- * Manages Supabase Realtime subscriptions for an agent's messages and events.
- * Returns a live-updating feed of items sorted by timestamp.
- *
- * Initial data must be loaded separately (via useAgentMessages / useAgentActions).
- * This hook only provides incremental updates.
- */
 export function useRealtimeFeed(agentId: string) {
   const qc = useQueryClient();
   const channelRef = useRef<RealtimeChannel | null>(null);
-  const [newMessages, setNewMessages] = useState<AgentMessageRow[]>([]);
-  const [newEvents, setNewEvents] = useState<AgentEventRow[]>([]);
+  const [newTurns, setNewTurns] = useState<ConversationTurn[]>([]);
   const [isConnected, setIsConnected] = useState(false);
 
-  const addMessage = useCallback((msg: AgentMessageRow) => {
-    setNewMessages((prev) => {
-      const updated = [...prev, msg];
+  const addTurn = useCallback((turn: ConversationTurn) => {
+    setNewTurns((prev) => {
+      const updated = [...prev, turn];
       if (updated.length > MAX_FEED_ITEMS) {
         return updated.slice(updated.length - MAX_FEED_ITEMS);
       }
       return updated;
     });
-    // Also invalidate the messages query so pagination stays in sync
-    qc.invalidateQueries({ queryKey: queryKeys.messages.byAgent(agentId) });
+    qc.invalidateQueries({ queryKey: queryKeys.conversation.byAgent(agentId) });
   }, [agentId, qc]);
+
+  const addMessage = useCallback((msg: AgentMessageRow) => {
+    const turn: ConversationTurn = {
+      id: msg.id,
+      agent_id: agentId,
+      timestamp: msg.created_at,
+      peer_id: msg.peer || (msg as any).payload?.peer || '',
+      peer_name: (msg as any).payload?.peer_name || '',
+      agent_name: (msg as any).payload?.agent_name || '',
+      incoming: msg.direction === 'incoming' ? msg.content : '',
+      outgoing: msg.direction === 'agent_response' ? msg.content : '',
+      direction: msg.direction === 'incoming' ? 'incoming' : 'outgoing',
+    };
+    addTurn(turn);
+  }, [agentId, addTurn]);
 
   const addEvent = useCallback((event: AgentEventRow) => {
-    setNewEvents((prev) => {
-      const updated = [...prev, event];
-      if (updated.length > MAX_FEED_ITEMS) {
-        return updated.slice(updated.length - MAX_FEED_ITEMS);
-      }
-      return updated;
-    });
-    qc.invalidateQueries({ queryKey: queryKeys.actions.byAgent(agentId) });
-  }, [agentId, qc]);
+    // Tool calls shown as turns with tools (Phase 4 - tool cards)
+    const turn: ConversationTurn = {
+      id: event.id,
+      agent_id: agentId,
+      timestamp: event.created_at,
+      peer_id: '',
+      peer_name: '',
+      agent_name: '',
+      incoming: '',
+      outgoing: `[${event.event_type}] ${event.status}`,
+      direction: 'outgoing',
+    };
+    addTurn(turn);
+  }, [agentId, addTurn]);
 
-  // Reset feed when agent changes to prevent stale data from previous agent
+  // Reset feed when agent changes
   useEffect(() => {
-    setNewMessages([]);
-    setNewEvents([]);
+    setNewTurns([]);
   }, [agentId]);
 
   useEffect(() => {
@@ -58,7 +68,6 @@ export function useRealtimeFeed(agentId: string) {
     const supabase = getSupabaseClient();
     const channelName = `agent-feed-${agentId}`;
 
-    // Prevent duplicate subscriptions
     const existingChannel = supabase.getChannels().find(
       (ch) => ch.topic === `realtime:${channelName}`
     );
@@ -77,7 +86,7 @@ export function useRealtimeFeed(agentId: string) {
           table: 'agent_messages',
           filter: `agent_id=eq.${agentId}`,
         },
-        (payload: RealtimePayload<AgentMessageRow>) => {
+        (payload: any) => {
           addMessage(payload.new);
         }
       )
@@ -89,7 +98,7 @@ export function useRealtimeFeed(agentId: string) {
           table: 'agent_events',
           filter: `agent_id=eq.${agentId}`,
         },
-        (payload: RealtimePayload<AgentEventRow>) => {
+        (payload: any) => {
           addEvent(payload.new);
         }
       )
@@ -106,43 +115,38 @@ export function useRealtimeFeed(agentId: string) {
     };
   }, [agentId, addMessage, addEvent]);
 
-  // Merge new messages and events into a unified sorted feed
-  const feedItems: FeedItem[] = [
-    ...newMessages.map((m): FeedItem => ({
-      type: 'message',
-      id: m.id,
-      timestamp: m.created_at,
-      peer: m.peer || (m as any).payload?.peer || '',
-      role: m.role,
-      content: m.content,
-      direction: m.direction ?? undefined as string,
-    })),
-    ...newEvents.map((e): FeedItem => ({
-      type: 'event',
-      id: e.id,
-      timestamp: e.created_at,
-      event_type: e.event_type,
-      status: e.status,
-      error: e.error,
-    })),
-  ].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+  // Backward compatibility: feedItems for dashboard LiveFeed
+  const feedItems: import('@/types').FeedItem[] = newTurns.map((t) => {
+    if (t.direction === 'incoming') {
+      return {
+        type: 'message' as const,
+        id: t.id,
+        timestamp: t.timestamp,
+        peer: t.peer_id,
+        role: 'user',
+        content: t.incoming,
+        direction: 'incoming' as const,
+      };
+    }
+    // Outgoing or tool call
+    return {
+      type: 'event' as const,
+      id: t.id,
+      timestamp: t.timestamp,
+      event_type: t.outgoing?.startsWith('[') ? (t.outgoing.match(/^\[(.+?)\]/)?.[1] || 'tool') : 'response',
+      status: 'succeeded' as const,
+      error: null,
+    };
+  });
 
   return {
+    newTurns,
     feedItems,
-    newMessageCount: newMessages.length,
-    newEventCount: newEvents.length,
     isConnected,
-    clearFeed: () => {
-      setNewMessages([]);
-      setNewEvents([]);
-    },
+    clearFeed: () => setNewTurns([]),
   };
 }
 
-/**
- * Subscribes to agent state changes in Supabase.
- * Invalidates the agent status query when the state changes.
- */
 export function useAgentStatusRealtime(agentId: string) {
   const qc = useQueryClient();
   const channelRef = useRef<RealtimeChannel | null>(null);

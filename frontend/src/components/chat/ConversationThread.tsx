@@ -52,20 +52,25 @@ export function ConversationThread({
 
   if (turns.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center h-full text-void-600">
-        <p className="text-sm">Нет сообщений</p>
-        <p className="text-xs mt-1">Отправьте сообщение боту в Telegram</p>
+      <div className="flex flex-col items-center justify-center h-full text-void-600 gap-3">
+        <div className="h-12 w-12 rounded-full bg-void-800 flex items-center justify-center">
+          <span className="text-2xl">💬</span>
+        </div>
+        <div className="text-center">
+          <p className="text-sm font-medium">Нет сообщений</p>
+          <p className="text-xs mt-1 opacity-60">Отправьте сообщение боту в Telegram</p>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="space-y-4 p-4">
+    <div className="space-y-4 p-3 sm:p-4">
       {hasMore && onLoadMore && (
-        <div className="flex justify-center py-2">
+        <div className="flex justify-center py-3">
           <button
             onClick={onLoadMore}
-            className="text-xs text-plasma-500 hover:text-plasma-300 transition-colors"
+            className="text-xs text-plasma-500 hover:text-plasma-300 transition-colors px-4 py-2 rounded-md border border-void-700 hover:border-plasma-800"
           >
             Загрузить ещё
           </button>
@@ -74,18 +79,20 @@ export function ConversationThread({
 
       {grouped.map((group) => (
         <div key={group.date}>
-          <div className="sticky top-0 z-10 text-center py-2">
-            <span className="text-[10px] text-void-500 bg-void-950 px-2 py-0.5 rounded">
+          <div className="sticky top-0 z-10 text-center py-2 bg-void-950/90 backdrop-blur-sm">
+            <span className="text-[10px] text-void-500 bg-void-900 px-3 py-1 rounded-full border border-void-800">
               {group.date}
             </span>
           </div>
-          <div className="space-y-2">
+          <div className="space-y-1 sm:space-y-2">
             {group.turns.map((turn) => (
               <ChatBubble key={turn.id} turn={turn} />
             ))}
           </div>
         </div>
       ))}
+
+      <div className="h-4" /> {/* bottom spacer */}
     </div>
   );
 }

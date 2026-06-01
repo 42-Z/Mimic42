@@ -1,7 +1,8 @@
 'use client';
 
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { useConversation } from '@/hooks/useConversation';
+import { useRealtimeFeed } from '@/hooks/useRealtimeFeed';
 import { ConversationThread } from '@/components/chat/ConversationThread';
 import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
@@ -9,18 +10,37 @@ import { cn } from '@/lib/utils';
 const FILTERS = [
   { id: 'all', label: 'Все' },
   { id: 'dialog', label: 'Диалог' },
+  { id: 'tools', label: 'Тулзы' },
 ] as const;
 
 export function TabLogsChat({ agentId }: { agentId: string }) {
   const { data, isLoading, fetchNextPage, hasNextPage } = useConversation(agentId);
-  const [filter, setFilter] = useState<'all' | 'dialog'>('all');
+  const { newTurns, isConnected, clearFeed } = useRealtimeFeed(agentId);
+  const [filter, setFilter] = useState<'all' | 'dialog' | 'tools'>('all');
   const [search, setSearch] = useState('');
+  const containerRef = useRef<HTMLDivElement>(null);
 
   const allTurns = data?.pages.flat() ?? [];
 
-  const filtered = allTurns.filter((turn) => {
+  // Merge historical + realtime, deduplicate by id
+  const mergedTurns = React.useMemo(() => {
+    const seen = new Set<string>();
+    const combined = [...allTurns, ...newTurns].sort(
+      (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+    );
+    return combined.filter((turn) => {
+      if (seen.has(turn.id)) return false;
+      seen.add(turn.id);
+      return true;
+    });
+  }, [allTurns, newTurns]);
+
+  const filtered = mergedTurns.filter((turn) => {
     if (filter === 'dialog') {
       return turn.direction === 'both' || turn.direction === 'incoming' || turn.direction === 'outgoing';
+    }
+    if (filter === 'tools') {
+      return turn.outgoing?.startsWith('[') && turn.outgoing?.includes(']');
     }
     return true;
   }).filter((turn) => {
@@ -36,9 +56,21 @@ export function TabLogsChat({ agentId }: { agentId: string }) {
     if (hasNextPage) fetchNextPage();
   }, [hasNextPage, fetchNextPage]);
 
+  // Auto-scroll to bottom on new turns
+  useEffect(() => {
+    if (containerRef.current && newTurns.length > 0) {
+      const el = containerRef.current;
+      // Only scroll if user is near bottom (within 100px)
+      const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 100;
+      if (isNearBottom) {
+        el.scrollTop = el.scrollHeight;
+      }
+    }
+  }, [newTurns.length]);
+
   return (
     <div className="space-y-4">
-      <div className="flex flex-col sm:flex-row gap-3">
+      <div className="flex flex-col sm:flex-row gap-3 items-start sm:items-center">
         <Input
           placeholder="Поиск по сообщениям..."
           value={search}
@@ -61,9 +93,26 @@ export function TabLogsChat({ agentId }: { agentId: string }) {
             </button>
           ))}
         </div>
+        <div className="flex items-center gap-2 ml-auto">
+          <div className={cn('h-2 w-2 rounded-full', isConnected ? 'bg-neon-400' : 'bg-crimson-400')} />
+          <span className={cn('text-[10px] font-mono', isConnected ? 'text-neon-500' : 'text-crimson-500')}>
+            {isConnected ? 'LIVE' : 'OFF'}
+          </span>
+          {newTurns.length > 0 && (
+            <button
+              onClick={clearFeed}
+              className="text-[10px] text-void-600 hover:text-void-400 transition-colors"
+            >
+              Очистить
+            </button>
+          )}
+        </div>
       </div>
 
-      <div className="h-[60vh] min-h-[400px] max-h-[600px] overflow-y-auto bg-void-950 border border-void-800 rounded-sm">
+      <div
+        ref={containerRef}
+        className="h-[60vh] min-h-[400px] max-h-[600px] overflow-y-auto bg-void-950 border border-void-800 rounded-sm"
+      >
         <ConversationThread
           turns={filtered}
           isLoading={isLoading}
