@@ -73,6 +73,7 @@ export interface OnboardingTelegramInput {
   api_id: number;
   api_hash: string;
   phone_number: string;
+  onboarding_id?: string;
 }
 
 /**

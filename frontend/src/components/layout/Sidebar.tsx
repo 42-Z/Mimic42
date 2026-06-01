@@ -226,6 +226,7 @@ export function Sidebar({ className, mobileOpen = false, onMobileClose }: Sideba
         )}
       </button>
     </aside>
+    </>
   );
 }
 

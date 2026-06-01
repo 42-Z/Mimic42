@@ -135,11 +135,12 @@ export function useStartTelegramAuth() {
   const qc = useQueryClient();
 
   return useMutation({
-    mutationFn: async (values: TelegramCredentialsValues) => {
+    mutationFn: async (values: TelegramCredentialsValues & { onboarding_id?: string }) => {
       const result = await onboardingApi.startTelegram({
         api_id: values.api_id,
         api_hash: values.api_hash,
         phone_number: values.phone_number,
+        onboarding_id: values.onboarding_id,
       });
 
       return result as OnboardingPublicStatus;
@@ -200,7 +201,6 @@ export function useFinalizeAgent() {
       const result = await onboardingApi.finalizeAgent(onboardingId, {
         name: session.agent_name ?? 'Мой агент',
         soul_prompt: session.soul_prompt ?? '',
-        system_prompt: session.system_prompt ?? '',
       });
 
       // Mark onboarding as complete in Supabase

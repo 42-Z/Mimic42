@@ -50,6 +50,7 @@ class TelegramCredentials(BaseModel):
     api_id: int = Field(gt=0)
     api_hash: str = Field(min_length=1)
     phone_number: str = Field(min_length=5)
+    onboarding_id: UUID | None = Field(default=None)
 
 
 class TelegramCodeVerification(BaseModel):
@@ -189,7 +190,7 @@ class AgentOnboardingService:
         self,
         credentials: TelegramCredentials,
     ) -> OnboardingPublicStatus:
-        onboarding_id = uuid4()
+        onboarding_id = credentials.onboarding_id or uuid4()
 
         client = self._telegram_factory.build(
             api_id=credentials.api_id,

@@ -7,7 +7,7 @@ import { queryKeys } from '@/lib/queryClient';
 import type { AgentMessageRow, AgentEventRow, FeedItem, RealtimePayload } from '@/types';
 import type { RealtimeChannel } from '@supabase/supabase-js';
 
-const MAX_FEED_ITEMS = 200;
+const MAX_FEED_ITEMS = {}
 
 /**
  * Manages Supabase Realtime subscriptions for an agent's messages and events.
@@ -109,7 +109,7 @@ export function useRealtimeFeed(agentId: string) {
       peer: m.peer || (m as any).payload?.peer || '',
       role: m.role,
       content: m.content,
-      direction: m.direction ?? undefined,
+      direction: m.direction ?? undefined as string,
     })),
     ...newEvents.map((e): FeedItem => ({
       type: 'event',

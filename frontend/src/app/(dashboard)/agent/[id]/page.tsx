@@ -343,7 +343,8 @@ function TabLogs({ agentId }: { agentId: string }) {
     ...(messages ?? []).map(m => ({
       type: 'message' as const, id: String(m.id ?? m.created_at),
       timestamp: m.created_at, peer: m.peer, role: m.role,
-      content: m.content, direction: m.direction,
+      content: m.content,
+      direction: m.direction as 'incoming' | 'outgoing' | undefined,
     })),
     ...(actions ?? []).map(a => ({
       type: 'event' as const, id: String(a.id ?? a.created_at),

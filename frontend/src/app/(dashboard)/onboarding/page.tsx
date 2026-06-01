@@ -67,16 +67,11 @@ export default function OnboardingPage() {
   const hasAgents = (agents ?? []).length > 0;
 
   // If user has agents and hasn't chosen to start new — show choice screen
-  if (hasAgents && !startNew && !session?.id) {
+  if (hasAgents && !startNew) {
     return <OnboardingChoice onStartNew={() => setStartNew(true)} />;
   }
 
   const currentStep = deriveOnboardingStep(session);
-
-  // If already done
-  if (session?.completed_agent_id) {
-    return <OnboardingComplete agentId={session.completed_agent_id} />;
-  }
 
   return (
     <div className="min-h-screen bg-void-950">
@@ -297,7 +292,10 @@ function StepTelegramCredentials({ session }: { session: OnboardingSessionRow | 
     }
     setErrors({});
     try {
-      await startAuth.mutateAsync(result.data);
+      await startAuth.mutateAsync({
+        ...result.data,
+        onboarding_id: session?.id ?? undefined,
+      });
     } catch (e: unknown) {
       toast((e as ApiError).message ?? 'Ошибка авторизации', 'error');
     }
