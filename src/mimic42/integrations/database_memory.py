@@ -107,12 +107,20 @@ class DatabaseShortTermMemory:
                 # ── Clean assistant content ──────────────────────────────────────
                 if role == "assistant":
                     # Structured output often leaves content empty or dumps the
-                    # raw repr.  Prefer the human-readable text from the payload.
-                    if not content or content.startswith("Returning structured response:"):
-                        if structured_response is not None:
-                            content = structured_response.get("text", "") or "[empty]"
-                        else:
-                            content = "[empty]"
+                    # raw repr.  Prefer the human-readable text.
+                    human_text = ""
+                    if structured_response is not None:
+                        human_text = structured_response.get("text", "")
+
+                    if content.startswith("Returning structured response:") or not content:
+                        content = human_text
+
+                    # If this is an intermediate AIMessage that only contains
+                    # tool_calls with no human-readable text, skip it entirely.
+                    # It will be surfaced as an agent_event in Phase 2.
+                    if not content and msg.get("tool_calls"):
+                        continue
+
                     # Store the full structured response for the first assistant msg
                     if structured_response is not None:
                         payload["structured_response"] = structured_response
@@ -154,7 +162,9 @@ class DatabaseShortTermMemory:
         if role == "tool":
             return "tool_result"
         if role in ("assistant", "ai"):
-            return "tool_call" if msg.get("tool_calls") else "agent_response"
+            # Assistant messages are always user-facing responses.
+            # Tool calls live in payload and are surfaced via agent_events.
+            return "agent_response"
         if role == "system":
             return "dashboard_trigger"
         return "agent_response"
