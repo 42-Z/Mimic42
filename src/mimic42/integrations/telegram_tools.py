@@ -16,6 +16,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from telethon import functions, types
 from telethon.extensions import markdown
 
+from mimic42.integrations.database_models import AgentEventModel
+
 
 class TelethonRequestClient(Protocol):
     async def __call__(self, request: object) -> object: ...

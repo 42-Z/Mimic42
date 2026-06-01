@@ -228,7 +228,7 @@ class DatabaseAgentStore:
                 if item_type == "msg":
                     msg = item
                     content = _message_content(msg)
-                    if msg.direction == "incoming":
+                    if msg.direction in ("incoming", "dashboard_trigger"):
                         if current_turn is not None:
                             turns.append(current_turn)
                         current_turn = ConversationTurn(

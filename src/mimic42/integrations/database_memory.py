@@ -81,7 +81,15 @@ class DatabaseShortTermMemory:
         now = datetime.now(UTC)
         async with self._session_factory() as db_session:
             # ── Persist incoming user message first ──────────────────────────
-            if raw_user_text:
+            # Avoid duplicate if raw_user_text is identical to the last user
+            # message already present in the messages list (e.g. formatted text).
+            last_user_content = ""
+            for msg in reversed(messages):
+                if msg.get("role") in ("user", "human"):
+                    last_user_content = msg.get("content", "")
+                    break
+
+            if raw_user_text and raw_user_text != last_user_content:
                 user_payload: dict[str, Any] = {"peer": peer}
                 if peer_name:
                     user_payload["peer_name"] = peer_name

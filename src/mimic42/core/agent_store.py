@@ -181,7 +181,7 @@ class InMemoryAgentStore:
         i = 0
         while i < len(filtered):
             msg = filtered[i]
-            if msg.direction == "incoming":
+            if msg.direction in ("incoming", "dashboard_trigger"):
                 turn = ConversationTurn(
                     id=msg.id,
                     agent_id=agent_id,
