@@ -5,13 +5,12 @@ import { useRouter } from 'next/navigation';
 import {
   useOnboardingSession,
   deriveOnboardingStep,
-  useSaveAgentName,
-  useSaveSoulPrompt,
   useStartTelegramAuth,
   useSubmitTelegramCode,
   useFinalizeAgent,
   useSaveOnboardingStep,
 } from '@/hooks/useOnboarding';
+import { useAgents } from '@/hooks/useAgents';
 import { StepIndicator } from '@/components/onboarding/StepIndicator';
 import { Button } from '@/components/ui/button';
 import { Input, Textarea } from '@/components/ui/input';
@@ -22,7 +21,7 @@ import {
   telegramCredentialsSchema, telegramCodeSchema, telegram2FASchema,
 } from '@/lib/validators';
 import { cn } from '@/lib/utils';
-import { Zap, ExternalLink, CheckCircle } from 'lucide-react';
+import { Zap, ExternalLink, CheckCircle, Plus, ArrowLeft } from 'lucide-react';
 import type { OnboardingStep, OnboardingSessionRow } from '@/types';
 import type { ApiError } from '@/types';
 
@@ -30,7 +29,9 @@ import { DEFAULT_SYSTEM_PROMPT } from '@/lib/constants';
 
 export default function OnboardingPage() {
   const { data: session, isLoading } = useOnboardingSession();
+  const { data: agents } = useAgents();
   const [telegramCode, setTelegramCodeState] = useState('');
+  const [startNew, setStartNew] = useState(false);
 
   // Secure client-side synchronization and preventive purging
   useEffect(() => {
@@ -63,9 +64,16 @@ export default function OnboardingPage() {
     );
   }
 
+  const hasAgents = (agents ?? []).length > 0;
+
+  // If user has agents and hasn't chosen to start new — show choice screen
+  if (hasAgents && !startNew && !session?.id) {
+    return <OnboardingChoice onStartNew={() => setStartNew(true)} />;
+  }
+
   const currentStep = deriveOnboardingStep(session);
 
-  // If already done, redirect
+  // If already done
   if (session?.completed_agent_id) {
     return <OnboardingComplete agentId={session.completed_agent_id} />;
   }
@@ -73,8 +81,13 @@ export default function OnboardingPage() {
   return (
     <div className="min-h-screen bg-void-950">
       <div className="max-w-2xl mx-auto px-6 py-12">
-        {/* Logo */}
+        {/* Logo + back */}
         <div className="flex items-center gap-2 mb-12">
+          {hasAgents && (
+            <button onClick={() => setStartNew(false)} className="text-void-500 hover:text-void-300 transition-colors mr-2">
+              <ArrowLeft className="h-4 w-4" />
+            </button>
+          )}
           <Zap className="h-5 w-5 text-plasma-400" />
           <span className="font-mono font-bold text-sm">
             MIMIC<span className="text-plasma-400">42</span>
@@ -100,6 +113,32 @@ export default function OnboardingPage() {
   );
 }
 
+// ── Choice screen for users with existing agents ────────────────────────────────
+function OnboardingChoice({ onStartNew }: { onStartNew: () => void }) {
+  const router = useRouter();
+
+  return (
+    <div className="min-h-screen bg-void-950 flex items-center justify-center p-8">
+      <div className="text-center space-y-6 max-w-sm">
+        <Zap className="h-12 w-12 text-plasma-400 mx-auto" />
+        <h1 className="font-display text-2xl font-bold text-void-100">Создать нового агента?</h1>
+        <p className="font-mono text-sm text-void-500">
+          У вас уже есть агенты. Вы можете создать нового или вернуться к существующим.
+        </p>
+        <div className="space-y-3">
+          <Button onClick={onStartNew} size="lg" className="w-full" leftIcon={<Plus className="h-4 w-4" />}>
+            Создать нового агента
+          </Button>
+          <Button onClick={() => router.push('/dashboard')} variant="outline" size="lg" className="w-full">
+            <ArrowLeft className="h-4 w-4 mr-2" />
+            Вернуться к агентам
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function StepRouter({
   step,
   session,
@@ -112,7 +151,7 @@ function StepRouter({
   setTelegramCode: (val: string) => void;
 }) {
   switch (step) {
-    case 'name':             return <StepName />;
+    case 'name':             return <StepName session={session} />;
     case 'soul':             return <StepSoul session={session} />;
     case 'telegram_credentials': return <StepTelegramCredentials session={session} />;
     case 'telegram_code':    return <StepTelegramCode session={session} setTelegramCode={setTelegramCode} />;
@@ -136,9 +175,9 @@ function StepHeading({ step, title, description }: { step: string; title: string
 }
 
 // ── Step 1: Name ─────────────────────────────────────────────────────────────
-function StepName() {
+function StepName({ session }: { session: OnboardingSessionRow | null }) {
   const { toast } = useToast();
-  const save = useSaveAgentName();
+  const save = useSaveOnboardingStep();
   const [name, setName] = useState('');
   const [error, setError] = useState('');
 
@@ -151,7 +190,7 @@ function StepName() {
     }
     setError('');
     try {
-      await save.mutateAsync({ name });
+      await save.mutateAsync({ id: session?.id, agent_name: name });
     } catch {
       toast('Не удалось сохранить. Попробуйте снова.', 'error');
     }
@@ -182,7 +221,7 @@ function StepName() {
 // ── Step 2: Soul ──────────────────────────────────────────────────────────────
 function StepSoul({ session }: { session: OnboardingSessionRow | null }) {
   const { toast } = useToast();
-  const save = useSaveSoulPrompt();
+  const save = useSaveOnboardingStep();
   const [soulPrompt, setSoulPrompt] = useState('');
   const [error, setError] = useState('');
 
@@ -201,7 +240,7 @@ function StepSoul({ session }: { session: OnboardingSessionRow | null }) {
     }
     setError('');
     try {
-      await save.mutateAsync({ soul_prompt: soulPrompt });
+      await save.mutateAsync({ id: session?.id, soul_prompt: soulPrompt });
     } catch {
       toast('Не удалось сохранить', 'error');
     }

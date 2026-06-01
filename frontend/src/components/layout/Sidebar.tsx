@@ -12,6 +12,7 @@ import {
   ChevronRight,
   Zap,
   X,
+  Plus,
 } from 'lucide-react';
 import { getSupabaseClient } from '@/lib/supabase/client';
 import { useRouter } from 'next/navigation';
@@ -168,6 +169,20 @@ export function Sidebar({ className, mobileOpen = false, onMobileClose }: Sideba
             )}
           </Link>
         ))}
+
+        {/* Create new agent */}
+        <Link
+          href="/onboarding"
+          className={cn(
+            'flex items-center rounded-sm transition-colors duration-150',
+            'text-plasma-500 hover:text-plasma-300 hover:bg-plasma-950/30',
+            collapsed ? 'justify-center h-10 w-10 mx-auto' : 'gap-3 px-3 py-2 mt-2',
+          )}
+          title={collapsed ? 'Новый агент' : undefined}
+        >
+          <Plus className="h-4 w-4 shrink-0" />
+          {!collapsed && <span className="font-mono text-sm">Новый агент</span>}
+        </Link>
       </nav>
 
       {/* Bottom section */}

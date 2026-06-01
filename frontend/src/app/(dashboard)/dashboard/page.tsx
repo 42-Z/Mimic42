@@ -15,7 +15,7 @@ import { formatDistanceToNow } from 'date-fns';
 import { ru } from 'date-fns/locale';
 import {
   MessageSquare, Activity, AlertTriangle, TrendingUp,
-  Play, Square, RefreshCw, Wifi, WifiOff, Bot,
+  Play, Square, RefreshCw, Wifi, WifiOff, Bot, Plus,
 } from 'lucide-react';
 import Link from 'next/link';
 import type { AgentRecord, FeedItem } from '@/types';
@@ -96,7 +96,7 @@ function DashboardHeader({
         </div>
       </div>
 
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 flex-wrap">
         {agents.length > 1 && (
           <select
             value={agent.agent_id}
@@ -128,6 +128,11 @@ function DashboardHeader({
         </Button>
         <Link href={`/agent/${agent.agent_id}`}>
           <Button variant="ghost" size="sm">Настройки →</Button>
+        </Link>
+        <Link href="/onboarding">
+          <Button variant="outline" size="sm" leftIcon={<Plus className="h-3.5 w-3.5" />}>
+            Новый
+          </Button>
         </Link>
       </div>
     </div>

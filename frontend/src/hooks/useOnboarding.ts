@@ -64,26 +64,30 @@ export function useOnboardingSession() {
 
 /**
  * Hook for saving onboarding step data to Supabase.
- * Performs an upsert based on owner_id.
+ * Upserts by session id (primary key) so a single onboarding flow
+ * updates the same row, while new flows naturally create new rows.
  */
 export function useSaveOnboardingStep() {
   const qc = useQueryClient();
 
   return useMutation({
-    mutationFn: async (update: Partial<OnboardingSessionRow>) => {
+    mutationFn: async (update: Partial<OnboardingSessionRow> & { id?: string }) => {
       const supabase = getSupabaseClient();
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) throw new Error('Not authenticated');
+
+      const rowId = update.id ?? crypto.randomUUID();
 
       const { data, error } = await supabase
         .from('agent_onboarding_sessions')
         .upsert(
           {
+            id: rowId,
             owner_id: user.id,
             ...update,
             updated_at: new Date().toISOString(),
           },
-          { onConflict: 'owner_id' }
+          { onConflict: 'id' }
         )
         .select()
         .single();
