@@ -147,12 +147,23 @@ class RuntimeMemoryService:
         new_messages = _extract_new_messages(input_messages, output_messages)
 
         if self._short_term is not None and new_messages:
-            await self._short_term.save_messages(
-                agent_id=agent_id,
-                peer=peer,
-                messages=new_messages,
-                structured_response=structured_response,
-            )
+            try:
+                await self._short_term.save_messages(
+                    agent_id=agent_id,
+                    peer=peer,
+                    messages=new_messages,
+                    structured_response=structured_response,
+                )
+            except Exception:
+                import logging
+                logger = logging.getLogger("mimic42.memory")
+                logger.exception(
+                    "Failed to save messages to short-term store (agent_id=%s, peer=%s, count=%d)",
+                    agent_id,
+                    peer,
+                    len(new_messages),
+                )
+                raise
 
         if self._long_term is not None:
             user_text = _extract_last_user_text(output_messages)

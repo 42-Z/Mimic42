@@ -84,6 +84,18 @@ class DatabaseShortTermMemory:
                 elif not isinstance(content, str):
                     content = str(content)
 
+                # Map to database direction enum
+                direction = self._resolve_direction(role, msg)
+
+                # Populate empty assistant content from structured response
+                # to satisfy database CHECK (btrim(content) <> '')
+                if not content and role in ("assistant", "ai") and structured_response is not None:
+                    content = structured_response.get("text", "") or "[empty]"
+
+                # Ensure content never violates NOT NULL / CHECK constraints
+                if not content:
+                    content = "[empty]"
+
                 # Preserve LangChain-specific fields in payload
                 if "tool_calls" in msg:
                     payload["tool_calls"] = msg["tool_calls"]
@@ -94,16 +106,11 @@ class DatabaseShortTermMemory:
                 if "id" in msg:
                     payload["id"] = msg["id"]
 
-                # Attach structured response to the last assistant message
+                # Attach structured response to the first assistant message
                 if structured_response is not None:
-                    direction = self._resolve_direction(role, msg)
                     if direction == "agent_response":
                         payload["structured_response"] = structured_response
-                        # Only attach once — to the last assistant message
                         structured_response = None
-
-                # Map to database direction enum
-                direction = self._resolve_direction(role, msg)
 
                 db_session.add(
                     AgentMessageModel(
