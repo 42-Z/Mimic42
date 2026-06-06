@@ -695,11 +695,13 @@ class MimicAgentRuntime:
                     reply_str = f"Ответ на сообщение #{reply_to_msg_id}\n"
 
             # Format output message text
+            incoming_msg_id = _extract_incoming_message_id(event)
             text = (
                 f"[Входящее сообщение]\n"
                 f"Время: {time_str}\n"
                 f"Чат: {chat_type_str}\n"
                 f"Отправитель: {sender_str}\n"
+                f"ID сообщения: {incoming_msg_id}\n"
                 f"{reply_str}"
                 f"Содержимое: {text}"
             )
