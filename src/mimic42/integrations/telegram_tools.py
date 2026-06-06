@@ -1631,6 +1631,55 @@ class TelegramToolbox:
         except Exception as e:
             return {"success": False, "error": str(e)}
 
+    async def join_channel_discussion(self, peer: str) -> dict[str, Any]:
+        """Join the linked discussion group of a broadcast channel."""
+        try:
+            entity = await self._resolve_peer(peer, as_input=False)
+            if not isinstance(entity, types.Channel):
+                return {"error": "Entity is not a channel"}
+            full_info = await self._client(
+                functions.channels.GetFullChannelRequest(channel=entity)
+            )
+            full_chat = full_info.full_chat
+            linked_chat_id = getattr(full_chat, "linked_chat_id", None)
+            if not linked_chat_id:
+                return {"error": "This channel has no linked discussion group"}
+            linked_chat = await self._client.get_entity(linked_chat_id)
+            await self._client(
+                functions.channels.JoinChannelRequest(channel=linked_chat)
+            )
+            return {
+                "success": True,
+                "linked_chat_id": linked_chat_id,
+                "title": getattr(linked_chat, "title", ""),
+                "username": getattr(linked_chat, "username", None),
+                "is_group": isinstance(linked_chat, types.Channel) and linked_chat.megagroup,
+            }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    async def get_discussion_messages(
+        self, peer: str, message_id: int, limit: int = 20
+    ) -> list[dict[str, Any]]:
+        """Get comments/messages from the discussion group of a channel post."""
+        try:
+            entity = await self._resolve_peer(peer, as_input=False)
+            messages = []
+            async for msg in self._client.iter_messages(
+                entity, reply_to=message_id, limit=limit
+            ):
+                messages.append(
+                    {
+                        "id": msg.id,
+                        "sender_id": msg.sender_id,
+                        "date": msg.date.isoformat() if msg.date else None,
+                        "text": msg.text or "",
+                    }
+                )
+            return messages
+        except Exception as e:
+            return [{"error": str(e)}]
+
     async def toggle_forum(self, peer: str, enabled: bool, tabs: bool = False) -> dict[str, Any]:
         """Enable or disable forum mode in a supergroup (creates topics)."""
         try:
@@ -2716,6 +2765,22 @@ def build_telegram_langchain_tools(
             coroutine=toolbox.set_discussion_group,
             name="set_discussion_group",
             description="Link a discussion group (supergroup) to a broadcast channel.",
+        ),
+        StructuredTool.from_function(
+            coroutine=toolbox.join_channel_discussion,
+            name="join_channel_discussion",
+            description=(
+                "Join the linked discussion group of a broadcast channel "
+                "and return its info (ID, title, username)."
+            ),
+        ),
+        StructuredTool.from_function(
+            coroutine=toolbox.get_discussion_messages,
+            name="get_discussion_messages",
+            description=(
+                "Get comments/messages from the discussion group "
+                "of a specific channel post (by message_id)."
+            ),
         ),
         StructuredTool.from_function(
             coroutine=toolbox.toggle_forum,
