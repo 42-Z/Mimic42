@@ -46,6 +46,7 @@ class FakeTelethonClient:
             full_chat.about = "Group description"
             full_chat.participants_count = 100
             full_chat.admins_count = 5
+            full_chat.linked_chat_id = 789
 
             chat_obj = MagicMock(spec=types.Channel)
             chat_obj.id = 456
@@ -55,6 +56,12 @@ class FakeTelethonClient:
             res = MagicMock(spec=types.messages.ChatFull)
             res.full_chat = full_chat
             res.chats = [chat_obj]
+            res.users = []
+            return res
+        elif isinstance(request, functions.channels.JoinChannelRequest):
+            res = MagicMock(spec=types.Updates)
+            res.updates = []
+            res.chats = [request.channel]
             res.users = []
             return res
         elif isinstance(request, functions.channels.GetParticipantRequest):
@@ -223,6 +230,13 @@ class FakeTelethonClient:
             channel.id = 456
             channel.title = "Test Group"
             channel.username = "test_group"
+            channel.megagroup = True
+            return channel
+        elif peer == 789:
+            channel = MagicMock(spec=types.Channel)
+            channel.id = 789
+            channel.title = "Discussion Group"
+            channel.username = "discussion_group"
             channel.megagroup = True
             return channel
         user = MagicMock(spec=types.User)
@@ -1329,4 +1343,67 @@ async def test_privacy_and_account_settings_tools() -> None:
     ]
     assert len(content_reqs) == 1
     assert content_reqs[0].sensitive_enabled is True
+
+
+@pytest.mark.asyncio
+async def test_join_channel_discussion() -> None:
+    client = FakeTelethonClient()
+    toolbox = TelegramToolbox(client)
+
+    result = await toolbox.join_channel_discussion("group")
+    assert result["success"] is True
+    assert result["linked_chat_id"] == 789
+    assert result["title"] == "Discussion Group"
+    assert result["username"] == "discussion_group"
+    assert result["is_group"] is True
+
+    join_reqs = [r for r in client.requests if isinstance(r, functions.channels.JoinChannelRequest)]
+    assert len(join_reqs) == 1
+
+
+class FakeTelethonClientNoLinkedChat(FakeTelethonClient):
+    async def __call__(self, request: object) -> Any:
+        if isinstance(request, functions.channels.GetFullChannelRequest):
+            full_chat = MagicMock(spec=types.ChannelFull)
+            full_chat.about = "Group description"
+            full_chat.participants_count = 100
+            full_chat.admins_count = 5
+            full_chat.linked_chat_id = None
+
+            chat_obj = MagicMock(spec=types.Channel)
+            chat_obj.id = 456
+            chat_obj.title = "Test Group"
+            chat_obj.username = "test_group"
+
+            res = MagicMock(spec=types.messages.ChatFull)
+            res.full_chat = full_chat
+            res.chats = [chat_obj]
+            res.users = []
+            return res
+        return await super().__call__(request)
+
+
+@pytest.mark.asyncio
+async def test_join_channel_discussion_no_linked_chat() -> None:
+    client = FakeTelethonClientNoLinkedChat()
+    toolbox = TelegramToolbox(client)
+
+    result = await toolbox.join_channel_discussion("group")
+    assert result == {"error": "This channel has no linked discussion group"}
+
+
+@pytest.mark.asyncio
+async def test_get_discussion_messages() -> None:
+    client = FakeTelethonClient()
+    toolbox = TelegramToolbox(client)
+
+    messages = await toolbox.get_discussion_messages("group", 42, limit=10)
+    assert len(messages) == 1
+    assert messages[0]["id"] == 777
+    assert messages[0]["text"] == "Mock message text"
+
+    iter_calls = [c for c in client.calls if c[0] == "iter_messages"]
+    assert len(iter_calls) == 1
+    assert iter_calls[0][1]["kwargs"]["reply_to"] == 42
+    assert iter_calls[0][1]["kwargs"]["limit"] == 10
 
