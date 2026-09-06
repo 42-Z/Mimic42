@@ -87,6 +87,7 @@ logs/
 *.stackdump
 
 # Generated media and temporary artifacts
+scratch/
 tmp/
 temp/
 .tmp/
