@@ -78,3 +78,64 @@ async def test_dashboard_can_list_agents_messages_and_actions() -> None:
     assert messages.json()[0]["content"] == "hello"
     assert actions.status_code == 200
     assert actions.json()[0]["event_type"] == "telegram.message.received"
+
+
+@pytest.mark.asyncio
+async def test_dashboard_conversation_groups_incoming_and_outgoing() -> None:
+    owner_id = uuid4()
+    agent_id = uuid4()
+    now = datetime(2026, 5, 19, 23, 30, tzinfo=UTC)
+    store = InMemoryAgentStore(
+        agents=[
+            AgentRecord(
+                agent_id=agent_id,
+                owner_id=owner_id,
+                name="Mimic",
+                state=AgentRuntimeState.STOPPED,
+            )
+        ],
+        messages=[
+            AgentMessageRecord(
+                agent_id=agent_id,
+                peer="chat",
+                peer_name="Ivan",
+                role="user",
+                content="hi",
+                direction="incoming",
+                created_at=now,
+            ),
+            AgentMessageRecord(
+                agent_id=agent_id,
+                peer="chat",
+                agent_name="Mimic",
+                role="assistant",
+                content="hello",
+                direction="agent_response",
+                created_at=now,
+            ),
+        ],
+    )
+    app = create_app(agent_store=store, auth_verifier=FakeAuthVerifier(owner_id))
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        conversation = await client.get(
+            f"/api/v1/agents/{agent_id}/conversation",
+            headers=AUTH_HEADERS,
+        )
+        limited = await client.get(
+            f"/api/v1/agents/{agent_id}/conversation?limit=1",
+            headers=AUTH_HEADERS,
+        )
+
+    assert conversation.status_code == 200
+    turns = conversation.json()
+    assert len(turns) == 1
+    assert turns[0]["direction"] == "both"
+    assert turns[0]["incoming"] == "hi"
+    assert turns[0]["outgoing"] == "hello"
+    assert turns[0]["peer_name"] == "Ivan"
+    assert limited.status_code == 200
+    assert len(limited.json()) == 1
