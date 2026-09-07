@@ -1,13 +1,20 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mimic42.core.agent_runtime import DEFAULT_LLM_MODEL, AgentRuntimeConfig, AgentRuntimeState
-from mimic42.core.agent_store import AgentActivity, AgentMessageRecord, AgentRecord, ConversationTurn, ToolCallRecord
+from mimic42.core.agent_store import (
+    AgentActivity,
+    AgentMessageRecord,
+    AgentRecord,
+    ConversationTurn,
+    ToolCallRecord,
+)
 from mimic42.core.onboarding import OnboardingSession, SecretCipher
 from mimic42.integrations.database_models import (
     AgentEventModel,
@@ -128,7 +135,9 @@ class DatabaseAgentStore:
                 agent.last_stopped_at = _now()
             await db_session.commit()
 
-    async def list_messages(self, *, agent_id: UUID, limit: int = 50, offset: int = 0) -> list[AgentMessageRecord]:
+    async def list_messages(
+        self, *, agent_id: UUID, limit: int = 50, offset: int = 0
+    ) -> list[AgentMessageRecord]:
         async with self._session_factory() as db_session:
             messages = await db_session.scalars(
                 select(AgentMessageModel)
@@ -161,7 +170,9 @@ class DatabaseAgentStore:
                 )
             return records
 
-    async def list_activities(self, *, agent_id: UUID, limit: int = 50, offset: int = 0) -> list[AgentActivity]:
+    async def list_activities(
+        self, *, agent_id: UUID, limit: int = 50, offset: int = 0
+    ) -> list[AgentActivity]:
         async with self._session_factory() as db_session:
             activities = await db_session.scalars(
                 select(AgentEventModel)

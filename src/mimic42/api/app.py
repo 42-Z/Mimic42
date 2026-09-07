@@ -308,13 +308,13 @@ def create_app(
     ) -> OnboardingPublicStatus:
         try:
             status_result = await _get_onboarding_service(app).get_status(onboarding_id)
-        except OnboardingNotFoundError:
-            raise _onboarding_not_found(onboarding_id)
+        except OnboardingNotFoundError as exc:
+            raise _onboarding_not_found(onboarding_id) from exc
         # Unified owner check — do not leak session existence via status codes
         try:
             _ensure_owner(status_result.owner_id, current_user.user_id)
         except HTTPException:
-            raise _onboarding_not_found(onboarding_id)
+            raise _onboarding_not_found(onboarding_id) from None
         try:
             result = await _get_onboarding_service(app).verify_telegram_code(onboarding_id, payload)
             return result
@@ -366,13 +366,13 @@ def create_app(
     ) -> AgentStatus:
         try:
             status_result = await _get_onboarding_service(app).get_status(onboarding_id)
-        except OnboardingNotFoundError:
-            raise _onboarding_not_found(onboarding_id)
+        except OnboardingNotFoundError as exc:
+            raise _onboarding_not_found(onboarding_id) from exc
         # Unified owner check — do not leak session existence via status codes
         try:
             _ensure_owner(status_result.owner_id, current_user.user_id)
         except HTTPException:
-            raise _onboarding_not_found(onboarding_id)
+            raise _onboarding_not_found(onboarding_id) from None
         try:
             result = await _get_onboarding_service(app).finalize_agent(onboarding_id, payload)
             return result

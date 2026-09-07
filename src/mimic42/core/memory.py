@@ -43,6 +43,9 @@ class ShortTermMemoryStore(Protocol):
         peer: str,
         messages: list[dict[str, Any]],
         structured_response: dict[str, Any] | None = None,
+        peer_name: str = "",
+        agent_name: str = "",
+        raw_user_text: str = "",
     ) -> None: ...
 
 
@@ -75,6 +78,9 @@ class MemoryServiceLike(Protocol):
         input_messages: list[dict[str, Any]],
         output_messages: list[dict[str, Any]],
         structured_response: dict[str, Any] | None = None,
+        peer_name: str = "",
+        agent_name: str = "",
+        raw_user_text: str = "",
     ) -> None: ...
 
 
