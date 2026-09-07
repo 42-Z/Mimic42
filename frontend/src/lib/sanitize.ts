@@ -99,13 +99,11 @@ export function sanitizeRichText(input: string | null | undefined): string {
 }
 
 /**
- * Новая функция для серверной очистки Rich Text.
- * Удаляет опасные теги, но оставляет базовое форматирование.
+ * Server-side rich-text cleanup: removes dangerous blocks (with content)
+ * via the linear scanner, then drops every tag except the allow-list.
  */
 function sanitizeRichHtmlServer(input: string): string {
-  return input
-  .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '') // Удаляем скрипты
-  .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '')   // Удаляем стили
+  return stripDangerousContent(input)
   // Это регулярное выражение удаляет все теги КРОМЕ разрешенных (b, i, em, strong, p, br, code, pre)
   .replace(/<(?!(\/?(b|i|em|strong|p|br|code|pre)\b))[^>]+>/gi, '')
   .trim();
