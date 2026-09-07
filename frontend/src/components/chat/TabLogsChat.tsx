@@ -21,7 +21,7 @@ export function TabLogsChat({ agentId }: { agentId: string }) {
   const [search, setSearch] = useState('');
   const containerRef = useRef<HTMLDivElement>(null);
 
-  const allTurns = data?.pages.flat() ?? [];
+  const allTurns = React.useMemo(() => data?.pages.flat() ?? [], [data?.pages]);
 
   // Merge historical + realtime, deduplicate by id
   const mergedTurns = React.useMemo(() => {

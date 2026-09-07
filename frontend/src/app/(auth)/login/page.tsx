@@ -38,8 +38,9 @@ function LoginContent() {
     ];
     let i = 0;
     const interval = setInterval(() => {
-      if (i < lines.length) {
-        setTerminalLines((prev) => [...prev, lines[i]!]);
+      const line = lines[i];
+      if (line !== undefined) {
+        setTerminalLines((prev) => [...prev, line]);
         i++;
       } else {
         clearInterval(interval);
@@ -60,8 +61,10 @@ function LoginContent() {
     if (!result.success) {
       const fieldErrors: Partial<LoginFormValues> = {};
       result.error.issues.forEach((issue) => {
-        const field = issue.path[0] as keyof LoginFormValues;
-        fieldErrors[field] = issue.message;
+        const key = issue.path[0];
+        if (typeof key === 'string' && (key === 'email' || key === 'password')) {
+          fieldErrors[key] = issue.message;
+        }
       });
       setErrors(fieldErrors);
       return false;

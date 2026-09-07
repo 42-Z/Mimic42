@@ -26,22 +26,51 @@ export function sanitizeText(input: string | null | undefined): string {
 }
 
 // Elements whose content must never survive (even as text).
-const DANGEROUS_ELEMENTS = 'script|style|iframe|object|embed|svg|form|link|meta|base';
+const DANGEROUS_ELEMENTS = ['script', 'style', 'iframe', 'object', 'embed', 'svg', 'form', 'link', 'meta', 'base'] as const;
+
+// Hard bound: Telegram messages are ≤ 4096 chars, soul prompts ≤ 50000.
+const MAX_SANITIZE_LEN = 200_000;
+
+/** Finds the next `<tag …>` open (not a close) for a dangerous tag. */
+function findOpenTag(
+  lower: string,
+  from: number,
+): { start: number; end: number; tag: string } | null {
+  let idx = lower.indexOf('<', from);
+  while (idx !== -1) {
+    const m = /^<([a-z][a-z0-9]*)[\s>]/.exec(lower.slice(idx, idx + 16));
+    if (m?.[1] && (DANGEROUS_ELEMENTS as readonly string[]).includes(m[1])) {
+      const gt = lower.indexOf('>', idx);
+      return gt === -1
+        ? { start: idx, end: lower.length, tag: m[1] }
+        : { start: idx, end: gt + 1, tag: m[1] };
+    }
+    idx = lower.indexOf('<', idx + 1);
+  }
+  return null;
+}
 
 function stripDangerousContent(input: string): string {
-  const openClose = new RegExp(
-    `<\\s*(${DANGEROUS_ELEMENTS})\\b[^>]*>[\\s\\S]*?(<\\/\\s*\\1\\s*>|$)`,
-    'gi',
-  );
-  let prev = '';
-  let result = input;
-  // Loop to fixpoint: nested payloads like <scr<script>..</script>
-  // reconstitute a fresh open tag after the inner block is removed.
-  while (prev !== result) {
-    prev = result;
-    result = result.replace(openClose, '');
+  const src = input.length > MAX_SANITIZE_LEN ? input.slice(0, MAX_SANITIZE_LEN) : input;
+  const lower = src.toLowerCase();
+  let out = '';
+  let i = 0;
+  // Linear scan: a removed inner block may reconstitute an outer open
+  // (e.g. <scr<script>..</script>), but every open is consumed at most
+  // once going forward, so this always terminates.
+  while (i < src.length) {
+    const open = findOpenTag(lower, i);
+    if (open === null) {
+      out += src.slice(i);
+      break;
+    }
+    out += src.slice(i, open.start);
+    const closeIdx = lower.indexOf(`</${open.tag}`, open.end);
+    if (closeIdx === -1) break; // Unclosed open consumes to end of input.
+    const closeEnd = lower.indexOf('>', closeIdx);
+    i = closeEnd === -1 ? src.length : closeEnd + 1;
   }
-  return result;
+  return out;
 }
 
 /**
