@@ -65,7 +65,7 @@ export function Sidebar({ className, mobileOpen = false, onMobileClose }: Sideba
 
       <aside
         className={cn(
-          'relative flex flex-col h-screen',
+          'relative flex flex-col h-dvh',
           'bg-void-900 border-r border-void-700',
           'transition-[width] duration-300 ease-spring',
           'md:translate-x-0',
@@ -123,6 +123,7 @@ export function Sidebar({ className, mobileOpen = false, onMobileClose }: Sideba
             icon={item.icon}
             isActive={isActive(item.href, item.exact)}
             collapsed={collapsed}
+            onNavigate={onMobileClose}
           />
         ))}
 
@@ -139,6 +140,7 @@ export function Sidebar({ className, mobileOpen = false, onMobileClose }: Sideba
           <Link
             key={agent.agent_id}
             href={`/agent/${agent.agent_id}`}
+            onClick={onMobileClose}
             className={cn(
               'flex items-center rounded-sm transition-colors duration-150',
               'hover:bg-void-800 text-void-400 hover:text-void-100',
@@ -172,6 +174,7 @@ export function Sidebar({ className, mobileOpen = false, onMobileClose }: Sideba
         {/* Create new agent */}
         <Link
           href="/onboarding"
+          onClick={onMobileClose}
           className={cn(
             'flex items-center rounded-sm transition-colors duration-150',
             'text-plasma-500 hover:text-plasma-300 hover:bg-plasma-950/30',
@@ -185,7 +188,7 @@ export function Sidebar({ className, mobileOpen = false, onMobileClose }: Sideba
       </nav>
 
       {/* Bottom section */}
-      <div className="px-3 py-4 border-t border-void-800 space-y-1">
+      <div className="px-3 pt-4 pb-[max(1rem,env(safe-area-inset-bottom))] border-t border-void-800 space-y-1">
         <button
           onClick={handleLogout}
           className={cn(
@@ -237,12 +240,14 @@ interface SidebarLinkProps {
   isActive: boolean;
   collapsed: boolean;
   badge?: string;
+  onNavigate?: () => void;
 }
 
-function SidebarLink({ href, label, icon: Icon, isActive, collapsed, badge }: SidebarLinkProps) {
+function SidebarLink({ href, label, icon: Icon, isActive, collapsed, badge, onNavigate }: SidebarLinkProps) {
   return (
     <Link
       href={href}
+      onClick={onNavigate}
       className={cn(
         'flex items-center rounded-sm transition-all duration-150',
         isActive

@@ -37,7 +37,7 @@ const Input = React.forwardRef<HTMLInputElement, InputProps>(
               'flex h-10 w-full rounded-sm',
               'bg-void-800 border border-void-600',
               'px-3 py-2',
-              'font-mono text-sm text-void-100',
+              'font-mono text-base sm:text-sm text-void-100',
               'placeholder:text-void-500',
               'transition-colors duration-150',
               'focus:outline-none focus:ring-1 focus:ring-plasma-500 focus:border-plasma-600',
@@ -55,7 +55,7 @@ const Input = React.forwardRef<HTMLInputElement, InputProps>(
             {...props}
           />
           {rightElement && (
-            <div className="absolute right-3 flex items-center text-void-400">
+            <div className="absolute right-1 flex min-h-[44px] min-w-[44px] items-center justify-center text-void-400">
               {rightElement}
             </div>
           )}
@@ -124,7 +124,7 @@ const Textarea = React.forwardRef<HTMLTextAreaElement, TextareaProps>(
             'flex w-full rounded-sm',
             'bg-void-800 border border-void-600',
             'px-3 py-2.5',
-            'font-mono text-sm text-void-100',
+            'font-mono text-base sm:text-sm text-void-100',
             'placeholder:text-void-500',
             'transition-colors duration-150',
             'focus:outline-none focus:ring-1 focus:ring-plasma-500 focus:border-plasma-600',

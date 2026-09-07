@@ -97,7 +97,7 @@ function LoginContent() {
   };
 
   return (
-    <div className="min-h-screen bg-void-950 flex">
+    <div className="min-h-dvh bg-void-950 flex">
       {/* Left: terminal panel */}
       <div className="hidden lg:flex w-1/2 flex-col justify-between p-12 bg-void-900 border-r border-void-800 relative overflow-hidden">
         <div className="absolute inset-0 bg-plasma-glow opacity-30" />
@@ -190,7 +190,7 @@ function LoginContent() {
                 <button
                   type="button"
                   onClick={() => setShowPassword((v) => !v)}
-                  className="text-void-500 hover:text-void-300 transition-colors"
+                  className="text-void-500 hover:text-void-300 transition-colors p-2 -m-1"
                   aria-label={showPassword ? 'Скрыть пароль' : 'Показать пароль'}
                 >
                   {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
@@ -201,7 +201,7 @@ function LoginContent() {
             <div className="flex justify-end">
               <Link
                 href="/reset-password"
-                className="font-mono text-xs text-void-500 hover:text-plasma-300 transition-colors"
+                className="font-mono text-xs text-void-500 hover:text-plasma-300 transition-colors py-2"
               >
                 Забыли пароль?
               </Link>
@@ -219,7 +219,7 @@ function LoginContent() {
 
           <p className="text-center font-mono text-sm text-void-500">
             Нет аккаунта?{' '}
-            <Link href="/register" className="text-plasma-400 hover:text-plasma-300 transition-colors">
+            <Link href="/register" className="text-plasma-400 hover:text-plasma-300 transition-colors inline-block py-2">
               Зарегистрироваться
             </Link>
           </p>
@@ -231,7 +231,7 @@ function LoginContent() {
 
 export default function LoginPage() {
   return (
-    <Suspense fallback={<div className="min-h-screen bg-void-950 flex items-center justify-center font-mono text-void-500">Loading...</div>}>
+    <Suspense fallback={<div className="min-h-dvh bg-void-950 flex items-center justify-center font-mono text-void-500">Loading...</div>}>
       <LoginContent />
     </Suspense>
   );

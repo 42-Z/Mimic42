@@ -261,7 +261,7 @@ function TabSettings({ agentId }: { agentId: string }) {
         <select
           value={values.reasoning_effort}
           onChange={(e) => set('reasoning_effort', e.target.value)}
-          className="flex h-10 w-full rounded-sm bg-void-800 border border-void-600 px-3 py-2 font-mono text-sm text-void-100 placeholder:text-void-500 transition-colors duration-150 focus:outline-none focus:ring-1 focus:ring-plasma-500 focus:border-plasma-600 hover:border-void-500 disabled:cursor-not-allowed disabled:opacity-50"
+          className="flex h-10 w-full rounded-sm bg-void-800 border border-void-600 px-3 py-2 font-mono text-base sm:text-sm text-void-100 placeholder:text-void-500 transition-colors duration-150 focus:outline-none focus:ring-1 focus:ring-plasma-500 focus:border-plasma-600 hover:border-void-500 disabled:cursor-not-allowed disabled:opacity-50"
         >
           <option value="none">None (Без рассуждения)</option>
           <option value="medium">Medium (Среднее рассуждение)</option>

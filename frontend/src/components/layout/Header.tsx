@@ -21,12 +21,12 @@ export function Header({ onMenuClick }: HeaderProps) {
   const displayName = email.split('@')[0] ?? 'user';
 
   return (
-    <header className="h-14 border-b border-void-800 bg-void-900/80 backdrop-blur-sm flex items-center justify-between px-6 shrink-0">
+    <header className="h-14 border-b border-void-800 bg-void-900/80 backdrop-blur-sm flex items-center justify-between px-4 sm:px-6 shrink-0">
       {/* Left: mobile menu + brand */}
       <div className="flex items-center gap-3">
         <button
           onClick={onMenuClick}
-          className="md:hidden text-void-500 hover:text-void-300 transition-colors"
+          className="md:hidden -ml-2 p-2 text-void-500 hover:text-void-300 transition-colors"
           aria-label="Открыть меню"
         >
           <Menu className="h-5 w-5" />

@@ -14,10 +14,12 @@ function ToolCard({ tool }: { tool: ToolCallRecord }) {
 
   return (
     <div className="space-y-1">
-      <div
+      <button
+        type="button"
         onClick={() => setExpanded(!expanded)}
+        aria-expanded={expanded}
         className={cn(
-          'flex items-center gap-2 px-3 py-1.5 rounded-md text-xs cursor-pointer transition-colors select-none',
+          'flex w-full items-center gap-2 px-3 py-2.5 rounded-md text-xs cursor-pointer transition-colors select-none text-left',
           isFailed
             ? 'bg-crimson-950/40 border border-crimson-900/60 text-crimson-300'
             : 'bg-amber-950/40 border border-amber-900/60 text-amber-300',
@@ -35,7 +37,7 @@ function ToolCard({ tool }: { tool: ToolCallRecord }) {
           </span>
         )}
         {expanded ? <ChevronUp className="h-3.5 w-3.5 shrink-0" /> : <ChevronDown className="h-3.5 w-3.5 shrink-0" />}
-      </div>
+      </button>
 
       {expanded && (
         <div className="bg-void-900/60 border border-void-800 rounded-md px-3 py-2 space-y-1.5 text-[11px] text-void-400">

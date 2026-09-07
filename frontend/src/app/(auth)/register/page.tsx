@@ -67,7 +67,7 @@ export default function RegisterPage() {
 
   if (done) {
     return (
-      <div className="min-h-screen bg-void-950 flex items-center justify-center p-8">
+      <div className="min-h-dvh bg-void-950 flex items-center justify-center p-8 pb-[max(2rem,env(safe-area-inset-bottom))]">
         <div className="max-w-sm w-full text-center space-y-4">
           <div className="text-4xl">✓</div>
           <h1 className="font-display text-xl font-bold text-neon-400">Проверьте email</h1>
@@ -84,7 +84,7 @@ export default function RegisterPage() {
   }
 
   return (
-    <div className="min-h-screen bg-void-950 flex items-center justify-center p-8">
+    <div className="min-h-dvh bg-void-950 flex items-center justify-center p-8 pb-[max(2rem,env(safe-area-inset-bottom))]">
       <div className="w-full max-w-sm space-y-8">
         <div className="flex items-center gap-2">
           <Zap className="h-6 w-6 text-plasma-400" />
@@ -120,7 +120,7 @@ export default function RegisterPage() {
             disabled={isLoading}
             rightElement={
               <button type="button" onClick={() => setShowPassword((v) => !v)}
-                className="text-void-500 hover:text-void-300 transition-colors">
+                className="text-void-500 hover:text-void-300 transition-colors p-2 -m-1">
                 {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
               </button>
             }
@@ -142,7 +142,7 @@ export default function RegisterPage() {
 
         <p className="text-center font-mono text-sm text-void-500">
           Уже есть аккаунт?{' '}
-          <Link href="/login" className="text-plasma-400 hover:text-plasma-300 transition-colors">
+          <Link href="/login" className="text-plasma-400 hover:text-plasma-300 transition-colors inline-block py-2">
             Войти
           </Link>
         </p>

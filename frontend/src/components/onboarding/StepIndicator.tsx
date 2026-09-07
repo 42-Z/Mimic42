@@ -49,7 +49,7 @@ export function StepIndicator({ currentStep, className }: StepIndicatorProps) {
                 {isDone ? '✓' : step.short}
               </div>
               <span className={cn(
-                'font-mono text-[10px] mt-1.5 text-center w-16 leading-tight',
+                'font-mono text-[10px] mt-1.5 text-center w-14 sm:w-16 leading-tight',
                 isActive ? 'text-plasma-400' : isDone ? 'text-neon-600' : 'text-void-600',
               )}>
                 {step.label}
