@@ -40,6 +40,7 @@ export default function UpdatePasswordPage() {
       setPasswordError('Пароль должен быть не менее 8 символов');
       return false;
     }
+    // eslint-disable-next-line security/detect-possible-timing-attacks -- compares two user inputs, not a stored secret
     if (password !== confirmPassword) {
       setPasswordError('Пароли не совпадают');
       return false;

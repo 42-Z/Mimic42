@@ -36,15 +36,14 @@ function LoginContent() {
       '> Connecting to Supabase cluster...',
       '> Ready. Awaiting authentication.',
     ];
-    let i = 0;
+    const queue = [...lines];
     const interval = setInterval(() => {
-      const line = lines[i];
-      if (line !== undefined) {
-        setTerminalLines((prev) => [...prev, line]);
-        i++;
-      } else {
+      const line = queue.shift();
+      if (line === undefined) {
         clearInterval(interval);
+        return;
       }
+      setTerminalLines((prev) => [...prev, line]);
     }, 400);
     return () => clearInterval(interval);
   }, []);
@@ -62,9 +61,8 @@ function LoginContent() {
       const fieldErrors: Partial<LoginFormValues> = {};
       result.error.issues.forEach((issue) => {
         const key = issue.path[0];
-        if (typeof key === 'string' && (key === 'email' || key === 'password')) {
-          fieldErrors[key] = issue.message;
-        }
+        if (key === 'email') fieldErrors.email = issue.message;
+        else if (key === 'password') fieldErrors.password = issue.message;
       });
       setErrors(fieldErrors);
       return false;

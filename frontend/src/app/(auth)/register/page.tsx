@@ -30,8 +30,12 @@ export default function RegisterPage() {
     if (!result.success) {
       const fieldErrors: Partial<RegisterFormValues> = {};
       result.error.issues.forEach((issue) => {
-        const field = issue.path[0] as keyof RegisterFormValues;
-        if (!fieldErrors[field]) fieldErrors[field] = issue.message;
+        const key = issue.path[0];
+        if (key === 'email' && !fieldErrors.email) fieldErrors.email = issue.message;
+        else if (key === 'password' && !fieldErrors.password) fieldErrors.password = issue.message;
+        else if (key === 'confirmPassword' && !fieldErrors.confirmPassword) {
+          fieldErrors.confirmPassword = issue.message;
+        }
       });
       setErrors(fieldErrors);
       return false;

@@ -146,6 +146,7 @@ export const FALLBACK_TOOL_LABEL: ToolLabelFn = (a) => {
 };
 
 export function getToolLabel(name: string, args: Record<string, unknown>): string {
+  // eslint-disable-next-line security/detect-object-injection -- dispatch table guarded by `if (fn)` below
   const fn = TOOL_LABELS[name];
   if (fn) {
     try {

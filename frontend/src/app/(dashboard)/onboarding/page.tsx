@@ -281,8 +281,10 @@ function StepTelegramCredentials({ session }: { session: OnboardingSessionRow | 
     if (!result.success) {
       const fe: Partial<typeof values> = {};
       result.error.issues.forEach((issue) => {
-        const f = issue.path[0] as keyof typeof values;
-        if (!fe[f]) fe[f] = issue.message;
+        const key = issue.path[0];
+        if (key === 'api_id' && !fe.api_id) fe.api_id = issue.message;
+        else if (key === 'api_hash' && !fe.api_hash) fe.api_hash = issue.message;
+        else if (key === 'phone_number' && !fe.phone_number) fe.phone_number = issue.message;
       });
       setErrors(fe);
       return;

@@ -72,6 +72,7 @@ export function Modal({
           'bg-void-800 border border-void-600',
           'rounded-sm shadow-void-lg',
           'animate-slide-in-up',
+          // eslint-disable-next-line security/detect-object-injection -- key is typed size union, not user input
           modalSizes[size],
           className
         )}

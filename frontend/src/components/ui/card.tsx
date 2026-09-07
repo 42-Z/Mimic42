@@ -29,7 +29,9 @@ const Card = React.forwardRef<HTMLDivElement, CardProps>(
         ref={ref}
         className={cn(
           'rounded-sm',
+          // eslint-disable-next-line security/detect-object-injection -- keys are typed variant/padding unions
           variants[variant],
+          // eslint-disable-next-line security/detect-object-injection -- keys are typed variant/padding unions
           paddings[padding],
           className
         )}
@@ -123,7 +125,9 @@ const spinnerSizes = {
 function Spinner({ size = 'md', className }: SpinnerProps) {
   return (
     <svg
-      className={cn('animate-spin text-plasma-500', spinnerSizes[size], className)}
+      className={cn('animate-spin text-plasma-500',
+        // eslint-disable-next-line security/detect-object-injection -- key is typed size union, not user input
+        spinnerSizes[size], className)}
       xmlns="http://www.w3.org/2000/svg"
       fill="none"
       viewBox="0 0 24 24"
