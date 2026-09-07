@@ -3,6 +3,7 @@
     "next/core-web-vitals",
     "plugin:security/recommended-legacy"
   ],
+  "plugins": ["@typescript-eslint"],
   "rules": {
     "react/no-danger": "error",
     "no-console": ["warn", { "allow": ["warn", "error"] }],

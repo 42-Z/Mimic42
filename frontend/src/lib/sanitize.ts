@@ -15,17 +15,33 @@ import type { DOMPurify } from 'dompurify';
 /**
  * Strips ALL HTML — returns plain text only.
  * Use for content that should never contain HTML.
+ *
+ * Deterministic regex pipeline (no DOMPurify): identical behaviour on
+ * server, in tests (jsdom) and in the browser. Dangerous elements are
+ * removed WITH their content; unclosed opens consume to end of input.
  */
 export function sanitizeText(input: string | null | undefined): string {
   if (!input) return '';
+  return stripDangerousContent(input).replace(/<[^>]*>/g, '').trim();
+}
 
-  // Server-side: DOMPurify needs a DOM — use simple stripping
-  if (typeof window === 'undefined') {
-    return stripHtmlServer(input);
+// Elements whose content must never survive (even as text).
+const DANGEROUS_ELEMENTS = 'script|style|iframe|object|embed|svg|form|link|meta|base';
+
+function stripDangerousContent(input: string): string {
+  const openClose = new RegExp(
+    `<\\s*(${DANGEROUS_ELEMENTS})\\b[^>]*>[\\s\\S]*?(<\\/\\s*\\1\\s*>|$)`,
+    'gi',
+  );
+  let prev = '';
+  let result = input;
+  // Loop to fixpoint: nested payloads like <scr<script>..</script>
+  // reconstitute a fresh open tag after the inner block is removed.
+  while (prev !== result) {
+    prev = result;
+    result = result.replace(openClose, '');
   }
-
-  // Client-side: use DOMPurify
-  return sanitizeClientSide(input, { ALLOWED_TAGS: [], ALLOWED_ATTR: [] });
+  return result;
 }
 
 /**
@@ -79,8 +95,8 @@ let DOMPurifyInstance: DOMPurify | null = null;
 
 async function loadDOMPurify() {
   if (!DOMPurifyInstance) {
-    const module = await import('dompurify');
-    DOMPurifyInstance = module.default;
+    const dompurifyModule = await import('dompurify');
+    DOMPurifyInstance = dompurifyModule.default;
   }
   return DOMPurifyInstance;
 }
@@ -106,19 +122,6 @@ export async function preloadSanitizer(): Promise<void> {
   if (typeof window !== 'undefined') {
     await loadDOMPurify();
   }
-}
-
-/**
- * Server-side fallback: strip HTML tags with regex.
- * Less safe than DOMPurify but acceptable for SSR where
- * the output is escaped by React anyway.
- */
-function stripHtmlServer(input: string): string {
-  return input
-    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
-    .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '')
-    .replace(/<[^>]+>/g, '')
-    .trim();
 }
 
 /**

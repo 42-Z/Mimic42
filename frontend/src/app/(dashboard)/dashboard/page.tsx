@@ -1,7 +1,6 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { getSupabaseClient } from '@/lib/supabase/client';
 import { useAgents, useStartAgent, useStopAgent } from '@/hooks/useAgents';
 import { useDashboardKPIs } from '@/hooks/useTelegramSession';
 import { useRealtimeFeed, useAgentStatusRealtime } from '@/hooks/useRealtimeFeed';
@@ -10,7 +9,7 @@ import { AgentStatusBadge } from '@/components/agents/AgentStatusBadge';
 import { Card, Skeleton } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
-import { sanitizeText, truncate } from '@/lib/sanitize';
+import { sanitizeText } from '@/lib/sanitize';
 import { formatDistanceToNow } from 'date-fns';
 import { ru } from 'date-fns/locale';
 import {

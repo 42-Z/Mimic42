@@ -20,12 +20,9 @@ import {
   agentNameSchema, soulPromptSchema,
   telegramCredentialsSchema, telegramCodeSchema, telegram2FASchema,
 } from '@/lib/validators';
-import { cn } from '@/lib/utils';
-import { Zap, ExternalLink, CheckCircle, Plus, ArrowLeft } from 'lucide-react';
+import { Zap, ExternalLink, Plus, ArrowLeft } from 'lucide-react';
 import type { OnboardingStep, OnboardingSessionRow } from '@/types';
 import type { ApiError } from '@/types';
-
-import { DEFAULT_SYSTEM_PROMPT } from '@/lib/constants';
 
 export default function OnboardingPage() {
   const { data: session, isLoading } = useOnboardingSession();
@@ -590,25 +587,6 @@ function StepFinalize({ session }: { session: OnboardingSessionRow | null }) {
       >
         {finalize.isPending ? 'Создание агента...' : '🚀 Создать агента'}
       </Button>
-    </div>
-  );
-}
-
-// ── Complete ──────────────────────────────────────────────────────────────────
-function OnboardingComplete({ agentId }: { agentId: string }) {
-  const router = useRouter();
-  return (
-    <div className="min-h-screen bg-void-950 flex items-center justify-center p-8">
-      <div className="text-center space-y-6 max-w-sm">
-        <CheckCircle className="h-16 w-16 text-neon-400 mx-auto" />
-        <h1 className="font-display text-2xl font-bold text-void-100">Агент создан!</h1>
-        <p className="font-mono text-sm text-void-500">
-          Ваш агент готов к работе. Перейдите в дашборд чтобы запустить его.
-        </p>
-        <Button onClick={() => router.push('/dashboard')} size="lg" className="w-full">
-          Открыть Dashboard →
-        </Button>
-      </div>
     </div>
   );
 }

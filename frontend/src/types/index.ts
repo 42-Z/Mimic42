@@ -46,15 +46,15 @@ export interface AgentMessageRecord {
   created_at: string;  // ISO 8601
   direction?: 'incoming' | 'outgoing' | 'agent_response' | 'dashboard_trigger' | string;
   thread_id?: string;
-  payload?: Record<string, any>;
+  payload?: Record<string, unknown>;
 }
 
 export interface ToolCallRecord {
   id: string;
   name: string;
   status: EventStatus;
-  payload?: Record<string, any>;
-  result?: Record<string, any> | null;
+  payload?: Record<string, unknown>;
+  result?: Record<string, unknown> | null;
   error: string | null;
   duration_ms: number;
   created_at: string;
@@ -185,7 +185,7 @@ export interface AgentMessageRow {
   direction: 'incoming' | 'outgoing' | 'agent_response' | 'dashboard_trigger' | string | null;
   thread_id: string | null;
   created_at: string;
-  payload?: Record<string, any>;
+  payload?: Record<string, unknown>;
 }
 
 /**

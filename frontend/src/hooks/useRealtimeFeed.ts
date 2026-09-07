@@ -4,7 +4,7 @@ import { useEffect, useRef, useCallback, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { getSupabaseClient } from '@/lib/supabase/client';
 import { queryKeys } from '@/lib/queryClient';
-import type { AgentMessageRow, AgentEventRow, ConversationTurn, ToolCallRecord } from '@/types';
+import type { AgentMessageRow, AgentEventRow, ConversationTurn, ToolCallRecord, RealtimePayload } from '@/types';
 import type { RealtimeChannel } from '@supabase/supabase-js';
 
 const MAX_FEED_ITEMS = 200;
@@ -31,9 +31,9 @@ export function useRealtimeFeed(agentId: string) {
       id: msg.id,
       agent_id: agentId,
       timestamp: msg.created_at,
-      peer_id: msg.peer || (msg as any).payload?.peer || '',
-      peer_name: (msg as any).payload?.peer_name || '',
-      agent_name: (msg as any).payload?.agent_name || '',
+      peer_id: msg.peer || String(msg.payload?.peer ?? ''),
+      peer_name: String(msg.payload?.peer_name ?? ''),
+      agent_name: String(msg.payload?.agent_name ?? ''),
       incoming: msg.direction === 'incoming' ? msg.content : '',
       outgoing: msg.direction === 'agent_response' ? msg.content : '',
       direction: msg.direction === 'incoming' ? 'incoming' : 'outgoing',
@@ -97,7 +97,7 @@ export function useRealtimeFeed(agentId: string) {
           table: 'agent_messages',
           filter: `agent_id=eq.${agentId}`,
         },
-        (payload: any) => {
+        (payload: RealtimePayload<AgentMessageRow>) => {
           addMessage(payload.new);
         }
       )
@@ -109,7 +109,7 @@ export function useRealtimeFeed(agentId: string) {
           table: 'agent_events',
           filter: `agent_id=eq.${agentId}`,
         },
-        (payload: any) => {
+        (payload: RealtimePayload<AgentEventRow>) => {
           addEvent(payload.new);
         }
       )

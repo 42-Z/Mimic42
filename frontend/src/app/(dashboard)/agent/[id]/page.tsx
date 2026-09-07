@@ -1,10 +1,10 @@
 'use client';
 
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useParams, useSearchParams, useRouter } from 'next/navigation';
 import { agentIdSchema } from '@/lib/validators';
 import { useAgentStatus, useAgentDetails, useUpdateAgentSettings } from '@/hooks/useAgent';
-import { useRealtimeFeed, useAgentStatusRealtime } from '@/hooks/useRealtimeFeed';
+import { useAgentStatusRealtime } from '@/hooks/useRealtimeFeed';
 import { TabLogsChat } from '@/components/chat/TabLogsChat';
 import { useTelegramSession, useAnalyticsData } from '@/hooks/useTelegramSession';
 import { useStartAgent, useStopAgent, useTriggerMessage } from '@/hooks/useAgents';
@@ -22,8 +22,8 @@ import {
 } from '@/lib/validators';
 import {
   Settings, ScrollText, Zap, MessageSquare, BarChart2, Brain,
-  Play, Square, Send, Wifi, WifiOff, AlertTriangle, RefreshCw,
-  Bot, Clock, CheckCircle, XCircle, Loader2, Search,
+  Play, Square, Send, AlertTriangle, RefreshCw,
+  Bot, Clock, Search,
 } from 'lucide-react';
 import { formatDistanceToNow, format } from 'date-fns';
 import { ru } from 'date-fns/locale';
@@ -32,7 +32,7 @@ import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, BarChart, Bar,
 } from 'recharts';
-import type { AgentTab, AgentActivity, AgentMessageRecord, ApiError, FeedItem } from '@/types';
+import type { AgentTab, ApiError } from '@/types';
 
 const TABS: { id: AgentTab; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
   { id: 'settings',  label: 'Настройки',  icon: Settings },
@@ -50,10 +50,9 @@ export default function AgentPage() {
 
   const rawId = params['id'] as string;
   const parsed = agentIdSchema.safeParse(rawId);
-  if (!parsed.success) {
-    return <div className="p-8 font-mono text-crimson-400">Недопустимый ID агента</div>;
-  }
-  const agentId = parsed.data;
+  // Hooks must run unconditionally (rules-of-hooks): validate first,
+  // render the error below after all hooks are called.
+  const agentId = parsed.success ? parsed.data : '';
 
   const initialTab = (searchParams.get('tab') as AgentTab) ?? 'settings';
   const [activeTab, setActiveTab] = useState<AgentTab>(
@@ -68,6 +67,10 @@ export default function AgentPage() {
   const { data: status } = useAgentStatus(agentId);
   const { data: details } = useAgentDetails(agentId);
   useAgentStatusRealtime(agentId);
+
+  if (!parsed.success) {
+    return <div className="p-8 font-mono text-crimson-400">Недопустимый ID агента</div>;
+  }
 
   return (
     <div className="space-y-6 animate-fade-in">

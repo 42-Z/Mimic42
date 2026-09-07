@@ -17,7 +17,6 @@ import {
 import { getSupabaseClient } from '@/lib/supabase/client';
 import { useRouter } from 'next/navigation';
 import { useAgents } from '@/hooks/useAgents';
-import type { AgentState } from '@/types';
 
 interface NavItem {
   href: string;

@@ -3,13 +3,13 @@
 import React, { useState } from 'react';
 import { cn } from '@/lib/utils';
 import type { ConversationTurn, ToolCallRecord } from '@/types';
-import { getToolLabel } from '@/lib/toolLabels';
+import { getToolLabel, toolArgs } from '@/lib/toolLabels';
 import { format } from 'date-fns';
-import { Zap, ChevronDown, ChevronUp, CheckCircle2, XCircle } from 'lucide-react';
+import { Zap, ChevronDown, ChevronUp, XCircle } from 'lucide-react';
 
 function ToolCard({ tool }: { tool: ToolCallRecord }) {
   const [expanded, setExpanded] = useState(false);
-  const label = getToolLabel(tool.name, tool.payload?.args ?? {});
+  const label = getToolLabel(tool.name, toolArgs(tool.payload?.args));
   const isFailed = tool.status === 'failed';
 
   return (
@@ -43,11 +43,11 @@ function ToolCard({ tool }: { tool: ToolCallRecord }) {
             <span className="text-void-500 shrink-0">Тулз:</span>
             <code className="text-amber-400/80">{tool.name}</code>
           </div>
-          {tool.payload?.args && (
+          {tool.payload?.args != null && (
             <div>
               <span className="text-void-500">Аргументы:</span>
               <pre className="mt-0.5 bg-void-950 rounded px-2 py-1 overflow-x-auto text-[10px] text-void-300">
-                {JSON.stringify(tool.payload.args, null, 2)}
+                {JSON.stringify(toolArgs(tool.payload.args), null, 2)}
               </pre>
             </div>
           )}

@@ -3,6 +3,14 @@
 
 export type ToolLabelFn = (args: Record<string, unknown>) => string;
 
+/** Narrows an unknown tool payload to an args record ({} when absent). */
+export function toolArgs(payload: unknown): Record<string, unknown> {
+  if (typeof payload === 'object' && payload !== null && !Array.isArray(payload)) {
+    return payload as Record<string, unknown>;
+  }
+  return {};
+}
+
 const _peer = (a: Record<string, unknown>): string => {
   const p =
     a.peer ??
@@ -104,7 +112,7 @@ export const TOOL_LABELS: Record<string, ToolLabelFn> = {
   // Category 8: Chat Folders
   get_chat_folders: () => `Посмотрел папки чатов`,
   create_or_update_chat_folder: (a) => `Создал/обновил папку «${a.title ?? ''}»`,
-  delete_chat_folder: (a) => `Удалил папку чатов`,
+  delete_chat_folder: () => `Удалил папку чатов`,
 
   // Category 9: Inline Bots and Buttons
   get_message_buttons: (a) => `Посмотрел кнопки сообщения в ${_peer(a)}`,

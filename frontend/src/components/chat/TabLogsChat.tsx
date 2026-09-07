@@ -6,7 +6,7 @@ import { useRealtimeFeed } from '@/hooks/useRealtimeFeed';
 import { ConversationThread } from '@/components/chat/ConversationThread';
 import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
-import { getToolLabel } from '@/lib/toolLabels';
+import { getToolLabel, toolArgs } from '@/lib/toolLabels';
 
 const FILTERS = [
   { id: 'all', label: 'Все' },
@@ -51,7 +51,7 @@ export function TabLogsChat({ agentId }: { agentId: string }) {
       turn.incoming.toLowerCase().includes(q) ||
       turn.outgoing.toLowerCase().includes(q);
     const inTools = turn.tools.some((tool) => {
-      const label = getToolLabel(tool.name, tool.payload?.args ?? {});
+      const label = getToolLabel(tool.name, toolArgs(tool.payload?.args));
       return label.toLowerCase().includes(q);
     });
     return inMessages || inTools;
