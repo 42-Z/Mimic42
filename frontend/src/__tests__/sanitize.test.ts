@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect } from 'bun:test';
 import { sanitizeText, sanitizeRichText, maskPhoneNumber, truncate } from '@/lib/sanitize';
 
 describe('sanitizeText', () => {

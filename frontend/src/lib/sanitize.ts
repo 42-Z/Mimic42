@@ -86,16 +86,21 @@ async function loadDOMPurify() {
 }
 
 function sanitizeClientSide(input: string, config: PurifyConfig): string {
-  // Synchronous path — DOMPurify must be pre-loaded or we use fallback
+  // Synchronous path — DOMPurify must be pre-loaded or we use fallback.
+  // The fallback mirrors the server-side semantics so behaviour is
+  // identical until DOMPurify finishes loading.
   if (!DOMPurifyInstance) {
-    // Fallback to basic HTML entity encoding before DOMPurify loads
-    return encodeHtmlEntities(input);
+    return config.ALLOWED_TAGS?.length
+      ? sanitizeRichHtmlServer(input)
+      : stripHtmlServer(input);
   }
 
   try {
     return DOMPurifyInstance.sanitize(input, config) as string;
   } catch {
-    return encodeHtmlEntities(input);
+    return config.ALLOWED_TAGS?.length
+      ? sanitizeRichHtmlServer(input)
+      : stripHtmlServer(input);
   }
 }
 
@@ -119,18 +124,6 @@ function stripHtmlServer(input: string): string {
     .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '')
     .replace(/<[^>]+>/g, '')
     .trim();
-}
-
-/**
- * Encode HTML entities — last-resort fallback.
- */
-function encodeHtmlEntities(str: string): string {
-  return str
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#x27;');
 }
 
 /**
