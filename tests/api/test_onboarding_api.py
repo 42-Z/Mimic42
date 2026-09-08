@@ -6,6 +6,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from mimic42.api.app import create_app
+from mimic42.config import Settings
 from mimic42.core.onboarding import (
     AgentOnboardingService,
     InMemoryOnboardingRepository,
@@ -51,6 +52,7 @@ class FakeTelegramAuthClient:
 class FakeTelegramAuthClientFactory(TelegramAuthClientFactory):
     def __init__(self, client: FakeTelegramAuthClient) -> None:
         self.client = client
+        self.built_with: tuple[int, str] | None = None
 
     def build(
         self,
@@ -59,6 +61,7 @@ class FakeTelegramAuthClientFactory(TelegramAuthClientFactory):
         api_hash: str,
         session_string: str | None = None,
     ) -> FakeTelegramAuthClient:
+        self.built_with = (api_id, api_hash)
         self.client.session_string = session_string or self.client.session_string
         return self.client
 
@@ -116,3 +119,97 @@ async def test_onboarding_creates_login_flow_verifies_code_and_finalizes_agent()
         "owner_id": str(owner_id),
         "state": "stopped",
     }
+
+
+@pytest.mark.asyncio
+async def test_onboarding_uses_deployment_telegram_app_when_none_supplied() -> None:
+    factory = FakeTelegramAuthClientFactory(FakeTelegramAuthClient())
+    service = AgentOnboardingService(
+        repository=InMemoryOnboardingRepository(),
+        telegram_factory=factory,
+    )
+    owner_id = uuid4()
+    app = create_app(
+        onboarding_service=service,
+        auth_verifier=FakeAuthVerifier(owner_id),
+        settings=Settings(telegram_api_id=777, telegram_api_hash="deployment-hash"),
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        response = await client.post(
+            "/api/v1/onboarding/telegram",
+            headers=AUTH_HEADERS,
+            json={"phone_number": "+79990000000"},
+        )
+
+    assert response.status_code == 201
+    assert response.json()["authorization_status"] == "code_requested"
+    assert factory.built_with == (777, "deployment-hash")
+
+
+@pytest.mark.asyncio
+async def test_onboarding_fails_when_no_telegram_app_configured() -> None:
+    service = AgentOnboardingService(
+        repository=InMemoryOnboardingRepository(),
+        telegram_factory=FakeTelegramAuthClientFactory(FakeTelegramAuthClient()),
+    )
+    app = create_app(
+        onboarding_service=service,
+        auth_verifier=FakeAuthVerifier(uuid4()),
+        settings=Settings(telegram_api_id=None, telegram_api_hash=None),
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        response = await client.post(
+            "/api/v1/onboarding/telegram",
+            headers=AUTH_HEADERS,
+            json={"phone_number": "+79990000000"},
+        )
+
+    assert response.status_code == 503
+    assert "TELEGRAM_API_ID" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_verify_code_reports_phone_without_telegram_account() -> None:
+    from telethon.errors import PhoneNumberUnoccupiedError
+
+    class UnoccupiedPhoneClient(FakeTelegramAuthClient):
+        async def sign_in(self, **kwargs: object) -> object:
+            raise PhoneNumberUnoccupiedError(request=None)
+
+    service = AgentOnboardingService(
+        repository=InMemoryOnboardingRepository(),
+        telegram_factory=FakeTelegramAuthClientFactory(UnoccupiedPhoneClient()),
+    )
+    app = create_app(
+        onboarding_service=service,
+        auth_verifier=FakeAuthVerifier(uuid4()),
+        settings=Settings(telegram_api_id=777, telegram_api_hash="deployment-hash"),
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        start_response = await client.post(
+            "/api/v1/onboarding/telegram",
+            headers=AUTH_HEADERS,
+            json={"phone_number": "+79990000000"},
+        )
+        onboarding_id = UUID(start_response.json()["onboarding_id"])
+
+        verify_response = await client.post(
+            f"/api/v1/onboarding/{onboarding_id}/telegram/code",
+            headers=AUTH_HEADERS,
+            json={"code": "12345"},
+        )
+
+    assert verify_response.status_code == 400
+    assert verify_response.json()["detail"] == "Пользователя с таким номером нет в Telegram."

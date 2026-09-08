@@ -22,7 +22,7 @@ import {
   telegramCredentialsSchema, telegramCodeSchema, telegram2FASchema,
 } from '@/lib/validators';
 import { cn } from '@/lib/utils';
-import { Zap, ExternalLink, CheckCircle } from 'lucide-react';
+import { Zap, CheckCircle } from 'lucide-react';
 import type { OnboardingStep, OnboardingSessionRow } from '@/types';
 import type { ApiError } from '@/types';
 
@@ -241,7 +241,7 @@ function StepSoul({ session }: { session: OnboardingSessionRow | null }) {
 function StepTelegramCredentials({ session }: { session: OnboardingSessionRow | null }) {
   const { toast } = useToast();
   const startAuth = useStartTelegramAuth();
-  const [values, setValues] = useState({ api_id: '', api_hash: '', phone_number: '' });
+  const [values, setValues] = useState({ phone_number: '' });
   const [errors, setErrors] = useState<Partial<typeof values>>({});
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -269,41 +269,10 @@ function StepTelegramCredentials({ session }: { session: OnboardingSessionRow | 
       <StepHeading
         step="03 / 04"
         title="Подключение Telegram"
-        description="Авторизуйтесь как пользователь (не бот). Для этого нужен API ID и Hash от Telegram."
+        description="Авторизуйтесь как пользователь, а не как бот. Введите номер — на него придёт код подтверждения."
       />
 
-      <div className="p-4 rounded-sm border border-void-700 bg-void-800/40 space-y-2">
-        <p className="font-mono text-xs text-void-400 font-medium">Как получить API ID и Hash:</p>
-        <ol className="font-mono text-xs text-void-500 space-y-1 list-decimal list-inside">
-          <li>Перейдите на <a href="https://my.telegram.org" target="_blank" rel="noopener noreferrer"
-            className="text-plasma-400 hover:text-plasma-300 inline-flex items-center gap-0.5">
-            my.telegram.org <ExternalLink className="h-3 w-3" />
-          </a></li>
-          <li>Войдите в аккаунт</li>
-          <li>Перейдите в «API development tools»</li>
-          <li>Создайте приложение и скопируйте API ID и API Hash</li>
-        </ol>
-      </div>
-
       <div className="space-y-4">
-        <Input
-          label="API ID"
-          type="text"
-          inputMode="numeric"
-          placeholder="12345678"
-          value={values.api_id}
-          onChange={(e) => setValues((v) => ({ ...v, api_id: e.target.value }))}
-          error={errors.api_id}
-        />
-        <Input
-          label="API Hash"
-          type="text"
-          placeholder="abc123def456..."
-          value={values.api_hash}
-          onChange={(e) => setValues((v) => ({ ...v, api_hash: e.target.value }))}
-          error={errors.api_hash}
-          hint="32-символьная hex строка"
-        />
         <Input
           label="Номер телефона"
           type="tel"
