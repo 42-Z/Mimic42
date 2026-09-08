@@ -1,21 +1,19 @@
 'use client';
 
-import { useState } from 'react';
-import { useAgents, useDeleteAgent, useStartAgent, useStopAgent } from '@/hooks/useAgents';
+import { useAgents, useStartAgent, useStopAgent } from '@/hooks/useAgents';
 import { useAllAgentsKPIs, useAgentsDetails } from '@/hooks/useTelegramSession';
 import { useMultiAgentRealtimeFeed, useAllAgentsStatusRealtime } from '@/hooks/useRealtimeFeed';
 import { useToast } from '@/components/ui/toast';
 import { AgentStatusBadge } from '@/components/agents/AgentStatusBadge';
 import { Card, Skeleton } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { ConfirmDialog } from '@/components/ui/modal';
 import { cn } from '@/lib/utils';
 import { sanitizeText, truncate } from '@/lib/sanitize';
 import { formatDistanceToNow } from 'date-fns';
 import { ru } from 'date-fns/locale';
 import {
   MessageSquare, Activity, AlertTriangle, TrendingUp,
-  Play, Square, RefreshCw, Wifi, WifiOff, Bot, Trash2, Plus, Settings,
+  Play, Square, RefreshCw, Wifi, WifiOff, Bot, Plus, Settings,
 } from 'lucide-react';
 import Link from 'next/link';
 import type { AgentRecord, FeedItem } from '@/types';
@@ -160,9 +158,7 @@ function AgentsGrid({ agents }: { agents: AgentRecord[] }) {
 function AgentCard({ agent, details }: { agent: AgentRecord; details?: { phone_number: string | null; last_started_at: string | null } }) {
   const { mutate: start, isPending: starting } = useStartAgent();
   const { mutate: stop, isPending: stopping } = useStopAgent();
-  const { mutate: remove, isPending: deleting } = useDeleteAgent();
   const { toast } = useToast();
-  const [deleteOpen, setDeleteOpen] = useState(false);
 
   const canStart = agent.state === 'stopped' || agent.state === 'error';
   const canStop = agent.state === 'running';
@@ -178,16 +174,6 @@ function AgentCard({ agent, details }: { agent: AgentRecord; details?: { phone_n
     stop(agent.agent_id, {
       onSuccess: () => toast('Агент останавливается...', 'warning'),
       onError: (e: unknown) => toast((e as { message?: string }).message ?? 'Ошибка остановки', 'error'),
-    });
-  };
-
-  const handleDelete = () => {
-    remove(agent.agent_id, {
-      onSuccess: () => {
-        setDeleteOpen(false);
-        toast(`Агент «${agent.name}» удалён`, 'success');
-      },
-      onError: (e: unknown) => toast((e as { message?: string }).message ?? 'Ошибка удаления', 'error'),
     });
   };
 
@@ -241,25 +227,7 @@ function AgentCard({ agent, details }: { agent: AgentRecord; details?: { phone_n
             <Settings className="h-4 w-4" />
           </Button>
         </Link>
-        <Button
-          variant="ghost" size="sm" className="px-2 text-void-500 hover:text-crimson-400"
-          onClick={() => setDeleteOpen(true)}
-          aria-label="Удалить агента"
-        >
-          <Trash2 className="h-4 w-4" />
-        </Button>
       </div>
-
-      <ConfirmDialog
-        isOpen={deleteOpen}
-        onClose={() => setDeleteOpen(false)}
-        onConfirm={handleDelete}
-        title="Удалить агента?"
-        description={`Агент «${sanitizeText(agent.name)}» будет остановлен и удалён вместе с историей сообщений, событиями и Telegram-сессией. Это действие необратимо.`}
-        confirmLabel="Удалить"
-        variant="danger"
-        isLoading={deleting}
-      />
     </Card>
   );
 }
