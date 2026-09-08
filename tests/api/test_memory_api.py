@@ -15,12 +15,27 @@ class FakeAgentManager:
     def __init__(self, owner_id: UUID) -> None:
         self.owner_id = owner_id
 
+    async def create_agent(self, *args: Any, **kwargs: Any) -> Any:
+        raise NotImplementedError
+
     async def get_agent_status(self, agent_id: UUID) -> AgentStatus:
         return AgentStatus(
             agent_id=agent_id,
             owner_id=self.owner_id,
             state=AgentRuntimeState.RUNNING,
         )
+
+    async def list_agents(self, *args: Any, **kwargs: Any) -> Any:
+        raise NotImplementedError
+
+    async def start_agent(self, *args: Any, **kwargs: Any) -> Any:
+        raise NotImplementedError
+
+    async def stop_agent(self, *args: Any, **kwargs: Any) -> Any:
+        raise NotImplementedError
+
+    async def trigger_message(self, *args: Any, **kwargs: Any) -> Any:
+        raise NotImplementedError
 
     async def shutdown(self) -> None:
         pass
@@ -86,7 +101,7 @@ async def test_get_memories_endpoint() -> None:
 async def test_get_memory_history_endpoint() -> None:
     owner_id = uuid4()
     agent_id = uuid4()
-    memory_id = "mem-123"
+    memory_id = "mem-1"
     manager = FakeAgentManager(owner_id)
     memory_store = FakeMem0LongTermMemory()
 
@@ -104,6 +119,28 @@ async def test_get_memory_history_endpoint() -> None:
         assert response.status_code == 200
         assert response.json() == [{"id": "hist-1", "memory_id": memory_id, "new_value": "new"}]
         assert memory_store.history_called == [memory_id]
+
+
+@pytest.mark.asyncio
+async def test_get_memory_history_rejects_foreign_memory_id() -> None:
+    owner_id = uuid4()
+    agent_id = uuid4()
+    manager = FakeAgentManager(owner_id)
+    memory_store = FakeMem0LongTermMemory()
+
+    app = create_app(manager=manager, auth_verifier=FakeAuthVerifier(owner_id))
+    app.state.long_term_memory = memory_store
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        response = await client.get(
+            f"/api/v1/agents/{agent_id}/memory/mem-foreign/history",
+            headers=AUTH_HEADERS,
+        )
+        assert response.status_code == 404
+        assert memory_store.history_called == []
 
 
 @pytest.mark.asyncio
