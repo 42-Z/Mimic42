@@ -11,7 +11,7 @@
     "test": "bun test",
     "test:e2e": "playwright test",
     "test:watch": "bun test --watch",
-    "generate:types": "supabase gen types typescript --project-id ajcznltdbwvhmhgzufzv > src/types/supabase.ts",
+    "generate:types": "supabase gen types typescript --project-id ipqylrdmmjitemjrygej > src/types/supabase.ts",
     "audit": "bun audit"
   },
   "dependencies": {

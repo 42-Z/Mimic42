@@ -71,6 +71,7 @@ playwright/.cache/
 
 # Local databases and state
 supabase/.temp/
+**/supabase/.temp/
 *.sqlite
 *.sqlite3
 *.db
