@@ -167,6 +167,9 @@ class RuntimeMemoryService:
                     raw_user_text=raw_user_text,
                 )
             except Exception:
+                # Fail-open like long-term memory: auxiliary persistence must
+                # never break the agent turn. The error is logged with context
+                # for alerting; the turn itself proceeds.
                 import logging
                 logger = logging.getLogger("mimic42.memory")
                 logger.exception(
@@ -175,7 +178,6 @@ class RuntimeMemoryService:
                     peer,
                     len(new_messages),
                 )
-                raise
 
         if self._long_term is not None:
             user_text = _extract_last_user_text(output_messages)

@@ -181,17 +181,17 @@ class DatabaseAgentStore:
                 .offset(offset)
                 .limit(limit)
             )
-        return [
-                    AgentActivity(
-                        id=activity.id,
-                        agent_id=activity.agent_id,
-                        event_type=activity.event_type,
-                        status=activity.status,
-                        created_at=activity.created_at,
-                        error=activity.error,
-                    )
-                    for activity in activities
-                ]
+            return [
+                AgentActivity(
+                    id=activity.id,
+                    agent_id=activity.agent_id,
+                    event_type=activity.event_type,
+                    status=activity.status,
+                    created_at=activity.created_at,
+                    error=activity.error,
+                )
+                for activity in activities
+            ]
 
     async def get_conversation(
         self,
@@ -200,27 +200,34 @@ class DatabaseAgentStore:
         limit: int = 50,
         offset: int = 0,
     ) -> list[ConversationTurn]:
+        # Bounded read: fetch only the window needed for the requested page
+        # instead of the full history. Each turn consumes at most ~2 messages
+        # but can hold many tool events, so over-fetch both sides.
+        msg_fetch = (offset + limit) * 2 + 50
+        evt_fetch = (offset + limit) * 4 + 100
         async with self._session_factory() as db_session:
             messages = await db_session.scalars(
                 select(AgentMessageModel)
                 .where(AgentMessageModel.agent_id == agent_id)
-                .order_by(AgentMessageModel.created_at.asc())
+                .order_by(AgentMessageModel.created_at.desc())
+                .limit(msg_fetch)
             )
-            all_messages = list(messages)
+            recent_messages = list(reversed(list(messages)))
 
             events = await db_session.scalars(
                 select(AgentEventModel)
                 .where(AgentEventModel.agent_id == agent_id)
                 .where(AgentEventModel.event_type.not_in(["start_agent", "stop_agent"]))
-                .order_by(AgentEventModel.created_at.asc())
+                .order_by(AgentEventModel.created_at.desc())
+                .limit(evt_fetch)
             )
-            all_events = list(events)
+            recent_events = list(reversed(list(events)))
 
             # Build unified timeline
             timeline: list[tuple[str, datetime, Any]] = []
-            for msg in all_messages:
+            for msg in recent_messages:
                 timeline.append(("msg", msg.created_at, msg))
-            for evt in all_events:
+            for evt in recent_events:
                 timeline.append(("evt", evt.created_at, evt))
             timeline.sort(key=lambda x: x[1])
 

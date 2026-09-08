@@ -7,7 +7,7 @@ import json
 import logging
 import time
 from collections.abc import Awaitable, Callable
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, ParamSpec, Protocol, TypeVar
 from uuid import UUID
 
@@ -107,6 +107,25 @@ def parse_media_id(media_id: str) -> tuple[str, int, int, bytes, int]:
     file_reference = bytes.fromhex(parts[3])
     dc_id = int(parts[4])
     return media_type, obj_id, access_hash, file_reference, dc_id
+
+
+def _sanitize_log_value(value: Any, *, max_len: int = 500) -> Any:
+    """Make an arbitrary tool arg/result JSON-safe and bounded for DB logging."""
+    if isinstance(value, bytes):
+        return f"<bytes {len(value)}B>"
+    if isinstance(value, str):
+        return value[:max_len] if len(value) > max_len else value
+    if isinstance(value, dict):
+        return {
+            str(k)[:100]: _sanitize_log_value(v, max_len=max_len)
+            for k, v in list(value.items())[:20]
+        }
+    if isinstance(value, (list, tuple)):
+        return [_sanitize_log_value(v, max_len=max_len) for v in list(value)[:20]]
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    text = str(value)
+    return text[:max_len] if len(text) > max_len else text
 
 
 def format_media_object(msg: Any) -> str | None:
@@ -303,7 +322,7 @@ class TelegramToolbox:
         logger = logging.getLogger("mimic42.telegram_tools")
         try:
             safe_args = {
-                k: v
+                k: _sanitize_log_value(v)
                 for k, v in args.items()
                 if k not in ("session_string", "api_hash", "phone_code_hash", "password")
             }
@@ -317,15 +336,17 @@ class TelegramToolbox:
             )
             payload: dict[str, Any] = {"args": safe_args}
             if parent_peer:
-                payload["parent_peer"] = str(parent_peer)
+                payload["parent_peer"] = str(parent_peer)[:200]
 
             result_data: dict[str, Any] | None = None
             if isinstance(result, dict):
-                result_data = result
+                result_data = {
+                    str(k): _sanitize_log_value(v) for k, v in list(result.items())[:20]
+                }
             elif result is not None:
-                result_data = {"value": str(result)[:500]}
+                result_data = {"value": _sanitize_log_value(result)}
 
-            now = datetime.now()
+            now = datetime.now(UTC)
             async with self._session_factory() as db_session:
                 event = AgentEventModel(
                     agent_id=self._agent_id,
@@ -333,7 +354,7 @@ class TelegramToolbox:
                     status="failed" if error else "succeeded",
                     payload=payload,
                     result=result_data,
-                    error=error,
+                    error=error[:2000] if error else None,
                     started_at=now - timedelta(milliseconds=duration_ms),
                     completed_at=now,
                 )

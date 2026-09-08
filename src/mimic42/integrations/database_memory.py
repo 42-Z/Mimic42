@@ -81,15 +81,26 @@ class DatabaseShortTermMemory:
         now = datetime.now(UTC)
         async with self._session_factory() as db_session:
             # ── Persist incoming user message first ──────────────────────────
-            # Avoid duplicate if raw_user_text is identical to the last user
-            # message already present in the messages list (e.g. formatted text).
+            # Avoid duplicate if raw_user_text matches the last user message
+            # already present in the messages list (e.g. formatted text).
+            # Compare normalized text: LangChain dicts may carry the role in
+            # either "role" or "type" ("human"/"user"), and whitespace
+            # differences must not cause duplicate rows.
             last_user_content = ""
             for msg in reversed(messages):
-                if msg.get("role") in ("user", "human"):
-                    last_user_content = msg.get("content", "")
+                msg_role = str(msg.get("role", msg.get("type", "")))
+                if msg_role in ("user", "human"):
+                    raw_content = msg.get("content", "")
+                    if isinstance(raw_content, list):
+                        import json as _json
+
+                        raw_content = _json.dumps(raw_content, ensure_ascii=False)
+                    elif not isinstance(raw_content, str):
+                        raw_content = str(raw_content)
+                    last_user_content = raw_content.strip()
                     break
 
-            if raw_user_text and raw_user_text != last_user_content:
+            if raw_user_text and raw_user_text.strip() != last_user_content:
                 user_payload: dict[str, Any] = {"peer": peer}
                 if peer_name:
                     user_payload["peer_name"] = peer_name
@@ -155,9 +166,11 @@ class DatabaseShortTermMemory:
                         payload["structured_response"] = structured_response
                         structured_response = None
 
-                # Ensure we never violate the NOT NULL / CHECK constraints
+                # The CHECK constraint on content was dropped
+                # (migration ..._remove_agent_messages_content_not_blank), so
+                # empty content is stored as "" and the UI renders a fallback.
                 if not content:
-                    content = "[empty]"
+                    content = ""
 
                 # Map to database direction enum
                 direction = self._resolve_direction(role, msg)
