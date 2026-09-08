@@ -272,7 +272,11 @@ class TelegramToolbox:
     # Category 1: Messages and Basic Communication (1-12)
 
     async def send_text_message(
-        self, peer: str, message: str, reply_to_msg_id: int | None = None
+        self,
+        peer: str,
+        message: str,
+        reply_to_msg_id: int | None = None,
+        comment_to_msg_id: int | None = None,
     ) -> dict[str, Any]:
         """Send a text message (markdown supported)."""
         now = datetime.now()
@@ -289,7 +293,11 @@ class TelegramToolbox:
         try:
             entity = await self._resolve_peer(peer)
             msg = await self._client.send_message(
-                entity, message, reply_to=reply_to_msg_id, parse_mode=CustomMarkdown()
+                entity,
+                message,
+                reply_to=reply_to_msg_id,
+                comment_to=comment_to_msg_id,
+                parse_mode=CustomMarkdown(),
             )
             self._last_send_text_message[peer] = now
             return {"success": True, "message_id": msg.id}
@@ -604,13 +612,18 @@ class TelegramToolbox:
         file_source: str,
         caption: str | None = None,
         reply_to_msg_id: int | None = None,
+        comment_to_msg_id: int | None = None,
     ) -> dict[str, Any]:
         """Send a file by URL or Media ID."""
         try:
             entity = await self._resolve_peer(peer)
             if file_source.startswith("http://") or file_source.startswith("https://"):
                 msg = await self._client.send_file(
-                    entity, file_source, caption=caption, reply_to=reply_to_msg_id
+                    entity,
+                    file_source,
+                    caption=caption,
+                    reply_to=reply_to_msg_id,
+                    comment_to=comment_to_msg_id,
                 )
                 return {"success": True, "message_id": msg.id}
 
@@ -631,7 +644,11 @@ class TelegramToolbox:
                 return {"success": False, "error": f"Invalid media type: {media_type}"}
 
             msg = await self._client.send_file(
-                entity, file_input, caption=caption, reply_to=reply_to_msg_id
+                entity,
+                file_input,
+                caption=caption,
+                reply_to=reply_to_msg_id,
+                comment_to=comment_to_msg_id,
             )
             return {"success": True, "message_id": msg.id}
         except Exception as e:
@@ -748,13 +765,18 @@ class TelegramToolbox:
         file_source: str,
         duration: int | None = None,
         reply_to_msg_id: int | None = None,
+        comment_to_msg_id: int | None = None,
     ) -> dict[str, Any]:
         """Send voice note by URL or Media ID."""
         try:
             entity = await self._resolve_peer(peer)
             if file_source.startswith("http://") or file_source.startswith("https://"):
                 msg = await self._client.send_file(
-                    entity, file_source, voice_note=True, reply_to=reply_to_msg_id
+                    entity,
+                    file_source,
+                    voice_note=True,
+                    reply_to=reply_to_msg_id,
+                    comment_to=comment_to_msg_id,
                 )
                 return {"success": True, "message_id": msg.id}
 
@@ -765,7 +787,11 @@ class TelegramToolbox:
                 file_reference=file_reference,
             )
             msg = await self._client.send_file(
-                entity, file_input, voice_note=True, reply_to=reply_to_msg_id
+                entity,
+                file_input,
+                voice_note=True,
+                reply_to=reply_to_msg_id,
+                comment_to=comment_to_msg_id,
             )
             return {"success": True, "message_id": msg.id}
         except Exception as e:
@@ -777,13 +803,18 @@ class TelegramToolbox:
         file_source: str,
         duration: int | None = None,
         reply_to_msg_id: int | None = None,
+        comment_to_msg_id: int | None = None,
     ) -> dict[str, Any]:
         """Send video note (round video) by URL or Media ID."""
         try:
             entity = await self._resolve_peer(peer)
             if file_source.startswith("http://") or file_source.startswith("https://"):
                 msg = await self._client.send_file(
-                    entity, file_source, video_note=True, reply_to=reply_to_msg_id
+                    entity,
+                    file_source,
+                    video_note=True,
+                    reply_to=reply_to_msg_id,
+                    comment_to=comment_to_msg_id,
                 )
                 return {"success": True, "message_id": msg.id}
 
@@ -794,7 +825,11 @@ class TelegramToolbox:
                 file_reference=file_reference,
             )
             msg = await self._client.send_file(
-                entity, file_input, video_note=True, reply_to=reply_to_msg_id
+                entity,
+                file_input,
+                video_note=True,
+                reply_to=reply_to_msg_id,
+                comment_to=comment_to_msg_id,
             )
             return {"success": True, "message_id": msg.id}
         except Exception as e:
@@ -968,7 +1003,11 @@ class TelegramToolbox:
             return {"success": False, "error": str(e)}
 
     async def send_sticker(
-        self, peer: str, media_id: str, reply_to_msg_id: int | None = None
+        self,
+        peer: str,
+        media_id: str,
+        reply_to_msg_id: int | None = None,
+        comment_to_msg_id: int | None = None,
     ) -> dict[str, Any]:
         """Send a sticker by its Media ID."""
         try:
@@ -982,7 +1021,12 @@ class TelegramToolbox:
                 access_hash=access_hash,
                 file_reference=file_reference,
             )
-            msg = await self._client.send_file(entity, sticker_input, reply_to=reply_to_msg_id)
+            msg = await self._client.send_file(
+                entity,
+                sticker_input,
+                reply_to=reply_to_msg_id,
+                comment_to=comment_to_msg_id,
+            )
             return {"success": True, "message_id": msg.id}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -2452,14 +2496,19 @@ def build_telegram_langchain_tools(
     agent_id: UUID | None = None,
     session_factory: async_sessionmaker[AsyncSession] | None = None,
 ) -> list[BaseTool]:
-    """Expose all 89 tools as LangChain StructuredTools."""
+    """Expose all 91 tools as LangChain StructuredTools."""
     toolbox = TelegramToolbox(client, agent_id=agent_id, session_factory=session_factory)
 
     return [
         StructuredTool.from_function(
             coroutine=toolbox.send_text_message,
             name="send_text_message",
-            description="Send a text message (markdown supported).",
+            description=(
+                "Send a text message (markdown supported). "
+                "Set comment_to_msg_id to the ID of a channel post to leave a comment "
+                "under it: the message goes to the channel's linked discussion group. "
+                "It takes precedence over reply_to_msg_id."
+            ),
         ),
         StructuredTool.from_function(
             coroutine=toolbox.edit_text_message,
@@ -2552,7 +2601,11 @@ def build_telegram_langchain_tools(
         StructuredTool.from_function(
             coroutine=toolbox.send_file,
             name="send_file",
-            description="Send a file or photo by URL or Media ID.",
+            description=(
+                "Send a file or photo by URL or Media ID. "
+                "Set comment_to_msg_id to the ID of a channel post to send it as a comment "
+                "under that post (takes precedence over reply_to_msg_id)."
+            ),
         ),
         StructuredTool.from_function(
             coroutine=toolbox.view_image,
@@ -2570,12 +2623,20 @@ def build_telegram_langchain_tools(
         StructuredTool.from_function(
             coroutine=toolbox.send_voice_note,
             name="send_voice_note",
-            description="Send a voice note audio file by URL or Media ID.",
+            description=(
+                "Send a voice note audio file by URL or Media ID. "
+                "Set comment_to_msg_id to the ID of a channel post to send it as a comment "
+                "under that post (takes precedence over reply_to_msg_id)."
+            ),
         ),
         StructuredTool.from_function(
             coroutine=toolbox.send_video_note,
             name="send_video_note",
-            description="Send a video note (round video message) by URL or Media ID.",
+            description=(
+                "Send a video note (round video message) by URL or Media ID. "
+                "Set comment_to_msg_id to the ID of a channel post to send it as a comment "
+                "under that post (takes precedence over reply_to_msg_id)."
+            ),
         ),
         StructuredTool.from_function(
             coroutine=toolbox.get_sticker_sets,
@@ -2605,7 +2666,11 @@ def build_telegram_langchain_tools(
         StructuredTool.from_function(
             coroutine=toolbox.send_sticker,
             name="send_sticker",
-            description="Send a sticker by its Media ID.",
+            description=(
+                "Send a sticker by its Media ID. "
+                "Set comment_to_msg_id to the ID of a channel post to send it as a comment "
+                "under that post (takes precedence over reply_to_msg_id)."
+            ),
         ),
         StructuredTool.from_function(
             coroutine=toolbox.get_profile,
