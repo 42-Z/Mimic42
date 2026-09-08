@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mimic42.core.agent_runtime import DEFAULT_LLM_MODEL, AgentRuntimeConfig, AgentRuntimeState
@@ -13,6 +13,7 @@ from mimic42.integrations.database_models import (
     AgentEventModel,
     AgentMessageModel,
     AgentModel,
+    AgentOnboardingSessionModel,
     TelegramSessionModel,
 )
 
@@ -121,6 +122,20 @@ class DatabaseAgentStore:
                 agent.last_started_at = _now()
             if state is AgentRuntimeState.STOPPED:
                 agent.last_stopped_at = _now()
+            await db_session.commit()
+
+    async def delete_agent(self, agent_id: UUID) -> None:
+        async with self._session_factory() as db_session:
+            # Remove leftover onboarding drafts first: the FK is `on delete set null`,
+            # so without this the wizard would pick up an abandoned session.
+            await db_session.execute(
+                delete(AgentOnboardingSessionModel).where(
+                    AgentOnboardingSessionModel.completed_agent_id == agent_id
+                )
+            )
+            # telegram_sessions, message_threads, agent_messages, agent_events
+            # and agent_timers are removed by ON DELETE CASCADE.
+            await db_session.execute(delete(AgentModel).where(AgentModel.id == agent_id))
             await db_session.commit()
 
     async def list_messages(self, *, agent_id: UUID, limit: int = 50) -> list[AgentMessageRecord]:

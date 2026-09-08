@@ -86,6 +86,37 @@ export function useStopAgent() {
 }
 
 /**
+ * Hook for deleting an agent.
+ * Optimistically removes it from the list, rolls back on error.
+ */
+export function useDeleteAgent() {
+  const qc = useQueryClient();
+
+  return useMutation({
+    mutationFn: agentsApi.remove,
+    onMutate: async (agentId: string) => {
+      await qc.cancelQueries({ queryKey: queryKeys.agents.list() });
+
+      const previousList = qc.getQueryData(queryKeys.agents.list());
+
+      qc.setQueryData(queryKeys.agents.list(), (old: AgentRecord[] | undefined) =>
+        old ? old.filter((agent) => agent.agent_id !== agentId) : old
+      );
+
+      return { previousList };
+    },
+    onError: (_, __, context) => {
+      if (context?.previousList) {
+        qc.setQueryData(queryKeys.agents.list(), context.previousList);
+      }
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.agents.list() });
+    },
+  });
+}
+
+/**
  * Hook for triggering a message to a peer via the agent.
  */
 export function useTriggerMessage(agentId: string) {

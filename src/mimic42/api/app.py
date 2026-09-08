@@ -28,6 +28,7 @@ from mimic42.core.onboarding import (
     AgentOnboardingService,
     AgentProfileInput,
     OnboardingNotFoundError,
+    OnboardingOwnershipError,
     OnboardingPublicStatus,
     TelegramAuthorizationIncompleteError,
     TelegramCodeVerification,
@@ -63,6 +64,8 @@ class AgentManagerLike(Protocol):
     async def start_agent(self, agent_id: UUID) -> None: ...
 
     async def stop_agent(self, agent_id: UUID) -> None: ...
+
+    async def remove_agent(self, agent_id: UUID) -> None: ...
 
     async def trigger_message(
         self,
@@ -113,6 +116,7 @@ class TelegramLoginRequest(BaseModel):
     api_id: int | None = Field(default=None, gt=0)
     api_hash: str | None = Field(default=None, min_length=1)
     phone_number: str = Field(min_length=5)
+    onboarding_id: UUID | None = None
 
 
 def _resolve_telegram_app(
@@ -185,6 +189,7 @@ def create_app(
                     ),
                     config_loader=database_agent_store.get_runtime_config,
                     status_sink=database_agent_store.update_status,
+                    session_factory=session_factory,
                 )
         try:
             # Restore running agents from database after restart
@@ -276,7 +281,17 @@ def create_app(
             phone_number=payload.phone_number,
         )
         try:
-            return await _get_onboarding_service(app).request_telegram_code(credentials)
+            return await _get_onboarding_service(app).request_telegram_code(
+                credentials,
+                onboarding_id=payload.onboarding_id,
+            )
+        except OnboardingNotFoundError as exc:
+            raise _onboarding_not_found(exc.onboarding_id) from exc
+        except OnboardingOwnershipError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Onboarding session belongs to another user",
+            ) from exc
         except Exception as exc:
             from telethon.errors import (
                 ApiIdInvalidError,
@@ -482,6 +497,37 @@ def create_app(
             return status_result
         except AgentNotFoundError as exc:
             raise _not_found(exc.agent_id) from exc
+
+    @app.delete(
+        "/api/v1/agents/{agent_id}",
+        status_code=status.HTTP_204_NO_CONTENT,
+    )
+    async def delete_agent(
+        agent_id: UUID,
+        current_user: CurrentUserDep,
+    ) -> Response:
+        store = _get_agent_store(app)
+        try:
+            if store is not None:
+                await _ensure_agent_owner(store, agent_id=agent_id, user_id=current_user.user_id)
+            else:
+                await _ensure_runtime_owner(app, agent_id=agent_id, user_id=current_user.user_id)
+        except AgentNotFoundError as exc:
+            raise _not_found(exc.agent_id) from exc
+
+        await _get_agent_manager(app).remove_agent(agent_id)
+
+        if store is not None:
+            await store.delete_agent(agent_id)
+
+        memory_store = _get_long_term_memory(app)
+        if memory_store is not None:
+            try:
+                await memory_store.clear_all_memories(agent_id)
+            except Exception:
+                logger.exception("Failed to clear Mem0 memories for agent %s", agent_id)
+
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     @app.post(
         "/api/v1/agents/{agent_id}/start",

@@ -14,6 +14,7 @@ from mimic42.core.agent_runtime import (
     AgentTrigger,
     AgentTriggerResult,
 )
+from mimic42.core.agent_store import AgentRecord, InMemoryAgentStore
 from tests.api.auth_helpers import AUTH_HEADERS, FakeAuthVerifier
 
 
@@ -28,6 +29,7 @@ class FakeAgentManager:
         self.created: dict[UUID, FakeAgentRecord] = {}
         self.started: list[UUID] = []
         self.stopped: list[UUID] = []
+        self.removed: list[UUID] = []
         self.triggers: list[tuple[UUID, str, str]] = []
 
     async def create_agent(
@@ -51,6 +53,9 @@ class FakeAgentManager:
     async def stop_agent(self, agent_id: UUID) -> None:
         self.stopped.append(agent_id)
         self.created[agent_id].state = AgentRuntimeState.STOPPED
+
+    async def remove_agent(self, agent_id: UUID) -> None:
+        self.removed.append(agent_id)
 
     async def get_agent_status(self, agent_id: UUID) -> AgentStatus:
         item = self.created[agent_id]
@@ -149,3 +154,63 @@ async def test_create_start_and_trigger_agent_through_api() -> None:
     assert trigger_response.json()["response_text"] == "api response"
     assert manager.started == [agent_id, agent_id]
     assert manager.triggers == [(agent_id, "me", "hello")]
+
+
+@pytest.mark.asyncio
+async def test_delete_agent_returns_204_for_owner() -> None:
+    manager = FakeAgentManager()
+    owner_id = uuid4()
+    agent_id = uuid4()
+    store = InMemoryAgentStore(
+        agents=[
+            AgentRecord(
+                agent_id=agent_id,
+                owner_id=owner_id,
+                name="Mimic",
+                state=AgentRuntimeState.STOPPED,
+            )
+        ]
+    )
+    app = create_app(
+        manager=manager,
+        agent_store=store,
+        auth_verifier=FakeAuthVerifier(owner_id),
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        response = await client.delete(
+            f"/api/v1/agents/{agent_id}",
+            headers=AUTH_HEADERS,
+        )
+
+    assert response.status_code == 204
+    assert manager.removed == [agent_id]
+    assert await store.list_agents(owner_id=owner_id) == []
+
+
+@pytest.mark.asyncio
+async def test_delete_agent_returns_404_for_foreign_agent() -> None:
+    manager = FakeAgentManager()
+    owner_id = uuid4()
+    foreign_agent_id = uuid4()
+    store = InMemoryAgentStore()
+    app = create_app(
+        manager=manager,
+        agent_store=store,
+        auth_verifier=FakeAuthVerifier(owner_id),
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        response = await client.delete(
+            f"/api/v1/agents/{foreign_agent_id}",
+            headers=AUTH_HEADERS,
+        )
+
+    assert response.status_code == 404
+    assert manager.removed == []

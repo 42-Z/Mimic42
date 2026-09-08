@@ -12,6 +12,7 @@ class FakeMem0Client:
     def __init__(self) -> None:
         self.added: list[tuple[object, dict[str, Any]]] = []
         self.deleted: list[str] = []
+        self.deleted_all: list[dict[str, Any]] = []
         self.get_all_called_with: list[dict[str, Any]] = []
 
     async def search(self, query: str, **kwargs: Any) -> dict[str, Any]:
@@ -38,6 +39,10 @@ class FakeMem0Client:
     async def delete(self, memory_id: str) -> dict[str, Any]:
         self.deleted.append(memory_id)
         return {"message": "deleted"}
+
+    async def delete_all(self, **kwargs: Any) -> dict[str, Any]:
+        self.deleted_all.append(kwargs)
+        return {"message": "deleted all"}
 
     async def history(self, memory_id: str) -> list[dict[str, Any]]:
         return [

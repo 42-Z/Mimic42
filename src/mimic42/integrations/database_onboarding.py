@@ -46,17 +46,6 @@ class DatabaseOnboardingRepository:
                 raise OnboardingNotFoundError(onboarding_id)
             return _model_to_session(model)
 
-    async def get_by_owner(self, owner_id: UUID) -> OnboardingSession | None:
-        async with self._session_factory() as db_session:
-            model = await db_session.scalar(
-                select(AgentOnboardingSessionModel).where(
-                    AgentOnboardingSessionModel.owner_id == owner_id
-                )
-            )
-            if model is None:
-                return None
-            return _model_to_session(model)
-
 
 def _model_to_session(model: AgentOnboardingSessionModel) -> OnboardingSession:
     return OnboardingSession(

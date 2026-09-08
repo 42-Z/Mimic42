@@ -47,6 +47,8 @@ class AgentStore(Protocol):
 
     async def update_status(self, agent_id: UUID, state: AgentRuntimeState) -> None: ...
 
+    async def delete_agent(self, agent_id: UUID) -> None: ...
+
     async def list_messages(
         self,
         *,
@@ -117,6 +119,10 @@ class InMemoryAgentStore:
     async def update_status(self, agent_id: UUID, state: AgentRuntimeState) -> None:
         if agent_id in self._agents:
             self._agents[agent_id] = self._agents[agent_id].model_copy(update={"state": state})
+
+    async def delete_agent(self, agent_id: UUID) -> None:
+        self._agents.pop(agent_id, None)
+        self._configs.pop(agent_id, None)
 
     async def list_messages(self, *, agent_id: UUID, limit: int = 50) -> list[AgentMessageRecord]:
         return [message for message in self._messages if message.agent_id == agent_id][-limit:]

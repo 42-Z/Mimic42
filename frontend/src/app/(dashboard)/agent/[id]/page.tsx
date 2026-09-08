@@ -183,7 +183,7 @@ function TabSettings({ agentId }: { agentId: string }) {
   const [values, setValues] = useState<AgentSettingsValues>({
     name: '', soul_prompt: '', reasoning_effort: 'high',
   });
-  const [formErrors, setFormErrors] = useState<Partial<AgentSettingsValues>>({});
+  const [formErrors, setFormErrors] = useState<Partial<Record<keyof AgentSettingsValues, string>>>({});
   const [dirty, setDirty] = useState(false);
 
   useEffect(() => {
@@ -205,7 +205,7 @@ function TabSettings({ agentId }: { agentId: string }) {
     e.preventDefault();
     const result = agentSettingsSchema.safeParse(values);
     if (!result.success) {
-      const fe: Partial<AgentSettingsValues> = {};
+      const fe: Partial<Record<keyof AgentSettingsValues, string>> = {};
       result.error.issues.forEach(i => { fe[i.path[0] as keyof AgentSettingsValues] = i.message; });
       setFormErrors(fe);
       return;

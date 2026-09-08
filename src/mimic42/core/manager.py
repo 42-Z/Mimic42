@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import logging
 from collections.abc import Callable
 from typing import cast
 from uuid import UUID
@@ -24,6 +25,8 @@ from mimic42.integrations.telegram_tools import (
     build_telegram_langchain_tools,
 )
 from mimic42.integrations.telethon_client import build_telegram_client
+
+logger = logging.getLogger("mimic42.core.manager")
 
 
 class AgentNotFoundError(KeyError):
@@ -110,6 +113,17 @@ class AgentManager:
     async def stop_agent(self, agent_id: UUID) -> None:
         await (await self.get_agent(agent_id)).stop()
         await self._save_status(agent_id, AgentRuntimeState.STOPPED)
+
+    async def remove_agent(self, agent_id: UUID) -> None:
+        """Unregister the agent runtime and stop it. Missing agents are ignored."""
+        async with self._lock:
+            runtime = self._agents.pop(agent_id, None)
+        if runtime is None:
+            return
+        try:
+            await runtime.stop()
+        except Exception:
+            logger.exception("Failed to stop runtime of removed agent %s", agent_id)
 
     async def trigger_message(
         self,
