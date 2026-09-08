@@ -192,6 +192,21 @@ class AgentOnboardingService:
     ) -> OnboardingPublicStatus:
         onboarding_id = credentials.onboarding_id or uuid4()
 
+        # Preserve profile fields when the frontend reuses an existing row
+        # (name/soul steps run before Telegram credentials).
+        preserved_name: str | None = None
+        preserved_soul: str | None = None
+        if credentials.onboarding_id is not None:
+            try:
+                existing = await self._repository.get(credentials.onboarding_id)
+            except OnboardingNotFoundError:
+                existing = None
+            if existing is not None:
+                if existing.owner_id != credentials.owner_id:
+                    raise OnboardingNotFoundError(credentials.onboarding_id)
+                preserved_name = existing.name
+                preserved_soul = existing.soul_prompt
+
         client = self._telegram_factory.build(
             api_id=credentials.api_id,
             api_hash=credentials.api_hash,
@@ -213,8 +228,8 @@ class AgentOnboardingService:
             authorization_status=TelegramLoginStatus.CODE_REQUESTED,
             phone_code_hash_secret=self._cipher.encrypt(phone_code_hash),
             session_secret=self._cipher.encrypt(session_string),
-            name=None,
-            soul_prompt=None,
+            name=preserved_name,
+            soul_prompt=preserved_soul,
         )
         await self._repository.save(session)
         return _public_status(session)

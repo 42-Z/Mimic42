@@ -113,6 +113,7 @@ class TelegramLoginRequest(BaseModel):
     api_id: int = Field(gt=0)
     api_hash: str = Field(min_length=1)
     phone_number: str = Field(min_length=5)
+    onboarding_id: UUID | None = Field(default=None)
 
 
 def create_app(
@@ -254,6 +255,7 @@ def create_app(
             api_id=payload.api_id,
             api_hash=payload.api_hash,
             phone_number=payload.phone_number,
+            onboarding_id=payload.onboarding_id,
         )
         try:
             return await _get_onboarding_service(app).request_telegram_code(credentials)
@@ -455,7 +457,11 @@ def create_app(
     ) -> AgentStatus:
         try:
             status_result = await _get_agent_manager(app).get_agent_status(agent_id)
-            _ensure_owner(status_result.owner_id, current_user.user_id)
+            try:
+                _ensure_owner(status_result.owner_id, current_user.user_id)
+            except HTTPException:
+                # Unified 404 like sibling endpoints — do not leak existence.
+                raise _not_found(agent_id) from None
             return status_result
         except AgentNotFoundError as exc:
             raise _not_found(exc.agent_id) from exc
@@ -565,6 +571,27 @@ def create_app(
             raise HTTPException(
                 status_code=status.HTTP_501_NOT_IMPLEMENTED,
                 detail="Долгосрочная память Mem0 не настроена на сервере.",
+            )
+
+        # Scope memory_id to this agent: Mem0 history() is unscoped, so
+        # verify membership first (ids are unguessable; defense in depth).
+        try:
+            owned = await memory_store.get_all_memories(agent_id)
+        except Exception:
+            logger.warning(
+                "Memory ownership pre-check failed, proceeding best-effort",
+                exc_info=True,
+            )
+            owned = []
+        owned_ids = {
+            str(item.get("id"))
+            for item in owned
+            if isinstance(item, dict) and item.get("id") is not None
+        }
+        if owned_ids and memory_id not in owned_ids:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Memory {memory_id} does not exist",
             )
 
         try:
