@@ -27,6 +27,7 @@ export function useRealtimeFeed(agentId: string) {
   }, [agentId, qc]);
 
   const addMessage = useCallback((msg: AgentMessageRow) => {
+    const isIncoming = msg.direction === 'incoming' || msg.direction === 'dashboard_trigger';
     const turn: ConversationTurn = {
       id: msg.id,
       agent_id: agentId,
@@ -34,15 +35,22 @@ export function useRealtimeFeed(agentId: string) {
       peer_id: msg.peer || String(msg.payload?.peer ?? ''),
       peer_name: String(msg.payload?.peer_name ?? ''),
       agent_name: String(msg.payload?.agent_name ?? ''),
-      incoming: msg.direction === 'incoming' ? msg.content : '',
-      outgoing: msg.direction === 'agent_response' ? msg.content : '',
-      direction: msg.direction === 'incoming' ? 'incoming' : 'outgoing',
+      incoming: isIncoming ? msg.content : '',
+      outgoing: isIncoming ? '' : msg.content,
+      direction: isIncoming ? 'incoming' : 'outgoing',
       tools: [],
     };
     addTurn(turn);
   }, [agentId, addTurn]);
 
   const addEvent = useCallback((event: AgentEventRow) => {
+    const started = (event as unknown as Record<string, unknown>).started_at;
+    const completed = (event as unknown as Record<string, unknown>).completed_at;
+    let duration_ms = 0;
+    if (typeof started === 'string' && typeof completed === 'string') {
+      const ms = new Date(completed).getTime() - new Date(started).getTime();
+      if (Number.isFinite(ms) && ms >= 0) duration_ms = ms;
+    }
     const tool: ToolCallRecord = {
       id: event.id,
       name: event.event_type,
@@ -50,7 +58,7 @@ export function useRealtimeFeed(agentId: string) {
       payload: event.payload ?? undefined,
       result: event.result,
       error: event.error,
-      duration_ms: 0,
+      duration_ms,
       created_at: event.created_at,
     };
     const turn: ConversationTurn = {
@@ -84,7 +92,10 @@ export function useRealtimeFeed(agentId: string) {
     );
     if (existingChannel) {
       channelRef.current = existingChannel;
-      return;
+      setIsConnected(true);
+      return () => {
+        setIsConnected(false);
+      };
     }
 
     const channel = supabase
@@ -139,6 +150,17 @@ export function useRealtimeFeed(agentId: string) {
         direction: 'incoming' as const,
       };
     }
+    if (t.direction === 'outgoing' || (t.outgoing && t.tools.length === 0)) {
+      return {
+        type: 'message' as const,
+        id: t.id,
+        timestamp: t.timestamp,
+        peer: t.peer_id,
+        role: 'assistant',
+        content: t.outgoing,
+        direction: 'outgoing' as const,
+      };
+    }
     if (t.direction === 'tools' && t.tools.length > 0) {
       const first = t.tools[0]!;
       return {
@@ -148,6 +170,19 @@ export function useRealtimeFeed(agentId: string) {
         event_type: first.name,
         status: first.status,
         error: first.error,
+      };
+    }
+    // Fallback: 'both' or any turn with outgoing content — surface as message
+    // so live agent replies are never invisible on the dashboard.
+    if (t.outgoing) {
+      return {
+        type: 'message' as const,
+        id: t.id,
+        timestamp: t.timestamp,
+        peer: t.peer_id,
+        role: 'assistant',
+        content: t.outgoing,
+        direction: 'outgoing' as const,
       };
     }
     return {
@@ -177,6 +212,14 @@ export function useAgentStatusRealtime(agentId: string) {
 
     const supabase = getSupabaseClient();
     const channelName = `agent-status-${agentId}`;
+
+    const existingChannel = supabase.getChannels().find(
+      (ch) => ch.topic === `realtime:${channelName}`
+    );
+    if (existingChannel) {
+      channelRef.current = existingChannel;
+      return;
+    }
 
     const channel = supabase
       .channel(channelName)

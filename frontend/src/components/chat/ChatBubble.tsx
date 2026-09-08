@@ -7,6 +7,21 @@ import { getToolLabel, toolArgs } from '@/lib/toolLabels';
 import { format } from 'date-fns';
 import { Zap, ChevronDown, ChevronUp, XCircle } from 'lucide-react';
 
+function formatTimeSafe(value: string, fmt: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  try {
+    return format(date, fmt);
+  } catch {
+    return '';
+  }
+}
+
+function MessageText({ text }: { text: string }) {
+  if (!text) return <span className="opacity-50">—</span>;
+  return <>{text}</>;
+}
+
 function ToolCard({ tool }: { tool: ToolCallRecord }) {
   const [expanded, setExpanded] = useState(false);
   const label = getToolLabel(tool.name, toolArgs(tool.payload?.args));
@@ -68,7 +83,7 @@ function ToolCard({ tool }: { tool: ToolCallRecord }) {
             </div>
           )}
           <div className="text-[10px] text-void-600 pt-0.5">
-            {format(new Date(tool.created_at), 'HH:mm:ss')}
+            {formatTimeSafe(tool.created_at, 'HH:mm:ss')}
           </div>
         </div>
       )}
@@ -77,7 +92,7 @@ function ToolCard({ tool }: { tool: ToolCallRecord }) {
 }
 
 export function ChatBubble({ turn }: { turn: ConversationTurn }) {
-  const time = format(new Date(turn.timestamp), 'HH:mm');
+  const time = formatTimeSafe(turn.timestamp, 'HH:mm');
 
   // Tools-only turn
   if (turn.direction === 'tools') {
@@ -100,7 +115,7 @@ export function ChatBubble({ turn }: { turn: ConversationTurn }) {
         <div className="max-w-[85%] sm:max-w-[70%]">
           <div className="text-[11px] text-void-500 mb-0.5 truncate">{turn.peer_name || turn.peer_id}</div>
           <div className="bg-void-800 text-void-100 rounded-2xl rounded-tl-md px-4 py-2 text-sm break-words">
-            {turn.incoming}
+            <MessageText text={turn.incoming} />
           </div>
           <div className="text-[10px] text-void-600 text-right mt-0.5">{time}</div>
         </div>
@@ -115,7 +130,7 @@ export function ChatBubble({ turn }: { turn: ConversationTurn }) {
         <div className="max-w-[85%] sm:max-w-[70%]">
           <div className="text-[11px] text-void-500 mb-0.5 text-right truncate">{turn.agent_name || 'Агент'}</div>
           <div className="bg-plasma-950 text-plasma-100 rounded-2xl rounded-tr-md px-4 py-2 text-sm border border-plasma-900/40 break-words">
-            {turn.outgoing}
+            <MessageText text={turn.outgoing} />
           </div>
           <div className="text-[10px] text-void-600 text-right mt-0.5">{time}</div>
         </div>
@@ -131,7 +146,7 @@ export function ChatBubble({ turn }: { turn: ConversationTurn }) {
         <div className="max-w-[85%] sm:max-w-[70%]">
           <div className="text-[11px] text-void-500 mb-0.5 truncate">{turn.peer_name || turn.peer_id}</div>
           <div className="bg-void-800 text-void-100 rounded-2xl rounded-tl-md px-4 py-2 text-sm break-words">
-            {turn.incoming}
+            <MessageText text={turn.incoming} />
           </div>
         </div>
       </div>
@@ -152,7 +167,7 @@ export function ChatBubble({ turn }: { turn: ConversationTurn }) {
         <div className="max-w-[85%] sm:max-w-[70%]">
           <div className="text-[11px] text-void-500 mb-0.5 text-right truncate">{turn.agent_name || 'Агент'}</div>
           <div className="bg-plasma-950 text-plasma-100 rounded-2xl rounded-tr-md px-4 py-2 text-sm border border-plasma-900/40 break-words">
-            {turn.outgoing}
+            <MessageText text={turn.outgoing} />
           </div>
           <div className="text-[10px] text-void-600 text-right mt-0.5">{time}</div>
         </div>

@@ -20,6 +20,7 @@ export function TabLogsChat({ agentId }: { agentId: string }) {
   const [filter, setFilter] = useState<'all' | 'dialog' | 'tools'>('all');
   const [search, setSearch] = useState('');
   const containerRef = useRef<HTMLDivElement>(null);
+  const initialScrollDone = useRef(false);
 
   const allTurns = React.useMemo(() => data?.pages.flat() ?? [], [data?.pages]);
 
@@ -72,6 +73,15 @@ export function TabLogsChat({ agentId }: { agentId: string }) {
       }
     }
   }, [newTurns.length]);
+
+  // Initial scroll to newest (bottom) once historical turns first load —
+  // otherwise the user lands on the oldest turn.
+  useEffect(() => {
+    if (!initialScrollDone.current && containerRef.current && allTurns.length > 0) {
+      containerRef.current.scrollTop = containerRef.current.scrollHeight;
+      initialScrollDone.current = true;
+    }
+  }, [allTurns.length]);
 
   return (
     <div className="space-y-4">

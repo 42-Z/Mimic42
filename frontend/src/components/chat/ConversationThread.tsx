@@ -15,9 +15,14 @@ interface ConversationThreadProps {
 
 function formatDateHeader(dateStr: string): string {
   const date = new Date(dateStr);
-  if (isToday(date)) return 'Сегодня';
-  if (isYesterday(date)) return 'Вчера';
-  return format(date, 'd MMMM', { locale: ru });
+  if (Number.isNaN(date.getTime())) return '';
+  try {
+    if (isToday(date)) return 'Сегодня';
+    if (isYesterday(date)) return 'Вчера';
+    return format(date, 'd MMMM', { locale: ru });
+  } catch {
+    return '';
+  }
 }
 
 export function ConversationThread({

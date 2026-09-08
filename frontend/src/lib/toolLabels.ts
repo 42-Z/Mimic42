@@ -1,4 +1,4 @@
-// Human-readable Russian labels for all 89 Telegram tools.
+// Human-readable Russian labels for all 91 Telegram tools.
 // Each function receives the tool arguments and returns a descriptive string.
 
 export type ToolLabelFn = (args: Record<string, unknown>) => string;
@@ -138,6 +138,10 @@ export const TOOL_LABELS: Record<string, ToolLabelFn> = {
   // Category 12: Mute/Unmute
   mute_chat: (a) => `Заглушил чат ${_peer(a)}`,
   unmute_chat: (a) => `Включил уведомления в ${_peer(a)}`,
+
+  // Category 13: Channel discussions
+  join_channel_discussion: (a) => `Открыл обсуждение канала ${_peer(a)}`,
+  get_discussion_messages: (a) => `Загрузил сообщения обсуждения в ${_peer(a)}`,
 };
 
 export const FALLBACK_TOOL_LABEL: ToolLabelFn = (a) => {

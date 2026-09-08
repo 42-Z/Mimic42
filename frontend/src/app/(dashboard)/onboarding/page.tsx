@@ -374,12 +374,16 @@ function StepTelegramCode({
   const [isBacking, setIsBacking] = useState(false);
 
   const handleBack = async () => {
+    if (!session?.id) {
+      toast('Сессия не найдена', 'error');
+      return;
+    }
     setIsBacking(true);
     try {
       if (typeof window !== 'undefined') {
         sessionStorage.removeItem('_m42_tc_state');
       }
-      await save.mutateAsync({ authorization_status: 'not_started' });
+      await save.mutateAsync({ id: session.id, authorization_status: 'not_started' });
     } catch {
       toast('Не удалось вернуться назад', 'error');
     } finally {
@@ -470,12 +474,16 @@ function StepTelegram2FA({
   const [isBacking, setIsBacking] = useState(false);
 
   const handleBack = async () => {
+    if (!session?.id) {
+      toast('Сессия не найдена', 'error');
+      return;
+    }
     setIsBacking(true);
     try {
       if (typeof window !== 'undefined') {
         sessionStorage.removeItem('_m42_tc_state');
       }
-      await save.mutateAsync({ authorization_status: 'not_started' });
+      await save.mutateAsync({ id: session.id, authorization_status: 'not_started' });
     } catch {
       toast('Не удалось вернуться назад', 'error');
     } finally {
