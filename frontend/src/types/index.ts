@@ -70,8 +70,6 @@ export interface AgentActivity {
  * Input body
  */
 export interface OnboardingTelegramInput {
-  api_id: number;
-  api_hash: string;
   phone_number: string;
 }
 

@@ -76,20 +76,26 @@ class AgentManagerLike(Protocol):
 class CreateAgentRequest(BaseModel):
     agent_id: UUID = Field(default_factory=uuid4)
     telegram_session_name: str = Field(min_length=1)
-    telegram_api_id: int = Field(gt=0)
-    telegram_api_hash: str = Field(min_length=1)
+    telegram_api_id: int | None = Field(default=None, gt=0)
+    telegram_api_hash: str | None = Field(default=None, min_length=1)
     soul_prompt: str = Field(default="", max_length=20_000)
     auto_start: bool = False
 
-    def to_runtime_config(self, *, owner_id: UUID) -> AgentRuntimeConfig:
+    def to_runtime_config(
+        self,
+        *,
+        owner_id: UUID,
+        api_id: int,
+        api_hash: str,
+    ) -> AgentRuntimeConfig:
         from mimic42.core.onboarding import load_default_system_prompt
 
         return AgentRuntimeConfig(
             agent_id=self.agent_id,
             owner_id=owner_id,
             telegram_session_name=self.telegram_session_name,
-            telegram_api_id=self.telegram_api_id,
-            telegram_api_hash=self.telegram_api_hash,
+            telegram_api_id=api_id,
+            telegram_api_hash=api_hash,
             system_prompt=load_default_system_prompt(),
             soul_prompt=self.soul_prompt,
         )
@@ -104,9 +110,28 @@ class TriggerMessageRequest(BaseModel):
 
 
 class TelegramLoginRequest(BaseModel):
-    api_id: int = Field(gt=0)
-    api_hash: str = Field(min_length=1)
+    api_id: int | None = Field(default=None, gt=0)
+    api_hash: str | None = Field(default=None, min_length=1)
     phone_number: str = Field(min_length=5)
+
+
+def _resolve_telegram_app(
+    settings: Settings,
+    api_id: int | None,
+    api_hash: str | None,
+) -> tuple[int, str]:
+    """Fall back to the deployment-wide Telegram application when none is supplied."""
+    resolved_id = api_id if api_id is not None else settings.telegram_api_id
+    resolved_hash = api_hash if api_hash is not None else settings.telegram_api_hash
+    if resolved_id is None or resolved_hash is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "Telegram-приложение не настроено на сервере. "
+                "Задайте TELEGRAM_API_ID и TELEGRAM_API_HASH в окружении."
+            ),
+        )
+    return resolved_id, resolved_hash
 
 
 def create_app(
@@ -243,10 +268,11 @@ def create_app(
         payload: TelegramLoginRequest,
         current_user: CurrentUserDep,
     ) -> OnboardingPublicStatus:
+        api_id, api_hash = _resolve_telegram_app(app_settings, payload.api_id, payload.api_hash)
         credentials = TelegramCredentials(
             owner_id=current_user.user_id,
-            api_id=payload.api_id,
-            api_hash=payload.api_hash,
+            api_id=api_id,
+            api_hash=api_hash,
             phone_number=payload.phone_number,
         )
         try:
@@ -254,7 +280,9 @@ def create_app(
         except Exception as exc:
             from telethon.errors import (
                 ApiIdInvalidError,
+                ApiIdPublishedFloodError,
                 FloodWaitError,
+                PhoneNumberBannedError,
                 PhoneNumberInvalidError,
                 RPCError,
             )
@@ -263,9 +291,22 @@ def create_app(
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=(
-                        "Неверная комбинация API ID и API Hash. "
-                        "Пожалуйста, проверьте их на my.telegram.org."
+                        "Telegram отклонил приложение сервера: "
+                        "неверная комбинация TELEGRAM_API_ID и TELEGRAM_API_HASH."
                     ),
+                ) from exc
+            if isinstance(exc, ApiIdPublishedFloodError):
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail=(
+                        "Telegram заблокировал приложение сервера как опубликованное. "
+                        "Замените TELEGRAM_API_ID и TELEGRAM_API_HASH."
+                    ),
+                ) from exc
+            if isinstance(exc, PhoneNumberBannedError):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Этот номер заблокирован в Telegram.",
                 ) from exc
             if isinstance(exc, PhoneNumberInvalidError):
                 raise HTTPException(
@@ -318,9 +359,15 @@ def create_app(
                 PhoneCodeEmptyError,
                 PhoneCodeExpiredError,
                 PhoneCodeInvalidError,
+                PhoneNumberUnoccupiedError,
                 RPCError,
             )
 
+            if isinstance(exc, PhoneNumberUnoccupiedError):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Пользователя с таким номером нет в Telegram.",
+                ) from exc
             if isinstance(exc, (PhoneCodeInvalidError, PhoneCodeEmptyError)):
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
@@ -399,10 +446,17 @@ def create_app(
         payload: CreateAgentRequest,
         current_user: CurrentUserDep,
     ) -> AgentStatus:
+        api_id, api_hash = _resolve_telegram_app(
+            app_settings, payload.telegram_api_id, payload.telegram_api_hash
+        )
         try:
             manager_for_request = _get_agent_manager(app)
             await manager_for_request.create_agent(
-                payload.to_runtime_config(owner_id=current_user.user_id),
+                payload.to_runtime_config(
+                    owner_id=current_user.user_id,
+                    api_id=api_id,
+                    api_hash=api_hash,
+                ),
                 start=payload.auto_start,
             )
         except ValueError as exc:

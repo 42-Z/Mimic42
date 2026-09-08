@@ -133,8 +133,6 @@ export function useStartTelegramAuth() {
   return useMutation({
     mutationFn: async (values: TelegramCredentialsValues) => {
       const result = await onboardingApi.startTelegram({
-        api_id: values.api_id,
-        api_hash: values.api_hash,
         phone_number: values.phone_number,
       });
 

@@ -22,7 +22,7 @@ Authenticated API requests must include a Supabase user access token. The backen
 `sb-access-token`. The token is verified locally through the project's Supabase JWKS endpoint; the
 backend does not need the Supabase secret API key for this check.
 
-1. `POST /api/v1/onboarding/telegram` with `api_id`, `api_hash`, `phone_number`.
+1. `POST /api/v1/onboarding/telegram` with `phone_number` (`api_id` and `api_hash` are optional overrides for the deployment-wide Telegram application).
 2. `POST /api/v1/onboarding/{id}/telegram/code` with Telegram `code` and optional `password`.
 3. `POST /api/v1/onboarding/{id}/agent` with `name`, `soul_prompt`, optional `system_prompt`.
 4. Dashboard controls runtime through `/api/v1/agents/{id}/start`, `/stop`, and
@@ -56,6 +56,10 @@ The current `.env` names used by the backend are:
 - `OPENROUTER_API_KEY` for model access.
 - `MEM0_API_KEY` for long-term memory integration.
 - `SECRET_KEY` for encrypting Telegram session strings before database storage.
+- `TELEGRAM_API_ID` and `TELEGRAM_API_HASH` for the Telegram application every agent logs in
+  through. Onboarding asks the user only for a phone number; these values are the deployment-wide
+  default, and requests may still override them per agent. Without them, onboarding answers
+  `503`.
 
 Generate `SECRET_KEY` with:
 

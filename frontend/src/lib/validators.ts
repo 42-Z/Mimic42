@@ -90,18 +90,8 @@ export const systemPromptSchema = z.object({
 });
 
 // Step 4a: Telegram credentials
+// API ID и Hash берутся из приложения сервера, пользователь вводит только телефон.
 export const telegramCredentialsSchema = z.object({
-  api_id: z
-    .string()
-    .min(1, 'API ID обязателен')
-    .regex(/^\d+$/, 'API ID должен быть числом')
-    .transform((val) => parseInt(val, 10))
-    .refine((val) => val > 0, 'API ID должен быть положительным числом'),
-  api_hash: z
-    .string()
-    .min(1, 'API Hash обязателен')
-    .max(128, 'API Hash слишком длинный')
-    .regex(/^[a-fA-F0-9]+$/, 'API Hash должен содержать только hex символы'),
   phone_number: phoneNumberSchema,
 });
 
