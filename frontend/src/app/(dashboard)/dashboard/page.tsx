@@ -9,14 +9,17 @@ import { Card, Skeleton } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { maskPhoneNumber, sanitizeText, truncate } from '@/lib/sanitize';
+import { getSupabaseClient } from '@/lib/supabase/client';
 import { formatDistanceToNow } from 'date-fns';
 import { ru } from 'date-fns/locale';
 import {
-  MessageSquare, Activity, AlertTriangle, TrendingUp,
+  MessageSquare, Activity, AlertTriangle, Users,
   Play, Square, RefreshCw, Wifi, WifiOff, Bot, Plus, Settings,
 } from 'lucide-react';
 import Link from 'next/link';
-import type { AgentRecord, FeedItem } from '@/types';
+import { useRouter } from 'next/navigation';
+import type { AgentRecord } from '@/types';
+import type { ActivityItem } from '@/lib/activity/normalize';
 
 export default function DashboardPage() {
   const { data: agents, isLoading: agentsLoading } = useAgents();
@@ -67,8 +70,36 @@ function DashboardHeader({ agentsCount }: { agentsCount: number }) {
 // ── KPI Cards ─────────────────────────────────────────────────────────────────
 function KPIRow({ agentIds }: { agentIds: string[] }) {
   const { data: kpis, isLoading } = useAllAgentsKPIs(agentIds);
+  const router = useRouter();
+  const { toast } = useToast();
+
+  const openLatestError = async () => {
+    if (!kpis || kpis.errors_today === 0 || agentIds.length === 0) return;
+    const supabase = getSupabaseClient();
+    const { data } = await supabase
+      .from('agent_events')
+      .select('agent_id')
+      .in('agent_id', agentIds)
+      .eq('status', 'failed')
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (data?.agent_id) {
+      router.push(`/agent/${data.agent_id}?tab=logs&filter=errors`);
+    } else {
+      toast('Не удалось найти ошибки', 'warning');
+    }
+  };
 
   const cards = [
+    {
+      label: 'Собеседников сегодня',
+      value: kpis?.contacts_today ?? 0,
+      icon: Users,
+      color: 'text-amber-400',
+      bg: 'bg-amber-950/40',
+      border: 'border-amber-900',
+    },
     {
       label: 'Сообщений сегодня',
       value: kpis?.messages_today ?? 0,
@@ -78,8 +109,8 @@ function KPIRow({ agentIds }: { agentIds: string[] }) {
       border: 'border-plasma-900',
     },
     {
-      label: 'Активных тредов',
-      value: kpis?.active_threads ?? 0,
+      label: 'Действий сегодня',
+      value: kpis?.actions_today ?? 0,
       icon: Activity,
       color: 'text-neon-400',
       bg: 'bg-neon-950/40',
@@ -92,21 +123,25 @@ function KPIRow({ agentIds }: { agentIds: string[] }) {
       color: 'text-crimson-400',
       bg: 'bg-crimson-950/40',
       border: 'border-crimson-900',
-    },
-    {
-      label: 'Обращений за неделю',
-      value: kpis?.incoming_week ?? 0,
-      icon: TrendingUp,
-      color: 'text-amber-400',
-      bg: 'bg-amber-950/40',
-      border: 'border-amber-900',
+      clickable: true,
     },
   ];
 
   return (
     <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
       {cards.map((card) => (
-        <Card key={card.label} variant="glass" padding="md" className={cn('border', card.border)}>
+        <Card
+          key={card.label}
+          variant="glass"
+          padding="md"
+          onClick={card.clickable ? openLatestError : undefined}
+          className={cn(
+            'border',
+            card.border,
+            card.clickable && kpis && kpis.errors_today > 0 &&
+              'cursor-pointer hover:border-crimson-700 transition-colors',
+          )}
+        >
           <div className="flex items-start justify-between">
             <div>
               {isLoading ? (
@@ -240,7 +275,7 @@ function LiveFeed({
   agentIds: string[];
   agentNameById: Map<string, string>;
 }) {
-  const { feedItems, isConnected, clearFeed } = useMultiAgentRealtimeFeed(agentIds);
+  const { items, isConnected, clearFeed } = useMultiAgentRealtimeFeed(agentIds);
 
   return (
     <Card variant="glass" padding="none" className="flex flex-col h-[480px]">
@@ -272,14 +307,14 @@ function LiveFeed({
 
       {/* Items */}
       <div className="flex-1 overflow-y-auto p-2 space-y-1">
-        {feedItems.length === 0 ? (
+        {items.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-void-600">
             <Activity className="h-8 w-8 mb-2 opacity-30" />
             <p className="font-mono text-xs">Ожидание событий...</p>
           </div>
         ) : (
-          [...feedItems].reverse().map((item) => (
-            <FeedItemRow key={item.id} item={item} agentNameById={agentNameById} />
+          [...items].reverse().map((item) => (
+            <FeedRow key={item.id} item={item} agentNameById={agentNameById} />
           ))
         )}
       </div>
@@ -287,53 +322,46 @@ function LiveFeed({
   );
 }
 
-function FeedItemRow({ item, agentNameById }: { item: FeedItem; agentNameById: Map<string, string> }) {
-  const time = formatDistanceToNow(new Date(item.timestamp), {
+function feedLine(item: ActivityItem): { text: string; failed: boolean } {
+  const failedAction = item.actions.find((a) => a.status === 'failed');
+  if (failedAction) {
+    return { text: failedAction.hint ?? failedAction.label, failed: true };
+  }
+  if (item.actions.length > 0) {
+    const labels = item.actions.map((a) => a.label).slice(0, 3).join(', ');
+    return { text: labels, failed: false };
+  }
+  if (item.response) return { text: item.response.content, failed: false };
+  if (item.incoming) return { text: item.incoming.content, failed: false };
+  if (item.trigger) return { text: item.trigger.content, failed: false };
+  return { text: '—', failed: false };
+}
+
+function FeedRow({ item, agentNameById }: { item: ActivityItem; agentNameById: Map<string, string> }) {
+  const time = formatDistanceToNow(new Date(item.createdAt), {
     addSuffix: true,
     locale: ru,
   });
-  const agentName = item.agent_id ? agentNameById.get(item.agent_id) : undefined;
-
-  if (item.type === 'message') {
-    const isIncoming = item.direction === 'incoming' || item.role === 'user';
-    return (
-      <div className={cn(
-        'flex gap-3 px-3 py-2 rounded-sm text-xs font-mono group',
-        'hover:bg-void-800/50 transition-colors',
-        isIncoming ? 'border-l-2 border-plasma-700' : 'border-l-2 border-neon-800'
-      )}>
-        <span className={cn('shrink-0 uppercase text-[10px]', isIncoming ? 'text-plasma-500' : 'text-neon-600')}>
-          {isIncoming ? '← IN' : '→ OUT'}
-        </span>
-        {agentName && (
-          <span className="shrink-0 text-void-600">{truncate(sanitizeText(agentName), 16)}</span>
-        )}
-        <span className="text-void-400 shrink-0 tabular-nums">{item.peer}</span>
-        <span className="text-void-300 flex-1 truncate">{sanitizeText(item.content)}</span>
-        <span className="text-void-600 shrink-0">{time}</span>
-      </div>
-    );
-  }
-
-  const statusColors: Record<string, string> = {
-    succeeded: 'text-neon-500',
-    failed: 'text-crimson-500',
-    running: 'text-plasma-500',
-    pending: 'text-void-500',
-    cancelled: 'text-void-600',
-  };
+  const agentName = item.agentId ? agentNameById.get(item.agentId) : undefined;
+  const peerLabel = item.peerTitle ?? (item.peer ? `ID ${item.peer}` : null);
+  const { text, failed } = feedLine(item);
 
   return (
-    <div className="flex gap-3 px-3 py-2 rounded-sm text-xs font-mono hover:bg-void-800/50 transition-colors border-l-2 border-void-700">
-      <span className="shrink-0 text-void-600 uppercase text-[10px]">EVT</span>
+    <div className={cn(
+      'flex gap-3 px-3 py-2 rounded-sm text-xs font-mono group hover:bg-void-800/50 transition-colors',
+      failed ? 'border-l-2 border-crimson-700' : 'border-l-2 border-void-700',
+    )}>
       {agentName && (
         <span className="shrink-0 text-void-600">{truncate(sanitizeText(agentName), 16)}</span>
       )}
-      <span className={cn('shrink-0', statusColors[item.status] ?? 'text-void-400')}>
-        [{item.status.toUpperCase()}]
+      {peerLabel && (
+        <span className={cn('shrink-0 max-w-[140px] truncate', failed ? 'text-crimson-400' : 'text-plasma-500')}>
+          {sanitizeText(peerLabel)}
+        </span>
+      )}
+      <span className={cn('flex-1 truncate', failed ? 'text-crimson-300' : 'text-void-300')}>
+        {truncate(sanitizeText(text), 140)}
       </span>
-      <span className="text-void-400 flex-1 truncate">{item.event_type}</span>
-      {item.error && <span className="text-crimson-400 truncate max-w-[120px]">{item.error}</span>}
       <span className="text-void-600 shrink-0">{time}</span>
     </div>
   );

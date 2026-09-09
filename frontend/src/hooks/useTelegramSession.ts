@@ -55,6 +55,8 @@ export function useMessageThreads(agentId: string) {
 
 /**
  * Fetch dashboard KPI metrics directly from Supabase.
+ * Every counter is live: contacts from message_threads, messages from the
+ * visible conversation rows, actions and errors from agent_events.
  */
 export function useDashboardKPIs(agentId: string) {
   const isValidId = agentIdSchema.safeParse(agentId).success;
@@ -67,28 +69,29 @@ export function useDashboardKPIs(agentId: string) {
       today.setHours(0, 0, 0, 0);
       const todayISO = today.toISOString();
 
-      const yesterday24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-      const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-
-      const [
-        messagesToday,
-        activeThreads,
-        errorsToday,
-        incomingWeek,
-      ] = await Promise.all([
-        // Messages today (total)
-        supabase
-          .from('agent_messages')
-          .select('id', { count: 'exact', head: true })
-          .eq('agent_id', agentId)
-          .gte('created_at', todayISO),
-
-        // Active threads (last 24h)
+      const [contactsToday, messagesToday, actionsToday, errorsToday] = await Promise.all([
+        // Contacts with activity today
         supabase
           .from('message_threads')
           .select('id', { count: 'exact', head: true })
           .eq('agent_id', agentId)
-          .gte('last_message_at', yesterday24h),
+          .gte('last_message_at', todayISO),
+
+        // Visible conversation rows (incoming + agent responses)
+        supabase
+          .from('agent_messages')
+          .select('id', { count: 'exact', head: true })
+          .eq('agent_id', agentId)
+          .in('direction', ['incoming', 'agent_response'])
+          .gte('created_at', todayISO),
+
+        // Tool calls today
+        supabase
+          .from('agent_events')
+          .select('id', { count: 'exact', head: true })
+          .eq('agent_id', agentId)
+          .like('event_type', 'tool.%')
+          .gte('created_at', todayISO),
 
         // Failed events today
         supabase
@@ -97,21 +100,13 @@ export function useDashboardKPIs(agentId: string) {
           .eq('agent_id', agentId)
           .eq('status', 'failed')
           .gte('created_at', todayISO),
-
-        // Incoming messages this week
-        supabase
-          .from('agent_messages')
-          .select('id', { count: 'exact', head: true })
-          .eq('agent_id', agentId)
-          .eq('direction', 'incoming')
-          .gte('created_at', weekAgo),
       ]);
 
       return {
+        contacts_today: contactsToday.count ?? 0,
         messages_today: messagesToday.count ?? 0,
-        active_threads: activeThreads.count ?? 0,
+        actions_today: actionsToday.count ?? 0,
         errors_today: errorsToday.count ?? 0,
-        incoming_week: incomingWeek.count ?? 0,
       };
     },
     enabled: isValidId,
@@ -134,26 +129,26 @@ export function useAllAgentsKPIs(agentIds: string[]) {
       today.setHours(0, 0, 0, 0);
       const todayISO = today.toISOString();
 
-      const yesterday24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-      const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-
-      const [
-        messagesToday,
-        activeThreads,
-        errorsToday,
-        incomingWeek,
-      ] = await Promise.all([
-        supabase
-          .from('agent_messages')
-          .select('id', { count: 'exact', head: true })
-          .in('agent_id', agentIds)
-          .gte('created_at', todayISO),
-
+      const [contactsToday, messagesToday, actionsToday, errorsToday] = await Promise.all([
         supabase
           .from('message_threads')
           .select('id', { count: 'exact', head: true })
           .in('agent_id', agentIds)
-          .gte('last_message_at', yesterday24h),
+          .gte('last_message_at', todayISO),
+
+        supabase
+          .from('agent_messages')
+          .select('id', { count: 'exact', head: true })
+          .in('agent_id', agentIds)
+          .in('direction', ['incoming', 'agent_response'])
+          .gte('created_at', todayISO),
+
+        supabase
+          .from('agent_events')
+          .select('id', { count: 'exact', head: true })
+          .in('agent_id', agentIds)
+          .like('event_type', 'tool.%')
+          .gte('created_at', todayISO),
 
         supabase
           .from('agent_events')
@@ -161,20 +156,13 @@ export function useAllAgentsKPIs(agentIds: string[]) {
           .in('agent_id', agentIds)
           .eq('status', 'failed')
           .gte('created_at', todayISO),
-
-        supabase
-          .from('agent_messages')
-          .select('id', { count: 'exact', head: true })
-          .in('agent_id', agentIds)
-          .eq('direction', 'incoming')
-          .gte('created_at', weekAgo),
       ]);
 
       return {
+        contacts_today: contactsToday.count ?? 0,
         messages_today: messagesToday.count ?? 0,
-        active_threads: activeThreads.count ?? 0,
+        actions_today: actionsToday.count ?? 0,
         errors_today: errorsToday.count ?? 0,
-        incoming_week: incomingWeek.count ?? 0,
       };
     },
     enabled: isValid,
@@ -230,7 +218,7 @@ export function useAgentsDetails(agentIds: string[]) {
 }
 
 /**
- * Fetch analytics data for charts.
+ * Fetch analytics data for charts: messages, tool actions and errors per day.
  */
 export function useAnalyticsData(agentId: string, days: 7 | 30) {
   const isValidId = agentIdSchema.safeParse(agentId).success;
@@ -246,25 +234,26 @@ export function useAnalyticsData(agentId: string, days: 7 | 30) {
           .from('agent_messages')
           .select('created_at, direction')
           .eq('agent_id', agentId)
+          .in('direction', ['incoming', 'agent_response'])
           .gte('created_at', since)
           .order('created_at', { ascending: true }),
 
         supabase
           .from('agent_events')
-          .select('created_at, status')
+          .select('created_at, status, event_type')
           .eq('agent_id', agentId)
           .gte('created_at', since)
           .order('created_at', { ascending: true }),
       ]);
 
       // Group by day
-      const dayMap = new Map<string, { messages: number; events: number; errors: number }>();
+      const dayMap = new Map<string, { messages: number; actions: number; errors: number }>();
 
       // Initialize all days
       for (let i = 0; i < days; i++) {
         const d = new Date(Date.now() - (days - 1 - i) * 24 * 60 * 60 * 1000);
         const key = d.toISOString().slice(0, 10);
-        dayMap.set(key, { messages: 0, events: 0, errors: 0 });
+        dayMap.set(key, { messages: 0, actions: 0, errors: 0 });
       }
 
       (messagesResult.data ?? []).forEach((m) => {
@@ -276,10 +265,9 @@ export function useAnalyticsData(agentId: string, days: 7 | 30) {
       (eventsResult.data ?? []).forEach((e) => {
         const key = e.created_at.slice(0, 10);
         const day = dayMap.get(key);
-        if (day) {
-          day.events++;
-          if (e.status === 'failed') day.errors++;
-        }
+        if (!day) return;
+        if (typeof e.event_type === 'string' && e.event_type.startsWith('tool.')) day.actions++;
+        if (e.status === 'failed') day.errors++;
       });
 
       return Array.from(dayMap.entries()).map(([date, counts]) => ({

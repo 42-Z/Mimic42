@@ -165,9 +165,13 @@ async def test_memory_service_saves_turn_to_short_and_long_term() -> None:
         output_messages=output_msgs,
     )
 
-    # Only the new message (assistant) should be saved to short-term
+    # The incoming user message is persisted explicitly; the assistant
+    # reply comes from the new-messages diff.
     assert len(short_term.saved_messages) == 1
-    assert short_term.saved_messages[0] == [{"role": "assistant", "content": "hi"}]
+    assert short_term.saved_messages[0] == [
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "hi"},
+    ]
     assert long_term.saved == [(str(agent_id), "hello", "hi")]
 
 

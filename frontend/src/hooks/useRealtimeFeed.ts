@@ -4,17 +4,25 @@ import { useEffect, useRef, useCallback, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { getSupabaseClient } from '@/lib/supabase/client';
 import { queryKeys } from '@/lib/queryClient';
-import type { AgentMessageRow, AgentEventRow, FeedItem, RealtimePayload } from '@/types';
+import { buildActivityFeed, type ActivityItem, type EventLike, type MessageLike } from '@/lib/activity/normalize';
+import type { AgentMessageRow, AgentEventRow, RealtimePayload } from '@/types';
 import type { RealtimeChannel } from '@supabase/supabase-js';
 
 const MAX_FEED_ITEMS = 200;
 
+/** Raw transcript rows rendered by typed events — never shown as messages. */
+const TRANSCRIPT_DIRECTIONS = new Set(['tool_call', 'tool_result']);
+
+function isTranscriptRow(row: AgentMessageRow): boolean {
+  return TRANSCRIPT_DIRECTIONS.has(row.direction ?? '');
+}
+
 /**
  * Manages Supabase Realtime subscriptions for an agent's messages and events.
- * Returns a live-updating feed of items sorted by timestamp.
+ * Incoming rows are normalized into human-facing activity items; raw tool
+ * transcripts are discarded on the client (the typed events replace them).
  *
  * Initial data must be loaded separately (via useAgentMessages / useAgentActions).
- * This hook only provides incremental updates.
  */
 export function useRealtimeFeed(agentId: string) {
   const qc = useQueryClient();
@@ -24,24 +32,22 @@ export function useRealtimeFeed(agentId: string) {
   const [isConnected, setIsConnected] = useState(false);
 
   const addMessage = useCallback((msg: AgentMessageRow) => {
+    if (isTranscriptRow(msg)) return;
     setNewMessages((prev) => {
       const updated = [...prev, msg];
-      if (updated.length > MAX_FEED_ITEMS) {
-        return updated.slice(updated.length - MAX_FEED_ITEMS);
-      }
-      return updated;
+      return updated.length > MAX_FEED_ITEMS
+        ? updated.slice(updated.length - MAX_FEED_ITEMS)
+        : updated;
     });
-    // Also invalidate the messages query so pagination stays in sync
     qc.invalidateQueries({ queryKey: queryKeys.messages.byAgent(agentId) });
   }, [agentId, qc]);
 
   const addEvent = useCallback((event: AgentEventRow) => {
     setNewEvents((prev) => {
       const updated = [...prev, event];
-      if (updated.length > MAX_FEED_ITEMS) {
-        return updated.slice(updated.length - MAX_FEED_ITEMS);
-      }
-      return updated;
+      return updated.length > MAX_FEED_ITEMS
+        ? updated.slice(updated.length - MAX_FEED_ITEMS)
+        : updated;
     });
     qc.invalidateQueries({ queryKey: queryKeys.actions.byAgent(agentId) });
   }, [agentId, qc]);
@@ -100,33 +106,13 @@ export function useRealtimeFeed(agentId: string) {
     };
   }, [agentId, addMessage, addEvent]);
 
-  // Merge new messages and events into a unified sorted feed
-  const feedItems: FeedItem[] = [
-    ...newMessages.map((m): FeedItem => ({
-      type: 'message',
-      id: m.id,
-      timestamp: m.created_at,
-      peer: m.peer || m.payload?.peer || '',
-      role: m.role,
-      content: m.content,
-      direction: m.direction ?? undefined,
-      agent_id: m.agent_id,
-    })),
-    ...newEvents.map((e): FeedItem => ({
-      type: 'event',
-      id: e.id,
-      timestamp: e.created_at,
-      event_type: e.event_type,
-      status: e.status,
-      error: e.error,
-      agent_id: e.agent_id,
-    })),
-  ].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+  const items: ActivityItem[] = buildActivityFeed(
+    newMessages as unknown as MessageLike[],
+    newEvents as unknown as EventLike[],
+  );
 
   return {
-    feedItems,
-    newMessageCount: newMessages.length,
-    newEventCount: newEvents.length,
+    items,
     isConnected,
     clearFeed: () => {
       setNewMessages([]);
@@ -137,8 +123,7 @@ export function useRealtimeFeed(agentId: string) {
 
 /**
  * Live feed merged across multiple agents over a single realtime channel.
- * Initial data must be loaded separately; the hook only provides
- * incremental updates. Each item carries agent_id of its owner.
+ * Rows are normalized the same way as the per-agent feed.
  */
 export function useMultiAgentRealtimeFeed(agentIds: string[]) {
   const qc = useQueryClient();
@@ -171,6 +156,7 @@ export function useMultiAgentRealtimeFeed(agentIds: string[]) {
         },
         (payload: RealtimePayload<AgentMessageRow>) => {
           const msg = payload.new;
+          if (isTranscriptRow(msg)) return;
           setNewMessages((prev) => {
             const updated = [...prev, msg];
             return updated.length > MAX_FEED_ITEMS
@@ -209,33 +195,13 @@ export function useMultiAgentRealtimeFeed(agentIds: string[]) {
     };
   }, [agentKey, qc]);
 
-  // Merge new messages and events into a unified sorted feed
-  const feedItems: FeedItem[] = [
-    ...newMessages.map((m): FeedItem => ({
-      type: 'message',
-      id: m.id,
-      timestamp: m.created_at,
-      peer: m.peer || m.payload?.peer || '',
-      role: m.role,
-      content: m.content,
-      direction: m.direction ?? undefined,
-      agent_id: m.agent_id,
-    })),
-    ...newEvents.map((e): FeedItem => ({
-      type: 'event',
-      id: e.id,
-      timestamp: e.created_at,
-      event_type: e.event_type,
-      status: e.status,
-      error: e.error,
-      agent_id: e.agent_id,
-    })),
-  ].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+  const items: ActivityItem[] = buildActivityFeed(
+    newMessages as unknown as MessageLike[],
+    newEvents as unknown as EventLike[],
+  );
 
   return {
-    feedItems,
-    newMessageCount: newMessages.length,
-    newEventCount: newEvents.length,
+    items,
     isConnected,
     clearFeed: () => {
       setNewMessages([]);
