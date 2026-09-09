@@ -24,6 +24,7 @@ export function ActionRow({ action }: { action: ActivityAction }) {
   const failed = action.status === 'failed';
   const running = action.status === 'running' || action.status === 'pending';
   const duration = formatDuration(action.startedAt, action.completedAt);
+  const resultSummary = summarizeResult(action.result);
 
   return (
     <div
@@ -45,9 +46,9 @@ export function ActionRow({ action }: { action: ActivityAction }) {
           {action.hint}
         </span>
       )}
-      {!failed && !running && !action.hint && isTool && action.result && (
+      {!failed && !running && !action.hint && isTool && resultSummary && (
         <span className="hidden md:inline text-[11px] text-void-600 truncate max-w-[40%]">
-          {describeError(null, summarizeResult(action.result))}
+          {resultSummary}
         </span>
       )}
       {duration && <span className="shrink-0 font-mono text-[10px] text-void-600">{duration}</span>}
@@ -62,9 +63,10 @@ export function ActionRow({ action }: { action: ActivityAction }) {
   );
 }
 
-function summarizeResult(result: Record<string, unknown>): string | null {
+function summarizeResult(result: Record<string, unknown> | null | undefined): string | null {
+  if (!result) return null;
   const text = result.text ?? result.content ?? result.title ?? result.description;
-  if (typeof text === 'string' && text) return text;
-  if (result.success === true) return null;
+  if (typeof text === 'string' && text.trim()) return text;
+  if (result.success === true) return 'готово';
   return null;
 }

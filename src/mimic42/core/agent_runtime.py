@@ -426,6 +426,10 @@ class MimicAgentRuntime:
                     logger.warning(
                         "Failed to persist incoming message after turn failure", exc_info=True
                     )
+                # Mark the exception so the handler-level catch-all does not
+                # record turn.failed a second time (the event above already
+                # carries the turn_id).
+                e._mimic_turn_failed_recorded = True
                 raise
 
             output_messages = _messages_to_dicts(response)
@@ -894,6 +898,10 @@ class MimicAgentRuntime:
             )
         except Exception as e:
             logger.exception("Unhandled exception in incoming message handler")
+            if getattr(e, "_mimic_turn_failed_recorded", False):
+                # trigger_message already recorded turn.failed with the
+                # turn_id — a second row would double the error KPI.
+                return
             await self._record_event(
                 event_type="turn.failed",
                 status="failed",

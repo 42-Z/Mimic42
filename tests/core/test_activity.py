@@ -15,7 +15,7 @@ from mimic42.core.manager import AgentManager
 from mimic42.integrations.activity_middleware import ActivityMiddleware
 from mimic42.integrations.database_models import AgentEventModel, Base
 
-from .test_agent_runtime import FakeLangChainAgent, FakeTelegramClient
+from .test_agent_runtime import FakeIncomingEvent, FakeLangChainAgent, FakeTelegramClient
 
 
 def make_config(agent_id: UUID | None = None) -> AgentRuntimeConfig:
@@ -261,3 +261,76 @@ async def test_manager_start_agent_persists_error_status() -> None:
         await manager.start_agent(config.agent_id)
 
     assert updates == [(config.agent_id, AgentRuntimeState.ERROR)]
+
+
+@pytest.mark.asyncio
+async def test_failed_turn_records_turn_failed_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A crashing LLM call must yield exactly one turn.failed event.
+
+    trigger_message records the event with the turn_id and re-raises;
+    the handler-level catch-all must not add a duplicate row.
+    """
+    from unittest.mock import MagicMock
+
+    from telethon.tl import functions
+
+    session_factory = make_session_factory()
+    await create_tables(session_factory)
+
+    agent_id = uuid4()
+    telegram = FakeTelegramClient()
+
+    async def mock_get_input_entity(peer: Any) -> Any:
+        return MagicMock()
+
+    async def mock_call(self: Any, request: Any) -> Any:
+        if isinstance(request, functions.account.GetNotifySettingsRequest):
+            res = MagicMock()
+            res.silent = False
+            res.mute_until = None
+            return res
+        return True
+
+    telegram.get_input_entity = mock_get_input_entity  # type: ignore
+    monkeypatch.setattr(FakeTelegramClient, "__call__", mock_call, raising=False)
+
+    class BrokenAgent:
+        async def ainvoke(
+            self,
+            input_data: dict[str, object],
+            context: object | None = None,
+        ) -> object:
+            raise RuntimeError("LLM down")
+
+    runtime = MimicAgentRuntime(
+        config=make_config(agent_id),
+        telegram_client=telegram,
+        langchain_agent=BrokenAgent(),  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
+        session_factory=session_factory,
+    )
+    await runtime.start()
+
+    async def mock_peer(ev: Any) -> str:
+        return "6121153070"
+
+    monkeypatch.setattr("mimic42.core.agent_runtime._extract_incoming_peer", mock_peer)
+    monkeypatch.setattr("mimic42.core.agent_runtime._extract_incoming_message_id", lambda ev: 708)
+
+    event = FakeIncomingEvent(chat_id=6121153070, message_id=708, text="ты любишь 42?")
+    await telegram.emit_message(event)  # must not raise
+
+    await runtime.stop()
+
+    async with session_factory() as session:
+        rows = list(
+            await session.scalars(
+                select(AgentEventModel).where(
+                    AgentEventModel.agent_id == agent_id,
+                    AgentEventModel.event_type == "turn.failed",
+                )
+            )
+        )
+    assert len(rows) == 1
+    assert rows[0].payload.get("turn_id")

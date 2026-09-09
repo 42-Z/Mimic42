@@ -52,7 +52,7 @@ export function TabLogs({ agentId }: { agentId: string }) {
   );
   const [search, setSearch] = useState('');
   const [autoScroll, setAutoScroll] = useState(true);
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const topRef = useRef<HTMLDivElement>(null);
 
   const peerNames = useMemo(
     () =>
@@ -92,7 +92,8 @@ export function TabLogs({ agentId }: { agentId: string }) {
   }, [items, filter, search]);
 
   useEffect(() => {
-    if (autoScroll) bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    // The list is newest-first, so "follow the latest" means the top.
+    if (autoScroll) topRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [filtered.length, autoScroll]);
 
   return (
@@ -145,6 +146,7 @@ export function TabLogs({ agentId }: { agentId: string }) {
 
       <Card variant="glass" padding="none">
         <div className="h-[600px] overflow-y-auto">
+          <div ref={topRef} />
           {messagesLoading || actionsLoading ? (
             <div className="flex items-center justify-center h-full">
               <Spinner />
@@ -157,7 +159,6 @@ export function TabLogs({ agentId }: { agentId: string }) {
           ) : (
             filtered.map((item) => <TurnCard key={item.id} item={item} />)
           )}
-          <div ref={bottomRef} />
         </div>
       </Card>
 
