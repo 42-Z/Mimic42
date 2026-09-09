@@ -10,9 +10,9 @@ import {
   LogOut,
   ChevronLeft,
   ChevronRight,
+  Plus,
   Zap,
   X,
-  Plus,
 } from 'lucide-react';
 import { getSupabaseClient } from '@/lib/supabase/client';
 import { useRouter } from 'next/navigation';
@@ -63,19 +63,19 @@ export function Sidebar({ className, mobileOpen = false, onMobileClose }: Sideba
         />
       )}
 
-      <aside
-        className={cn(
-          'relative flex flex-col h-dvh',
-          'bg-void-900 border-r border-void-700',
-          'transition-[width] duration-300 ease-spring',
-          'md:translate-x-0',
-          collapsed ? 'md:w-16' : 'md:w-64',
-          // Mobile: fixed drawer
-          'fixed inset-y-0 left-0 z-50 w-64 transform transition-transform duration-300 md:relative',
-          mobileOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0',
-          className
-        )}
-      >
+    <aside
+      className={cn(
+        'relative flex flex-col h-dvh',
+        'bg-void-900 border-r border-void-700',
+        'transition-[width] duration-300 ease-spring',
+        'md:translate-x-0',
+        collapsed ? 'md:w-16' : 'md:w-64',
+        // Mobile: fixed drawer
+        'fixed inset-y-0 left-0 z-50 w-64 transform transition-transform duration-300 md:relative',
+        mobileOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0',
+        className
+      )}
+    >
       {/* Top scan line */}
       <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-plasma-600/40 to-transparent" />
 
@@ -171,14 +171,15 @@ export function Sidebar({ className, mobileOpen = false, onMobileClose }: Sideba
           </Link>
         ))}
 
-        {/* Create new agent */}
+        {/* New agent */}
         <Link
           href="/onboarding"
           onClick={onMobileClose}
           className={cn(
             'flex items-center rounded-sm transition-colors duration-150',
-            'text-plasma-500 hover:text-plasma-300 hover:bg-plasma-950/30',
-            collapsed ? 'justify-center h-10 w-10 mx-auto' : 'gap-3 px-3 py-2 mt-2',
+            'text-void-500 hover:text-plasma-400 hover:bg-void-800/50',
+            'border border-dashed border-transparent hover:border-plasma-900',
+            collapsed ? 'justify-center h-10 w-10 mx-auto mt-2' : 'gap-3 px-3 py-2 mt-2',
           )}
           title={collapsed ? 'Новый агент' : undefined}
         >
@@ -188,7 +189,7 @@ export function Sidebar({ className, mobileOpen = false, onMobileClose }: Sideba
       </nav>
 
       {/* Bottom section */}
-      <div className="px-3 pt-4 pb-[max(1rem,env(safe-area-inset-bottom))] border-t border-void-800 space-y-1">
+      <div className="px-3 py-4 border-t border-void-800 space-y-1">
         <button
           onClick={handleLogout}
           className={cn(
@@ -204,20 +205,19 @@ export function Sidebar({ className, mobileOpen = false, onMobileClose }: Sideba
         </button>
       </div>
 
-      {/* Collapse toggle (desktop only) */}
+      {/* Collapse toggle */}
       <button
         onClick={() => setCollapsed(!collapsed)}
         className={cn(
           'absolute -right-3 top-20',
           'h-6 w-6 rounded-full',
           'bg-void-700 border border-void-600',
-          'items-center justify-center',
+          'flex items-center justify-center',
           'text-void-400 hover:text-void-100',
           'transition-all duration-150',
           'hover:bg-void-600 hover:border-void-500',
           'shadow-void',
-          'z-10',
-          'hidden md:flex'
+          'z-10'
         )}
         aria-label={collapsed ? 'Развернуть панель' : 'Свернуть панель'}
       >

@@ -173,20 +173,26 @@ class MimicAgentRuntime:
                 return
 
             self._state = AgentRuntimeState.STOPPING
-            if self._scheduler_task is not None:
-                self._scheduler_task.cancel()
-                try:
-                    await self._scheduler_task
-                except asyncio.CancelledError:
-                    pass
-                self._scheduler_task = None
+            try:
+                if self._scheduler_task is not None:
+                    self._scheduler_task.cancel()
+                    try:
+                        await self._scheduler_task
+                    except asyncio.CancelledError:
+                        pass
+                    self._scheduler_task = None
 
-            if self._http_client is not None:
-                await self._http_client.aclose()
-                self._http_client = None
-
-            await self._telegram_client.disconnect()
-            self._state = AgentRuntimeState.STOPPED
+                if self._http_client is not None:
+                    try:
+                        await self._http_client.aclose()
+                    finally:
+                        self._http_client = None
+            finally:
+                # The Telegram client must be disconnected even if a previous
+                # step failed — otherwise the userbot keeps answering messages
+                # for a runtime nobody can reach anymore.
+                await self._telegram_client.disconnect()
+                self._state = AgentRuntimeState.STOPPED
 
     async def _humanized_send(
         self,

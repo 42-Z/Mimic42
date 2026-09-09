@@ -104,9 +104,6 @@ class OnboardingRepository(Protocol):
 
     async def get(self, onboarding_id: UUID) -> OnboardingSession: ...
 
-    async def get_latest_by_owner(self, owner_id: UUID) -> OnboardingSession | None: ...
-
-
 class InMemoryOnboardingRepository:
     def __init__(self) -> None:
         self._sessions: dict[UUID, OnboardingSession] = {}
@@ -120,21 +117,15 @@ class InMemoryOnboardingRepository:
         except KeyError as exc:
             raise OnboardingNotFoundError(onboarding_id) from exc
 
-    async def get_latest_by_owner(self, owner_id: UUID) -> OnboardingSession | None:
-        sessions = [
-            s for s in self._sessions.values()
-            if s.owner_id == owner_id
-        ]
-        if not sessions:
-            return None
-        # Return the most recently created session
-        latest = max(sessions, key=lambda s: s.onboarding_id)
-        return latest.model_copy(deep=True)
-
-
 class OnboardingNotFoundError(KeyError):
     def __init__(self, onboarding_id: UUID) -> None:
         super().__init__(f"Onboarding session {onboarding_id} does not exist")
+        self.onboarding_id = onboarding_id
+
+
+class OnboardingOwnershipError(PermissionError):
+    def __init__(self, onboarding_id: UUID) -> None:
+        super().__init__(f"Onboarding session {onboarding_id} belongs to another user")
         self.onboarding_id = onboarding_id
 
 
@@ -189,23 +180,19 @@ class AgentOnboardingService:
     async def request_telegram_code(
         self,
         credentials: TelegramCredentials,
+        *,
+        onboarding_id: UUID | None = None,
     ) -> OnboardingPublicStatus:
-        onboarding_id = credentials.onboarding_id or uuid4()
-
-        # Preserve profile fields when the frontend reuses an existing row
-        # (name/soul steps run before Telegram credentials).
-        preserved_name: str | None = None
-        preserved_soul: str | None = None
-        if credentials.onboarding_id is not None:
-            try:
-                existing = await self._repository.get(credentials.onboarding_id)
-            except OnboardingNotFoundError:
-                existing = None
-            if existing is not None:
-                if existing.owner_id != credentials.owner_id:
-                    raise OnboardingNotFoundError(credentials.onboarding_id)
-                preserved_name = existing.name
-                preserved_soul = existing.soul_prompt
+        if onboarding_id is not None:
+            existing = await self._repository.get(onboarding_id)
+            if existing.owner_id != credentials.owner_id:
+                raise OnboardingOwnershipError(onboarding_id)
+            name = existing.name
+            soul_prompt = existing.soul_prompt
+        else:
+            onboarding_id = uuid4()
+            name = None
+            soul_prompt = None
 
         client = self._telegram_factory.build(
             api_id=credentials.api_id,
@@ -228,8 +215,8 @@ class AgentOnboardingService:
             authorization_status=TelegramLoginStatus.CODE_REQUESTED,
             phone_code_hash_secret=self._cipher.encrypt(phone_code_hash),
             session_secret=self._cipher.encrypt(session_string),
-            name=preserved_name,
-            soul_prompt=preserved_soul,
+            name=name,
+            soul_prompt=soul_prompt,
         )
         await self._repository.save(session)
         return _public_status(session)

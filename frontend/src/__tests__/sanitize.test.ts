@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect } from 'bun:test';
 import { sanitizeText, sanitizeRichText, maskPhoneNumber, truncate } from '@/lib/sanitize';
 
 describe('sanitizeText', () => {
@@ -66,6 +66,14 @@ describe('sanitizeRichText', () => {
     const result = sanitizeRichText(input);
     expect(result).toContain('<b>');
     expect(result).toContain('<i>');
+  });
+
+  it('strips attributes from allowed tags in the fallback path', () => {
+    const input = '<b onmouseover="alert(1)">bold</b>';
+    const result = sanitizeRichText(input);
+    expect(result).not.toContain('onmouseover');
+    expect(result).not.toContain('alert');
+    expect(result).toContain('<b>bold</b>');
   });
 
   it('strips script in rich mode', () => {

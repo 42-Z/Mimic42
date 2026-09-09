@@ -1,0 +1,6 @@
+# Bun configuration — https://bun.com/docs/test/configuration
+[test]
+# happy-dom globals must be registered before tests touch browser APIs
+preload = ["./src/__tests__/setup.ts"]
+# Next.js build output must not be scanned for test files
+pathIgnorePatterns = [".next/**"]

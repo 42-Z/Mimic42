@@ -1,18 +1,20 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { useRouter } from 'next/navigation';
 import {
   useOnboardingSession,
   deriveOnboardingStep,
+  useSaveAgentName,
+  useSaveSoulPrompt,
   useStartTelegramAuth,
   useSubmitTelegramCode,
   useFinalizeAgent,
   useSaveOnboardingStep,
+  useDiscardOnboardingDraft,
 } from '@/hooks/useOnboarding';
-import { useAgents } from '@/hooks/useAgents';
 import { StepIndicator } from '@/components/onboarding/StepIndicator';
 import { Button } from '@/components/ui/button';
+import { ConfirmDialog } from '@/components/ui/modal';
 import { Input, Textarea } from '@/components/ui/input';
 import { Spinner } from '@/components/ui/card';
 import { useToast } from '@/components/ui/toast';
@@ -20,15 +22,14 @@ import {
   agentNameSchema, soulPromptSchema,
   telegramCredentialsSchema, telegramCodeSchema, telegram2FASchema,
 } from '@/lib/validators';
-import { Zap, ExternalLink, Plus, ArrowLeft } from 'lucide-react';
+import { Zap } from 'lucide-react';
+import Link from 'next/link';
 import type { OnboardingStep, OnboardingSessionRow } from '@/types';
 import type { ApiError } from '@/types';
 
 export default function OnboardingPage() {
   const { data: session, isLoading } = useOnboardingSession();
-  const { data: agents } = useAgents();
   const [telegramCode, setTelegramCodeState] = useState('');
-  const [startNew, setStartNew] = useState(false);
 
   // Secure client-side synchronization and preventive purging
   useEffect(() => {
@@ -61,29 +62,30 @@ export default function OnboardingPage() {
     );
   }
 
-  const hasAgents = (agents ?? []).length > 0;
-
-  // If user has agents and hasn't chosen to start new — show choice screen
-  if (hasAgents && !startNew) {
-    return <OnboardingChoice onStartNew={() => setStartNew(true)} />;
-  }
-
   const currentStep = deriveOnboardingStep(session);
 
   return (
     <div className="min-h-screen bg-void-950">
       <div className="max-w-2xl mx-auto px-6 py-12">
-        {/* Logo + back */}
-        <div className="flex items-center gap-2 mb-12">
-          {hasAgents && (
-            <button onClick={() => setStartNew(false)} className="text-void-500 hover:text-void-300 transition-colors mr-2">
-              <ArrowLeft className="h-4 w-4" />
-            </button>
-          )}
-          <Zap className="h-5 w-5 text-plasma-400" />
-          <span className="font-mono font-bold text-sm">
-            MIMIC<span className="text-plasma-400">42</span>
-          </span>
+        {/* Logo */}
+        <div className="flex items-center justify-between mb-12">
+          <div className="flex items-center gap-2">
+            <Zap className="h-5 w-5 text-plasma-400" />
+            <span className="font-mono font-bold text-sm">
+              MIMIC<span className="text-plasma-400">42</span>
+            </span>
+          </div>
+          <div className="flex items-center gap-3">
+            {session && (
+              <DiscardDraftButton sessionId={session.id} />
+            )}
+            <Link
+              href="/dashboard"
+              className="font-mono text-xs text-void-500 hover:text-void-200 transition-colors"
+            >
+              ← К агентам
+            </Link>
+          </div>
         </div>
 
         {/* Progress */}
@@ -105,29 +107,40 @@ export default function OnboardingPage() {
   );
 }
 
-// ── Choice screen for users with existing agents ────────────────────────────────
-function OnboardingChoice({ onStartNew }: { onStartNew: () => void }) {
-  const router = useRouter();
+// ── Start over ────────────────────────────────────────────────────────────────
+function DiscardDraftButton({ sessionId }: { sessionId: string }) {
+  const { toast } = useToast();
+  const discard = useDiscardOnboardingDraft();
+  const [confirmOpen, setConfirmOpen] = useState(false);
+
+  const handleDiscard = () => {
+    discard.mutate(sessionId, {
+      onSuccess: () => setConfirmOpen(false),
+      onError: () => toast('Не удалось сбросить черновик', 'error'),
+    });
+  };
 
   return (
-    <div className="min-h-screen bg-void-950 flex items-center justify-center p-8">
-      <div className="text-center space-y-6 max-w-sm">
-        <Zap className="h-12 w-12 text-plasma-400 mx-auto" />
-        <h1 className="font-display text-2xl font-bold text-void-100">Создать нового агента?</h1>
-        <p className="font-mono text-sm text-void-500">
-          У вас уже есть агенты. Вы можете создать нового или вернуться к существующим.
-        </p>
-        <div className="space-y-3">
-          <Button onClick={onStartNew} size="lg" className="w-full" leftIcon={<Plus className="h-4 w-4" />}>
-            Создать нового агента
-          </Button>
-          <Button onClick={() => router.push('/dashboard')} variant="outline" size="lg" className="w-full">
-            <ArrowLeft className="h-4 w-4 mr-2" />
-            Вернуться к агентам
-          </Button>
-        </div>
-      </div>
-    </div>
+    <>
+      <button
+        type="button"
+        onClick={() => setConfirmOpen(true)}
+        disabled={discard.isPending}
+        className="font-mono text-xs text-void-500 hover:text-crimson-400 transition-colors disabled:opacity-50"
+      >
+        Начать заново
+      </button>
+      <ConfirmDialog
+        isOpen={confirmOpen}
+        onClose={() => setConfirmOpen(false)}
+        onConfirm={handleDiscard}
+        title="Начать заново?"
+        description="Текущий черновик онбординга будет удалён, и мастер начнётся с чистого листа."
+        confirmLabel="Сбросить"
+        variant="danger"
+        isLoading={discard.isPending}
+      />
+    </>
   );
 }
 
@@ -169,7 +182,7 @@ function StepHeading({ step, title, description }: { step: string; title: string
 // ── Step 1: Name ─────────────────────────────────────────────────────────────
 function StepName({ session }: { session: OnboardingSessionRow | null }) {
   const { toast } = useToast();
-  const save = useSaveOnboardingStep();
+  const save = useSaveAgentName();
   const [name, setName] = useState('');
   const [error, setError] = useState('');
 
@@ -182,7 +195,7 @@ function StepName({ session }: { session: OnboardingSessionRow | null }) {
     }
     setError('');
     try {
-      await save.mutateAsync({ id: session?.id, agent_name: name });
+      await save.mutateAsync({ sessionId: session?.id ?? null, values: { name } });
     } catch {
       toast('Не удалось сохранить. Попробуйте снова.', 'error');
     }
@@ -213,7 +226,7 @@ function StepName({ session }: { session: OnboardingSessionRow | null }) {
 // ── Step 2: Soul ──────────────────────────────────────────────────────────────
 function StepSoul({ session }: { session: OnboardingSessionRow | null }) {
   const { toast } = useToast();
-  const save = useSaveOnboardingStep();
+  const save = useSaveSoulPrompt();
   const [soulPrompt, setSoulPrompt] = useState('');
   const [error, setError] = useState('');
 
@@ -232,7 +245,8 @@ function StepSoul({ session }: { session: OnboardingSessionRow | null }) {
     }
     setError('');
     try {
-      await save.mutateAsync({ id: session?.id, soul_prompt: soulPrompt });
+      if (!session?.id) { toast('Сессия не найдена', 'error'); return; }
+      await save.mutateAsync({ sessionId: session.id, values: { soul_prompt: soulPrompt } });
     } catch {
       toast('Не удалось сохранить', 'error');
     }
@@ -272,7 +286,7 @@ function StepSoul({ session }: { session: OnboardingSessionRow | null }) {
 function StepTelegramCredentials({ session }: { session: OnboardingSessionRow | null }) {
   const { toast } = useToast();
   const startAuth = useStartTelegramAuth();
-  const [values, setValues] = useState({ api_id: '', api_hash: '', phone_number: '' });
+  const [values, setValues] = useState({ phone_number: '' });
   const [errors, setErrors] = useState<Partial<typeof values>>({});
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -281,10 +295,9 @@ function StepTelegramCredentials({ session }: { session: OnboardingSessionRow | 
     if (!result.success) {
       const fe: Partial<typeof values> = {};
       result.error.issues.forEach((issue) => {
+        // Explicit key (no computed indexing) — keeps security/detect-object-injection clean.
         const key = issue.path[0];
-        if (key === 'api_id' && !fe.api_id) fe.api_id = issue.message;
-        else if (key === 'api_hash' && !fe.api_hash) fe.api_hash = issue.message;
-        else if (key === 'phone_number' && !fe.phone_number) fe.phone_number = issue.message;
+        if (key === 'phone_number' && !fe.phone_number) fe.phone_number = issue.message;
       });
       setErrors(fe);
       return;
@@ -292,8 +305,8 @@ function StepTelegramCredentials({ session }: { session: OnboardingSessionRow | 
     setErrors({});
     try {
       await startAuth.mutateAsync({
-        ...result.data,
-        onboarding_id: session?.id ?? undefined,
+        onboardingId: session?.id ?? null,
+        values: result.data,
       });
     } catch (e: unknown) {
       toast((e as ApiError).message ?? 'Ошибка авторизации', 'error');
@@ -305,41 +318,10 @@ function StepTelegramCredentials({ session }: { session: OnboardingSessionRow | 
       <StepHeading
         step="03 / 04"
         title="Подключение Telegram"
-        description="Авторизуйтесь как пользователь (не бот). Для этого нужен API ID и Hash от Telegram."
+        description="Авторизуйтесь как пользователь, а не как бот. Введите номер — на него придёт код подтверждения."
       />
 
-      <div className="p-4 rounded-sm border border-void-700 bg-void-800/40 space-y-2">
-        <p className="font-mono text-xs text-void-400 font-medium">Как получить API ID и Hash:</p>
-        <ol className="font-mono text-xs text-void-500 space-y-1 list-decimal list-inside">
-          <li>Перейдите на <a href="https://my.telegram.org" target="_blank" rel="noopener noreferrer"
-            className="text-plasma-400 hover:text-plasma-300 inline-flex items-center gap-0.5">
-            my.telegram.org <ExternalLink className="h-3 w-3" />
-          </a></li>
-          <li>Войдите в аккаунт</li>
-          <li>Перейдите в «API development tools»</li>
-          <li>Создайте приложение и скопируйте API ID и API Hash</li>
-        </ol>
-      </div>
-
       <div className="space-y-4">
-        <Input
-          label="API ID"
-          type="text"
-          inputMode="numeric"
-          placeholder="12345678"
-          value={values.api_id}
-          onChange={(e) => setValues((v) => ({ ...v, api_id: e.target.value }))}
-          error={errors.api_id}
-        />
-        <Input
-          label="API Hash"
-          type="text"
-          placeholder="abc123def456..."
-          value={values.api_hash}
-          onChange={(e) => setValues((v) => ({ ...v, api_hash: e.target.value }))}
-          error={errors.api_hash}
-          hint="32-символьная hex строка"
-        />
         <Input
           label="Номер телефона"
           type="tel"
@@ -374,16 +356,16 @@ function StepTelegramCode({
   const [isBacking, setIsBacking] = useState(false);
 
   const handleBack = async () => {
-    if (!session?.id) {
-      toast('Сессия не найдена', 'error');
-      return;
-    }
     setIsBacking(true);
     try {
       if (typeof window !== 'undefined') {
         sessionStorage.removeItem('_m42_tc_state');
       }
-      await save.mutateAsync({ id: session.id, authorization_status: 'not_started' });
+      if (!session?.id) { toast('Сессия не найдена', 'error'); return; }
+      await save.mutateAsync({
+        sessionId: session.id,
+        update: { authorization_status: 'not_started' },
+      });
     } catch {
       toast('Не удалось вернуться назад', 'error');
     } finally {
@@ -474,16 +456,16 @@ function StepTelegram2FA({
   const [isBacking, setIsBacking] = useState(false);
 
   const handleBack = async () => {
-    if (!session?.id) {
-      toast('Сессия не найдена', 'error');
-      return;
-    }
     setIsBacking(true);
     try {
       if (typeof window !== 'undefined') {
         sessionStorage.removeItem('_m42_tc_state');
       }
-      await save.mutateAsync({ id: session.id, authorization_status: 'not_started' });
+      if (!session?.id) { toast('Сессия не найдена', 'error'); return; }
+      await save.mutateAsync({
+        sessionId: session.id,
+        update: { authorization_status: 'not_started' },
+      });
     } catch {
       toast('Не удалось вернуться назад', 'error');
     } finally {

@@ -121,6 +121,115 @@ export function useDashboardKPIs(agentId: string) {
 }
 
 /**
+ * Fetch dashboard KPI metrics across all agents of the user from Supabase.
+ */
+export function useAllAgentsKPIs(agentIds: string[]) {
+  const isValid = agentIds.length > 0;
+
+  return useQuery({
+    queryKey: queryKeys.analytics.kpisAll(agentIds),
+    queryFn: async () => {
+      const supabase = getSupabaseClient();
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const todayISO = today.toISOString();
+
+      const yesterday24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+      const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+
+      const [
+        messagesToday,
+        activeThreads,
+        errorsToday,
+        incomingWeek,
+      ] = await Promise.all([
+        supabase
+          .from('agent_messages')
+          .select('id', { count: 'exact', head: true })
+          .in('agent_id', agentIds)
+          .gte('created_at', todayISO),
+
+        supabase
+          .from('message_threads')
+          .select('id', { count: 'exact', head: true })
+          .in('agent_id', agentIds)
+          .gte('last_message_at', yesterday24h),
+
+        supabase
+          .from('agent_events')
+          .select('id', { count: 'exact', head: true })
+          .in('agent_id', agentIds)
+          .eq('status', 'failed')
+          .gte('created_at', todayISO),
+
+        supabase
+          .from('agent_messages')
+          .select('id', { count: 'exact', head: true })
+          .in('agent_id', agentIds)
+          .eq('direction', 'incoming')
+          .gte('created_at', weekAgo),
+      ]);
+
+      return {
+        messages_today: messagesToday.count ?? 0,
+        active_threads: activeThreads.count ?? 0,
+        errors_today: errorsToday.count ?? 0,
+        incoming_week: incomingWeek.count ?? 0,
+      };
+    },
+    enabled: isValid,
+    staleTime: 60_000,
+    refetchInterval: 60_000,
+  });
+}
+
+export interface AgentDetails {
+  phone_number: string | null;
+  last_started_at: string | null;
+}
+
+/**
+ * Fetch Telegram phone numbers and last start times for several agents.
+ */
+export function useAgentsDetails(agentIds: string[]) {
+  const isValid = agentIds.length > 0;
+
+  return useQuery({
+    queryKey: queryKeys.agents.detailsAll(agentIds),
+    queryFn: async () => {
+      const supabase = getSupabaseClient();
+      const [sessionsResult, agentsResult] = await Promise.all([
+        supabase
+          .from('telegram_sessions')
+          .select('agent_id, phone_number')
+          .in('agent_id', agentIds),
+        supabase
+          .from('agents')
+          .select('id, last_started_at')
+          .in('id', agentIds),
+      ]);
+
+      if (sessionsResult.error) throw sessionsResult.error;
+      if (agentsResult.error) throw agentsResult.error;
+
+      const details: Record<string, AgentDetails> = {};
+      for (const row of agentsResult.data ?? []) {
+        details[row.id] = { phone_number: null, last_started_at: row.last_started_at ?? null };
+      }
+      for (const row of sessionsResult.data ?? []) {
+        details[row.agent_id] = {
+          ...(details[row.agent_id] ?? { last_started_at: null }),
+          phone_number: row.phone_number ?? null,
+        };
+      }
+      return details;
+    },
+    enabled: isValid,
+    staleTime: 30_000,
+  });
+}
+
+/**
  * Fetch analytics data for charts.
  */
 export function useAnalyticsData(agentId: string, days: 7 | 30) {

@@ -33,6 +33,17 @@ export interface AgentStatus {
 }
 
 /**
+ * Message direction — mirrors the `agent_message_direction` Postgres enum
+ */
+export type AgentMessageDirection =
+  | 'incoming'
+  | 'outgoing'
+  | 'dashboard_trigger'
+  | 'agent_response'
+  | 'tool_call'
+  | 'tool_result';
+
+/**
  * GET /api/v1/agents/{id}/messages — message record
  */
 export interface AgentMessageRecord {
@@ -44,7 +55,7 @@ export interface AgentMessageRecord {
   role: 'user' | 'assistant' | string;
   content: string;
   created_at: string;  // ISO 8601
-  direction?: 'incoming' | 'outgoing' | 'agent_response' | 'dashboard_trigger' | string;
+  direction?: AgentMessageDirection;
   thread_id?: string;
   payload?: Record<string, unknown>;
 }
@@ -96,10 +107,8 @@ export interface AgentActivity {
  * Input body
  */
 export interface OnboardingTelegramInput {
-  api_id: number;
-  api_hash: string;
   phone_number: string;
-  onboarding_id?: string;
+  onboarding_id?: string | null;
 }
 
 /**
@@ -163,12 +172,14 @@ export interface TriggerMessageResponse {
  * agents table row
  */
 export interface AgentRow {
-  id: string;           // UUID
-  owner_id: string;     // UUID - foreign key to auth.users
+  id: string;                    // UUID
+  owner_id: string;              // UUID - foreign key to auth.users
   name: string;
-  state: AgentState;
+  status: AgentState;
   soul_prompt: string | null;
   settings: Record<string, unknown> | null;
+  last_started_at: string | null;
+  last_stopped_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -182,7 +193,7 @@ export interface AgentMessageRow {
   peer: string;
   role: string;
   content: string;
-  direction: 'incoming' | 'outgoing' | 'agent_response' | 'dashboard_trigger' | string | null;
+  direction: AgentMessageDirection | null;
   thread_id: string | null;
   created_at: string;
   payload?: Record<string, unknown>;
@@ -224,11 +235,12 @@ export interface TelegramSessionRow {
 export interface MessageThreadRow {
   id: string;
   agent_id: string;
-  peer: string;
-  peer_name: string | null;
-  message_count: number;
-  last_message_at: string;
+  telegram_peer_id: string;
+  title: string | null;
+  metadata: Record<string, unknown> | null;
+  last_message_at: string | null;
   created_at: string;
+  updated_at: string;
 }
 
 /**
@@ -274,7 +286,8 @@ export interface FeedMessage {
   peer: string;
   role: string;
   content: string;
-  direction?: 'incoming' | 'outgoing';
+  direction?: AgentMessageDirection;
+  agent_id?: string;
 }
 
 export interface FeedEvent {
@@ -284,6 +297,7 @@ export interface FeedEvent {
   event_type: string;
   status: EventStatus;
   error: string | null;
+  agent_id?: string;
 }
 
 export type FeedItem = FeedMessage | FeedEvent;
@@ -294,7 +308,6 @@ export type FeedItem = FeedMessage | FeedEvent;
 export type OnboardingStep =
   | 'name'
   | 'soul'
-  | 'system_prompt'
   | 'telegram_credentials'
   | 'telegram_code'
   | 'telegram_2fa'

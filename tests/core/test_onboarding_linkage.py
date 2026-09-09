@@ -7,7 +7,7 @@ import pytest
 from mimic42.core.onboarding import (
     AgentOnboardingService,
     InMemoryOnboardingRepository,
-    OnboardingNotFoundError,
+    OnboardingOwnershipError,
     OnboardingSession,
     TelegramAuthClient,
     TelegramCredentials,
@@ -79,8 +79,8 @@ async def test_request_code_reuses_onboarding_id_and_preserves_profile() -> None
             api_id=12345,
             api_hash="api-hash",
             phone_number="+79990000000",
-            onboarding_id=onboarding_id,
-        )
+        ),
+        onboarding_id=onboarding_id,
     )
 
     assert status.onboarding_id == onboarding_id
@@ -108,13 +108,13 @@ async def test_request_code_rejects_cross_owner_onboarding_id() -> None:
         telegram_factory=FakeTelegramFactory(),  # type: ignore[arg-type]
     )
 
-    with pytest.raises(OnboardingNotFoundError):
+    with pytest.raises(OnboardingOwnershipError):
         await service.request_telegram_code(
             TelegramCredentials(
                 owner_id=owner_id,
                 api_id=12345,
                 api_hash="api-hash",
                 phone_number="+79990000000",
-                onboarding_id=onboarding_id,
-            )
+            ),
+            onboarding_id=onboarding_id,
         )

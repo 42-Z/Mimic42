@@ -1410,3 +1410,86 @@ async def test_get_discussion_messages() -> None:
     assert iter_calls[0][1]["kwargs"]["reply_to"] == 42
     assert iter_calls[0][1]["kwargs"]["limit"] == 10
 
+
+
+@pytest.mark.asyncio
+async def test_send_text_message_as_comment() -> None:
+    client = FakeTelethonClient()
+    toolbox = TelegramToolbox(client)
+
+    result = await toolbox.send_text_message("channel", "Nice post", comment_to_msg_id=42)
+    assert result["success"] is True
+
+    send_calls = [c for c in client.calls if c[0] == "send_message"]
+    assert len(send_calls) == 1
+    assert send_calls[0][1]["kwargs"]["comment_to"] == 42
+    assert send_calls[0][1]["kwargs"]["reply_to"] is None
+
+
+@pytest.mark.asyncio
+async def test_send_text_message_without_comment() -> None:
+    client = FakeTelethonClient()
+    toolbox = TelegramToolbox(client)
+
+    await toolbox.send_text_message("group", "Hello", reply_to_msg_id=7)
+
+    send_calls = [c for c in client.calls if c[0] == "send_message"]
+    assert send_calls[0][1]["kwargs"]["comment_to"] is None
+    assert send_calls[0][1]["kwargs"]["reply_to"] == 7
+
+
+@pytest.mark.asyncio
+async def test_send_text_message_comment_respects_cooldown() -> None:
+    client = FakeTelethonClient()
+    toolbox = TelegramToolbox(client)
+
+    first = await toolbox.send_text_message("channel", "Nice post", comment_to_msg_id=42)
+    assert first["success"] is True
+
+    second = await toolbox.send_text_message("channel", "Another one", comment_to_msg_id=43)
+    assert second["success"] is False
+    assert "Cooldown" in second["error"]
+
+    send_calls = [c for c in client.calls if c[0] == "send_message"]
+    assert len(send_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_send_media_as_comment() -> None:
+    client = FakeTelethonClient()
+    toolbox = TelegramToolbox(client)
+
+    media_id = "photo:123:456:0102:2"
+    res_media = await toolbox.send_file("channel", media_id, comment_to_msg_id=42)
+    assert res_media["success"] is True
+
+    res_url = await toolbox.send_file(
+        "channel", "https://example.com/pic.jpg", comment_to_msg_id=42
+    )
+    assert res_url["success"] is True
+
+    res_sticker = await toolbox.send_sticker(
+        "channel", "sticker:123:456:0102:2:emoji:pack", comment_to_msg_id=42
+    )
+    assert res_sticker["success"] is True
+
+    res_voice = await toolbox.send_voice_note("channel", media_id, comment_to_msg_id=42)
+    assert res_voice["success"] is True
+
+    res_round = await toolbox.send_video_note("channel", media_id, comment_to_msg_id=42)
+    assert res_round["success"] is True
+
+    send_file_calls = [c for c in client.calls if c[0] == "send_file"]
+    assert len(send_file_calls) == 5
+    assert all(call[1]["kwargs"]["comment_to"] == 42 for call in send_file_calls)
+
+
+@pytest.mark.asyncio
+async def test_send_file_without_comment() -> None:
+    client = FakeTelethonClient()
+    toolbox = TelegramToolbox(client)
+
+    await toolbox.send_file("username", "photo:123:456:0102:2", caption="Hello")
+
+    send_file_calls = [c for c in client.calls if c[0] == "send_file"]
+    assert send_file_calls[0][1]["kwargs"]["comment_to"] is None

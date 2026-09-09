@@ -7,7 +7,7 @@ import { useAgentStatus, useAgentDetails, useUpdateAgentSettings } from '@/hooks
 import { useAgentStatusRealtime } from '@/hooks/useRealtimeFeed';
 import { TabLogsChat } from '@/components/chat/TabLogsChat';
 import { useTelegramSession, useAnalyticsData } from '@/hooks/useTelegramSession';
-import { useStartAgent, useStopAgent, useTriggerMessage } from '@/hooks/useAgents';
+import { useStartAgent, useStopAgent, useTriggerMessage, useDeleteAgent } from '@/hooks/useAgents';
 import { useAgentMemories, useAgentMemoryHistory } from '@/hooks/useMemory';
 import { useToast } from '@/components/ui/toast';
 import { AgentStatusBadge } from '@/components/agents/AgentStatusBadge';
@@ -23,7 +23,7 @@ import {
 import {
   Settings, ScrollText, Zap, MessageSquare, BarChart2, Brain,
   Play, Square, Send, AlertTriangle, RefreshCw,
-  Bot, Clock, Search,
+  Bot, Clock, Search, Trash2,
 } from 'lucide-react';
 import { formatDistanceToNow, format } from 'date-fns';
 import { ru } from 'date-fns/locale';
@@ -300,10 +300,13 @@ function SettingsSkeleton() {
 // ── Tab: Actions ──────────────────────────────────────────────────────────────
 function TabActions({ agentId }: { agentId: string }) {
   const { toast } = useToast();
+  const router = useRouter();
   const { mutate: start, isPending: starting } = useStartAgent();
   const { mutate: stop,  isPending: stopping }  = useStopAgent();
+  const { mutate: remove, isPending: deleting } = useDeleteAgent();
   const trigger = useTriggerMessage(agentId);
   const [stopConfirm, setStopConfirm] = useState(false);
+  const [deleteConfirm, setDeleteConfirm] = useState(false);
   const [triggerModal, setTriggerModal] = useState(false);
   const [triggerValues, setTriggerValues] = useState<TriggerMessageValues>({ peer: '', text: '' });
   const [triggerErrors, setTriggerErrors] = useState<Partial<TriggerMessageValues>>({});
@@ -368,6 +371,18 @@ function TabActions({ agentId }: { agentId: string }) {
       variant: 'default' as const,
       destructive: false,
     },
+    {
+      title: 'Удалить агента',
+      desc: 'Полностью удалить агента, его историю и Telegram-сессию',
+      icon: Trash2,
+      color: 'text-crimson-400',
+      bg: 'bg-crimson-950/40 border-crimson-900',
+      action: () => setDeleteConfirm(true),
+      loading: deleting,
+      label: 'Удалить',
+      variant: 'danger' as const,
+      destructive: true,
+    },
   ];
 
   return (
@@ -403,6 +418,26 @@ function TabActions({ agentId }: { agentId: string }) {
         description="Агент перестанет отвечать. Можно перезапустить в любой момент."
         confirmLabel="Остановить"
         variant="danger"
+      />
+
+      <ConfirmDialog
+        isOpen={deleteConfirm}
+        onClose={() => setDeleteConfirm(false)}
+        onConfirm={() => {
+          remove(agentId, {
+            onSuccess: () => {
+              setDeleteConfirm(false);
+              toast('Агент удалён', 'success');
+              router.push('/dashboard');
+            },
+            onError: (e: unknown) => toast((e as ApiError).message ?? 'Ошибка удаления', 'error'),
+          });
+        }}
+        title="Удалить агента?"
+        description="Агент будет остановлен и удалён вместе с историей сообщений, событиями и Telegram-сессией. Это действие необратимо."
+        confirmLabel="Удалить навсегда"
+        variant="danger"
+        isLoading={deleting}
       />
 
       <Modal isOpen={triggerModal} onClose={() => setTriggerModal(false)} title="Отправить сообщение" size="md">

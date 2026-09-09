@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect } from 'bun:test';
 import {
   agentIdSchema, phoneNumberSchema, loginSchema,
   telegramCredentialsSchema, agentSettingsSchema,
@@ -45,9 +45,13 @@ describe('phoneNumberSchema', () => {
     expect(phoneNumberSchema.safeParse('+44207946001').success).toBe(true);
   });
 
-  it('rejects numbers without country code', () => {
-    expect(phoneNumberSchema.safeParse('79991234567').success).toBe(false);
-    expect(phoneNumberSchema.safeParse('9991234567').success).toBe(false);
+  it('prepends the plus sign when it is missing', () => {
+    // Форму проверяет только формат. Существует ли номер в Telegram, решает Telegram.
+    const result = phoneNumberSchema.safeParse('79991234567');
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data).toBe('+79991234567');
+    }
   });
 
   it('rejects invalid formats', () => {
@@ -79,30 +83,26 @@ describe('loginSchema', () => {
 });
 
 describe('telegramCredentialsSchema', () => {
-  const valid = { api_id: '12345678', api_hash: 'abcdef1234567890abcdef1234567890', phone_number: '+79991234567' };
+  const valid = { phone_number: '+79991234567' };
 
-  it('accepts valid credentials', () => {
+  it('accepts a valid phone number', () => {
     expect(telegramCredentialsSchema.safeParse(valid).success).toBe(true);
   });
 
-  it('transforms api_id string to number', () => {
-    const result = telegramCredentialsSchema.safeParse(valid);
+  it('rejects a phone that is not a number at all', () => {
+    expect(telegramCredentialsSchema.safeParse({ phone_number: 'not-a-phone' }).success).toBe(false);
+  });
+
+  it('does not carry api credentials to the backend', () => {
+    const result = telegramCredentialsSchema.safeParse({
+      ...valid,
+      api_id: '12345678',
+      api_hash: 'abcdef1234567890abcdef1234567890',
+    });
+    expect(result.success).toBe(true);
     if (result.success) {
-      expect(typeof result.data.api_id).toBe('number');
-      expect(result.data.api_id).toBe(12345678);
+      expect(result.data).toEqual(valid);
     }
-  });
-
-  it('rejects non-numeric api_id', () => {
-    expect(telegramCredentialsSchema.safeParse({ ...valid, api_id: 'abc' }).success).toBe(false);
-  });
-
-  it('rejects non-hex api_hash', () => {
-    expect(telegramCredentialsSchema.safeParse({ ...valid, api_hash: 'not-hex-!!!!' }).success).toBe(false);
-  });
-
-  it('rejects invalid phone', () => {
-    expect(telegramCredentialsSchema.safeParse({ ...valid, phone_number: '89991234567' }).success).toBe(false);
   });
 });
 

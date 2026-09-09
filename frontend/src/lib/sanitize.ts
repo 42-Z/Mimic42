@@ -16,8 +16,8 @@ import type { DOMPurify } from 'dompurify';
  * Strips ALL HTML — returns plain text only.
  * Use for content that should never contain HTML.
  *
- * Deterministic regex pipeline (no DOMPurify): identical behaviour on
- * server, in tests (jsdom) and in the browser. Dangerous elements are
+ * Deterministic pipeline (no DOMPurify): identical behaviour on
+ * server, in bun tests (happy-dom) and in the browser. Dangerous elements are
  * removed WITH their content; unclosed opens consume to end of input.
  */
 export function sanitizeText(input: string | null | undefined): string {
@@ -78,9 +78,6 @@ function stripDangerousContent(input: string): string {
  * Use for system prompts / soul prompts shown in preview.
  * Still strips any dangerous attributes or scripts.
  */
-/**
- * Allows a small safe set of HTML tags for rich content display.
- */
 export function sanitizeRichText(input: string | null | undefined): string {
   if (!input) return '';
 
@@ -99,14 +96,19 @@ export function sanitizeRichText(input: string | null | undefined): string {
 }
 
 /**
- * Server-side rich-text cleanup: removes dangerous blocks (with content)
- * via the linear scanner, then drops every tag except the allow-list.
+ * Server-side / pre-DOMPurify cleanup for rich text.
+ * Removes dangerous blocks (with content) via the linear scanner, keeps
+ * only bare allowed tags — every attribute is stripped, so handlers like
+ * onmouseover cannot survive the fallback.
  */
 function sanitizeRichHtmlServer(input: string): string {
+  const ALLOWED_BARE = /<(?!\/?(?:b|i|em|strong|p|br|code|pre)\s*\/?>)[^>]*>/g;
   return stripDangerousContent(input)
-  // Это регулярное выражение удаляет все теги КРОМЕ разрешенных (b, i, em, strong, p, br, code, pre)
-  .replace(/<(?!(\/?(b|i|em|strong|p|br|code|pre)\b))[^>]+>/gi, '')
-  .trim();
+    // Rewrite allowed tags to their bare, attribute-less form
+    .replace(/<(\/?)(b|i|em|strong|p|br|code|pre)\b[^>]*>/gi, '<$1$2>')
+    // Drop every tag that is not a bare allowed tag
+    .replace(ALLOWED_BARE, '')
+    .trim();
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
@@ -129,16 +131,21 @@ async function loadDOMPurify() {
 }
 
 function sanitizeClientSide(input: string, config: PurifyConfig): string {
-  // Synchronous path — DOMPurify must be pre-loaded or we use fallback
+  // Synchronous path — DOMPurify must be pre-loaded or we use fallback.
+  // The fallback mirrors the server-side semantics so behaviour is
+  // identical until DOMPurify finishes loading.
   if (!DOMPurifyInstance) {
-    // Fallback to basic HTML entity encoding before DOMPurify loads
-    return encodeHtmlEntities(input);
+    return config.ALLOWED_TAGS?.length
+      ? sanitizeRichHtmlServer(input)
+      : stripHtmlServer(input);
   }
 
   try {
     return DOMPurifyInstance.sanitize(input, config) as string;
   } catch {
-    return encodeHtmlEntities(input);
+    return config.ALLOWED_TAGS?.length
+      ? sanitizeRichHtmlServer(input)
+      : stripHtmlServer(input);
   }
 }
 
@@ -152,15 +159,14 @@ export async function preloadSanitizer(): Promise<void> {
 }
 
 /**
- * Encode HTML entities — last-resort fallback.
+ * Server-side fallback: strip HTML tags (plain text only).
+ * Reuses the linear dangerous-content scanner, so behaviour matches
+ * sanitizeText and no nested-quantifier regexes are needed.
  */
-function encodeHtmlEntities(str: string): string {
-  return str
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#x27;');
+function stripHtmlServer(input: string): string {
+  return stripDangerousContent(input)
+    .replace(/<[^>]+>/g, '')
+    .trim();
 }
 
 /**

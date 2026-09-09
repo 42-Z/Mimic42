@@ -16,9 +16,10 @@ export const phoneNumberSchema = z
   .string()
   .min(1, 'Номер телефона обязателен')
   .transform((val) => {
-    // Удаляем пробелы, дефисы и скобки. Плюс НЕ добавляем:
-    // номер без '+' отклоняется refine ниже (требуется E.164).
-    return val.replace(/[\s\-\(\)]/g, '');
+    // Удаляем пробелы, дефисы и скобки. Если '+' отсутствует — добавляем:
+    // форму проверяет только формат, существование номера решает Telegram.
+    const cleaned = val.replace(/[\s\-\(\)]/g, '');
+    return cleaned && !cleaned.startsWith('+') ? `+${cleaned}` : cleaned;
   })
   .refine(
     (val) => /^\+[1-9]\d{6,18}$/.test(val),
@@ -76,28 +77,9 @@ export const soulPromptSchema = z.object({
     .trim(),
 });
 
-// Step 3: System prompt
-export const systemPromptSchema = z.object({
-  system_prompt: z
-    .string()
-    .min(10, 'Системный промпт должен содержать хотя бы 10 символов')
-    .max(20_000, 'Системный промпт не должен превышать 20 000 символов')
-    .trim(),
-});
-
 // Step 4a: Telegram credentials
+// API ID и Hash берутся из приложения сервера, пользователь вводит только телефон.
 export const telegramCredentialsSchema = z.object({
-  api_id: z
-    .string()
-    .min(1, 'API ID обязателен')
-    .regex(/^\d+$/, 'API ID должен быть числом')
-    .transform((val) => parseInt(val, 10))
-    .refine((val) => val > 0, 'API ID должен быть положительным числом'),
-  api_hash: z
-    .string()
-    .min(1, 'API Hash обязателен')
-    .max(128, 'API Hash слишком длинный')
-    .regex(/^[a-fA-F0-9]+$/, 'API Hash должен содержать только hex символы'),
   phone_number: phoneNumberSchema,
 });
 
@@ -152,7 +134,6 @@ export type LoginFormValues = z.infer<typeof loginSchema>;
 export type RegisterFormValues = z.infer<typeof registerSchema>;
 export type AgentNameValues = z.infer<typeof agentNameSchema>;
 export type SoulPromptValues = z.infer<typeof soulPromptSchema>;
-export type SystemPromptValues = z.infer<typeof systemPromptSchema>;
 export type TelegramCredentialsValues = z.infer<typeof telegramCredentialsSchema>;
 export type TelegramCodeValues = z.infer<typeof telegramCodeSchema>;
 export type Telegram2FAValues = z.infer<typeof telegram2FASchema>;

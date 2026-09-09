@@ -9,6 +9,8 @@ export const queryKeys = {
     list: () => [...queryKeys.agents.lists()] as const,
     details: () => [...queryKeys.agents.all, 'detail'] as const,
     detail: (id: string) => [...queryKeys.agents.details(), id] as const,
+    detailsAll: (agentIds: string[]) =>
+      [...queryKeys.agents.all, 'details-all', [...agentIds].sort()] as const,
   },
 
   // Agent messages
@@ -57,6 +59,8 @@ export const queryKeys = {
     byAgent: (agentId: string, days: number) =>
       [...queryKeys.analytics.all, agentId, days] as const,
     kpis: (agentId: string) => [...queryKeys.analytics.all, agentId, 'kpis'] as const,
+    kpisAll: (agentIds: string[]) =>
+      [...queryKeys.analytics.all, { kpisAll: [...agentIds].sort() }] as const,
   },
 
   // Profile

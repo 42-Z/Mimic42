@@ -1,83 +1,46 @@
 'use client';
 
-import { useEffect, useState } from 'react';
 import { useAgents, useStartAgent, useStopAgent } from '@/hooks/useAgents';
-import { useDashboardKPIs } from '@/hooks/useTelegramSession';
-import { useRealtimeFeed, useAgentStatusRealtime } from '@/hooks/useRealtimeFeed';
+import { useAllAgentsKPIs, useAgentsDetails } from '@/hooks/useTelegramSession';
+import { useMultiAgentRealtimeFeed, useAllAgentsStatusRealtime } from '@/hooks/useRealtimeFeed';
 import { useToast } from '@/components/ui/toast';
 import { AgentStatusBadge } from '@/components/agents/AgentStatusBadge';
 import { Card, Skeleton } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
-import { sanitizeText } from '@/lib/sanitize';
+import { maskPhoneNumber, sanitizeText, truncate } from '@/lib/sanitize';
 import { formatDistanceToNow } from 'date-fns';
 import { ru } from 'date-fns/locale';
 import {
   MessageSquare, Activity, AlertTriangle, TrendingUp,
-  Play, Square, RefreshCw, Wifi, WifiOff, Bot, Plus,
+  Play, Square, RefreshCw, Wifi, WifiOff, Bot, Plus, Settings,
 } from 'lucide-react';
 import Link from 'next/link';
 import type { AgentRecord, FeedItem } from '@/types';
 
 export default function DashboardPage() {
   const { data: agents, isLoading: agentsLoading } = useAgents();
-  const [currentAgentId, setCurrentAgentId] = useState<string | null>(null);
+  const agentIds = agents?.map((a) => a.agent_id) ?? [];
 
-  // Use first agent by default
-  useEffect(() => {
-    if (agents && agents.length > 0 && !currentAgentId) {
-      setCurrentAgentId(agents[0]!.agent_id);
-    }
-  }, [agents, currentAgentId]);
+  useAllAgentsStatusRealtime();
+
+  const agentNameById = new Map((agents ?? []).map((a) => [a.agent_id, a.name]));
 
   if (agentsLoading) return <DashboardSkeleton />;
   if (!agents || agents.length === 0) return <NoAgents />;
 
-  const agent = agents.find((a) => a.agent_id === currentAgentId) ?? agents[0]!;
-
   return (
     <div className="space-y-6 animate-fade-in">
-      <DashboardHeader agent={agent} agents={agents} onSelectAgent={setCurrentAgentId} />
-      <KPIRow agentId={agent.agent_id} />
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-2">
-          <LiveFeed agentId={agent.agent_id} />
-        </div>
-        <div className="hidden md:block">
-          <QuickActions agent={agent} />
-        </div>
-      </div>
+      <DashboardHeader agentsCount={agents.length} />
+      <KPIRow agentIds={agentIds} />
+      <AgentsGrid agents={agents} />
+      <LiveFeed agentIds={agentIds} agentNameById={agentNameById} />
     </div>
   );
 }
 
 // ── Header ────────────────────────────────────────────────────────────────────
-function DashboardHeader({
-  agent, agents, onSelectAgent,
-}: { agent: AgentRecord; agents: AgentRecord[]; onSelectAgent: (id: string) => void }) {
-  const { mutate: start, isPending: starting } = useStartAgent();
-  const { mutate: stop, isPending: stopping } = useStopAgent();
-  const { toast } = useToast();
-
-  useAgentStatusRealtime(agent.agent_id);
-
-  const handleStart = () => {
-    start(agent.agent_id, {
-      onSuccess: () => toast('Агент запускается...', 'success'),
-      onError: (e: unknown) => toast((e as { message?: string }).message ?? 'Ошибка запуска', 'error'),
-    });
-  };
-
-  const handleStop = () => {
-    stop(agent.agent_id, {
-      onSuccess: () => toast('Агент останавливается...', 'warning'),
-      onError: (e: unknown) => toast((e as { message?: string }).message ?? 'Ошибка остановки', 'error'),
-    });
-  };
-
-  const canStart = agent.state === 'stopped' || agent.state === 'error';
-  const canStop = agent.state === 'running';
-
+function DashboardHeader({ agentsCount }: { agentsCount: number }) {
   return (
     <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
       <div className="flex items-center gap-4">
@@ -85,62 +48,25 @@ function DashboardHeader({
           <Bot className="h-5 w-5 text-plasma-400" />
         </div>
         <div>
-          <div className="flex items-center gap-3">
-            <h1 className="font-display text-xl font-bold text-void-100">{agent.name}</h1>
-            <AgentStatusBadge state={agent.state} />
-          </div>
+          <h1 className="font-display text-xl font-bold text-void-100">Ваши агенты</h1>
           <p className="font-mono text-xs text-void-500 mt-0.5">
-            ID: {agent.agent_id.slice(0, 8)}...
+            {agentsCount} {agentsCount === 1 ? 'агент' : agentsCount < 5 ? 'агента' : 'агентов'} на связи
           </p>
         </div>
       </div>
 
-      <div className="flex items-center gap-2 flex-wrap">
-        {agents.length > 1 && (
-          <select
-            value={agent.agent_id}
-            onChange={(e) => onSelectAgent(e.target.value)}
-            className="h-9 px-3 rounded-sm bg-void-800 border border-void-600 font-mono text-xs text-void-200 focus:outline-none focus:border-plasma-600"
-          >
-            {agents.map((a) => (
-              <option key={a.agent_id} value={a.agent_id}>{a.name}</option>
-            ))}
-          </select>
-        )}
-        <Button
-          variant="success" size="sm"
-          onClick={handleStart}
-          disabled={!canStart}
-          isLoading={starting}
-          leftIcon={<Play className="h-3.5 w-3.5" />}
-        >
-          Запустить
+      <Link href="/onboarding">
+        <Button variant="default" size="sm" leftIcon={<Plus className="h-3.5 w-3.5" />}>
+          Новый агент
         </Button>
-        <Button
-          variant="danger" size="sm"
-          onClick={handleStop}
-          disabled={!canStop}
-          isLoading={stopping}
-          leftIcon={<Square className="h-3.5 w-3.5" />}
-        >
-          Стоп
-        </Button>
-        <Link href={`/agent/${agent.agent_id}`} className="hidden md:inline-flex">
-          <Button variant="ghost" size="sm">Настройки →</Button>
-        </Link>
-        <Link href="/onboarding">
-          <Button variant="outline" size="sm" leftIcon={<Plus className="h-3.5 w-3.5" />}>
-            <span className="hidden sm:inline">Новый</span>
-          </Button>
-        </Link>
-      </div>
+      </Link>
     </div>
   );
 }
 
 // ── KPI Cards ─────────────────────────────────────────────────────────────────
-function KPIRow({ agentId }: { agentId: string }) {
-  const { data: kpis, isLoading } = useDashboardKPIs(agentId);
+function KPIRow({ agentIds }: { agentIds: string[] }) {
+  const { data: kpis, isLoading } = useAllAgentsKPIs(agentIds);
 
   const cards = [
     {
@@ -202,12 +128,122 @@ function KPIRow({ agentId }: { agentId: string }) {
   );
 }
 
-// ── Live Feed ─────────────────────────────────────────────────────────────────
-function LiveFeed({ agentId }: { agentId: string }) {
-  const { feedItems, isConnected, clearFeed } = useRealtimeFeed(agentId);
+// ── Agents Grid ───────────────────────────────────────────────────────────────
+function AgentsGrid({ agents }: { agents: AgentRecord[] }) {
+  const { data: details } = useAgentsDetails(agents.map((a) => a.agent_id));
 
   return (
-    <Card variant="glass" padding="none" className="flex flex-col h-[50vh] min-h-[300px] max-h-[480px]">
+    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+      {agents.map((agent) => (
+        <AgentCard
+          key={agent.agent_id}
+          agent={agent}
+          details={details?.[agent.agent_id]}
+        />
+      ))}
+      <Link href="/onboarding" className="block h-full">
+        <Card
+          variant="glass"
+          padding="md"
+          className="h-full min-h-[160px] border-dashed border-void-700 flex flex-col items-center justify-center gap-2 text-void-500 hover:text-plasma-400 hover:border-plasma-700 transition-colors cursor-pointer"
+        >
+          <Plus className="h-8 w-8" />
+          <span className="font-mono text-sm">Новый агент</span>
+        </Card>
+      </Link>
+    </div>
+  );
+}
+
+function AgentCard({ agent, details }: { agent: AgentRecord; details?: { phone_number: string | null; last_started_at: string | null } }) {
+  const { mutate: start, isPending: starting } = useStartAgent();
+  const { mutate: stop, isPending: stopping } = useStopAgent();
+  const { toast } = useToast();
+
+  const canStart = agent.state === 'stopped' || agent.state === 'error';
+  const canStop = agent.state === 'running';
+
+  const handleStart = () => {
+    start(agent.agent_id, {
+      onSuccess: () => toast('Агент запускается...', 'success'),
+      onError: (e: unknown) => toast((e as { message?: string }).message ?? 'Ошибка запуска', 'error'),
+    });
+  };
+
+  const handleStop = () => {
+    stop(agent.agent_id, {
+      onSuccess: () => toast('Агент останавливается...', 'warning'),
+      onError: (e: unknown) => toast((e as { message?: string }).message ?? 'Ошибка остановки', 'error'),
+    });
+  };
+
+  return (
+    <Card variant="glass" padding="md" className="space-y-3">
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="h-9 w-9 rounded-sm bg-void-800 border border-void-600 flex items-center justify-center shrink-0">
+            <Bot className="h-4 w-4 text-plasma-400" />
+          </div>
+          <div className="min-w-0">
+            <p className="font-display text-sm font-bold text-void-100 truncate">
+              {sanitizeText(agent.name)}
+            </p>
+            <p className="font-mono text-xs text-void-500 truncate">
+              {details?.phone_number ? maskPhoneNumber(details.phone_number) : 'Telegram не подключён'}
+            </p>
+          </div>
+        </div>
+        <AgentStatusBadge state={agent.state} />
+      </div>
+
+      <p className="font-mono text-[10px] text-void-600">
+        {details?.last_started_at
+          ? `Запускался ${formatDistanceToNow(new Date(details.last_started_at), { addSuffix: true, locale: ru })}`
+          : 'Ещё не запускался'}
+      </p>
+
+      <div className="flex items-center gap-2 pt-1">
+        <Button
+          variant="success" size="sm"
+          onClick={handleStart}
+          disabled={!canStart}
+          isLoading={starting}
+          leftIcon={<Play className="h-3.5 w-3.5" />}
+        >
+          Запустить
+        </Button>
+        <Button
+          variant="danger" size="sm"
+          onClick={handleStop}
+          disabled={!canStop}
+          isLoading={stopping}
+          leftIcon={<Square className="h-3.5 w-3.5" />}
+        >
+          Стоп
+        </Button>
+        <div className="flex-1" />
+        <Link href={`/agent/${agent.agent_id}`} aria-label="Настройки агента">
+          <Button variant="ghost" size="sm" className="px-2">
+            <Settings className="h-4 w-4" />
+          </Button>
+        </Link>
+      </div>
+    </Card>
+  );
+}
+
+// ── Live Feed ─────────────────────────────────────────────────────────────────
+function LiveFeed({
+  agentIds,
+  agentNameById,
+}: {
+  agentIds: string[];
+  agentNameById: Map<string, string>;
+}) {
+  const { feedItems, isConnected, clearFeed } = useMultiAgentRealtimeFeed(agentIds);
+
+  return (
+    <Card variant="glass" padding="none" className="flex flex-col h-[480px]">
       {/* Header */}
       <div className="flex items-center justify-between px-5 py-4 border-b border-void-700">
         <div className="flex items-center gap-2">
@@ -243,7 +279,7 @@ function LiveFeed({ agentId }: { agentId: string }) {
           </div>
         ) : (
           [...feedItems].reverse().map((item) => (
-            <FeedItemRow key={item.id} item={item} />
+            <FeedItemRow key={item.id} item={item} agentNameById={agentNameById} />
           ))
         )}
       </div>
@@ -251,11 +287,12 @@ function LiveFeed({ agentId }: { agentId: string }) {
   );
 }
 
-function FeedItemRow({ item }: { item: FeedItem }) {
+function FeedItemRow({ item, agentNameById }: { item: FeedItem; agentNameById: Map<string, string> }) {
   const time = formatDistanceToNow(new Date(item.timestamp), {
     addSuffix: true,
     locale: ru,
   });
+  const agentName = item.agent_id ? agentNameById.get(item.agent_id) : undefined;
 
   if (item.type === 'message') {
     const isIncoming = item.direction === 'incoming' || item.role === 'user';
@@ -268,6 +305,9 @@ function FeedItemRow({ item }: { item: FeedItem }) {
         <span className={cn('shrink-0 uppercase text-[10px]', isIncoming ? 'text-plasma-500' : 'text-neon-600')}>
           {isIncoming ? '← IN' : '→ OUT'}
         </span>
+        {agentName && (
+          <span className="shrink-0 text-void-600">{truncate(sanitizeText(agentName), 16)}</span>
+        )}
         <span className="text-void-400 shrink-0 tabular-nums">{item.peer}</span>
         <span className="text-void-300 flex-1 truncate">{sanitizeText(item.content)}</span>
         <span className="text-void-600 shrink-0">{time}</span>
@@ -286,6 +326,9 @@ function FeedItemRow({ item }: { item: FeedItem }) {
   return (
     <div className="flex gap-3 px-3 py-2 rounded-sm text-xs font-mono hover:bg-void-800/50 transition-colors border-l-2 border-void-700">
       <span className="shrink-0 text-void-600 uppercase text-[10px]">EVT</span>
+      {agentName && (
+        <span className="shrink-0 text-void-600">{truncate(sanitizeText(agentName), 16)}</span>
+      )}
       <span className={cn('shrink-0', statusColors[item.status] ?? 'text-void-400')}>
         [{item.status.toUpperCase()}]
       </span>
@@ -293,43 +336,6 @@ function FeedItemRow({ item }: { item: FeedItem }) {
       {item.error && <span className="text-crimson-400 truncate max-w-[120px]">{item.error}</span>}
       <span className="text-void-600 shrink-0">{time}</span>
     </div>
-  );
-}
-
-// ── Quick Actions ─────────────────────────────────────────────────────────────
-function QuickActions({ agent }: { agent: AgentRecord }) {
-  return (
-    <Card variant="glass" padding="md" className="space-y-4">
-      <h2 className="font-mono text-xs font-medium text-void-400 uppercase tracking-wider">
-        Быстрые действия
-      </h2>
-      <div className="space-y-2">
-        <Link href={`/agent/${agent.agent_id}?tab=logs`} className="block">
-          <Button variant="outline" size="sm" className="w-full justify-start">
-            <MessageSquare className="h-4 w-4" />
-            Логи сообщений
-          </Button>
-        </Link>
-        <Link href={`/agent/${agent.agent_id}?tab=actions`} className="block">
-          <Button variant="outline" size="sm" className="w-full justify-start">
-            <Activity className="h-4 w-4" />
-            Управление
-          </Button>
-        </Link>
-        <Link href={`/agent/${agent.agent_id}?tab=telegram`} className="block">
-          <Button variant="outline" size="sm" className="w-full justify-start">
-            <span className="text-sm">✈</span>
-            Telegram сессия
-          </Button>
-        </Link>
-        <Link href={`/agent/${agent.agent_id}?tab=settings`} className="block">
-          <Button variant="outline" size="sm" className="w-full justify-start">
-            <span className="text-sm">⚙</span>
-            Настройки агента
-          </Button>
-        </Link>
-      </div>
-    </Card>
   );
 }
 
@@ -349,7 +355,7 @@ function DashboardSkeleton() {
           <Skeleton key={i} className="h-24 rounded-sm" />
         ))}
       </div>
-      <Skeleton className="h-[50vh] min-h-[300px] max-h-[480px] rounded-sm" />
+      <Skeleton className="h-[480px] rounded-sm" />
     </div>
   );
 }
