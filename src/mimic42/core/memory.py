@@ -119,8 +119,9 @@ class RuntimeMemoryService:
         messages.extend(short_term_messages)
 
         # OpenRouter / Mistral fix: Mistral rejects requests where 'human' directly follows 'tool'.
-        # If the last message before the new user input is a 'tool' message (meaning the agent didn't
-        # get to reply after a tool execution), we inject a dummy 'ai' message to satisfy the LLM constraints.
+        # If the last message before the new user input is a 'tool' message (meaning the agent
+        # didn't get to reply after a tool execution), we inject a dummy 'ai' message to
+        # satisfy the LLM constraints.
         if messages:
             last_msg_type = messages[-1].get("type", messages[-1].get("role", ""))
             if last_msg_type == "tool":
@@ -128,7 +129,9 @@ class RuntimeMemoryService:
                     {
                         "type": "ai",
                         "role": "assistant",
-                        "content": "The tool executed, but the user interrupted before I could reply.",
+                        "content": (
+                            "The tool executed, but the user interrupted before I could reply."
+                        ),
                     }
                 )
 

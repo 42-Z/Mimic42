@@ -978,7 +978,6 @@ async def test_typing_interrupt_chance(monkeypatch: pytest.MonkeyPatch) -> None:
 async def test_long_message_split_into_multiple_parts(monkeypatch: pytest.MonkeyPatch) -> None:
     from unittest.mock import MagicMock
 
-    from telethon.tl import functions
 
     class TypedFakeClient(FakeTelegramClient):
         def __init__(self) -> None:
