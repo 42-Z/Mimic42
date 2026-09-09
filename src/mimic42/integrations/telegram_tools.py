@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import base64
 import json
-from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta
-from typing import Any, Literal, ParamSpec, Protocol, TypeVar
+from typing import Any, Literal, Protocol
 from uuid import UUID
 
 from langchain_core.tools import BaseTool, StructuredTool
@@ -88,6 +87,16 @@ class CustomMarkdown:
             else:
                 temp_entities.append(entity)
         return markdown.unparse(text, temp_entities)
+
+
+def _tool_failure(exc: Exception) -> dict[str, Any]:
+    """Structured tool failure: machine-readable error identity for the activity log."""
+    return {"success": False, "error": str(exc), "error_code": type(exc).__name__}
+
+
+def _tool_failure_list(exc: Exception) -> list[dict[str, Any]]:
+    """List-shaped counterpart of _tool_failure for tools returning lists."""
+    return [_tool_failure(exc)]
 
 
 def parse_media_id(media_id: str) -> tuple[str, int, int, bytes, int]:
@@ -265,7 +274,8 @@ class TelegramToolbox:
                 # Provide a more helpful error for the LLM
                 raise ValueError(
                     f"Telegram error: {e}. If you used a numeric ID, it might not be cached yet. "
-                    "Try using a @username, phone number, or call 'get_dialogs' first to populate the cache."
+                    "Try using a @username, phone number, or call 'get_dialogs' first "
+                    "to populate the cache."
                 ) from e
         raise ValueError("Telethon client missing entity resolution method")
 
@@ -286,8 +296,10 @@ class TelegramToolbox:
             return {
                 "success": False,
                 "error": (
-                    f"send_text_message for this peer was already used {int((now - last).total_seconds())}s ago. "
-                    f"Cooldown: {int(remaining)}s remaining. Use your main reply instead of this tool."
+                    f"send_text_message for this peer was already used "
+                    f"{int((now - last).total_seconds())}s ago. "
+                    f"Cooldown: {int(remaining)}s remaining. "
+                    "Use your main reply instead of this tool."
                 ),
             }
         try:
@@ -302,7 +314,7 @@ class TelegramToolbox:
             self._last_send_text_message[peer] = now
             return {"success": True, "message_id": msg.id}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     async def edit_text_message(
         self, peer: str, message_id: int, new_message: str
@@ -315,7 +327,7 @@ class TelegramToolbox:
             )
             return {"success": True, "message_id": msg.id}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     async def delete_messages(
         self, peer: str, message_ids: list[int], revoke: bool = True
@@ -326,7 +338,7 @@ class TelegramToolbox:
             await self._client.delete_messages(entity, message_ids, revoke=revoke)
             return {"success": True}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     async def forward_messages(
         self, from_peer: str, to_peer: str, message_ids: list[int]
@@ -338,7 +350,7 @@ class TelegramToolbox:
             await self._client.forward_messages(to_entity, message_ids, from_peer=from_entity)
             return {"success": True}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     async def pin_message(self, peer: str, message_id: int, silent: bool = False) -> dict[str, Any]:
         """Pin a message in a chat."""
@@ -347,7 +359,7 @@ class TelegramToolbox:
             await self._client.pin_message(entity, message_id, silent=silent)
             return {"success": True}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     async def unpin_message(self, peer: str, message_id: int | None = None) -> dict[str, Any]:
         """Unpin a message in a chat."""
@@ -356,7 +368,7 @@ class TelegramToolbox:
             await self._client.unpin_message(entity, message_id)
             return {"success": True}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     async def unpin_all_messages(self, peer: str) -> dict[str, Any]:
         """Unpin all pinned messages in a chat."""
@@ -365,7 +377,7 @@ class TelegramToolbox:
             await self._client(functions.messages.UnpinAllMessagesRequest(peer=entity))
             return {"success": True}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     async def send_chat_action(self, peer: str, action: str) -> dict[str, Any]:
         """Send a chat action indicator (typing, record_audio, etc.)."""
@@ -384,7 +396,7 @@ class TelegramToolbox:
                 pass
             return {"success": True}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     async def send_reaction(self, peer: str, message_id: int, emoji: str) -> dict[str, Any]:
         """Set a reaction on a message."""
@@ -400,7 +412,7 @@ class TelegramToolbox:
             )
             return {"success": True}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     async def get_message_reactions(self, peer: str, message_id: int) -> dict[str, Any]:
         """Get the reactions of a message."""
@@ -425,7 +437,7 @@ class TelegramToolbox:
                 )
             return {"reactions": reactions}
         except Exception as e:
-            return {"error": str(e)}
+            return _tool_failure(e)
 
     async def mark_chat_as_read(self, peer: str, max_id: int | None = None) -> dict[str, Any]:
         """Mark messages in a chat as read."""
@@ -436,7 +448,7 @@ class TelegramToolbox:
             )
             return {"success": True}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     async def get_messages(
         self, peer: str, limit: int = 20, offset_id: int = 0
@@ -468,7 +480,7 @@ class TelegramToolbox:
                 )
             return messages
         except Exception as e:
-            return [{"error": str(e)}]
+            return _tool_failure_list(e)
 
     # Category 2: Navigation and Dialogs (13-18)
 
@@ -488,7 +500,7 @@ class TelegramToolbox:
                 )
             return result
         except Exception as e:
-            return [{"error": str(e)}]
+            return _tool_failure_list(e)
 
     async def search_messages(self, peer: str, query: str, limit: int = 20) -> list[dict[str, Any]]:
         """Search messages in a chat."""
@@ -507,7 +519,7 @@ class TelegramToolbox:
                 )
             return messages
         except Exception as e:
-            return [{"error": str(e)}]
+            return _tool_failure_list(e)
 
     async def delete_dialog(self, peer: str, revoke: bool = True) -> dict[str, Any]:
         """Delete a dialog or leave a group/channel."""
@@ -516,7 +528,7 @@ class TelegramToolbox:
             await self._client.delete_dialog(entity, revoke=revoke)
             return {"success": True}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     async def archive_dialogs(self, peers: list[str]) -> dict[str, Any]:
         """Archive dialogs."""
@@ -530,7 +542,7 @@ class TelegramToolbox:
                 )
             return {"success": True}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     async def unarchive_dialogs(self, peers: list[str]) -> dict[str, Any]:
         """Unarchive dialogs."""
@@ -544,10 +556,10 @@ class TelegramToolbox:
                 )
             return {"success": True}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     async def mute_chat(self, peer: str, duration_hours: int | None = None) -> dict[str, Any]:
-        """Mute a chat. If duration_hours is not specified, it will be muted indefinitely (10 years)."""
+        """Mute a chat. If duration_hours is not specified, muted indefinitely (10 years)."""
         try:
             entity = await self._resolve_peer(peer)
             notify_peer = types.InputNotifyPeer(peer=entity)
@@ -565,7 +577,7 @@ class TelegramToolbox:
             )
             return {"success": True}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     async def unmute_chat(self, peer: str) -> dict[str, Any]:
         """Unmute a chat, enabling notifications."""
@@ -582,7 +594,7 @@ class TelegramToolbox:
             )
             return {"success": True}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     async def get_common_chats(self, peer: str) -> list[dict[str, Any]]:
         """Get common groups/channels with a user."""
@@ -602,7 +614,7 @@ class TelegramToolbox:
                 )
             return chats
         except Exception as e:
-            return [{"error": str(e)}]
+            return _tool_failure_list(e)
 
     # Category 3: Memory-based Media Handling (19-23)
 
@@ -652,7 +664,7 @@ class TelegramToolbox:
             )
             return {"success": True, "message_id": msg.id}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     async def view_image(self, media_id: str) -> list[dict[str, Any]]:
         """View image/sticker and return Base64 image payload."""
@@ -711,7 +723,15 @@ class TelegramToolbox:
                 }
             ]
         except Exception as e:
-            return [{"type": "text", "text": f"Error loading image: {str(e)}"}]
+            return [
+                {
+                    "type": "text",
+                    "text": f"Error loading image: {str(e)}",
+                    "success": False,
+                    "error": str(e),
+                    "error_code": type(e).__name__,
+                }
+            ]
 
     async def set_profile_photo(self, media_id: str) -> dict[str, Any]:
         """Set profile photo by URL or Media ID in memory."""
@@ -757,7 +777,7 @@ class TelegramToolbox:
             await self._client(functions.photos.UploadProfilePhotoRequest(file=uploaded_file))
             return {"success": True}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     async def send_voice_note(
         self,
@@ -795,7 +815,7 @@ class TelegramToolbox:
             )
             return {"success": True, "message_id": msg.id}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     async def send_video_note(
         self,
@@ -833,7 +853,7 @@ class TelegramToolbox:
             )
             return {"success": True, "message_id": msg.id}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     async def send_location(self, peer: str, latitude: float, longitude: float) -> dict[str, Any]:
         """Send a map location pin with specific latitude and longitude."""
@@ -847,7 +867,7 @@ class TelegramToolbox:
             )
             return {"success": True, "message_id": msg.id}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     async def send_venue(
         self, peer: str, latitude: float, longitude: float, title: str, address: str
@@ -868,20 +888,23 @@ class TelegramToolbox:
             )
             return {"success": True, "message_id": msg.id}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     async def search_location(self, query: str) -> dict[str, Any]:
-        """Search for a location/address and return its coordinates and formatted address using ArcGIS."""
+        """Search for a location/address and return its coordinates and address using ArcGIS."""
         try:
             import asyncio
             import json
             import urllib.parse
             import urllib.request
 
-            url = f"https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates?f=json&singleLine={urllib.parse.quote(query)}"
+            url = (
+                "https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/"
+                f"findAddressCandidates?f=json&singleLine={urllib.parse.quote(query)}"
+            )
             req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
 
-            def _fetch():
+            def _fetch() -> dict[str, Any]:
                 with urllib.request.urlopen(req) as resp:
                     return json.loads(resp.read().decode())
 
@@ -901,7 +924,7 @@ class TelegramToolbox:
                 "address": address,
             }
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     # Category 4: Sticker Management (24-29)
 
@@ -921,7 +944,7 @@ class TelegramToolbox:
                 )
             return sets
         except Exception as e:
-            return [{"error": str(e)}]
+            return _tool_failure_list(e)
 
     async def get_stickers_in_set(self, set_short_name: str) -> list[dict[str, Any]]:
         """Get list of stickers inside a specific set."""
@@ -956,7 +979,7 @@ class TelegramToolbox:
                 )
             return stickers
         except Exception as e:
-            return [{"error": str(e)}]
+            return _tool_failure_list(e)
 
     async def search_sticker_sets(self, query: str) -> list[dict[str, Any]]:
         """Search sticker sets globally by name."""
@@ -975,7 +998,7 @@ class TelegramToolbox:
                     )
             return sets
         except Exception as e:
-            return [{"error": str(e)}]
+            return _tool_failure_list(e)
 
     async def install_sticker_set(self, set_short_name: str) -> dict[str, Any]:
         """Add a sticker set to user's list."""
@@ -988,7 +1011,7 @@ class TelegramToolbox:
             )
             return {"success": True}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     async def uninstall_sticker_set(self, set_short_name: str) -> dict[str, Any]:
         """Remove a sticker set from user's list."""
@@ -1000,7 +1023,7 @@ class TelegramToolbox:
             )
             return {"success": True}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     async def send_sticker(
         self,
@@ -1029,7 +1052,7 @@ class TelegramToolbox:
             )
             return {"success": True, "message_id": msg.id}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     # Category 5: Business Profile and Contacts (30-35)
 
@@ -1067,7 +1090,7 @@ class TelegramToolbox:
                     "type": "chat" if isinstance(entity, types.Chat) else "channel",
                 }
         except Exception as e:
-            return {"error": str(e)}
+            return _tool_failure(e)
 
     async def update_profile_info(
         self, first_name: str | None = None, last_name: str | None = None, bio: str | None = None
@@ -1085,7 +1108,7 @@ class TelegramToolbox:
                 await self._client(functions.account.UpdateProfileRequest(about=bio))
             return {"success": True}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     async def update_username(self, username: str) -> dict[str, Any]:
         """Update bot's public @username."""
@@ -1093,7 +1116,7 @@ class TelegramToolbox:
             await self._client(functions.account.UpdateUsernameRequest(username=username))
             return {"success": True}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     async def add_contact(self, phone: str, first_name: str, last_name: str = "") -> dict[str, Any]:
         """Add contact by phone."""
@@ -1112,7 +1135,7 @@ class TelegramToolbox:
             )
             return {"success": True}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     async def delete_contact(self, peer: str) -> dict[str, Any]:
         """Delete user from contact list."""
@@ -1121,7 +1144,7 @@ class TelegramToolbox:
             await self._client(functions.contacts.DeleteContactsRequest(id=[entity]))
             return {"success": True}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     async def get_contacts(self) -> list[dict[str, Any]]:
         """Get contacts list."""
@@ -1141,7 +1164,7 @@ class TelegramToolbox:
                     )
             return contacts
         except Exception as e:
-            return [{"error": str(e)}]
+            return _tool_failure_list(e)
 
     # Category 7: Bot Interaction (49-55)
 
@@ -1174,7 +1197,7 @@ class TelegramToolbox:
                     buttons.append(btn_info)
             return {"buttons": buttons}
         except Exception as e:
-            return {"error": str(e)}
+            return _tool_failure(e)
 
     async def click_inline_button(
         self,
@@ -1205,7 +1228,9 @@ class TelegramToolbox:
                 ):
                     return {
                         "success": False,
-                        "error": f"Invalid button index. Total callback buttons: {len(callback_buttons)}",
+                        "error": (
+                            f"Invalid button index. Total callback buttons: {len(callback_buttons)}"
+                        ),
                     }
                 data = callback_buttons[button_index].data
 
@@ -1226,7 +1251,7 @@ class TelegramToolbox:
                 "url": getattr(result, "url", None),
             }
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     async def click_reply_keyboard_button(self, peer: str, button_text: str) -> dict[str, Any]:
         """Press a reply keyboard button by sending its text as a message."""
@@ -1235,7 +1260,7 @@ class TelegramToolbox:
             msg = await self._client.send_message(entity, button_text)
             return {"success": True, "message_id": msg.id}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     async def query_inline_bot(
         self, bot_username: str, query: str, peer: str | None = None
@@ -1268,7 +1293,7 @@ class TelegramToolbox:
                 "results": results,
             }
         except Exception as e:
-            return {"error": str(e)}
+            return _tool_failure(e)
 
     async def send_inline_bot_result(
         self,
@@ -1293,7 +1318,7 @@ class TelegramToolbox:
             )
             return {"success": True}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     async def start_bot(
         self, bot_username: str, parameter: str = "", peer: str | None = None
@@ -1306,7 +1331,7 @@ class TelegramToolbox:
             msg = await self._client.send_message(entity, start_msg)
             return {"success": True, "message_id": msg.id}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     # Category 6: Groups, Channels and Permissions (36-48)
 
@@ -1347,7 +1372,7 @@ class TelegramToolbox:
 
             return info
         except Exception as e:
-            return {"error": str(e)}
+            return _tool_failure(e)
 
     async def check_admin_permissions(self, peer: str) -> dict[str, Any]:
         """Check administrative rights of the bot inside a chat/group."""
@@ -1370,7 +1395,7 @@ class TelegramToolbox:
                 "can_add_admins": permissions.add_admins,
             }
         except Exception as e:
-            return {"error": str(e)}
+            return _tool_failure(e)
 
     async def create_group(self, title: str, users: list[str]) -> dict[str, Any]:
         """Create a simple group chat."""
@@ -1378,7 +1403,7 @@ class TelegramToolbox:
             await self._client(functions.messages.CreateChatRequest(title=title, users=users))
             return {"success": True}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     async def create_channel(
         self, title: str, about: str = "", megagroup: bool = False
@@ -1392,7 +1417,7 @@ class TelegramToolbox:
             )
             return {"success": True}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     async def invite_to_channel(self, channel: str, users: list[str]) -> dict[str, Any]:
         """Invite users to channel/supergroup."""
@@ -1403,7 +1428,7 @@ class TelegramToolbox:
             )
             return {"success": True}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     async def kick_chat_member(self, peer: str, user: str) -> dict[str, Any]:
         """Kick participant from chat."""
@@ -1411,7 +1436,7 @@ class TelegramToolbox:
             await self._client.kick_participant(peer, user)
             return {"success": True}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     async def ban_chat_member(
         self, peer: str, user: str, until_date: int | None = None
@@ -1422,7 +1447,7 @@ class TelegramToolbox:
             await self._client.edit_permissions(peer, user, view_messages=False, until_date=until)
             return {"success": True}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     async def restrict_chat_member(
         self,
@@ -1446,7 +1471,7 @@ class TelegramToolbox:
             )
             return {"success": True}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     async def promote_chat_member(
         self,
@@ -1467,7 +1492,7 @@ class TelegramToolbox:
             )
             return {"success": True}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     async def get_chat_members(
         self, peer: str, filter_type: str = "all", limit: int = 100
@@ -1501,7 +1526,7 @@ class TelegramToolbox:
                 )
             return participants
         except Exception as e:
-            return [{"error": str(e)}]
+            return _tool_failure_list(e)
 
     async def get_chat_admin_log(self, peer: str, limit: int = 20) -> list[dict[str, Any]]:
         """Get administrative audit log."""
@@ -1519,7 +1544,7 @@ class TelegramToolbox:
                 )
             return log_entries
         except Exception as e:
-            return [{"error": str(e)}]
+            return _tool_failure_list(e)
 
     async def edit_chat_title(self, peer: str, title: str) -> dict[str, Any]:
         """Change the title of a channel, group or supergroup."""
@@ -1528,7 +1553,7 @@ class TelegramToolbox:
             await self._client(functions.channels.EditTitleRequest(channel=entity, title=title))
             return {"success": True}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     async def edit_chat_about(self, peer: str, about: str) -> dict[str, Any]:
         """Change the about/description of a channel, group or supergroup."""
@@ -1537,7 +1562,7 @@ class TelegramToolbox:
             await self._client(functions.messages.EditChatAboutRequest(peer=entity, about=about))
             return {"success": True}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     async def edit_chat_photo(self, peer: str, photo: str) -> dict[str, Any]:
         """Change the photo of a channel, group or supergroup. photo can be a file path or URL."""
@@ -1566,7 +1591,7 @@ class TelegramToolbox:
             await self._client(functions.channels.EditPhotoRequest(channel=entity, photo=uploaded))
             return {"success": True}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     async def update_chat_public_link(self, peer: str, username: str) -> dict[str, Any]:
         """Set or change the public username/link of a channel or supergroup.
@@ -1578,7 +1603,7 @@ class TelegramToolbox:
             )
             return {"success": bool(result)}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     async def set_chat_default_banned_rights(self, peer: str, rights: str) -> dict[str, Any]:
         """Set default restricted rights for all members of a group/channel.
@@ -1599,7 +1624,7 @@ class TelegramToolbox:
             )
             return {"success": True}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     async def toggle_chat_signatures(
         self, peer: str, signatures_enabled: bool, profiles_enabled: bool = True
@@ -1616,7 +1641,7 @@ class TelegramToolbox:
             )
             return {"success": True}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     async def delete_channel(self, peer: str) -> dict[str, Any]:
         """Delete a channel or supergroup entirely."""
@@ -1625,7 +1650,7 @@ class TelegramToolbox:
             await self._client(functions.channels.DeleteChannelRequest(channel=entity))
             return {"success": True}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     async def toggle_join_requests(self, peer: str, enabled: bool) -> dict[str, Any]:
         """Enable or disable join requests (approval required to join)."""
@@ -1636,7 +1661,7 @@ class TelegramToolbox:
             )
             return {"success": True}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     async def toggle_join_to_send(self, peer: str, enabled: bool) -> dict[str, Any]:
         """Enable or disable the requirement to join the channel before sending messages."""
@@ -1647,7 +1672,7 @@ class TelegramToolbox:
             )
             return {"success": True}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     async def toggle_slow_mode(self, peer: str, seconds: int) -> dict[str, Any]:
         """Enable or disable slow mode in a group.
@@ -1659,7 +1684,7 @@ class TelegramToolbox:
             )
             return {"success": True}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     async def set_discussion_group(self, broadcast: str, group: str) -> dict[str, Any]:
         """Link a discussion group (supergroup) to a broadcast channel."""
@@ -1673,7 +1698,7 @@ class TelegramToolbox:
             )
             return {"success": bool(result)}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     async def join_channel_discussion(self, peer: str) -> dict[str, Any]:
         """Join the linked discussion group of a broadcast channel."""
@@ -1681,17 +1706,13 @@ class TelegramToolbox:
             entity = await self._resolve_peer(peer, as_input=False)
             if not isinstance(entity, types.Channel):
                 return {"error": "Entity is not a channel"}
-            full_info = await self._client(
-                functions.channels.GetFullChannelRequest(channel=entity)
-            )
+            full_info = await self._client(functions.channels.GetFullChannelRequest(channel=entity))
             full_chat = full_info.full_chat
             linked_chat_id = getattr(full_chat, "linked_chat_id", None)
             if not linked_chat_id:
                 return {"error": "This channel has no linked discussion group"}
             linked_chat = await self._client.get_entity(linked_chat_id)
-            await self._client(
-                functions.channels.JoinChannelRequest(channel=linked_chat)
-            )
+            await self._client(functions.channels.JoinChannelRequest(channel=linked_chat))
             return {
                 "success": True,
                 "linked_chat_id": linked_chat_id,
@@ -1700,7 +1721,7 @@ class TelegramToolbox:
                 "is_group": isinstance(linked_chat, types.Channel) and linked_chat.megagroup,
             }
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     async def get_discussion_messages(
         self, peer: str, message_id: int, limit: int = 20
@@ -1709,9 +1730,7 @@ class TelegramToolbox:
         try:
             entity = await self._resolve_peer(peer, as_input=False)
             messages = []
-            async for msg in self._client.iter_messages(
-                entity, reply_to=message_id, limit=limit
-            ):
+            async for msg in self._client.iter_messages(entity, reply_to=message_id, limit=limit):
                 messages.append(
                     {
                         "id": msg.id,
@@ -1722,7 +1741,7 @@ class TelegramToolbox:
                 )
             return messages
         except Exception as e:
-            return [{"error": str(e)}]
+            return _tool_failure_list(e)
 
     async def toggle_forum(self, peer: str, enabled: bool, tabs: bool = False) -> dict[str, Any]:
         """Enable or disable forum mode in a supergroup (creates topics)."""
@@ -1733,7 +1752,7 @@ class TelegramToolbox:
             )
             return {"success": True}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     async def toggle_pre_history_hidden(self, peer: str, enabled: bool) -> dict[str, Any]:
         """Hide or show previous chat history for new members."""
@@ -1744,7 +1763,7 @@ class TelegramToolbox:
             )
             return {"success": True}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     async def toggle_participants_hidden(self, peer: str, enabled: bool) -> dict[str, Any]:
         """Hide or show the list of participants in a channel/group."""
@@ -1755,7 +1774,7 @@ class TelegramToolbox:
             )
             return {"success": True}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     async def edit_chat_location(
         self, peer: str, latitude: float, longitude: float, address: str
@@ -1771,7 +1790,7 @@ class TelegramToolbox:
             )
             return {"success": bool(result)}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     async def toggle_anti_spam(self, peer: str, enabled: bool) -> dict[str, Any]:
         """Enable or disable native Telegram anti-spam protection in a group."""
@@ -1782,7 +1801,7 @@ class TelegramToolbox:
             )
             return {"success": True}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     async def set_chat_admin_rights(
         self, peer: str, user: str, rights: str, title: str | None = None
@@ -1806,7 +1825,7 @@ class TelegramToolbox:
             )
             return {"success": True}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     async def set_chat_banned_rights(
         self, peer: str, user: str, rights: str, until_date: int | None = None
@@ -1833,10 +1852,10 @@ class TelegramToolbox:
             )
             return {"success": True}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     async def join_channel(self, channel: str) -> dict[str, Any]:
-        """Join a public channel/group by username/ID or a private one via invite link (e.g. t.me/+hash or t.me/joinchat/hash)."""
+        """Join a public channel/group by username/ID or a private one via invite link."""
         try:
             import re
 
@@ -1932,7 +1951,7 @@ class TelegramToolbox:
             msg = await self._client.send_file(entity, media)
             return {"success": True, "message_id": msg.id}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     async def transcribe_voice_note(self, media_id: str) -> dict[str, Any]:
         """Transcribe a voice note or round video message to text using Whisper on OpenRouter."""
@@ -1974,7 +1993,7 @@ class TelegramToolbox:
             )
             return {"success": True, "transcription": text}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     async def read_document_file(self, media_id: str) -> dict[str, Any]:
         """Read and extract contents from a document/file programmatically (docx, xlsx, txt)."""
@@ -2059,7 +2078,7 @@ class TelegramToolbox:
                             "error": "Не удалось декодировать текстовый файл.",
                         }
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     def _extract_docx(self, file_bytes: bytes) -> str:
         import io
@@ -2164,7 +2183,7 @@ class TelegramToolbox:
 
             return {"success": True, "trigger_at": trigger_at.isoformat()}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     # Category 7: Chat Folder Management
 
@@ -2218,7 +2237,7 @@ class TelegramToolbox:
                     folders.append({"id": 0, "title": "All Chats", "type": "default"})
             return folders
         except Exception as e:
-            return [{"error": str(e)}]
+            return _tool_failure_list(e)
 
     async def create_or_update_chat_folder(
         self,
@@ -2241,7 +2260,7 @@ class TelegramToolbox:
         """Create or update a custom chat folder (dialog filter)."""
         try:
 
-            async def resolve_peers(peer_list):
+            async def resolve_peers(peer_list: list[Any] | None) -> list[Any]:
                 if not peer_list:
                     return []
                 resolved = []
@@ -2280,7 +2299,7 @@ class TelegramToolbox:
             )
             return {"success": True}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     async def delete_chat_folder(self, folder_id: int) -> dict[str, Any]:
         """Delete a chat folder by its ID."""
@@ -2290,7 +2309,7 @@ class TelegramToolbox:
             )
             return {"success": True}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     # Category 8: Privacy and Account Settings
 
@@ -2331,7 +2350,7 @@ class TelegramToolbox:
                     rules.append({"type": type(rule).__name__})
             return {"key": key, "rules": rules}
         except Exception as e:
-            return {"error": str(e)}
+            return _tool_failure(e)
 
     async def set_privacy_settings(
         self,
@@ -2367,7 +2386,7 @@ class TelegramToolbox:
             )
             return {"success": True}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     async def get_global_settings(self) -> dict[str, Any]:
         """Get global privacy settings."""
@@ -2387,7 +2406,7 @@ class TelegramToolbox:
                 "noncontact_peers_paid_stars": res.noncontact_peers_paid_stars,
             }
         except Exception as e:
-            return {"error": str(e)}
+            return _tool_failure(e)
 
     async def set_global_settings(
         self,
@@ -2411,7 +2430,7 @@ class TelegramToolbox:
             await self._client(functions.account.SetGlobalPrivacySettingsRequest(settings=settings))
             return {"success": True}
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            return _tool_failure(e)
 
     async def get_content_settings(self) -> dict[str, Any]:
         """Get content settings (sensitive content filter)."""
@@ -2422,7 +2441,7 @@ class TelegramToolbox:
                 "sensitive_can_change": bool(res.sensitive_can_change),
             }
         except Exception as e:
-            return {"error": str(e)}
+            return _tool_failure(e)
 
     async def set_content_settings(self, sensitive_enabled: bool) -> dict[str, Any]:
         """Enable or disable sensitive content filter."""
@@ -2432,63 +2451,7 @@ class TelegramToolbox:
             )
             return {"success": True}
         except Exception as e:
-            return {"success": False, "error": str(e)}
-
-
-P = ParamSpec("P")
-R = TypeVar("R")
-
-
-def _serialize_tool(coro: Callable[P, Awaitable[R]]) -> Callable[P, Awaitable[str]]:
-    """
-    Wrap a toolbox method so it always returns a JSON string.
-    This is required for OpenRouter SDK compatibility, which expects
-    ToolMessage.content to be a string.
-    """
-
-    async def wrapper(*args: P.args, **kwargs: P.kwargs) -> str:
-        result = await coro(*args, **kwargs)
-        if isinstance(result, str):
-            return result
-        if isinstance(result, (dict, list)):
-            return json.dumps(result, ensure_ascii=False)
-        return str(result)
-
-    import inspect
-
-    wrapper.__signature__ = inspect.signature(coro)  # type: ignore[attr-defined]
-    wrapper.__name__ = getattr(coro, "__name__", "wrapper")
-    wrapper.__doc__ = getattr(coro, "__doc__", None)
-    return wrapper
-
-
-P = ParamSpec("P")
-R = TypeVar("R")
-
-
-def _serialize_tool(coro: Callable[P, Awaitable[R]]) -> Callable[P, Awaitable[str]]:
-    """
-    Wrap a toolbox method so it always returns a JSON string.
-    This is required for OpenRouter SDK compatibility, which expects
-    ToolMessage.content to be a string.
-    """
-
-    async def wrapper(*args: P.args, **kwargs: P.kwargs) -> str:
-        result = await coro(*args, **kwargs)
-        if isinstance(result, str):
-            return result
-        if isinstance(result, (dict, list)):
-            import json
-
-            return json.dumps(result, ensure_ascii=False)
-        return str(result)
-
-    import inspect
-
-    wrapper.__signature__ = inspect.signature(coro)  # type: ignore[attr-defined]
-    wrapper.__name__ = getattr(coro, "__name__", "wrapper")
-    wrapper.__doc__ = getattr(coro, "__doc__", None)
-    return wrapper
+            return _tool_failure(e)
 
 
 def build_telegram_langchain_tools(
@@ -2918,7 +2881,10 @@ def build_telegram_langchain_tools(
         StructuredTool.from_function(
             coroutine=toolbox.mute_chat,
             name="mute_chat",
-            description="Mute a chat. If duration_hours is not specified, it is muted indefinitely (10 years).",
+            description=(
+                "Mute a chat. If duration_hours is not specified, "
+                "it is muted indefinitely (10 years)."
+            ),
         ),
         StructuredTool.from_function(
             coroutine=toolbox.unmute_chat,
@@ -2938,7 +2904,10 @@ def build_telegram_langchain_tools(
         StructuredTool.from_function(
             coroutine=toolbox.search_location,
             name="search_location",
-            description="Search for a location or address and return its coordinates and formatted address using ArcGIS.",
+            description=(
+                "Search for a location or address and return its coordinates "
+                "and formatted address using ArcGIS."
+            ),
         ),
         StructuredTool.from_function(
             coroutine=toolbox.get_chat_folders,
@@ -2960,7 +2929,8 @@ def build_telegram_langchain_tools(
             name="get_message_buttons",
             description=(
                 "Get inline or reply keyboard buttons from a message. "
-                "CRITICAL: The 'peer' argument MUST be the chat/bot where the message is located, not the current chat! "
+                "CRITICAL: The 'peer' argument MUST be the chat/bot where the message is "
+                "located, not the current chat! "
                 "Returns list of buttons with text, type, data, URL, etc."
             ),
         ),

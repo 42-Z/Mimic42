@@ -1,17 +1,17 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import { useParams, useSearchParams, useRouter } from 'next/navigation';
 import { agentIdSchema } from '@/lib/validators';
 import { useAgentStatus, useAgentDetails, useUpdateAgentSettings } from '@/hooks/useAgent';
-import { useAgentMessages } from '@/hooks/useAgentMessages';
-import { useAgentActions as useAgentActionsQuery } from '@/hooks/useAgentMessages';
-import { useRealtimeFeed, useAgentStatusRealtime } from '@/hooks/useRealtimeFeed';
-import { useTelegramSession, useAnalyticsData } from '@/hooks/useTelegramSession';
+import { useAgentStatusRealtime } from '@/hooks/useRealtimeFeed';
+import { useTelegramSession } from '@/hooks/useTelegramSession';
 import { useStartAgent, useStopAgent, useTriggerMessage, useDeleteAgent } from '@/hooks/useAgents';
 import { useAgentMemories, useAgentMemoryHistory } from '@/hooks/useMemory';
 import { useToast } from '@/components/ui/toast';
 import { AgentStatusBadge } from '@/components/agents/AgentStatusBadge';
+import { TabLogs } from '@/components/agent/TabLogs';
+import { TabAnalytics } from '@/components/agent/TabAnalytics';
 import { Button } from '@/components/ui/button';
 import { Input, Textarea } from '@/components/ui/input';
 import { Card, Skeleton, Spinner, Divider } from '@/components/ui/card';
@@ -23,17 +23,13 @@ import {
 } from '@/lib/validators';
 import {
   Settings, ScrollText, Zap, MessageSquare, BarChart2, Brain,
-  Play, Square, Send, Wifi, WifiOff, AlertTriangle, RefreshCw,
-  Bot, Clock, CheckCircle, XCircle, Loader2, Search, Trash2,
+  Play, Square, Send, AlertTriangle, RefreshCw,
+  Bot, Clock, Search, Trash2,
 } from 'lucide-react';
 import { formatDistanceToNow, format } from 'date-fns';
 import { ru } from 'date-fns/locale';
 import { cn } from '@/lib/utils';
-import {
-  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer, BarChart, Bar,
-} from 'recharts';
-import type { AgentTab, AgentActivity, AgentMessageRecord, ApiError, FeedItem } from '@/types';
+import type { AgentTab, ApiError } from '@/types';
 
 const TABS: { id: AgentTab; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
   { id: 'settings',  label: 'Настройки',  icon: Settings },
@@ -291,166 +287,6 @@ function SettingsSkeleton() {
   );
 }
 
-// ── Tab: Logs ─────────────────────────────────────────────────────────────────
-function TabLogs({ agentId }: { agentId: string }) {
-  const { data: messages, isLoading: mlLoading } = useAgentMessages(agentId, 50);
-  const { data: actions, isLoading: alLoading }  = useAgentActionsQuery(agentId, 50);
-  const { feedItems, isConnected } = useRealtimeFeed(agentId);
-
-  const [filter, setFilter] = useState<'all' | 'messages' | 'events' | 'errors'>('all');
-  const [search, setSearch] = useState('');
-  const [autoScroll, setAutoScroll] = useState(true);
-  const bottomRef = useRef<HTMLDivElement>(null);
-
-  // Merge initial + realtime
-  const allItems = [
-    ...(messages ?? []).map(m => ({
-      type: 'message' as const, id: m.id ?? m.created_at,
-      timestamp: m.created_at, peer: m.peer, role: m.role,
-      content: m.content, direction: m.direction,
-    })),
-    ...(actions ?? []).map(a => ({
-      type: 'event' as const, id: a.id ?? a.created_at,
-      timestamp: a.created_at, event_type: a.event_type,
-      status: a.status, error: a.error,
-    })),
-    ...feedItems,
-  ].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
-
-  // Deduplicate by id
-  const seen = new Set<string>();
-  const deduped = allItems.filter(item => {
-    if (seen.has(item.id)) return false;
-    seen.add(item.id);
-    return true;
-  });
-
-  const filtered = deduped.filter(item => {
-    if (filter === 'messages' && item.type !== 'message') return false;
-    if (filter === 'events'   && item.type !== 'event')   return false;
-    if (filter === 'errors'   && !(item.type === 'event' && item.status === 'failed')) return false;
-    if (search) {
-      const q = search.toLowerCase();
-      if (item.type === 'message') return item.content.toLowerCase().includes(q) || item.peer.toLowerCase().includes(q);
-      return item.event_type.toLowerCase().includes(q);
-    }
-    return true;
-  });
-
-  useEffect(() => {
-    if (autoScroll) bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [filtered.length, autoScroll]);
-
-  return (
-    <div className="space-y-4">
-      {/* Controls */}
-      <div className="flex flex-col sm:flex-row gap-3">
-        <Input
-          placeholder="Поиск по содержимому..."
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          className="sm:max-w-xs"
-        />
-        <div className="flex items-center gap-1">
-          {(['all', 'messages', 'events', 'errors'] as const).map((f) => (
-            <button
-              key={f}
-              onClick={() => setFilter(f)}
-              className={cn(
-                'px-3 py-1.5 rounded-sm font-mono text-xs border transition-colors',
-                filter === f
-                  ? 'bg-plasma-950 border-plasma-800 text-plasma-400'
-                  : 'border-void-700 text-void-500 hover:text-void-300 hover:border-void-600',
-              )}
-            >
-              {{ all: 'Все', messages: 'Сообщения', events: 'События', errors: 'Ошибки' }[f]}
-            </button>
-          ))}
-        </div>
-        <div className="flex items-center gap-2 ml-auto">
-          <button
-            onClick={() => setAutoScroll(v => !v)}
-            className={cn('font-mono text-xs px-3 py-1.5 rounded-sm border transition-colors',
-              autoScroll ? 'border-neon-800 text-neon-500' : 'border-void-700 text-void-600')}
-          >
-            {autoScroll ? '⬇ Авто-скролл' : '— Авто-скролл'}
-          </button>
-          <div className="flex items-center gap-1.5">
-            {isConnected ? <Wifi className="h-3.5 w-3.5 text-neon-400" /> : <WifiOff className="h-3.5 w-3.5 text-void-600" />}
-            <span className={cn('font-mono text-[10px]', isConnected ? 'text-neon-500' : 'text-void-600')}>
-              {isConnected ? 'LIVE' : 'OFFLINE'}
-            </span>
-          </div>
-        </div>
-      </div>
-
-      {/* Log container */}
-      <Card variant="glass" padding="none">
-        <div className="h-[600px] overflow-y-auto p-2 space-y-0.5 font-mono text-xs">
-          {(mlLoading || alLoading) ? (
-            <div className="flex items-center justify-center h-full">
-              <Spinner />
-            </div>
-          ) : filtered.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-full text-void-600 gap-2">
-              <ScrollText className="h-8 w-8 opacity-30" />
-              <p>Нет записей</p>
-            </div>
-          ) : (
-            filtered.map(item => (
-              <LogRow key={item.id} item={item} />
-            ))
-          )}
-          <div ref={bottomRef} />
-        </div>
-      </Card>
-
-      <p className="font-mono text-xs text-void-600 text-right">
-        {filtered.length} записей
-      </p>
-    </div>
-  );
-}
-
-function LogRow({ item }: { item: FeedItem }) {
-  const time = format(new Date((item as { timestamp: string }).timestamp), 'HH:mm:ss');
-
-  if ((item as { type: string }).type === 'message') {
-    const m = item as { peer: string; role: string; content: string; direction?: string };
-    const isIn = m.direction === 'incoming' || m.role === 'user';
-    return (
-      <div className={cn(
-        'flex gap-3 px-3 py-1.5 rounded-[2px] hover:bg-void-800/40',
-        isIn ? 'border-l-2 border-plasma-800' : 'border-l-2 border-neon-900',
-      )}>
-        <span className="text-void-600 w-16 shrink-0 tabular-nums">{time}</span>
-        <span className={cn('w-8 shrink-0 uppercase text-[10px]', isIn ? 'text-plasma-600' : 'text-neon-700')}>
-          {isIn ? '←IN' : '→OUT'}
-        </span>
-        <span className="text-void-500 shrink-0 max-w-[100px] truncate">{m.peer}</span>
-        <span className="text-void-300 flex-1">{sanitizeText(m.content)}</span>
-      </div>
-    );
-  }
-
-  const e = item as { event_type: string; status: string; error: string | null };
-  const statusColor: Record<string, string> = {
-    succeeded: 'text-neon-600', failed: 'text-crimson-500',
-    running: 'text-plasma-500', pending: 'text-void-500', cancelled: 'text-void-600',
-  };
-  return (
-    <div className="flex gap-3 px-3 py-1.5 rounded-[2px] hover:bg-void-800/40 border-l-2 border-void-800">
-      <span className="text-void-600 w-16 shrink-0 tabular-nums">{time}</span>
-      <span className="text-void-700 w-8 shrink-0">EVT</span>
-      <span className={cn('w-20 shrink-0', statusColor[e.status] ?? 'text-void-500')}>
-        [{e.status.toUpperCase()}]
-      </span>
-      <span className="text-void-400 flex-1">{e.event_type}</span>
-      {e.error && <span className="text-crimson-500 truncate max-w-[150px]">{e.error}</span>}
-    </div>
-  );
-}
-
 // ── Tab: Actions ──────────────────────────────────────────────────────────────
 function TabActions({ agentId }: { agentId: string }) {
   const { toast } = useToast();
@@ -692,87 +528,6 @@ function TabTelegram({ agentId }: { agentId: string }) {
           <Button variant="outline" size="sm" leftIcon={<RefreshCw className="h-3.5 w-3.5" />}>
             Переподключить
           </Button>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── Tab: Analytics ────────────────────────────────────────────────────────────
-function TabAnalytics({ agentId }: { agentId: string }) {
-  const [days, setDays] = useState<7 | 30>(7);
-  const { data, isLoading } = useAnalyticsData(agentId, days);
-
-  const tooltipStyle = {
-    backgroundColor: '#1a1a28',
-    border: '1px solid rgba(96, 96, 117, 0.2)',
-    borderRadius: '2px',
-    fontFamily: 'var(--font-geist-mono)',
-    fontSize: '11px',
-    color: '#c0c0cc',
-  };
-
-  return (
-    <div className="space-y-6">
-      <div className="flex items-center gap-2">
-        {([7, 30] as const).map(d => (
-          <button
-            key={d}
-            onClick={() => setDays(d)}
-            className={cn(
-              'px-4 py-1.5 rounded-sm font-mono text-xs border transition-colors',
-              days === d
-                ? 'bg-plasma-950 border-plasma-800 text-plasma-400'
-                : 'border-void-700 text-void-500 hover:text-void-300',
-            )}
-          >
-            {d} дней
-          </button>
-        ))}
-      </div>
-
-      {isLoading ? (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <Skeleton className="h-64" />
-          <Skeleton className="h-64" />
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <Card variant="glass" padding="md">
-            <h3 className="font-mono text-xs text-void-400 uppercase tracking-wider mb-4">
-              Сообщения по дням
-            </h3>
-            <ResponsiveContainer width="100%" height={220}>
-              <AreaChart data={data}>
-                <defs>
-                  <linearGradient id="msgGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%"  stopColor="#1a7fff" stopOpacity={0.3} />
-                    <stop offset="95%" stopColor="#1a7fff" stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="rgba(96,96,117,0.1)" />
-                <XAxis dataKey="date" tick={{ fontSize: 10, fontFamily: 'Space Mono', fill: '#606075' }} />
-                <YAxis tick={{ fontSize: 10, fontFamily: 'Space Mono', fill: '#606075' }} />
-                <Tooltip contentStyle={tooltipStyle} />
-                <Area type="monotone" dataKey="messages" stroke="#1a7fff" fill="url(#msgGrad)" strokeWidth={1.5} dot={false} />
-              </AreaChart>
-            </ResponsiveContainer>
-          </Card>
-
-          <Card variant="glass" padding="md">
-            <h3 className="font-mono text-xs text-void-400 uppercase tracking-wider mb-4">
-              Ошибки по дням
-            </h3>
-            <ResponsiveContainer width="100%" height={220}>
-              <BarChart data={data}>
-                <CartesianGrid strokeDasharray="3 3" stroke="rgba(96,96,117,0.1)" />
-                <XAxis dataKey="date" tick={{ fontSize: 10, fontFamily: 'Space Mono', fill: '#606075' }} />
-                <YAxis tick={{ fontSize: 10, fontFamily: 'Space Mono', fill: '#606075' }} />
-                <Tooltip contentStyle={tooltipStyle} />
-                <Bar dataKey="errors" fill="#f43f5e" opacity={0.8} radius={[2, 2, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </Card>
         </div>
       )}
     </div>

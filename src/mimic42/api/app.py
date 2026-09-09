@@ -208,7 +208,8 @@ def create_app(
                                     record.agent_id
                                 )
                                 logger.info(
-                                    f"[lifespan] Restoring agent {record.agent_id} with model {config.llm_model}"
+                                    f"[lifespan] Restoring agent {record.agent_id} "
+                                    f"with model {config.llm_model}"
                                 )
                                 await app.state.agent_manager.create_agent(config, start=True)
                                 logger.info(
@@ -386,7 +387,9 @@ def create_app(
             if isinstance(exc, (PhoneCodeInvalidError, PhoneCodeEmptyError)):
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Неверный код подтверждения. Пожалуйста, проверьте и введите код заново.",
+                    detail=(
+                        "Неверный код подтверждения. Пожалуйста, проверьте и введите код заново."
+                    ),
                 ) from exc
             if isinstance(exc, PhoneCodeExpiredError):
                 raise HTTPException(

@@ -66,14 +66,20 @@ class DatabaseShortTermMemory:
         peer: str,
         messages: list[dict[str, Any]],
         structured_response: dict[str, Any] | None = None,
+        turn_id: str | None = None,
+        thread_id: UUID | None = None,
     ) -> None:
         """Save a list of LangChain message dicts to the database."""
         from datetime import datetime, timedelta
 
         now = datetime.now(UTC)
         async with self._session_factory() as db_session:
+            row_count = 0
             for i, msg in enumerate(messages):
+                row_count = i + 1
                 payload: dict[str, Any] = {"peer": peer}
+                if turn_id is not None:
+                    payload["turn_id"] = turn_id
                 role = msg.get("role", msg.get("type", ""))
                 content = msg.get("content", "")
 
@@ -108,6 +114,7 @@ class DatabaseShortTermMemory:
                 db_session.add(
                     AgentMessageModel(
                         agent_id=agent_id,
+                        thread_id=thread_id,
                         direction=direction,
                         role=role,
                         content=content,
@@ -115,6 +122,30 @@ class DatabaseShortTermMemory:
                         created_at=now + timedelta(microseconds=i * 1000),
                     )
                 )
+
+            # With response_format the turn ends on a synthetic tool message:
+            # no assistant row exists, so the reply text would be lost. Persist
+            # it as its own agent_response row for the dashboard and KPIs.
+            if structured_response is not None:
+                text = structured_response.get("text", "")
+                if text:
+                    response_payload: dict[str, Any] = {
+                        "peer": peer,
+                        "structured_response": structured_response,
+                    }
+                    if turn_id is not None:
+                        response_payload["turn_id"] = turn_id
+                    db_session.add(
+                        AgentMessageModel(
+                            agent_id=agent_id,
+                            thread_id=thread_id,
+                            direction="agent_response",
+                            role="assistant",
+                            content=text,
+                            payload=response_payload,
+                            created_at=now + timedelta(microseconds=(row_count + 1) * 1000),
+                        )
+                    )
             await db_session.commit()
 
     @staticmethod
