@@ -13,6 +13,7 @@ from mimic42.integrations.database_models import AgentEventModel
 logger = logging.getLogger("mimic42.activity")
 
 MAX_JSON_CHARS = 4000
+MAX_ITEM_CHARS = 400
 PREVIEW_CHARS = 500
 
 
@@ -20,7 +21,10 @@ def _truncate(value: Any) -> dict[str, Any]:
     """Fit an arbitrary JSON value into the payload/result column.
 
     Large tool outputs (get_messages, get_dialogs) must not bloat the
-    activity log, so oversized values collapse to a short preview.
+    activity log. For oversized dicts the small top-level keys are kept —
+    they carry turn correlation and error identity (turn_id, peer,
+    error_code, success, error) — while each oversized value collapses to
+    a marker. Non-dict values collapse to a short preview.
     """
     try:
         serialized = json.dumps(value, ensure_ascii=False, default=str)
@@ -30,10 +34,25 @@ def _truncate(value: Any) -> dict[str, Any]:
         if isinstance(value, dict):
             return value
         return {"value": value}
-    return {
-        "_truncated": True,
-        "preview": serialized[:PREVIEW_CHARS],
-    }
+
+    if not isinstance(value, dict):
+        return {"_truncated": True, "preview": serialized[:PREVIEW_CHARS]}
+
+    kept: dict[str, Any] = {}
+    for key, item in value.items():
+        try:
+            item_json = json.dumps(item, ensure_ascii=False, default=str)
+        except (TypeError, ValueError):
+            item_json = str(item)
+        if len(item_json) <= MAX_ITEM_CHARS:
+            kept[key] = item
+        else:
+            kept[key] = {"_truncated": True}
+    kept["_truncated"] = True
+
+    if len(json.dumps(kept, ensure_ascii=False, default=str)) > MAX_JSON_CHARS:
+        return {"_truncated": True, "preview": serialized[:PREVIEW_CHARS]}
+    return kept
 
 
 class ActivityRecorder:

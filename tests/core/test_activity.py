@@ -84,16 +84,28 @@ async def test_activity_recorder_swallows_write_failure() -> None:
     )
 
 
-def test_truncate_caps_large_values() -> None:
-    big = {"items": "x" * 10_000}
-    truncated = ActivityMiddleware.__mro__  # keep import meaningful
-    assert truncated is not None
-
+def test_truncate_keeps_small_keys_and_caps_large_values() -> None:
     from mimic42.core.activity import _truncate
 
+    # Oversized dict: small correlation keys survive, the huge value is
+    # collapsed to a marker.
+    big = {
+        "turn_id": "t-1",
+        "peer": "123",
+        "error_code": "FloodWaitError",
+        "items": "x" * 10_000,
+    }
     result = _truncate(big)
     assert result["_truncated"] is True
-    assert len(result["preview"]) < 1000
+    assert result["turn_id"] == "t-1"
+    assert result["peer"] == "123"
+    assert result["error_code"] == "FloodWaitError"
+    assert result["items"] == {"_truncated": True}
+
+    # Oversized non-dict: collapses to a short preview.
+    list_result = _truncate(["y" * 10_000])
+    assert list_result["_truncated"] is True
+    assert len(list_result["preview"]) < 1000
 
 
 class _RecordingRecorder:

@@ -429,7 +429,9 @@ class MimicAgentRuntime:
                 # Mark the exception so the handler-level catch-all does not
                 # record turn.failed a second time (the event above already
                 # carries the turn_id).
-                e._mimic_turn_failed_recorded = True
+                # Marker for the handler catch-all: turn.failed was already
+                # recorded with the turn_id, so it must not be recorded twice.
+                e._mimic_turn_failed_recorded = True  # ty: ignore[unresolved-attribute]
                 raise
 
             output_messages = _messages_to_dicts(response)
