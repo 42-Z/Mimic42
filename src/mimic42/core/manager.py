@@ -125,16 +125,23 @@ class AgentManager:
         """Unregister the agent runtime and stop it. Missing agents are ignored.
 
         Failures of ``stop`` propagate to the caller so the deletion flow can
-        abort before removing the database rows.
+        abort before removing the database rows. On failure the tombstone is
+        lifted: the agent row is still in the database, so the next
+        ``get_agent`` re-creates the runtime from scratch (a fresh object).
         """
         async with self._lock:
-            runtime = self._agents.pop(agent_id, None)
-        if runtime is not None:
-            await runtime.stop()
-        # Tombstone the id so a concurrent get_agent cannot re-materialise the
-        # runtime from the persistent config while the rows are being deleted.
-        async with self._lock:
+            # Tombstone and pop must happen under one lock: a concurrent
+            # get_agent landing in the window between them would re-materialise
+            # the runtime from the persistent config and leak it.
             self._removed.add(agent_id)
+            runtime = self._agents.pop(agent_id, None)
+        try:
+            if runtime is not None:
+                await runtime.stop()
+        except Exception:
+            async with self._lock:
+                self._removed.discard(agent_id)
+            raise
 
     async def trigger_message(
         self,

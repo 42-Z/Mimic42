@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+from typing import cast
 from uuid import UUID, uuid4
 
 import pytest
@@ -110,3 +112,45 @@ async def test_remove_agent_propagates_stop_failures() -> None:
     # The agent must not be tombstoned: it is still present in the database,
     # so re-materialisation has to stay possible.
     assert agent_id not in manager._removed
+
+
+@pytest.mark.asyncio
+async def test_get_agent_during_removal_sees_tombstone() -> None:
+    """A concurrent get_agent must not re-materialise the runtime while
+    remove_agent is stopping it — otherwise the leaked runtime keeps its
+    Telethon connection forever."""
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    agent_id = uuid4()
+
+    class SlowStopRuntime:
+        def __init__(self, config: AgentRuntimeConfig) -> None:
+            self.config = config
+
+        async def stop(self) -> None:
+            entered.set()
+            await release.wait()
+
+    def factory(
+        config: AgentRuntimeConfig,
+        session_factory: object = None,
+    ) -> MimicAgentRuntime:
+        return cast("MimicAgentRuntime", SlowStopRuntime(config))
+
+    async def load_config(_agent_id: UUID) -> AgentRuntimeConfig:
+        return _build_config(agent_id)
+
+    manager = AgentManager(runtime_factory=factory, config_loader=load_config)
+    await manager.create_agent(_build_config(agent_id))
+
+    removal = asyncio.create_task(manager.remove_agent(agent_id))
+    await entered.wait()
+
+    with pytest.raises(KeyError):
+        await manager.get_agent(agent_id)
+
+    release.set()
+    await removal
+
+    assert manager._agents == {}
+    assert agent_id in manager._removed
