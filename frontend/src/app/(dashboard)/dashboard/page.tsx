@@ -19,7 +19,7 @@ import {
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import type { AgentRecord } from '@/types';
-import type { ActivityItem } from '@/lib/activity/normalize';
+import { feedDirection, feedLine, type ActivityItem } from '@/lib/activity/normalize';
 
 export default function DashboardPage() {
   const { data: agents, isLoading: agentsLoading } = useAgents();
@@ -331,21 +331,6 @@ function LiveFeed({
   );
 }
 
-function feedLine(item: ActivityItem): { text: string; failed: boolean } {
-  const failedAction = item.actions.find((a) => a.status === 'failed');
-  if (failedAction) {
-    return { text: failedAction.hint ?? failedAction.label, failed: true };
-  }
-  if (item.actions.length > 0) {
-    const labels = item.actions.map((a) => a.label).slice(0, 3).join(', ');
-    return { text: labels, failed: false };
-  }
-  if (item.response) return { text: item.response.content, failed: false };
-  if (item.incoming) return { text: item.incoming.content, failed: false };
-  if (item.trigger) return { text: item.trigger.content, failed: false };
-  return { text: '—', failed: false };
-}
-
 function FeedRow({ item, agentNameById }: { item: ActivityItem; agentNameById: Map<string, string> }) {
   const time = formatDistanceToNow(new Date(item.createdAt), {
     addSuffix: true,
@@ -353,22 +338,38 @@ function FeedRow({ item, agentNameById }: { item: ActivityItem; agentNameById: M
   });
   const agentName = item.agentId ? agentNameById.get(item.agentId) : undefined;
   const peerLabel = item.peerTitle ?? (item.peer ? `ID ${item.peer}` : null);
-  const { text, failed } = feedLine(item);
+  const text = feedLine(item);
+  const direction = feedDirection(item);
+  const failed = item.failed;
 
   return (
     <div className={cn(
-      'flex gap-3 px-3 py-2 rounded-sm text-xs font-mono group hover:bg-void-800/50 transition-colors',
+      'flex gap-2.5 px-3 py-2 rounded-sm text-xs font-mono group hover:bg-void-800/50 transition-colors',
       failed ? 'border-l-2 border-crimson-700' : 'border-l-2 border-void-700',
     )}>
       {agentName && (
         <span className="shrink-0 text-void-600">{truncate(sanitizeText(agentName), 16)}</span>
       )}
+      <span
+        className={cn(
+          'shrink-0 font-bold',
+          direction === 'in' ? 'text-plasma-500' : 'text-neon-600',
+        )}
+        title={direction === 'in' ? 'Входящее от собеседника' : 'Действие агента'}
+      >
+        {direction === 'in' ? '←' : '→'}
+      </span>
       {peerLabel && (
-        <span className={cn('shrink-0 max-w-[140px] truncate', failed ? 'text-crimson-400' : 'text-plasma-500')}>
+        <span
+          className={cn(
+            'shrink-0 max-w-[140px] truncate',
+            direction === 'in' ? 'text-plasma-400' : 'text-void-500',
+          )}
+        >
           {sanitizeText(peerLabel)}
         </span>
       )}
-      <span className={cn('flex-1 truncate', failed ? 'text-crimson-300' : 'text-void-300')}>
+      <span className={cn('flex-1 truncate', failed ? 'text-crimson-300' : direction === 'in' ? 'text-void-200' : 'text-void-300')}>
         {truncate(sanitizeText(text), 140)}
       </span>
       <span className="text-void-600 shrink-0">{time}</span>

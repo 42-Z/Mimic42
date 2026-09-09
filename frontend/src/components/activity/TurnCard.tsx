@@ -3,21 +3,13 @@
 import { useState } from 'react';
 import { ChevronDown, CornerDownRight, MessageSquarePlus } from 'lucide-react';
 import type { ActivityItem } from '@/lib/activity/normalize';
+import { incomingBody } from '@/lib/activity/normalize';
 import { ActionRow } from './ActionRow';
 import { ActivityDetails } from './ActivityDetails';
 import { sanitizeText } from '@/lib/sanitize';
 import { cn } from '@/lib/utils';
 import { Bot } from 'lucide-react';
 import { getEventMeta } from '@/lib/activity/eventCatalog';
-
-/** Extract the human-readable part of the wrapped incoming message prompt. */
-function incomingBody(content: string): string {
-  const match = content.match(/Содержимое: ([\s\S]*)$/);
-  const senderMatch = content.match(/Отправитель: (.*)$/m);
-  const body = match?.[1] ?? content;
-  const sender = senderMatch?.[1]?.trim() ?? null;
-  return sender ? `${body} — ${sender}` : body;
-}
 
 export function TurnCard({ item, defaultOpen = false }: { item: ActivityItem; defaultOpen?: boolean }) {
   const [open, setOpen] = useState(defaultOpen);
