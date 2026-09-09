@@ -275,7 +275,13 @@ function LiveFeed({
   agentIds: string[];
   agentNameById: Map<string, string>;
 }) {
-  const { items, isConnected, clearFeed } = useMultiAgentRealtimeFeed(agentIds);
+  const { items, peerNames, isConnected, refetchSeed, clearFeed } =
+    useMultiAgentRealtimeFeed(agentIds);
+
+  const rows = items.map((item) => ({
+    ...item,
+    peerTitle: item.peerTitle ?? peerNames.get(item.peer) ?? null,
+  }));
 
   return (
     <Card variant="glass" padding="none" className="flex flex-col h-[480px]">
@@ -297,23 +303,26 @@ function LiveFeed({
           </div>
         </div>
         <button
-          onClick={clearFeed}
+          onClick={() => {
+            refetchSeed();
+            clearFeed();
+          }}
           className="font-mono text-xs text-void-600 hover:text-void-400 transition-colors flex items-center gap-1"
         >
           <RefreshCw className="h-3 w-3" />
-          Очистить
+          Обновить
         </button>
       </div>
 
       {/* Items */}
       <div className="flex-1 overflow-y-auto p-2 space-y-1">
-        {items.length === 0 ? (
+        {rows.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-void-600">
             <Activity className="h-8 w-8 mb-2 opacity-30" />
             <p className="font-mono text-xs">Ожидание событий...</p>
           </div>
         ) : (
-          [...items].reverse().map((item) => (
+          [...rows].reverse().map((item) => (
             <FeedRow key={item.id} item={item} agentNameById={agentNameById} />
           ))
         )}
