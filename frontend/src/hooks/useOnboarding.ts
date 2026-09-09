@@ -36,8 +36,10 @@ export function deriveOnboardingStep(session: OnboardingSessionRow | null | unde
 }
 
 /**
- * Fetches the current onboarding session from Supabase.
- * Returns null if no session exists yet.
+ * Fetches the current onboarding draft from Supabase.
+ * Only sessions without a completed agent are returned, so finished
+ * wizard runs never block creating a new agent.
+ * Returns null if no draft exists yet.
  */
 export function useOnboardingSession() {
   return useQuery({
@@ -51,6 +53,7 @@ export function useOnboardingSession() {
         .from('agent_onboarding_sessions')
         .select('*')
         .eq('owner_id', user.id)
+        .is('completed_agent_id', null)
         .order('created_at', { ascending: false })
         .limit(1)
         .maybeSingle();
@@ -64,48 +67,66 @@ export function useOnboardingSession() {
 
 /**
  * Hook for saving onboarding step data to Supabase.
- * Performs an upsert based on owner_id.
+ * With sessionId === null inserts a new draft row (the database generates the id),
+ * otherwise updates the existing draft.
  */
 export function useSaveOnboardingStep() {
   const qc = useQueryClient();
 
   return useMutation({
-    mutationFn: async (update: Partial<OnboardingSessionRow>) => {
+    mutationFn: async ({
+      sessionId,
+      update,
+    }: {
+      sessionId: string | null;
+      update: Partial<OnboardingSessionRow>;
+    }) => {
       const supabase = getSupabaseClient();
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) throw new Error('Not authenticated');
 
-      const { data, error } = await supabase
-        .from('agent_onboarding_sessions')
-        .upsert(
-          {
-            owner_id: user.id,
-            ...update,
-            updated_at: new Date().toISOString(),
-          },
-          { onConflict: 'owner_id' }
-        )
-        .select()
-        .single();
+      const payload = {
+        owner_id: user.id,
+        ...update,
+        updated_at: new Date().toISOString(),
+      };
 
+      const query = sessionId
+        ? supabase
+            .from('agent_onboarding_sessions')
+            .update(payload)
+            .eq('id', sessionId)
+            .select()
+            .single()
+        : supabase
+            .from('agent_onboarding_sessions')
+            .insert(payload)
+            .select()
+            .single();
+
+      const { data, error } = await query;
       if (error) throw error;
       return data as OnboardingSessionRow;
     },
-    onSuccess: () => {
+    onSuccess: (row) => {
+      // Write the row into the cache immediately: deriveOnboardingStep moves
+      // to the next step without waiting for the refetch, which also prevents
+      // a second submit from inserting a duplicate draft.
+      qc.setQueryData(queryKeys.onboarding.session(), row);
       qc.invalidateQueries({ queryKey: queryKeys.onboarding.session() });
     },
   });
 }
 
 /**
- * Step 1: Save agent name
+ * Step 1: Save agent name — creates the draft row when sessionId is null
  */
 export function useSaveAgentName() {
   const save = useSaveOnboardingStep();
   return {
     ...save,
-    mutateAsync: (values: AgentNameValues) =>
-      save.mutateAsync({ agent_name: values.name }),
+    mutateAsync: ({ sessionId, values }: { sessionId: string | null; values: AgentNameValues }) =>
+      save.mutateAsync({ sessionId, update: { agent_name: values.name } }),
   };
 }
 
@@ -116,24 +137,32 @@ export function useSaveSoulPrompt() {
   const save = useSaveOnboardingStep();
   return {
     ...save,
-    mutateAsync: (values: SoulPromptValues) =>
+    mutateAsync: ({ sessionId, values }: { sessionId: string; values: SoulPromptValues }) =>
       save.mutateAsync({
-        soul_prompt: values.soul_prompt,
+        sessionId,
+        update: { soul_prompt: values.soul_prompt },
       }),
   };
 }
 
 
 /**
- * Step 4a: Start Telegram authorization
+ * Step 4a: Start Telegram authorization for the current draft
  */
 export function useStartTelegramAuth() {
   const qc = useQueryClient();
 
   return useMutation({
-    mutationFn: async (values: TelegramCredentialsValues) => {
+    mutationFn: async ({
+      onboardingId,
+      values,
+    }: {
+      onboardingId: string | null;
+      values: TelegramCredentialsValues;
+    }) => {
       const result = await onboardingApi.startTelegram({
         phone_number: values.phone_number,
+        onboarding_id: onboardingId,
       });
 
       return result as OnboardingPublicStatus;
@@ -194,7 +223,6 @@ export function useFinalizeAgent() {
       const result = await onboardingApi.finalizeAgent(onboardingId, {
         name: session.agent_name ?? 'Мой агент',
         soul_prompt: session.soul_prompt ?? '',
-        system_prompt: session.system_prompt ?? '',
       });
 
       // Mark onboarding as complete in Supabase
@@ -210,6 +238,27 @@ export function useFinalizeAgent() {
       qc.invalidateQueries({ queryKey: queryKeys.onboarding.session() });
       qc.invalidateQueries({ queryKey: queryKeys.agents.list() });
       router.push(`/dashboard`);
+    },
+  });
+}
+
+/**
+ * Deletes the current onboarding draft (for the "Start over" action)
+ */
+export function useDiscardOnboardingDraft() {
+  const qc = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (sessionId: string) => {
+      const supabase = getSupabaseClient();
+      const { error } = await supabase
+        .from('agent_onboarding_sessions')
+        .delete()
+        .eq('id', sessionId);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.onboarding.session() });
     },
   });
 }

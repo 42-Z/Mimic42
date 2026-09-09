@@ -106,10 +106,11 @@ export function useRealtimeFeed(agentId: string) {
       type: 'message',
       id: m.id,
       timestamp: m.created_at,
-      peer: m.peer || (m as any).payload?.peer || '',
+      peer: m.peer || m.payload?.peer || '',
       role: m.role,
       content: m.content,
       direction: m.direction ?? undefined,
+      agent_id: m.agent_id,
     })),
     ...newEvents.map((e): FeedItem => ({
       type: 'event',
@@ -118,6 +119,116 @@ export function useRealtimeFeed(agentId: string) {
       event_type: e.event_type,
       status: e.status,
       error: e.error,
+      agent_id: e.agent_id,
+    })),
+  ].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+
+  return {
+    feedItems,
+    newMessageCount: newMessages.length,
+    newEventCount: newEvents.length,
+    isConnected,
+    clearFeed: () => {
+      setNewMessages([]);
+      setNewEvents([]);
+    },
+  };
+}
+
+/**
+ * Live feed merged across multiple agents over a single realtime channel.
+ * Initial data must be loaded separately; the hook only provides
+ * incremental updates. Each item carries agent_id of its owner.
+ */
+export function useMultiAgentRealtimeFeed(agentIds: string[]) {
+  const qc = useQueryClient();
+  const [newMessages, setNewMessages] = useState<AgentMessageRow[]>([]);
+  const [newEvents, setNewEvents] = useState<AgentEventRow[]>([]);
+  const [isConnected, setIsConnected] = useState(false);
+
+  const agentKey = [...agentIds].sort().join(',');
+
+  useEffect(() => {
+    if (!agentKey) {
+      setNewMessages([]);
+      setNewEvents([]);
+      return;
+    }
+
+    const supabase = getSupabaseClient();
+    const channelName = 'agent-feed-all';
+    const filter = `agent_id=in.(${agentKey})`;
+
+    const channel = supabase
+      .channel(channelName)
+      .on<AgentMessageRow>(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'agent_messages',
+          filter,
+        },
+        (payload: RealtimePayload<AgentMessageRow>) => {
+          const msg = payload.new;
+          setNewMessages((prev) => {
+            const updated = [...prev, msg];
+            return updated.length > MAX_FEED_ITEMS
+              ? updated.slice(updated.length - MAX_FEED_ITEMS)
+              : updated;
+          });
+          qc.invalidateQueries({ queryKey: queryKeys.messages.byAgent(msg.agent_id) });
+        }
+      )
+      .on<AgentEventRow>(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'agent_events',
+          filter,
+        },
+        (payload: RealtimePayload<AgentEventRow>) => {
+          const event = payload.new;
+          setNewEvents((prev) => {
+            const updated = [...prev, event];
+            return updated.length > MAX_FEED_ITEMS
+              ? updated.slice(updated.length - MAX_FEED_ITEMS)
+              : updated;
+          });
+          qc.invalidateQueries({ queryKey: queryKeys.actions.byAgent(event.agent_id) });
+        }
+      )
+      .subscribe((status) => {
+        setIsConnected(status === 'SUBSCRIBED');
+      });
+
+    return () => {
+      supabase.removeChannel(channel);
+      setIsConnected(false);
+    };
+  }, [agentKey, qc]);
+
+  // Merge new messages and events into a unified sorted feed
+  const feedItems: FeedItem[] = [
+    ...newMessages.map((m): FeedItem => ({
+      type: 'message',
+      id: m.id,
+      timestamp: m.created_at,
+      peer: m.peer || m.payload?.peer || '',
+      role: m.role,
+      content: m.content,
+      direction: m.direction ?? undefined,
+      agent_id: m.agent_id,
+    })),
+    ...newEvents.map((e): FeedItem => ({
+      type: 'event',
+      id: e.id,
+      timestamp: e.created_at,
+      event_type: e.event_type,
+      status: e.status,
+      error: e.error,
+      agent_id: e.agent_id,
     })),
   ].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
 
@@ -171,4 +282,35 @@ export function useAgentStatusRealtime(agentId: string) {
       channelRef.current = null;
     };
   }, [agentId, qc]);
+}
+
+/**
+ * Subscribes to status changes of any agent the user owns (RLS filters the rest)
+ * and refreshes the agent list.
+ */
+export function useAllAgentsStatusRealtime() {
+  const qc = useQueryClient();
+
+  useEffect(() => {
+    const supabase = getSupabaseClient();
+
+    const channel = supabase
+      .channel('agents-status-all')
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'agents',
+        },
+        () => {
+          qc.invalidateQueries({ queryKey: queryKeys.agents.list() });
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [qc]);
 }

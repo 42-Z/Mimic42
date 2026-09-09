@@ -54,16 +54,20 @@ export function sanitizeRichText(input: string | null | undefined): string {
 }
 
 /**
- * Новая функция для серверной очистки Rich Text.
- * Удаляет опасные теги, но оставляет базовое форматирование.
+ * Server-side / pre-DOMPurify cleanup for rich text.
+ * Removes dangerous tags, keeps only bare allowed tags — every attribute
+ * is stripped, so handlers like onmouseover cannot survive the fallback.
  */
 function sanitizeRichHtmlServer(input: string): string {
+  const ALLOWED_BARE = /<(?!\/?(?:b|i|em|strong|p|br|code|pre)\s*\/?>)[^>]*>/g;
   return input
-  .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '') // Удаляем скрипты
-  .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '')   // Удаляем стили
-  // Это регулярное выражение удаляет все теги КРОМЕ разрешенных (b, i, em, strong, p, br, code, pre)
-  .replace(/<(?!(\/?(b|i|em|strong|p|br|code|pre)\b))[^>]+>/gi, '')
-  .trim();
+    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+    .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '')
+    // Rewrite allowed tags to their bare, attribute-less form
+    .replace(/<(\/?)(b|i|em|strong|p|br|code|pre)\b[^>]*>/gi, '<$1$2>')
+    // Drop every tag that is not a bare allowed tag
+    .replace(ALLOWED_BARE, '')
+    .trim();
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
@@ -86,16 +90,21 @@ async function loadDOMPurify() {
 }
 
 function sanitizeClientSide(input: string, config: PurifyConfig): string {
-  // Synchronous path — DOMPurify must be pre-loaded or we use fallback
+  // Synchronous path — DOMPurify must be pre-loaded or we use fallback.
+  // The fallback mirrors the server-side semantics so behaviour is
+  // identical until DOMPurify finishes loading.
   if (!DOMPurifyInstance) {
-    // Fallback to basic HTML entity encoding before DOMPurify loads
-    return encodeHtmlEntities(input);
+    return config.ALLOWED_TAGS?.length
+      ? sanitizeRichHtmlServer(input)
+      : stripHtmlServer(input);
   }
 
   try {
     return DOMPurifyInstance.sanitize(input, config) as string;
   } catch {
-    return encodeHtmlEntities(input);
+    return config.ALLOWED_TAGS?.length
+      ? sanitizeRichHtmlServer(input)
+      : stripHtmlServer(input);
   }
 }
 
@@ -119,18 +128,6 @@ function stripHtmlServer(input: string): string {
     .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '')
     .replace(/<[^>]+>/g, '')
     .trim();
-}
-
-/**
- * Encode HTML entities — last-resort fallback.
- */
-function encodeHtmlEntities(str: string): string {
-  return str
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#x27;');
 }
 
 /**

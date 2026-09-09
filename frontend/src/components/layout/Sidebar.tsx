@@ -11,6 +11,7 @@ import {
   LogOut,
   ChevronLeft,
   ChevronRight,
+  Plus,
   Zap,
   Activity,
 } from 'lucide-react';
@@ -146,6 +147,21 @@ export function Sidebar({ className }: SidebarProps) {
             )}
           </Link>
         ))}
+
+        {/* New agent */}
+        <Link
+          href="/onboarding"
+          className={cn(
+            'flex items-center rounded-sm transition-colors duration-150',
+            'text-void-500 hover:text-plasma-400 hover:bg-void-800/50',
+            'border border-dashed border-transparent hover:border-plasma-900',
+            collapsed ? 'justify-center h-10 w-10 mx-auto mt-2' : 'gap-3 px-3 py-2 mt-2',
+          )}
+          title={collapsed ? 'Новый агент' : undefined}
+        >
+          <Plus className="h-4 w-4 shrink-0" />
+          {!collapsed && <span className="font-mono text-sm">Новый агент</span>}
+        </Link>
       </nav>
 
       {/* Bottom section */}

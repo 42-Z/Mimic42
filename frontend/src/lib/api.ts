@@ -139,6 +139,10 @@ export const agentsApi = {
   stop: (id: string) =>
     apiClient.post<void>(`/agents/${id}/stop`).then(() => undefined),
 
+  /** DELETE /api/v1/agents/:id */
+  remove: (id: string) =>
+    apiClient.delete<void>(`/agents/${id}`).then(() => undefined),
+
   /** GET /api/v1/agents/:id/messages */
   getMessages: (id: string, limit = 50) =>
     apiClient

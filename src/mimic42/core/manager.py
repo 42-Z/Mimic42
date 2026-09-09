@@ -55,6 +55,7 @@ class AgentManager:
         self._status_sink = status_sink
         self.session_factory = session_factory
         self._agents: dict[UUID, MimicAgentRuntime] = {}
+        self._removed: set[UUID] = set()
         self._lock = asyncio.Lock()
 
     async def create_agent(
@@ -78,14 +79,23 @@ class AgentManager:
                 else:
                     runtime = self._runtime_factory(config)
             self._agents[config.agent_id] = runtime
+            self._removed.discard(config.agent_id)
 
         if start:
             await runtime.start()
         return runtime
 
     async def get_agent(self, agent_id: UUID) -> MimicAgentRuntime:
+        if agent_id in self._removed:
+            # The agent was deleted during this process lifetime: never
+            # re-materialise it from the persistent config.
+            raise AgentNotFoundError(agent_id)
         if agent_id not in self._agents and self._config_loader is not None:
-            config = await _await_result(self._config_loader(agent_id))
+            try:
+                config = await _await_result(self._config_loader(agent_id))
+            except KeyError as exc:
+                # The config loader signals a missing agent row with KeyError.
+                raise AgentNotFoundError(agent_id) from exc
             if not isinstance(config, AgentRuntimeConfig):
                 raise TypeError("config_loader must return AgentRuntimeConfig")
             await self.create_agent(config)
@@ -110,6 +120,28 @@ class AgentManager:
     async def stop_agent(self, agent_id: UUID) -> None:
         await (await self.get_agent(agent_id)).stop()
         await self._save_status(agent_id, AgentRuntimeState.STOPPED)
+
+    async def remove_agent(self, agent_id: UUID) -> None:
+        """Unregister the agent runtime and stop it. Missing agents are ignored.
+
+        Failures of ``stop`` propagate to the caller so the deletion flow can
+        abort before removing the database rows. On failure the tombstone is
+        lifted: the agent row is still in the database, so the next
+        ``get_agent`` re-creates the runtime from scratch (a fresh object).
+        """
+        async with self._lock:
+            # Tombstone and pop must happen under one lock: a concurrent
+            # get_agent landing in the window between them would re-materialise
+            # the runtime from the persistent config and leak it.
+            self._removed.add(agent_id)
+            runtime = self._agents.pop(agent_id, None)
+        try:
+            if runtime is not None:
+                await runtime.stop()
+        except Exception:
+            async with self._lock:
+                self._removed.discard(agent_id)
+            raise
 
     async def trigger_message(
         self,

@@ -80,15 +80,6 @@ export const soulPromptSchema = z.object({
     .trim(),
 });
 
-// Step 3: System prompt
-export const systemPromptSchema = z.object({
-  system_prompt: z
-    .string()
-    .min(10, 'Системный промпт должен содержать хотя бы 10 символов')
-    .max(20_000, 'Системный промпт не должен превышать 20 000 символов')
-    .trim(),
-});
-
 // Step 4a: Telegram credentials
 // API ID и Hash берутся из приложения сервера, пользователь вводит только телефон.
 export const telegramCredentialsSchema = z.object({
@@ -146,7 +137,6 @@ export type LoginFormValues = z.infer<typeof loginSchema>;
 export type RegisterFormValues = z.infer<typeof registerSchema>;
 export type AgentNameValues = z.infer<typeof agentNameSchema>;
 export type SoulPromptValues = z.infer<typeof soulPromptSchema>;
-export type SystemPromptValues = z.infer<typeof systemPromptSchema>;
 export type TelegramCredentialsValues = z.infer<typeof telegramCredentialsSchema>;
 export type TelegramCodeValues = z.infer<typeof telegramCodeSchema>;
 export type Telegram2FAValues = z.infer<typeof telegram2FASchema>;
