@@ -168,6 +168,8 @@ class DatabaseAgentStore:
                         role=message.role,
                         content=content,
                         direction=message.direction,
+                        payload=message.payload or {},
+                        thread_id=message.thread_id,
                         created_at=message.created_at,
                     )
                 )
@@ -188,7 +190,11 @@ class DatabaseAgentStore:
                     event_type=activity.event_type,
                     status=activity.status,
                     created_at=activity.created_at,
+                    payload=activity.payload or {},
+                    result=activity.result,
                     error=activity.error,
+                    started_at=activity.started_at,
+                    completed_at=activity.completed_at,
                 )
                 for activity in activities
             ]

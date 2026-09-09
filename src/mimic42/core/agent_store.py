@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field
@@ -26,6 +26,8 @@ class AgentMessageRecord(BaseModel):
     role: str
     content: str
     direction: str = "inbound"
+    payload: dict[str, Any] = Field(default_factory=dict)
+    thread_id: UUID | None = None
     created_at: datetime
 
 
@@ -35,7 +37,11 @@ class AgentActivity(BaseModel):
     event_type: str
     status: str
     created_at: datetime
+    payload: dict[str, Any] = Field(default_factory=dict)
+    result: dict[str, Any] | None = None
     error: str | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
 
 
 class AgentStore(Protocol):
