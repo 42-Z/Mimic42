@@ -43,6 +43,8 @@ class ShortTermMemoryStore(Protocol):
         peer: str,
         messages: list[dict[str, Any]],
         structured_response: dict[str, Any] | None = None,
+        turn_id: str | None = None,
+        thread_id: UUID | None = None,
     ) -> None: ...
 
 
@@ -75,6 +77,8 @@ class MemoryServiceLike(Protocol):
         input_messages: list[dict[str, Any]],
         output_messages: list[dict[str, Any]],
         structured_response: dict[str, Any] | None = None,
+        turn_id: str | None = None,
+        thread_id: UUID | None = None,
     ) -> None: ...
 
 
@@ -146,6 +150,8 @@ class RuntimeMemoryService:
         input_messages: list[dict[str, Any]],
         output_messages: list[dict[str, Any]],
         structured_response: dict[str, Any] | None = None,
+        turn_id: str | None = None,
+        thread_id: UUID | None = None,
     ) -> None:
         new_messages = _extract_new_messages(input_messages, output_messages)
 
@@ -155,6 +161,8 @@ class RuntimeMemoryService:
                 peer=peer,
                 messages=new_messages,
                 structured_response=structured_response,
+                turn_id=turn_id,
+                thread_id=thread_id,
             )
 
         if self._long_term is not None:

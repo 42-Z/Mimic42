@@ -4,13 +4,16 @@ import asyncio
 import logging
 import random
 from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
 from typing import Any, Protocol, cast
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from mimic42.core.activity import ActivityRecorder
 from mimic42.core.memory import MemoryServiceLike, RuntimeMemoryService
 
 logger = logging.getLogger("mimic42.agent_runtime")
@@ -63,6 +66,8 @@ class AgentTrigger(BaseModel):
     peer: str = Field(min_length=1)
     text: str = Field(min_length=1)
     message_id: int | None = Field(default=None, gt=0)
+    thread_id: UUID | None = None
+    thread_title: str | None = None
 
 
 class AgentTriggerResult(BaseModel):
@@ -90,7 +95,19 @@ class TelegramClientLike(Protocol):
 
 
 class LangChainAgentLike(Protocol):
-    async def ainvoke(self, input_data: dict[str, object]) -> object: ...
+    async def ainvoke(
+        self,
+        input_data: dict[str, object],
+        context: object | None = None,
+    ) -> object: ...
+
+
+@dataclass(frozen=True)
+class TurnContext:
+    """Per-turn identity passed into the LangChain agent runtime context."""
+
+    turn_id: str
+    peer: str
 
 
 class MimicAgentRuntime:
@@ -118,6 +135,29 @@ class MimicAgentRuntime:
         self._chat_mute_cache: dict[str, tuple[bool, float]] = {}
         self._scheduler_task: asyncio.Task[None] | None = None
         self._http_client: Any | None = None
+        self._activity = ActivityRecorder(session_factory) if session_factory is not None else None
+
+    async def _record_event(
+        self,
+        *,
+        event_type: str,
+        status: str,
+        payload: dict[str, Any] | None = None,
+        error: str | None = None,
+        started_at: datetime | None = None,
+        completed_at: datetime | None = None,
+    ) -> None:
+        if self._activity is None:
+            return
+        await self._activity.record(
+            agent_id=self.config.agent_id,
+            event_type=event_type,
+            status=status,
+            payload=payload,
+            error=error,
+            started_at=started_at,
+            completed_at=completed_at,
+        )
 
     @property
     def state(self) -> AgentRuntimeState:
@@ -154,6 +194,17 @@ class MimicAgentRuntime:
             except Exception as e:
                 logger.error(f"Failed to start agent {self.config.agent_id}: {e}", exc_info=True)
                 self._state = AgentRuntimeState.ERROR
+                reason = (
+                    "unauthorized" if isinstance(e, TelegramAuthorizationRequired) else "exception"
+                )
+                await self._record_event(
+                    event_type="agent.start_failed",
+                    status="failed",
+                    payload={"reason": reason, "error_code": type(e).__name__},
+                    error=str(e),
+                    started_at=datetime.now(),
+                    completed_at=datetime.now(),
+                )
                 raise
 
             self._state = AgentRuntimeState.RUNNING
@@ -162,6 +213,12 @@ class MimicAgentRuntime:
             import httpx
 
             self._http_client = httpx.AsyncClient(timeout=30.0)
+            await self._record_event(
+                event_type="agent.started",
+                status="succeeded",
+                started_at=datetime.now(),
+                completed_at=datetime.now(),
+            )
             logger.info(f"Agent {self.config.agent_id} started successfully")
 
     async def stop(self) -> None:
@@ -190,6 +247,13 @@ class MimicAgentRuntime:
                 # for a runtime nobody can reach anymore.
                 await self._telegram_client.disconnect()
                 self._state = AgentRuntimeState.STOPPED
+
+            await self._record_event(
+                event_type="agent.stopped",
+                status="succeeded",
+                started_at=datetime.now(),
+                completed_at=datetime.now(),
+            )
 
     async def _humanized_send(
         self,
@@ -292,9 +356,6 @@ class MimicAgentRuntime:
                     )
                 else:
                     sent_message = await self._telegram_client.send_message(peer, text)
-        except Exception:
-            logger.exception("Failed to send message in _humanized_send")
-            sent_message = None
         finally:
             # Cancel typing
             try:
@@ -321,6 +382,8 @@ class MimicAgentRuntime:
 
         async with self._trigger_lock:
             logger.debug(f"Processing message from {trigger.peer}: {trigger.text[:100]}")
+            turn_id = str(uuid4())
+            turn_context = TurnContext(turn_id=turn_id, peer=trigger.peer)
             messages = await self._memory_service.build_messages(
                 agent_id=self.config.agent_id,
                 peer=trigger.peer,
@@ -331,10 +394,23 @@ class MimicAgentRuntime:
                 response = await self._langchain_agent.ainvoke(
                     {
                         "messages": messages,
-                    }
+                    },
+                    context=turn_context,
                 )
             except Exception as e:
                 logger.error(f"Error invoking agent: {e}", exc_info=True)
+                await self._record_event(
+                    event_type="turn.failed",
+                    status="failed",
+                    payload={
+                        "turn_id": turn_id,
+                        "peer": trigger.peer,
+                        "error_code": type(e).__name__,
+                    },
+                    error=str(e),
+                    started_at=datetime.now(),
+                    completed_at=datetime.now(),
+                )
                 raise
 
             output_messages = _messages_to_dicts(response)
@@ -398,8 +474,22 @@ class MimicAgentRuntime:
                         reply_to=reply_to,
                     )
                     logger.info(f"Message sent successfully to {peer_id_for_send}")
-                except Exception:
+                except Exception as e:
+                    # The turn must not crash on a delivery failure, but the
+                    # silence must be visible in the dashboard, not only in logs.
                     logger.exception("Failed to send Telegram message to %s", peer_id_for_send)
+                    await self._record_event(
+                        event_type="message.send_failed",
+                        status="failed",
+                        payload={
+                            "turn_id": turn_id,
+                            "peer": trigger.peer,
+                            "error_code": type(e).__name__,
+                        },
+                        error=str(e),
+                        started_at=datetime.now(),
+                        completed_at=datetime.now(),
+                    )
             else:
                 logger.debug("Agent decided not to send message (send_any=False)")
 
@@ -409,6 +499,8 @@ class MimicAgentRuntime:
                 input_messages=messages,
                 output_messages=output_messages,
                 structured_response=structured,
+                turn_id=turn_id,
+                thread_id=trigger.thread_id,
             )
 
         return AgentTriggerResult(
@@ -420,6 +512,51 @@ class MimicAgentRuntime:
                 _extract_message_id(sent_message) if sent_message is not None else None
             ),
         )
+
+    async def _upsert_thread(
+        self,
+        *,
+        peer: str,
+        title: str | None,
+        last_message_at: datetime | None,
+    ) -> UUID | None:
+        """Create or refresh the message_threads row for a peer.
+
+        Failures are non-fatal: the thread exists for dashboard naming only.
+        """
+        if self._session_factory is None:
+            return None
+        try:
+            from sqlalchemy import select
+
+            from mimic42.integrations.database_models import MessageThreadModel
+
+            async with self._session_factory() as db_session:
+                thread = await db_session.scalar(
+                    select(MessageThreadModel).where(
+                        MessageThreadModel.agent_id == self.config.agent_id,
+                        MessageThreadModel.telegram_peer_id == peer,
+                    )
+                )
+                if thread is None:
+                    thread = MessageThreadModel(
+                        agent_id=self.config.agent_id,
+                        telegram_peer_id=peer,
+                        title=title,
+                        last_message_at=last_message_at,
+                    )
+                    db_session.add(thread)
+                    await db_session.flush()
+                else:
+                    if title:
+                        thread.title = title
+                    if last_message_at is not None:
+                        thread.last_message_at = last_message_at
+                await db_session.commit()
+                return thread.id
+        except Exception:
+            logger.warning("Failed to upsert thread for peer %s", peer, exc_info=True)
+            return None
 
     def _register_message_handler(self) -> None:
         if self._message_handler_registered:
@@ -535,6 +672,7 @@ class MimicAgentRuntime:
             time_str = msg_date.strftime("%Y-%m-%d %H:%M:%S")
 
             # Chat name
+            chat = None
             if is_private:
                 chat_type_str = "ЛС"
             else:
@@ -640,6 +778,18 @@ class MimicAgentRuntime:
             if title:
                 sender_str += f" [Подпись/Роль: {title}]"
 
+            # Thread title for the dashboard: reuse the entities already
+            # fetched above — no extra Telegram requests. For private chats
+            # the interlocutor is the chat itself.
+            thread_title: str | None = None
+            thread_entity = chat if (not is_private and chat is not None) else sender
+            if thread_entity is not None:
+                from telethon import utils as telethon_utils
+
+                thread_title = telethon_utils.get_display_name(thread_entity) or None
+            if not thread_title:
+                thread_title = str(getattr(event, "chat_id", "")) or None
+
             # NewMessage.Event delegates __getattr__ to self.message, but
             # self.message is a raw types.Message (not the custom wrapper),
             # so it lacks the reply_to_msg_id property. Inspect reply_to directly.
@@ -713,15 +863,33 @@ class MimicAgentRuntime:
             )
 
             peer = await _extract_incoming_peer(event)
+            thread_id = await self._upsert_thread(
+                peer=peer,
+                title=thread_title,
+                last_message_at=msg_date,
+            )
             await self.trigger_message(
                 AgentTrigger(
                     peer=peer,
                     text=text,
                     message_id=_extract_incoming_message_id(event),
+                    thread_id=thread_id,
+                    thread_title=thread_title,
                 )
             )
-        except Exception:
+        except Exception as e:
             logger.exception("Unhandled exception in incoming message handler")
+            await self._record_event(
+                event_type="turn.failed",
+                status="failed",
+                payload={
+                    "peer": str(getattr(event, "chat_id", "") or ""),
+                    "error_code": type(e).__name__,
+                },
+                error=str(e),
+                started_at=datetime.now(),
+                completed_at=datetime.now(),
+            )
 
     async def _run_scheduler_loop(self) -> None:
         """Background loop to check and trigger pending agent timers."""
@@ -776,9 +944,29 @@ class MimicAgentRuntime:
                         )
                     )
                     timer.status = "succeeded"
-                except Exception:
+                    await self._record_event(
+                        event_type="timer.fired",
+                        status="succeeded",
+                        payload={
+                            "peer": timer.peer,
+                            "description": timer.description,
+                            "trigger_at": timer.trigger_at.isoformat(),
+                        },
+                    )
+                except Exception as e:
                     logger.exception("Error triggering timer %s", timer.id)
                     timer.status = "failed"
+                    await self._record_event(
+                        event_type="timer.failed",
+                        status="failed",
+                        payload={
+                            "peer": timer.peer,
+                            "description": timer.description,
+                            "trigger_at": timer.trigger_at.isoformat(),
+                            "error_code": type(e).__name__,
+                        },
+                        error=str(e),
+                    )
 
                 # Update status
                 async with self._session_factory() as update_session:

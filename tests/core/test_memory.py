@@ -28,13 +28,11 @@ class FakeShortTermMemory:
         return [
             {
                 "type": "human" if message.role == MemoryRole.USER else "ai",
-                "role": message.role.value, 
-                "content": message.content
+                "role": message.role.value,
+                "content": message.content,
             }
             for message in self._messages
-            if message.agent_id == agent_id
-            and message.peer == peer
-            and message.created_at >= since
+            if message.agent_id == agent_id and message.peer == peer and message.created_at >= since
         ]
 
     async def save_messages(
@@ -44,6 +42,8 @@ class FakeShortTermMemory:
         peer: str,
         messages: list[dict[str, Any]],
         structured_response: dict[str, Any] | None = None,
+        turn_id: str | None = None,
+        thread_id: UUID | None = None,
     ) -> None:
         self.saved_messages.append(messages)
 

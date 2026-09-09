@@ -66,6 +66,8 @@ class DatabaseShortTermMemory:
         peer: str,
         messages: list[dict[str, Any]],
         structured_response: dict[str, Any] | None = None,
+        turn_id: str | None = None,
+        thread_id: UUID | None = None,
     ) -> None:
         """Save a list of LangChain message dicts to the database."""
         from datetime import datetime, timedelta
@@ -74,6 +76,8 @@ class DatabaseShortTermMemory:
         async with self._session_factory() as db_session:
             for i, msg in enumerate(messages):
                 payload: dict[str, Any] = {"peer": peer}
+                if turn_id is not None:
+                    payload["turn_id"] = turn_id
                 role = msg.get("role", msg.get("type", ""))
                 content = msg.get("content", "")
 
@@ -108,6 +112,7 @@ class DatabaseShortTermMemory:
                 db_session.add(
                     AgentMessageModel(
                         agent_id=agent_id,
+                        thread_id=thread_id,
                         direction=direction,
                         role=role,
                         content=content,
