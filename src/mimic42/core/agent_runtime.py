@@ -5,7 +5,7 @@ import logging
 import random
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Protocol, cast
 from uuid import UUID, uuid4
@@ -202,8 +202,8 @@ class MimicAgentRuntime:
                     status="failed",
                     payload={"reason": reason, "error_code": type(e).__name__},
                     error=str(e),
-                    started_at=datetime.now(),
-                    completed_at=datetime.now(),
+                    started_at=datetime.now(UTC),
+                    completed_at=datetime.now(UTC),
                 )
                 raise
 
@@ -216,8 +216,8 @@ class MimicAgentRuntime:
             await self._record_event(
                 event_type="agent.started",
                 status="succeeded",
-                started_at=datetime.now(),
-                completed_at=datetime.now(),
+                started_at=datetime.now(UTC),
+                completed_at=datetime.now(UTC),
             )
             logger.info(f"Agent {self.config.agent_id} started successfully")
 
@@ -251,8 +251,8 @@ class MimicAgentRuntime:
             await self._record_event(
                 event_type="agent.stopped",
                 status="succeeded",
-                started_at=datetime.now(),
-                completed_at=datetime.now(),
+                started_at=datetime.now(UTC),
+                completed_at=datetime.now(UTC),
             )
 
     async def _humanized_send(
@@ -408,9 +408,24 @@ class MimicAgentRuntime:
                         "error_code": type(e).__name__,
                     },
                     error=str(e),
-                    started_at=datetime.now(),
-                    completed_at=datetime.now(),
+                    started_at=datetime.now(UTC),
+                    completed_at=datetime.now(UTC),
                 )
+                # Keep the incoming message in the transcript even though the
+                # turn crashed — the dashboard card must show what was asked.
+                try:
+                    await self._memory_service.save_messages(
+                        agent_id=self.config.agent_id,
+                        peer=trigger.peer,
+                        input_messages=messages,
+                        output_messages=[],
+                        turn_id=turn_id,
+                        thread_id=trigger.thread_id,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Failed to persist incoming message after turn failure", exc_info=True
+                    )
                 raise
 
             output_messages = _messages_to_dicts(response)
@@ -487,8 +502,8 @@ class MimicAgentRuntime:
                             "error_code": type(e).__name__,
                         },
                         error=str(e),
-                        started_at=datetime.now(),
-                        completed_at=datetime.now(),
+                        started_at=datetime.now(UTC),
+                        completed_at=datetime.now(UTC),
                     )
             else:
                 logger.debug("Agent decided not to send message (send_any=False)")
@@ -625,12 +640,12 @@ class MimicAgentRuntime:
                     if getattr(res, "silent", False):
                         is_muted = True
                     if getattr(res, "mute_until", None):
-                        from datetime import datetime
+                        from datetime import datetime as _datetime
 
                         if res.mute_until.tzinfo:
-                            now = datetime.now(res.mute_until.tzinfo)
+                            now = _datetime.now(res.mute_until.tzinfo)
                         else:
-                            now = datetime.now()
+                            now = _datetime.now()
                         if res.mute_until > now:
                             is_muted = True
 
@@ -887,8 +902,8 @@ class MimicAgentRuntime:
                     "error_code": type(e).__name__,
                 },
                 error=str(e),
-                started_at=datetime.now(),
-                completed_at=datetime.now(),
+                started_at=datetime.now(UTC),
+                completed_at=datetime.now(UTC),
             )
 
     async def _run_scheduler_loop(self) -> None:

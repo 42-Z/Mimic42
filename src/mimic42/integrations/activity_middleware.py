@@ -31,8 +31,8 @@ def _turn_fields(request: Any) -> tuple[str | None, str | None]:
     return turn_id, peer
 
 
-def _parse_tool_output(content: Any) -> dict[str, Any] | None:
-    """Parse a ToolMessage content into a dict, if possible.
+def _parse_tool_output(content: Any) -> dict[str, Any] | list[Any] | None:
+    """Parse a ToolMessage content into a dict or a list, if possible.
 
     LangChain serializes dict/list tool results to a JSON string before
     storing them in ``ToolMessage.content``.
@@ -42,11 +42,11 @@ def _parse_tool_output(content: Any) -> dict[str, Any] | None:
             parsed = json.loads(content)
         except (ValueError, TypeError):
             return None
-    elif isinstance(content, dict):
+    elif isinstance(content, (dict, list)):
         parsed = content
     else:
         return None
-    return parsed if isinstance(parsed, dict) else None
+    return parsed if isinstance(parsed, (dict, list)) else None
 
 
 def _classify_tool_output(content: Any) -> tuple[str, str | None, dict[str, Any] | None]:
@@ -54,13 +54,20 @@ def _classify_tool_output(content: Any) -> tuple[str, str | None, dict[str, Any]
 
     ``ToolMessage.status`` stays "success" even when the tool returned
     ``{"success": false}``, so the outcome must be read from the content.
+    List-shaped tools report failures as ``[{"success": false, ...}]``.
     """
     parsed = _parse_tool_output(content)
     if parsed is None:
         return "succeeded", None, None
-    if parsed.get("success") is False:
-        return "failed", str(parsed.get("error", "")), parsed
-    return "succeeded", None, parsed
+
+    entries = parsed if isinstance(parsed, list) else [parsed]
+    for entry in entries:
+        if isinstance(entry, dict) and entry.get("success") is False:
+            failure = entry if isinstance(parsed, dict) else {"items": parsed}
+            return "failed", str(entry.get("error", "")), failure
+
+    result = parsed if isinstance(parsed, dict) else {"items": parsed}
+    return "succeeded", None, result
 
 
 class ActivityMiddleware(AgentMiddleware):

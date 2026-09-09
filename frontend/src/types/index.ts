@@ -167,7 +167,7 @@ export interface AgentRow {
 export interface AgentMessageRow {
   id: string;
   agent_id: string;
-  peer: string;
+  peer?: string;       // not a column: the peer lives in payload
   role: string;
   content: string;
   direction: AgentMessageDirection | null;

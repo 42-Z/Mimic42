@@ -132,6 +132,8 @@ class FakeRuntimeMemoryService:
         self.saved_messages.append(
             (agent_id, peer, input_messages, output_messages, structured_response)
         )
+        self.saved_turn_ids: list[str | None] = getattr(self, "saved_turn_ids", [])
+        self.saved_turn_ids.append(turn_id)
 
 
 class FakeReplyTo:
@@ -271,6 +273,38 @@ async def test_trigger_persists_turn_to_memory() -> None:
     # input_messages has the user message, output_messages has the assistant response
     assert any(m["role"] == "user" and m["content"] == "remember this" for m in saved[2])
     assert any(m["role"] == "assistant" and m["content"] == "memory reply" for m in saved[3])
+    assert memory.saved_turn_ids[-1] is not None
+
+
+@pytest.mark.asyncio
+async def test_failed_turn_still_persists_incoming_message() -> None:
+    class BrokenAgent:
+        async def ainvoke(
+            self,
+            input_data: dict[str, object],
+            context: object | None = None,
+        ) -> object:
+            raise RuntimeError("LLM down")
+
+    memory = FakeRuntimeMemoryService()
+    runtime = MimicAgentRuntime(
+        config=make_config(),
+        telegram_client=FakeTelegramClient(),
+        langchain_agent=BrokenAgent(),  # type: ignore[arg-type]
+        memory_service=memory,
+    )
+
+    with pytest.raises(RuntimeError):
+        await runtime.trigger_message(AgentTrigger(peer="chat", text="hello there"))
+
+    # The incoming message survives the crash so the dashboard card shows
+    # what was asked; no response rows are written.
+    assert len(memory.saved_messages) == 1
+    saved = memory.saved_messages[0]
+    assert saved[1] == "chat"
+    assert any(m["role"] == "user" and m["content"] == "hello there" for m in saved[2])
+    assert saved[3] == []
+    assert memory.saved_turn_ids[-1] is not None
 
 
 @pytest.mark.asyncio

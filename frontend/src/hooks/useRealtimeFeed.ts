@@ -40,6 +40,8 @@ export function useRealtimeFeed(agentId: string) {
         : updated;
     });
     qc.invalidateQueries({ queryKey: queryKeys.messages.byAgent(agentId) });
+    // A brand-new contact must resolve to a human name promptly.
+    qc.invalidateQueries({ queryKey: queryKeys.threads.byAgent(agentId) });
   }, [agentId, qc]);
 
   const addEvent = useCallback((event: AgentEventRow) => {
@@ -55,17 +57,12 @@ export function useRealtimeFeed(agentId: string) {
   useEffect(() => {
     if (!agentId) return;
 
+    // A new agent must not inherit rows from the previous one.
+    setNewMessages([]);
+    setNewEvents([]);
+
     const supabase = getSupabaseClient();
     const channelName = `agent-feed-${agentId}`;
-
-    // Prevent duplicate subscriptions
-    const existingChannel = supabase.getChannels().find(
-      (ch) => ch.topic === `realtime:${channelName}`
-    );
-    if (existingChannel) {
-      channelRef.current = existingChannel;
-      return;
-    }
 
     const channel = supabase
       .channel(channelName)
@@ -143,6 +140,9 @@ export function useMultiAgentRealtimeFeed(agentIds: string[]) {
     const supabase = getSupabaseClient();
     const channelName = 'agent-feed-all';
     const filter = `agent_id=in.(${agentKey})`;
+
+    setNewMessages([]);
+    setNewEvents([]);
 
     const channel = supabase
       .channel(channelName)

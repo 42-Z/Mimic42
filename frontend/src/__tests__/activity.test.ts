@@ -81,10 +81,27 @@ describe('buildActivityFeed', () => {
           id: 'err',
           status: 'failed',
           error: 'An invalid Peer was used',
-          payload: { turn_id: 't9', error_code: 'FloodWaitError' },
+          payload: { turn_id: 't9' },
+          result: { success: false, error: 'An invalid Peer was used', error_code: 'FloodWaitError' },
         }),
       ],
     );
     expect(items[0]?.actions[0]?.hint).toBe('Telegram просит подождать');
+  });
+
+  test('runtime failures carry error_code in the payload', () => {
+    const items = buildActivityFeed(
+      [],
+      [
+        evt({
+          id: 'mfail',
+          event_type: 'model.failed',
+          status: 'failed',
+          error: 'provider down',
+          payload: { turn_id: 't2', peer: '123', error_code: 'APIStatusError' },
+        }),
+      ],
+    );
+    expect(items[0]?.actions[0]?.hint).toBe('provider down');
   });
 });

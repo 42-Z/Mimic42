@@ -156,6 +156,27 @@ async def test_middleware_classifies_successful_tool_output() -> None:
 
 
 @pytest.mark.asyncio
+async def test_middleware_classifies_failed_list_tool_output() -> None:
+    """List-shaped tools report failures as [{"success": false, ...}]."""
+    middleware, recorder = _make_middleware()
+
+    async def handler(request: Any) -> ToolMessage:
+        return ToolMessage(
+            content=json.dumps(
+                [{"success": False, "error": "Peer invalid", "error_code": "PeerIdInvalidError"}]
+            ),
+            tool_call_id="call-1",
+        )
+
+    await middleware.awrap_tool_call(_fake_request(), handler)
+
+    event = recorder.events[0]
+    assert event["status"] == "failed"
+    assert event["error"] == "Peer invalid"
+    assert event["result"]["items"][0]["error_code"] == "PeerIdInvalidError"
+
+
+@pytest.mark.asyncio
 async def test_middleware_records_model_failure_and_success_is_silent() -> None:
     middleware, recorder = _make_middleware()
 

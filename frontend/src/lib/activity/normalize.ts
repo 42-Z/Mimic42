@@ -80,7 +80,14 @@ function peerOf(message: MessageLike): string {
 function toAction(event: EventLike): ActivityAction {
   const isTool = event.event_type.startsWith('tool.');
   const payload = event.payload ?? null;
-  const errorCode = payload?.error_code;
+  // The failure identity lives in the tool result ({"success": false,
+  // "error_code": ...}) or, for runtime exceptions, in the payload.
+  const errorCode =
+    typeof payload?.error_code === 'string'
+      ? payload.error_code
+      : typeof event.result?.error_code === 'string'
+        ? event.result.error_code
+        : null;
   const meta = isTool ? getToolMeta(event.event_type.slice('tool.'.length)) : null;
   const lifecycle = getEventMeta(event.event_type);
   const label = meta ? meta.ru : lifecycle ? lifecycle.ru : event.event_type;
