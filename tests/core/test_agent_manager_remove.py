@@ -51,3 +51,62 @@ async def test_remove_agent_is_idempotent_for_missing_runtime() -> None:
 
     await manager.remove_agent(uuid4())
     await manager.remove_agent(uuid4())
+
+
+@pytest.mark.asyncio
+async def test_removed_agent_is_not_remateralised_from_config_loader() -> None:
+    agent_id = uuid4()
+    config = _build_config(agent_id)
+
+    async def load_config(_agent_id: UUID) -> AgentRuntimeConfig:
+        return config
+
+    manager = AgentManager(
+        runtime_factory=lambda runtime_config: MimicAgentRuntime(
+            config=runtime_config,
+            telegram_client=FakeTelegramClient(),
+            langchain_agent=FakeLangChainAgent(),
+        ),
+        config_loader=load_config,
+    )
+    await manager.remove_agent(agent_id)
+
+    with pytest.raises(KeyError):
+        await manager.get_agent(agent_id)
+
+
+@pytest.mark.asyncio
+async def test_missing_config_row_raises_agent_not_found() -> None:
+    async def load_config(_agent_id: UUID) -> AgentRuntimeConfig:
+        raise KeyError("Agent does not have a runtime config")
+
+    manager = AgentManager(config_loader=load_config)
+
+    with pytest.raises(KeyError) as exc_info:
+        await manager.get_agent(uuid4())
+
+    assert type(exc_info.value).__name__ == "AgentNotFoundError"
+
+
+@pytest.mark.asyncio
+async def test_remove_agent_propagates_stop_failures() -> None:
+    class FailingDisconnectClient(FakeTelegramClient):
+        async def disconnect(self) -> None:
+            raise RuntimeError("disconnect failed")
+
+    agent_id = uuid4()
+    manager = AgentManager(
+        runtime_factory=lambda runtime_config: MimicAgentRuntime(
+            config=runtime_config,
+            telegram_client=FailingDisconnectClient(),
+            langchain_agent=FakeLangChainAgent(),
+        ),
+    )
+    await manager.create_agent(_build_config(agent_id), start=True)
+
+    with pytest.raises(RuntimeError, match="disconnect failed"):
+        await manager.remove_agent(agent_id)
+
+    # The agent must not be tombstoned: it is still present in the database,
+    # so re-materialisation has to stay possible.
+    assert agent_id not in manager._removed

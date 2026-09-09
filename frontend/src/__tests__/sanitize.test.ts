@@ -68,6 +68,14 @@ describe('sanitizeRichText', () => {
     expect(result).toContain('<i>');
   });
 
+  it('strips attributes from allowed tags in the fallback path', () => {
+    const input = '<b onmouseover="alert(1)">bold</b>';
+    const result = sanitizeRichText(input);
+    expect(result).not.toContain('onmouseover');
+    expect(result).not.toContain('alert');
+    expect(result).toContain('<b>bold</b>');
+  });
+
   it('strips script in rich mode', () => {
     const input = '<b>text</b><script>alert(1)</script>';
     expect(sanitizeRichText(input)).not.toContain('<script>');

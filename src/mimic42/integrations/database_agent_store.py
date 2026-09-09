@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mimic42.core.agent_runtime import DEFAULT_LLM_MODEL, AgentRuntimeConfig, AgentRuntimeState
@@ -128,9 +128,14 @@ class DatabaseAgentStore:
         async with self._session_factory() as db_session:
             # Remove leftover onboarding drafts first: the FK is `on delete set null`,
             # so without this the wizard would pick up an abandoned session.
+            # `id == agent_id` covers the originating session even when the
+            # frontend failed to mark completed_agent_id after finalization.
             await db_session.execute(
                 delete(AgentOnboardingSessionModel).where(
-                    AgentOnboardingSessionModel.completed_agent_id == agent_id
+                    or_(
+                        AgentOnboardingSessionModel.completed_agent_id == agent_id,
+                        AgentOnboardingSessionModel.id == agent_id,
+                    )
                 )
             )
             # telegram_sessions, message_threads, agent_messages, agent_events

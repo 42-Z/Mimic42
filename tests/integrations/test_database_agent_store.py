@@ -128,6 +128,14 @@ async def test_delete_agent_removes_agent_and_onboarding_row_only_for_it(
     await store.create_from_onboarding(_make_session(owner_id, second_id, "Second"))
 
     async with session_factory() as session:
+        # The originating onboarding row: id == agent id, finalize marker lost
+        session.add(
+            AgentOnboardingSessionModel(
+                id=first_id,
+                owner_id=owner_id,
+                authorization_status=TelegramLoginStatus.AUTHORIZED.value,
+            )
+        )
         session.add(
             AgentOnboardingSessionModel(
                 id=uuid4(),

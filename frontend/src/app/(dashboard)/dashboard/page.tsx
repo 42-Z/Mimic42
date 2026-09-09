@@ -8,7 +8,7 @@ import { AgentStatusBadge } from '@/components/agents/AgentStatusBadge';
 import { Card, Skeleton } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
-import { sanitizeText, truncate } from '@/lib/sanitize';
+import { maskPhoneNumber, sanitizeText, truncate } from '@/lib/sanitize';
 import { formatDistanceToNow } from 'date-fns';
 import { ru } from 'date-fns/locale';
 import {
@@ -189,7 +189,7 @@ function AgentCard({ agent, details }: { agent: AgentRecord; details?: { phone_n
               {sanitizeText(agent.name)}
             </p>
             <p className="font-mono text-xs text-void-500 truncate">
-              {details?.phone_number ?? 'Telegram не подключён'}
+              {details?.phone_number ? maskPhoneNumber(details.phone_number) : 'Telegram не подключён'}
             </p>
           </div>
         </div>

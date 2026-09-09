@@ -108,7 +108,11 @@ export function useSaveOnboardingStep() {
       if (error) throw error;
       return data as OnboardingSessionRow;
     },
-    onSuccess: () => {
+    onSuccess: (row) => {
+      // Write the row into the cache immediately: deriveOnboardingStep moves
+      // to the next step without waiting for the refetch, which also prevents
+      // a second submit from inserting a duplicate draft.
+      qc.setQueryData(queryKeys.onboarding.session(), row);
       qc.invalidateQueries({ queryKey: queryKeys.onboarding.session() });
     },
   });
