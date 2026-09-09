@@ -230,30 +230,3 @@ export function incomingBody(content: string): string {
   const sender = senderMatch?.[1]?.trim() ?? null;
   return sender ? `${body} — ${sender}` : body;
 }
-
-/**
- * Who is the subject of the line: the peer wrote something ('in') or the
- * agent acted/replied ('out').
- */
-export function feedDirection(item: ActivityItem): 'in' | 'out' {
-  if (item.actions.length === 0 && !item.response) return 'in';
-  return 'out';
-}
-
-/** One-line summary of an activity item for compact feeds. */
-export function feedLine(item: ActivityItem): string {
-  const failedAction = item.actions.find((a) => a.status === 'failed');
-  if (failedAction) {
-    return failedAction.hint ? `${failedAction.label} — ${failedAction.hint}` : failedAction.label;
-  }
-  if (item.actions.length > 0) {
-    return item.actions
-      .map((a) => a.label)
-      .slice(0, 3)
-      .join(', ');
-  }
-  if (item.response) return item.response.content;
-  if (item.incoming) return incomingBody(item.incoming.content);
-  if (item.trigger) return item.trigger.content;
-  return '—';
-}

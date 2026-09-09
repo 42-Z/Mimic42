@@ -19,7 +19,7 @@ import {
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import type { AgentRecord } from '@/types';
-import { feedDirection, feedLine, type ActivityItem } from '@/lib/activity/normalize';
+import { incomingBody, type ActivityItem } from '@/lib/activity/normalize';
 
 export default function DashboardPage() {
   const { data: agents, isLoading: agentsLoading } = useAgents();
@@ -278,10 +278,16 @@ function LiveFeed({
   const { items, peerNames, isConnected, refetchSeed, clearFeed } =
     useMultiAgentRealtimeFeed(agentIds);
 
-  const rows = items.map((item) => ({
+  const namedItems = items.map((item) => ({
     ...item,
     peerTitle: item.peerTitle ?? peerNames.get(item.peer) ?? null,
   }));
+
+  // Newest turns first; within a turn keep the logical order:
+  // incoming -> actions -> response.
+  const rows: FeedLine[] = [...namedItems]
+    .reverse()
+    .flatMap((item) => toFeedLines(item));
 
   return (
     <Card variant="glass" padding="none" className="flex flex-col h-[480px]">
@@ -314,7 +320,7 @@ function LiveFeed({
         </button>
       </div>
 
-      {/* Items */}
+      {/* Items — newest turns first, within a turn: incoming, actions, response */}
       <div className="flex-1 overflow-y-auto p-2 space-y-1">
         {rows.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-void-600">
@@ -322,8 +328,8 @@ function LiveFeed({
             <p className="font-mono text-xs">Ожидание событий...</p>
           </div>
         ) : (
-          [...rows].reverse().map((item) => (
-            <FeedRow key={item.id} item={item} agentNameById={agentNameById} />
+          rows.map((line) => (
+            <FeedRow key={line.key} line={line} agentNameById={agentNameById} />
           ))
         )}
       </div>
@@ -331,21 +337,104 @@ function LiveFeed({
   );
 }
 
-function FeedRow({ item, agentNameById }: { item: ActivityItem; agentNameById: Map<string, string> }) {
-  const time = formatDistanceToNow(new Date(item.createdAt), {
+interface FeedLine {
+  key: string;
+  direction: 'in' | 'out';
+  text: string;
+  failed: boolean;
+  timestamp: string;
+  agentId?: string;
+  peer: string;
+  peerTitle: string | null;
+}
+
+function toFeedLines(item: ActivityItem): FeedLine[] {
+  const lines: FeedLine[] = [];
+
+  if (item.incoming) {
+    lines.push({
+      key: `${item.id}:in`,
+      direction: 'in',
+      text: incomingBody(item.incoming.content),
+      failed: false,
+      timestamp: item.incoming.createdAt,
+      agentId: item.agentId,
+      peer: item.peer,
+      peerTitle: item.peerTitle,
+    });
+  } else if (item.trigger) {
+    lines.push({
+      key: `${item.id}:in`,
+      direction: 'in',
+      text: item.trigger.content,
+      failed: false,
+      timestamp: item.trigger.createdAt,
+      agentId: item.agentId,
+      peer: item.peer,
+      peerTitle: item.peerTitle,
+    });
+  }
+
+  if (item.actions.length > 0) {
+    const failedAction = item.actions.find((a) => a.status === 'failed');
+    const text = failedAction?.hint
+      ? `${failedAction.label} — ${failedAction.hint}`
+      : item.actions
+          .map((a) => a.label)
+          .slice(0, 3)
+          .join(', ');
+    lines.push({
+      key: `${item.id}:act`,
+      direction: 'out',
+      text,
+      failed: Boolean(failedAction),
+      timestamp: item.endedAt ?? item.createdAt,
+      agentId: item.agentId,
+      peer: item.peer,
+      peerTitle: item.peerTitle,
+    });
+  }
+
+  if (item.response) {
+    lines.push({
+      key: `${item.id}:resp`,
+      direction: 'out',
+      text: item.response.content,
+      failed: false,
+      timestamp: item.response.createdAt,
+      agentId: item.agentId,
+      peer: item.peer,
+      peerTitle: item.peerTitle,
+    });
+  }
+
+  if (lines.length === 0) {
+    lines.push({
+      key: `${item.id}:empty`,
+      direction: 'out',
+      text: '—',
+      failed: false,
+      timestamp: item.createdAt,
+      agentId: item.agentId,
+      peer: item.peer,
+      peerTitle: item.peerTitle,
+    });
+  }
+  return lines;
+}
+
+function FeedRow({ line, agentNameById }: { line: FeedLine; agentNameById: Map<string, string> }) {
+  const time = formatDistanceToNow(new Date(line.timestamp), {
     addSuffix: true,
     locale: ru,
   });
-  const agentName = item.agentId ? agentNameById.get(item.agentId) : undefined;
-  const peerLabel = item.peerTitle ?? (item.peer ? `ID ${item.peer}` : null);
-  const text = feedLine(item);
-  const direction = feedDirection(item);
-  const failed = item.failed;
+  const agentName = line.agentId ? agentNameById.get(line.agentId) : undefined;
+  const peerLabel = line.peerTitle ?? (line.peer ? `ID ${line.peer}` : null);
 
   return (
     <div className={cn(
       'flex gap-2.5 px-3 py-2 rounded-sm text-xs font-mono group hover:bg-void-800/50 transition-colors',
-      failed ? 'border-l-2 border-crimson-700' : 'border-l-2 border-void-700',
+      line.failed ? 'border-l-2 border-crimson-700' : 'border-l-2 border-void-700',
     )}>
       {agentName && (
         <span className="shrink-0 text-void-600">{truncate(sanitizeText(agentName), 16)}</span>
@@ -353,24 +442,24 @@ function FeedRow({ item, agentNameById }: { item: ActivityItem; agentNameById: M
       <span
         className={cn(
           'shrink-0 font-bold',
-          direction === 'in' ? 'text-plasma-500' : 'text-neon-600',
+          line.direction === 'in' ? 'text-plasma-500' : 'text-neon-600',
         )}
-        title={direction === 'in' ? 'Входящее от собеседника' : 'Действие агента'}
+        title={line.direction === 'in' ? 'Входящее от собеседника' : 'Действие агента'}
       >
-        {direction === 'in' ? '←' : '→'}
+        {line.direction === 'in' ? '←' : '→'}
       </span>
       {peerLabel && (
         <span
           className={cn(
             'shrink-0 max-w-[140px] truncate',
-            direction === 'in' ? 'text-plasma-400' : 'text-void-500',
+            line.direction === 'in' ? 'text-plasma-400' : 'text-void-500',
           )}
         >
           {sanitizeText(peerLabel)}
         </span>
       )}
-      <span className={cn('flex-1 truncate', failed ? 'text-crimson-300' : direction === 'in' ? 'text-void-200' : 'text-void-300')}>
-        {truncate(sanitizeText(text), 140)}
+      <span className={cn('flex-1 truncate', line.failed ? 'text-crimson-300' : line.direction === 'in' ? 'text-void-200' : 'text-void-300')}>
+        {truncate(sanitizeText(line.text), 140)}
       </span>
       <span className="text-void-600 shrink-0">{time}</span>
     </div>
