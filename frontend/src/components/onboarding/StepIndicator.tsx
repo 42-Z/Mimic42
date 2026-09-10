@@ -29,13 +29,13 @@ export function StepIndicator({ currentStep, className }: StepIndicatorProps) {
   const currentIndex = getStepIndex(currentStep);
 
   return (
-    <div className={cn('flex items-center gap-0', className)}>
+    <div className={cn('flex items-center gap-0', className)} data-testid="step-indicator">
       {STEPS.map((step, index) => {
         const isDone = index < currentIndex;
         const isActive = index === currentIndex;
 
         return (
-          <div key={step.id} className="flex items-center">
+          <div key={step.id} className="flex items-center" data-testid={`onboarding-step-${step.id}`}>
             {/* Node */}
             <div className="flex flex-col items-center">
               <div className={cn(

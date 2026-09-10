@@ -98,10 +98,11 @@ function AgentPageContent({
 
       {/* Tabs */}
       <div className="border-b border-void-800">
-        <div className="flex gap-0 overflow-x-auto">
+        <div className="flex gap-0 overflow-x-auto" data-testid="agent-tabs">
           {TABS.map((tab) => (
             <button
               key={tab.id}
+              data-testid={`agent-tab-${tab.id}`}
               onClick={() => handleTabChange(tab.id)}
               className={cn(
                 'flex items-center gap-2 px-4 py-3 font-mono text-xs border-b-2 transition-all duration-150 whitespace-nowrap',
