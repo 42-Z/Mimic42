@@ -3,7 +3,6 @@
 import { CheckCircle2, XCircle, Loader2 } from 'lucide-react';
 import { getToolMeta } from '@/lib/activity/toolCatalog';
 import { getEventMeta } from '@/lib/activity/eventCatalog';
-import { describeError } from '@/lib/activity/errorCatalog';
 import type { ActivityAction } from '@/lib/activity/normalize';
 import { cn } from '@/lib/utils';
 

@@ -7,19 +7,15 @@ import { cn } from '@/lib/utils';
 import {
   LayoutDashboard,
   Bot,
-  Settings,
   LogOut,
   ChevronLeft,
   ChevronRight,
   Plus,
   Zap,
-  Activity,
 } from 'lucide-react';
 import { getSupabaseClient } from '@/lib/supabase/client';
 import { useRouter } from 'next/navigation';
 import { useAgents } from '@/hooks/useAgents';
-import { AgentStatusBadge } from '@/components/agents/AgentStatusBadge';
-import type { AgentState } from '@/types';
 
 interface NavItem {
   href: string;

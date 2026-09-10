@@ -14,8 +14,6 @@ import type {
   AgentNameValues,
   SoulPromptValues,
   TelegramCredentialsValues,
-  TelegramCodeValues,
-  Telegram2FAValues,
 } from '@/lib/validators';
 
 /**
@@ -234,7 +232,7 @@ export function useFinalizeAgent() {
 
       return result;
     },
-    onSuccess: (data) => {
+    onSuccess: () => {
       qc.invalidateQueries({ queryKey: queryKeys.onboarding.session() });
       qc.invalidateQueries({ queryKey: queryKeys.agents.list() });
       router.push(`/dashboard`);

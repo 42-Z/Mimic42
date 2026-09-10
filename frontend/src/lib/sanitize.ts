@@ -58,11 +58,23 @@ export function sanitizeRichText(input: string | null | undefined): string {
  * Removes dangerous tags, keeps only bare allowed tags — every attribute
  * is stripped, so handlers like onmouseover cannot survive the fallback.
  */
+// Linear-time patterns: sequential quantifiers only, no nesting — no ReDoS.
+const SCRIPT_BLOCK = /<script\b[^>]*>[\s\S]*?<\/script\s*>/gi;
+const STYLE_BLOCK = /<style\b[^>]*>[\s\S]*?<\/style\s*>/gi;
+const UNCLOSED_SCRIPT = /<script\b[^>]*>?/gi;
+const UNCLOSED_STYLE = /<style\b[^>]*>?/gi;
+
+function stripDangerousBlocks(input: string): string {
+  return input
+    .replace(SCRIPT_BLOCK, '')
+    .replace(STYLE_BLOCK, '')
+    .replace(UNCLOSED_SCRIPT, '')
+    .replace(UNCLOSED_STYLE, '');
+}
+
 function sanitizeRichHtmlServer(input: string): string {
   const ALLOWED_BARE = /<(?!\/?(?:b|i|em|strong|p|br|code|pre)\s*\/?>)[^>]*>/g;
-  return input
-    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
-    .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '')
+  return stripDangerousBlocks(input)
     // Rewrite allowed tags to their bare, attribute-less form
     .replace(/<(\/?)(b|i|em|strong|p|br|code|pre)\b[^>]*>/gi, '<$1$2>')
     // Drop every tag that is not a bare allowed tag
@@ -83,8 +95,8 @@ let DOMPurifyInstance: DOMPurify | null = null;
 
 async function loadDOMPurify() {
   if (!DOMPurifyInstance) {
-    const module = await import('dompurify');
-    DOMPurifyInstance = module.default;
+    const dompurifyModule = await import('dompurify');
+    DOMPurifyInstance = dompurifyModule.default;
   }
   return DOMPurifyInstance;
 }
@@ -123,11 +135,7 @@ export async function preloadSanitizer(): Promise<void> {
  * the output is escaped by React anyway.
  */
 function stripHtmlServer(input: string): string {
-  return input
-    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
-    .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '')
-    .replace(/<[^>]+>/g, '')
-    .trim();
+  return stripDangerousBlocks(input).replace(/<[^>]+>/g, '').trim();
 }
 
 /**

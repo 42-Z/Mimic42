@@ -1,7 +1,6 @@
 'use client';
 
 import { useState } from 'react';
-import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { getSupabaseClient } from '@/lib/supabase/client';
 import { registerSchema, type RegisterFormValues } from '@/lib/validators';
@@ -16,7 +15,6 @@ const SUPABASE_ERROR_MESSAGES: Record<string, string> = {
 };
 
 export default function RegisterPage() {
-  const router = useRouter();
   const { toast } = useToast();
 
   const [values, setValues] = useState<RegisterFormValues>({

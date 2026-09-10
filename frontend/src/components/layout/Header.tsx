@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from 'react';
 import { getSupabaseClient } from '@/lib/supabase/client';
-import { cn } from '@/lib/utils';
 import { Bell, User } from 'lucide-react';
 import type { User as SupabaseUser } from '@supabase/supabase-js';
 

@@ -55,7 +55,7 @@ export interface AgentMessageRecord {
   created_at: string;  // ISO 8601
   direction?: AgentMessageDirection;
   thread_id?: string;
-  payload?: Record<string, any>;
+  payload?: Record<string, unknown>;
 }
 
 /**
@@ -173,7 +173,7 @@ export interface AgentMessageRow {
   direction: AgentMessageDirection | null;
   thread_id: string | null;
   created_at: string;
-  payload?: Record<string, any>;
+  payload?: Record<string, unknown>;
 }
 
 /**
