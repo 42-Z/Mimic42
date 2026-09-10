@@ -11,6 +11,11 @@ const AUTH_ONLY_PATHS = ['/login', '/register', '/reset-password'];
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
+  // Liveness probe for the Docker HEALTHCHECK — no auth, no Supabase.
+  if (pathname === '/healthz') {
+    return NextResponse.next();
+  }
+
   // Skip middleware for API routes, static files, etc.
   if (
     pathname.startsWith('/_next') ||

@@ -6,6 +6,9 @@
 *.local
 *.secret
 secrets/
+deploy/api.env
+deploy/.env
+deploy/releases.log
 
 # Telegram / Telethon user sessions
 *.session

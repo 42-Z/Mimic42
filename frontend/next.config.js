@@ -49,6 +49,9 @@ const securityHeaders = [
 ];
 
 const nextConfig = {
+  // Required for the Docker image: produces a self-contained server.js
+  // (see frontend/Dockerfile). Needs a full `bun run build` to take effect.
+  output: 'standalone',
   eslint: {
     ignoreDuringBuilds: true,
   },
