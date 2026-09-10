@@ -135,13 +135,13 @@ jobs:
         run: |
           scp -i ~/.ssh/deploy_key -P "${{ vars.DEPLOY_PORT }}" \
             deploy/docker-compose.yml deploy/deploy.sh \
-            "${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }}:${{ vars.DEPLOY_PATH }}/"
+            "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:${{ vars.DEPLOY_PATH }}/"
 
       - name: Roll out
         run: |
           ssh -i ~/.ssh/deploy_key -p "${{ vars.DEPLOY_PORT }}" \
             -o StrictHostKeyChecking=yes \
-            "${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }}" \
+            "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
             "cd ${{ vars.DEPLOY_PATH }} && bash deploy.sh sha-${{ github.sha }}"
 
       - name: Smoke test
