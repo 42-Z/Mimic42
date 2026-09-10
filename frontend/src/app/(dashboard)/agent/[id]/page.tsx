@@ -1,12 +1,14 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { useParams, useSearchParams, useRouter } from 'next/navigation';
 import { agentIdSchema } from '@/lib/validators';
 import { useAgentStatus, useAgentDetails, useUpdateAgentSettings } from '@/hooks/useAgent';
 import { useAgentStatusRealtime } from '@/hooks/useRealtimeFeed';
 import { TabLogsChat } from '@/components/chat/TabLogsChat';
-import { useTelegramSession, useAnalyticsData } from '@/hooks/useTelegramSession';
+import { TabLogs } from '@/components/agent/TabLogs';
+import { TabAnalytics } from '@/components/agent/TabAnalytics';
+import { useTelegramSession } from '@/hooks/useTelegramSession';
 import { useStartAgent, useStopAgent, useTriggerMessage, useDeleteAgent } from '@/hooks/useAgents';
 import { useAgentMemories, useAgentMemoryHistory } from '@/hooks/useMemory';
 import { useToast } from '@/components/ui/toast';
@@ -28,10 +30,6 @@ import {
 import { formatDistanceToNow, format } from 'date-fns';
 import { ru } from 'date-fns/locale';
 import { cn } from '@/lib/utils';
-import {
-  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer, BarChart, Bar,
-} from 'recharts';
 import type { AgentTab, ApiError } from '@/types';
 
 const TABS: { id: AgentTab; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
@@ -58,6 +56,7 @@ export default function AgentPage() {
   const [activeTab, setActiveTab] = useState<AgentTab>(
     TABS.some(t => t.id === initialTab) ? initialTab : 'settings'
   );
+  const [logsView, setLogsView] = useState<'activity' | 'chat'>('activity');
 
   const handleTabChange = (tab: AgentTab) => {
     setActiveTab(tab);
@@ -119,7 +118,29 @@ export default function AgentPage() {
       {/* Tab content */}
       <div>
         {activeTab === 'settings'  && <TabSettings  agentId={agentId} />}
-        {activeTab === 'logs'      && <TabLogsChat   agentId={agentId} />}
+        {activeTab === 'logs'      && (
+          <div className="space-y-4">
+            <div className="flex items-center gap-2">
+              {(['activity', 'chat'] as const).map((v) => (
+                <button
+                  key={v}
+                  onClick={() => setLogsView(v)}
+                  className={cn(
+                    'px-4 py-1.5 rounded-sm font-mono text-xs border transition-colors',
+                    logsView === v
+                      ? 'bg-plasma-950 border-plasma-800 text-plasma-400'
+                      : 'border-void-700 text-void-500 hover:text-void-300'
+                  )}
+                >
+                  {v === 'activity' ? 'Активность' : 'Чат'}
+                </button>
+              ))}
+            </div>
+            {logsView === 'activity'
+              ? <TabLogs agentId={agentId} />
+              : <TabLogsChat agentId={agentId} />}
+          </div>
+        )}
         {activeTab === 'actions'   && <TabActions    agentId={agentId} />}
         {activeTab === 'telegram'  && <TabTelegram   agentId={agentId} />}
         {activeTab === 'analytics' && <TabAnalytics  agentId={agentId} />}
@@ -294,8 +315,6 @@ function SettingsSkeleton() {
     </div>
   );
 }
-
-
 
 // ── Tab: Actions ──────────────────────────────────────────────────────────────
 function TabActions({ agentId }: { agentId: string }) {
@@ -538,87 +557,6 @@ function TabTelegram({ agentId }: { agentId: string }) {
           <Button variant="outline" size="sm" leftIcon={<RefreshCw className="h-3.5 w-3.5" />}>
             Переподключить
           </Button>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── Tab: Analytics ────────────────────────────────────────────────────────────
-function TabAnalytics({ agentId }: { agentId: string }) {
-  const [days, setDays] = useState<7 | 30>(7);
-  const { data, isLoading } = useAnalyticsData(agentId, days);
-
-  const tooltipStyle = {
-    backgroundColor: '#1a1a28',
-    border: '1px solid rgba(96, 96, 117, 0.2)',
-    borderRadius: '2px',
-    fontFamily: 'var(--font-geist-mono)',
-    fontSize: '11px',
-    color: '#c0c0cc',
-  };
-
-  return (
-    <div className="space-y-6">
-      <div className="flex items-center gap-2">
-        {([7, 30] as const).map(d => (
-          <button
-            key={d}
-            onClick={() => setDays(d)}
-            className={cn(
-              'px-4 py-1.5 rounded-sm font-mono text-xs border transition-colors',
-              days === d
-                ? 'bg-plasma-950 border-plasma-800 text-plasma-400'
-                : 'border-void-700 text-void-500 hover:text-void-300',
-            )}
-          >
-            {d} дней
-          </button>
-        ))}
-      </div>
-
-      {isLoading ? (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <Skeleton className="h-64" />
-          <Skeleton className="h-64" />
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <Card variant="glass" padding="md">
-            <h3 className="font-mono text-xs text-void-400 uppercase tracking-wider mb-4">
-              Сообщения по дням
-            </h3>
-            <ResponsiveContainer width="100%" height={220}>
-              <AreaChart data={data}>
-                <defs>
-                  <linearGradient id="msgGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%"  stopColor="#1a7fff" stopOpacity={0.3} />
-                    <stop offset="95%" stopColor="#1a7fff" stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="rgba(96,96,117,0.1)" />
-                <XAxis dataKey="date" tick={{ fontSize: 10, fontFamily: 'Space Mono', fill: '#606075' }} />
-                <YAxis tick={{ fontSize: 10, fontFamily: 'Space Mono', fill: '#606075' }} />
-                <Tooltip contentStyle={tooltipStyle} />
-                <Area type="monotone" dataKey="messages" stroke="#1a7fff" fill="url(#msgGrad)" strokeWidth={1.5} dot={false} />
-              </AreaChart>
-            </ResponsiveContainer>
-          </Card>
-
-          <Card variant="glass" padding="md">
-            <h3 className="font-mono text-xs text-void-400 uppercase tracking-wider mb-4">
-              Ошибки по дням
-            </h3>
-            <ResponsiveContainer width="100%" height={220}>
-              <BarChart data={data}>
-                <CartesianGrid strokeDasharray="3 3" stroke="rgba(96,96,117,0.1)" />
-                <XAxis dataKey="date" tick={{ fontSize: 10, fontFamily: 'Space Mono', fill: '#606075' }} />
-                <YAxis tick={{ fontSize: 10, fontFamily: 'Space Mono', fill: '#606075' }} />
-                <Tooltip contentStyle={tooltipStyle} />
-                <Bar dataKey="errors" fill="#f43f5e" opacity={0.8} radius={[2, 2, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </Card>
         </div>
       )}
     </div>

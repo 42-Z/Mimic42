@@ -70,9 +70,15 @@ class FakeLangChainAgent:
         self.response = response
         self.structured_response = structured_response
         self.inputs: list[dict[str, object]] = []
+        self.contexts: list[object | None] = []
 
-    async def ainvoke(self, input_data: dict[str, object]) -> dict[str, object]:
+    async def ainvoke(
+        self,
+        input_data: dict[str, object],
+        context: object | None = None,
+    ) -> dict[str, object]:
         self.inputs.append(input_data)
+        self.contexts.append(context)
         # Build structured response from response text if not explicitly provided
         sr = self.structured_response
         if sr is None:
@@ -123,10 +129,14 @@ class FakeRuntimeMemoryService:
         peer_name: str = "",
         agent_name: str = "",
         raw_user_text: str = "",
+        turn_id: str | None = None,
+        thread_id: UUID | None = None,
     ) -> None:
         self.saved_messages.append(
             (agent_id, peer, input_messages, output_messages, structured_response)
         )
+        self.saved_turn_ids: list[str | None] = getattr(self, "saved_turn_ids", [])
+        self.saved_turn_ids.append(turn_id)
 
 
 class FakeReplyTo:
@@ -228,9 +238,7 @@ async def test_trigger_invokes_agent_and_sends_response_through_telegram() -> No
     )
 
     await runtime.start()
-    result = await runtime.trigger_message(
-        AgentTrigger(peer="me", text="Ping from dashboard")
-    )
+    result = await runtime.trigger_message(AgentTrigger(peer="me", text="Ping from dashboard"))
 
     assert result.agent_id == runtime.config.agent_id
     assert result.peer == "me"
@@ -268,6 +276,38 @@ async def test_trigger_persists_turn_to_memory() -> None:
     # input_messages has the user message, output_messages has the assistant response
     assert any(m["role"] == "user" and m["content"] == "remember this" for m in saved[2])
     assert any(m["role"] == "assistant" and m["content"] == "memory reply" for m in saved[3])
+    assert memory.saved_turn_ids[-1] is not None
+
+
+@pytest.mark.asyncio
+async def test_failed_turn_still_persists_incoming_message() -> None:
+    class BrokenAgent:
+        async def ainvoke(
+            self,
+            input_data: dict[str, object],
+            context: object | None = None,
+        ) -> object:
+            raise RuntimeError("LLM down")
+
+    memory = FakeRuntimeMemoryService()
+    runtime = MimicAgentRuntime(
+        config=make_config(),
+        telegram_client=FakeTelegramClient(),
+        langchain_agent=BrokenAgent(),  # type: ignore[arg-type]
+        memory_service=memory,
+    )
+
+    with pytest.raises(RuntimeError):
+        await runtime.trigger_message(AgentTrigger(peer="chat", text="hello there"))
+
+    # The incoming message survives the crash so the dashboard card shows
+    # what was asked; no response rows are written.
+    assert len(memory.saved_messages) == 1
+    saved = memory.saved_messages[0]
+    assert saved[1] == "chat"
+    assert any(m["role"] == "user" and m["content"] == "hello there" for m in saved[2])
+    assert saved[3] == []
+    assert memory.saved_turn_ids[-1] is not None
 
 
 @pytest.mark.asyncio
@@ -583,6 +623,7 @@ async def test_runtime_ignores_muted_chats(monkeypatch: pytest.MonkeyPatch) -> N
     from unittest.mock import MagicMock
 
     from telethon.tl import functions
+
     telegram = FakeTelegramClient()
 
     async def mock_get_input_entity(peer: Any) -> Any:
@@ -627,6 +668,7 @@ async def test_runtime_triggers_unmuted_chats(monkeypatch: pytest.MonkeyPatch) -
     from unittest.mock import MagicMock
 
     from telethon.tl import functions
+
     telegram = FakeTelegramClient()
 
     async def mock_get_input_entity(peer: Any) -> Any:
@@ -672,6 +714,7 @@ async def test_trigger_handles_telegram_permission_errors_gracefully() -> None:
         async def send_message(self, entity: str, message: str) -> object:
             from telethon.errors import ChatAdminRequiredError
             from telethon.tl.functions.messages import SendMessageRequest
+
             req = SendMessageRequest(peer=entity, message=message)
             raise ChatAdminRequiredError(request=req)
 
@@ -725,6 +768,7 @@ async def test_handle_incoming_message_handles_exceptions_gracefully(
     # Monkeypatch trigger_message to raise an error
     async def mock_trigger_message(_self: Any, trigger: Any) -> Any:
         raise ValueError("Trigger error")
+
     monkeypatch.setattr(MimicAgentRuntime, "trigger_message", mock_trigger_message)
 
     # This should not raise an exception, preventing crash
@@ -763,7 +807,7 @@ async def test_incoming_message_reply_annotation(monkeypatch: pytest.MonkeyPatch
     assert len(runtime._langchain_agent.inputs) == 1  # type: ignore
     prompt_text = runtime._langchain_agent.inputs[0]["messages"][-1]["content"]  # type: ignore
     assert "Ответ на сообщение #100" in prompt_text
-    assert 'original text 100' in prompt_text
+    assert "original text 100" in prompt_text
 
 
 @pytest.mark.asyncio
@@ -792,8 +836,7 @@ async def test_trigger_marks_read_only_when_replies(monkeypatch: pytest.MonkeyPa
     result = await runtime.trigger_message(AgentTrigger(peer="me", text="Ping", message_id=42))
     assert result.response_text == "yes i reply"
     read_requests = [
-        r for r in telegram.requests
-        if isinstance(r, functions.messages.ReadHistoryRequest)
+        r for r in telegram.requests if isinstance(r, functions.messages.ReadHistoryRequest)
     ]
     assert len(read_requests) == 1
     assert read_requests[0].max_id == 42
@@ -802,17 +845,18 @@ async def test_trigger_marks_read_only_when_replies(monkeypatch: pytest.MonkeyPa
     telegram.requests.clear()
 
     class SilentAgent:
-        async def ainvoke(self, input_data: dict[str, object]) -> dict[str, object]:
+        async def ainvoke(
+            self,
+            input_data: dict[str, object],
+            context: object | None = None,
+        ) -> dict[str, object]:
             return {"send_any_message": False, "text": ""}
 
     runtime._langchain_agent = SilentAgent()  # type: ignore
-    result2 = await runtime.trigger_message(
-        AgentTrigger(peer="me", text="Ping", message_id=43)
-    )
+    result2 = await runtime.trigger_message(AgentTrigger(peer="me", text="Ping", message_id=43))
     assert result2.response_text == ""
     read_requests = [
-        r for r in telegram.requests
-        if isinstance(r, functions.messages.ReadHistoryRequest)
+        r for r in telegram.requests if isinstance(r, functions.messages.ReadHistoryRequest)
     ]
     assert len(read_requests) == 0
     await runtime.stop()
@@ -902,12 +946,14 @@ async def test_humanized_typing_delay_used_on_send(monkeypatch: pytest.MonkeyPat
     assert len(telegram.sent_messages) == 1
 
     typing_requests = [
-        r for r in telegram.requests
+        r
+        for r in telegram.requests
         if isinstance(r, functions.messages.SetTypingRequest)
         and isinstance(r.action, types.SendMessageTypingAction)
     ]
     cancel_requests = [
-        r for r in telegram.requests
+        r
+        for r in telegram.requests
         if isinstance(r, functions.messages.SetTypingRequest)
         and isinstance(r.action, types.SendMessageCancelAction)
     ]
@@ -969,7 +1015,8 @@ async def test_typing_interrupt_chance(monkeypatch: pytest.MonkeyPatch) -> None:
     await runtime.trigger_message(AgentTrigger(peer="me", text="Ping"))
 
     cancel_requests = [
-        r for r in telegram.requests
+        r
+        for r in telegram.requests
         if isinstance(r, functions.messages.SetTypingRequest)
         and isinstance(r.action, types.SendMessageCancelAction)
     ]
@@ -980,8 +1027,6 @@ async def test_typing_interrupt_chance(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.mark.asyncio
 async def test_long_message_split_into_multiple_parts(monkeypatch: pytest.MonkeyPatch) -> None:
     from unittest.mock import MagicMock
-
-    from telethon.tl import functions
 
     class TypedFakeClient(FakeTelegramClient):
         def __init__(self) -> None:

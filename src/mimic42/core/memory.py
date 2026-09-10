@@ -46,6 +46,8 @@ class ShortTermMemoryStore(Protocol):
         peer_name: str = "",
         agent_name: str = "",
         raw_user_text: str = "",
+        turn_id: str | None = None,
+        thread_id: UUID | None = None,
     ) -> None: ...
 
 
@@ -81,6 +83,8 @@ class MemoryServiceLike(Protocol):
         peer_name: str = "",
         agent_name: str = "",
         raw_user_text: str = "",
+        turn_id: str | None = None,
+        thread_id: UUID | None = None,
     ) -> None: ...
 
 
@@ -125,8 +129,9 @@ class RuntimeMemoryService:
         messages.extend(short_term_messages)
 
         # OpenRouter / Mistral fix: Mistral rejects requests where 'human' directly follows 'tool'.
-        # If the last message before the new user input is a 'tool' message (meaning the agent didn't
-        # get to reply after a tool execution), we inject a dummy 'ai' message to satisfy the LLM constraints.
+        # If the last message before the new user input is a 'tool' message (meaning the agent
+        # didn't get to reply after a tool execution), we inject a dummy 'ai' message to
+        # satisfy the LLM constraints.
         if messages:
             last_msg_type = messages[-1].get("type", messages[-1].get("role", ""))
             if last_msg_type == "tool":
@@ -134,7 +139,9 @@ class RuntimeMemoryService:
                     {
                         "type": "ai",
                         "role": "assistant",
-                        "content": "The tool executed, but the user interrupted before I could reply.",
+                        "content": (
+                            "The tool executed, but the user interrupted before I could reply."
+                        ),
                     }
                 )
 
@@ -152,10 +159,21 @@ class RuntimeMemoryService:
         peer_name: str = "",
         agent_name: str = "",
         raw_user_text: str = "",
+        turn_id: str | None = None,
+        thread_id: UUID | None = None,
     ) -> None:
         new_messages = _extract_new_messages(input_messages, output_messages)
 
-        if self._short_term is not None:
+        # The transcript must contain the incoming message. When the raw
+        # telegram text is available the DB layer persists it (deduped
+        # against the list below); otherwise persist the processed human
+        # turn explicitly so dashboard triggers stay visible.
+        if not raw_user_text:
+            incoming = _extract_last_human_message(input_messages)
+            if incoming is not None:
+                new_messages = [incoming, *new_messages]
+
+        if self._short_term is not None and new_messages:
             try:
                 await self._short_term.save_messages(
                     agent_id=agent_id,
@@ -165,6 +183,8 @@ class RuntimeMemoryService:
                     peer_name=peer_name,
                     agent_name=agent_name,
                     raw_user_text=raw_user_text,
+                    turn_id=turn_id,
+                    thread_id=thread_id,
                 )
             except Exception:
                 # Fail-open like long-term memory: auxiliary persistence must
@@ -284,6 +304,15 @@ def _extract_last_user_text(messages: list[dict[str, Any]]) -> str:
         if role in ("human", "user"):
             return msg.get("content", "")
     return ""
+
+
+def _extract_last_human_message(messages: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Return the latest user message dict (the current turn's input)."""
+    for msg in reversed(messages):
+        role = msg.get("type", msg.get("role", ""))
+        if role in ("human", "user"):
+            return msg
+    return None
 
 
 def _extract_last_assistant_text(messages: list[dict[str, Any]]) -> str:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from typing import Any
 from unittest.mock import MagicMock
@@ -261,7 +262,7 @@ class FakeTelethonClient:
         msg.text = "Mock message text"
         msg.media = None
         msg.reply_markup = None
-        
+
         # Build reply_markup for button tests
         callback_btn = MagicMock(spec=types.KeyboardButtonCallback)
         callback_btn.text = "Yes"
@@ -288,9 +289,7 @@ class FakeTelethonClient:
         return msg
 
     async def send_file(self, entity: Any, file: Any, **kwargs: Any) -> Any:
-        self.calls.append(
-            ("send_file", {"entity": entity, "file": file, "kwargs": kwargs})
-        )
+        self.calls.append(("send_file", {"entity": entity, "file": file, "kwargs": kwargs}))
         msg = MagicMock(spec=types.Message)
         msg.id = 999
         return msg
@@ -343,9 +342,7 @@ class FakeTelethonClient:
         return True
 
     async def edit_permissions(self, entity: Any, user: Any, **kwargs: Any) -> Any:
-        self.calls.append(
-            ("edit_permissions", {"entity": entity, "user": user, "kwargs": kwargs})
-        )
+        self.calls.append(("edit_permissions", {"entity": entity, "user": user, "kwargs": kwargs}))
         return True
 
     async def edit_admin(self, entity: Any, user: Any, **kwargs: Any) -> Any:
@@ -451,7 +448,6 @@ class FakeTelethonClient:
         dialog.entity = MagicMock()
         dialog.entity.username = "test_group"
         return [dialog]
-
 
 
 def test_custom_markdown_parser() -> None:
@@ -654,10 +650,7 @@ async def test_extract_incoming_text_extended_media() -> None:
     event_sticker.message = msg_sticker
 
     text_sticker = _extract_incoming_text(event_sticker)
-    assert (
-        "[Стикер 👍 id=sticker:123:456:0102:2:👍:pepe_pack пак=pepe_pack]"
-        in text_sticker
-    )
+    assert "[Стикер 👍 id=sticker:123:456:0102:2:👍:pepe_pack пак=pepe_pack]" in text_sticker
 
     # 2. Test Voice note
     voice = MagicMock(spec=types.Document)
@@ -735,10 +728,7 @@ async def test_extract_incoming_text_extended_media() -> None:
     event_doc.message = msg_doc
 
     text_doc = _extract_incoming_text(event_doc)
-    assert (
-        "[Файл name=test_doc.pdf id=doc:1617:1819:0708:5:test_doc.pdf]"
-        in text_doc
-    )
+    assert "[Файл name=test_doc.pdf id=doc:1617:1819:0708:5:test_doc.pdf]" in text_doc
 
 
 @pytest.mark.asyncio
@@ -807,16 +797,14 @@ async def test_member_tags_caching() -> None:
     # 1. Trigger handler (should fetch from Telegram and cache)
     await runtime._handle_incoming_message(event)
     get_participant_requests = [
-        r for r in client.requests
-        if isinstance(r, functions.channels.GetParticipantRequest)
+        r for r in client.requests if isinstance(r, functions.channels.GetParticipantRequest)
     ]
     assert len(get_participant_requests) == 1
 
     # 2. Trigger handler again (should hit cache, no new calls)
     await runtime._handle_incoming_message(event)
     get_participant_requests_2 = [
-        r for r in client.requests
-        if isinstance(r, functions.channels.GetParticipantRequest)
+        r for r in client.requests if isinstance(r, functions.channels.GetParticipantRequest)
     ]
     assert len(get_participant_requests_2) == 1
 
@@ -1095,7 +1083,7 @@ async def test_location_and_venue_tools() -> None:
     res = await toolbox.send_location("group", latitude=59.9398, longitude=30.3146)
     assert res["success"] is True
     assert res["message_id"] == 999
-    
+
     # Assert send_file calls
     send_file_calls = [c for c in client.calls if c[0] == "send_file"]
     assert len(send_file_calls) == 1
@@ -1110,7 +1098,7 @@ async def test_location_and_venue_tools() -> None:
         latitude=48.8584,
         longitude=2.2945,
         title="Eiffel Tower",
-        address="Champ de Mars, Paris"
+        address="Champ de Mars, Paris",
     )
     assert res_venue["success"] is True
     assert res_venue["message_id"] == 999
@@ -1125,24 +1113,23 @@ async def test_location_and_venue_tools() -> None:
     assert call_args_venue["file"].address == "Champ de Mars, Paris"
 
 
-import json
-
-
 @pytest.mark.asyncio
-async def test_search_location_tool(monkeypatch) -> None:
+async def test_search_location_tool(monkeypatch: pytest.MonkeyPatch) -> None:
     client = FakeTelethonClient()
     toolbox = TelegramToolbox(client)
 
     class FakeResponse:
         def __init__(self) -> None:
-            self.data = json.dumps({
-                "candidates": [
-                    {
-                        "address": "Eiffel Tower, Paris, France",
-                        "location": {"x": 2.2945, "y": 48.8584}
-                    }
-                ]
-            }).encode("utf-8")
+            self.data = json.dumps(
+                {
+                    "candidates": [
+                        {
+                            "address": "Eiffel Tower, Paris, France",
+                            "location": {"x": 2.2945, "y": 48.8584},
+                        }
+                    ]
+                }
+            ).encode("utf-8")
 
         def read(self) -> bytes:
             return self.data
@@ -1157,6 +1144,7 @@ async def test_search_location_tool(monkeypatch) -> None:
         return FakeResponse()
 
     import urllib.request
+
     monkeypatch.setattr(urllib.request, "urlopen", mock_urlopen)
 
     res = await toolbox.search_location("Eiffel Tower")
@@ -1205,7 +1193,9 @@ async def test_chat_folder_tools() -> None:
     )
     assert res_create["success"] is True
 
-    update_reqs = [r for r in client.requests if isinstance(r, functions.messages.UpdateDialogFilterRequest)]
+    update_reqs = [
+        r for r in client.requests if isinstance(r, functions.messages.UpdateDialogFilterRequest)
+    ]
     assert len(update_reqs) == 1
     req = update_reqs[0]
     assert req.id == 3
@@ -1220,7 +1210,9 @@ async def test_chat_folder_tools() -> None:
     res_delete = await toolbox.delete_chat_folder(folder_id=3)
     assert res_delete["success"] is True
 
-    update_reqs_updated = [r for r in client.requests if isinstance(r, functions.messages.UpdateDialogFilterRequest)]
+    update_reqs_updated = [
+        r for r in client.requests if isinstance(r, functions.messages.UpdateDialogFilterRequest)
+    ]
     assert len(update_reqs_updated) == 2
     req_del = update_reqs_updated[1]
     assert req_del.id == 3
@@ -1325,7 +1317,8 @@ async def test_privacy_and_account_settings_tools() -> None:
     )
     assert res_set_global["success"] is True
     global_reqs = [
-        r for r in client.requests
+        r
+        for r in client.requests
         if isinstance(r, functions.account.SetGlobalPrivacySettingsRequest)
     ]
     assert len(global_reqs) == 1
@@ -1341,8 +1334,7 @@ async def test_privacy_and_account_settings_tools() -> None:
     res_set_content = await toolbox.set_content_settings(sensitive_enabled=True)
     assert res_set_content["success"] is True
     content_reqs = [
-        r for r in client.requests
-        if isinstance(r, functions.account.SetContentSettingsRequest)
+        r for r in client.requests if isinstance(r, functions.account.SetContentSettingsRequest)
     ]
     assert len(content_reqs) == 1
     assert content_reqs[0].sensitive_enabled is True
@@ -1409,7 +1401,6 @@ async def test_get_discussion_messages() -> None:
     assert len(iter_calls) == 1
     assert iter_calls[0][1]["kwargs"]["reply_to"] == 42
     assert iter_calls[0][1]["kwargs"]["limit"] == 10
-
 
 
 @pytest.mark.asyncio

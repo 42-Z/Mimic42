@@ -98,8 +98,11 @@ export interface AgentActivity {
   event_type: string;
   status: EventStatus;
   created_at: string;
+  payload?: Record<string, unknown> | null;
+  result?: Record<string, unknown> | null;
   error: string | null;
-  metadata?: Record<string, unknown>;
+  started_at?: string | null;
+  completed_at?: string | null;
 }
 
 /**
@@ -190,7 +193,7 @@ export interface AgentRow {
 export interface AgentMessageRow {
   id: string;
   agent_id: string;
-  peer: string;
+  peer?: string;       // not a column: the peer lives in payload
   role: string;
   content: string;
   direction: AgentMessageDirection | null;
@@ -211,6 +214,8 @@ export interface AgentEventRow {
   result: Record<string, unknown> | null;
   error: string | null;
   created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
 }
 
 /**
@@ -250,7 +255,6 @@ export interface ProfileRow {
   id: string;         // matches auth.users.id
   email: string | null;
   display_name: string | null;
-  avatar_url: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -274,33 +278,6 @@ export interface OnboardingSessionRow {
 // UI / APPLICATION TYPES
 // ============================================================
 
-/**
- * Unified feed item for the live feed — merge of messages and events
- */
-export type FeedItemType = 'message' | 'event';
-
-export interface FeedMessage {
-  type: 'message';
-  id: string;
-  timestamp: string;
-  peer: string;
-  role: string;
-  content: string;
-  direction?: AgentMessageDirection;
-  agent_id?: string;
-}
-
-export interface FeedEvent {
-  type: 'event';
-  id: string;
-  timestamp: string;
-  event_type: string;
-  status: EventStatus;
-  error: string | null;
-  agent_id?: string;
-}
-
-export type FeedItem = FeedMessage | FeedEvent;
 
 /**
  * Onboarding step enum
@@ -332,11 +309,10 @@ export type AgentTab = 'settings' | 'logs' | 'actions' | 'telegram' | 'analytics
  * KPI Dashboard metrics
  */
 export interface DashboardKPIs {
+  contacts_today: number;
   messages_today: number;
-  active_threads: number;
+  actions_today: number;
   errors_today: number;
-  incoming_week: number;
-  isLoading: boolean;
 }
 
 /**
@@ -366,18 +342,8 @@ export interface ApiError {
 export interface AnalyticsDataPoint {
   date: string;
   messages: number;
-  events: number;
+  actions: number;
   errors: number;
-}
-
-/**
- * Thread analytics
- */
-export interface ThreadAnalytics {
-  peer: string;
-  peer_name: string | null;
-  message_count: number;
-  last_message_at: string;
 }
 
 /**

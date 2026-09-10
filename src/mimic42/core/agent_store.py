@@ -28,6 +28,8 @@ class AgentMessageRecord(BaseModel):
     role: str
     content: str
     direction: str = "inbound"
+    payload: dict[str, Any] = Field(default_factory=dict)
+    thread_id: UUID | None = None
     created_at: datetime
 
 
@@ -37,7 +39,11 @@ class AgentActivity(BaseModel):
     event_type: str
     status: str
     created_at: datetime
+    payload: dict[str, Any] = Field(default_factory=dict)
+    result: dict[str, Any] | None = None
     error: str | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
 
 
 class ToolCallRecord(BaseModel):

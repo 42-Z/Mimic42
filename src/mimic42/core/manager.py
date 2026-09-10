@@ -114,7 +114,13 @@ class AgentManager:
         return [agent.status for agent in agents]
 
     async def start_agent(self, agent_id: UUID) -> None:
-        await (await self.get_agent(agent_id)).start()
+        try:
+            await (await self.get_agent(agent_id)).start()
+        except Exception:
+            # Persist the failure: without this the database keeps the stale
+            # status and the dashboard badge lies about the runtime state.
+            await self._save_status(agent_id, AgentRuntimeState.ERROR)
+            raise
         await self._save_status(agent_id, AgentRuntimeState.RUNNING)
 
     async def stop_agent(self, agent_id: UUID) -> None:
@@ -170,6 +176,7 @@ class AgentManager:
                     agent_id=config.agent_id,
                     session_factory=self.session_factory,
                 ),
+                session_factory=self.session_factory,
             ),
             memory_service=memory_service,
             session_factory=self.session_factory,
@@ -196,6 +203,7 @@ def _build_runtime(
                 agent_id=config.agent_id,
                 session_factory=session_factory,
             ),
+            session_factory=session_factory,
         ),
         session_factory=session_factory,
     )
