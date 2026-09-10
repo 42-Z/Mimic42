@@ -41,8 +41,13 @@ raw = sys.stdin.read().strip()
 try:
     docs = json.loads(raw)
 except ValueError:
-    docs = []
-services = docs if isinstance(docs, list) else [json.loads(line) for line in raw.splitlines() if line.strip()]
+    docs = None
+if docs is None:
+    # compose v5 prints one JSON object per line
+    docs = [json.loads(line) for line in raw.splitlines() if line.strip()]
+elif isinstance(docs, dict):
+    docs = [docs]
+services = docs if isinstance(docs, list) else []
 names = {svc.get('Name', '') for svc in services}
 healthy = {svc.get('Name', '') for svc in services if svc.get('Health') == 'healthy'}
 if not {'mimic42-api', 'mimic42-web'} <= healthy:
