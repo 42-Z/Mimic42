@@ -7,38 +7,8 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from mimic42.api.app import create_app
-from mimic42.core.agent_runtime import AgentRuntimeState, AgentStatus
 from tests.api.auth_helpers import AUTH_HEADERS, FakeAuthVerifier
-
-
-class FakeAgentManager:
-    def __init__(self, owner_id: UUID) -> None:
-        self.owner_id = owner_id
-
-    async def create_agent(self, *args: Any, **kwargs: Any) -> Any:
-        raise NotImplementedError
-
-    async def get_agent_status(self, agent_id: UUID) -> AgentStatus:
-        return AgentStatus(
-            agent_id=agent_id,
-            owner_id=self.owner_id,
-            state=AgentRuntimeState.RUNNING,
-        )
-
-    async def list_agents(self, *args: Any, **kwargs: Any) -> Any:
-        raise NotImplementedError
-
-    async def start_agent(self, *args: Any, **kwargs: Any) -> Any:
-        raise NotImplementedError
-
-    async def stop_agent(self, *args: Any, **kwargs: Any) -> Any:
-        raise NotImplementedError
-
-    async def trigger_message(self, *args: Any, **kwargs: Any) -> Any:
-        raise NotImplementedError
-
-    async def shutdown(self) -> None:
-        pass
+from tests.api.fakes import FakeAgentManager
 
 
 class FakeMem0LongTermMemory:

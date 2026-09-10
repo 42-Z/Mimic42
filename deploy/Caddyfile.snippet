@@ -1,0 +1,12 @@
+# Append to /etc/caddy/Caddyfile on the VPS, then `systemctl reload caddy`.
+#
+# Only /api/v1/* goes to the backend: Next.js owns its own route handler at
+# /api/auth/callback (Supabase OAuth code exchange), which must stay on the
+# frontend. /health is intentionally not published — it serves the container
+# HEALTHCHECK only.
+
+mimic42.zomb.top {
+	import common
+	reverse_proxy /api/v1/* 127.0.0.1:8100
+	reverse_proxy 127.0.0.1:8101
+}

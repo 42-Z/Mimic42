@@ -109,6 +109,7 @@ export function TabLogs({ agentId }: { agentId: string }) {
           {(Object.keys(FILTER_LABELS) as LogFilter[]).map((f) => (
             <button
               key={f}
+              data-testid={`log-filter-${f}`}
               onClick={() => setFilter(f)}
               className={cn(
                 'px-3 py-1.5 rounded-sm font-mono text-xs border transition-colors',

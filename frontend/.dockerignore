@@ -1,0 +1,9 @@
+# Never bake local env or build output into the frontend image.
+# NEXT_PUBLIC_* values arrive via Docker build args, not env files.
+.env*
+node_modules/
+.next/
+*.session
+e2e/
+test-results/
+playwright-report/

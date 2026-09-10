@@ -2,5 +2,6 @@
 [test]
 # happy-dom globals must be registered before tests touch browser APIs
 preload = ["./src/__tests__/setup.ts"]
-# Next.js build output must not be scanned for test files
-pathIgnorePatterns = [".next/**"]
+# Next.js build output and Playwright e2e specs must not be scanned by `bun test`
+# (e2e runs via `bun run test:e2e`)
+pathIgnorePatterns = ["e2e/**", ".next/**"]

@@ -129,6 +129,7 @@ function ToastContainer({
 
   return (
     <div
+      data-testid="toast-container"
       className="fixed bottom-4 right-4 z-[9999] flex flex-col gap-2 pointer-events-none"
       aria-label="Уведомления"
     >

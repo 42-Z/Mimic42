@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 from collections.abc import Callable
-from typing import cast
+from typing import Protocol, cast
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -36,6 +36,15 @@ RuntimeFactory = Callable[[AgentRuntimeConfig], MimicAgentRuntime]
 MemoryServiceFactory = Callable[[AgentRuntimeConfig], RuntimeMemoryService]
 ConfigLoader = Callable[[UUID], object]
 StatusSink = Callable[[UUID, AgentRuntimeState], object]
+
+
+class RuntimeFactoryWithSession(Protocol):
+    def __call__(
+        self,
+        config: AgentRuntimeConfig,
+        *,
+        session_factory: async_sessionmaker[AsyncSession] | None,
+    ) -> MimicAgentRuntime: ...
 
 
 class AgentManager:
@@ -72,7 +81,8 @@ class AgentManager:
             else:
                 sig = inspect.signature(self._runtime_factory)
                 if "session_factory" in sig.parameters:
-                    runtime = self._runtime_factory(
+                    factory_with_session = cast(RuntimeFactoryWithSession, self._runtime_factory)
+                    runtime = factory_with_session(
                         config,
                         session_factory=self.session_factory,
                     )

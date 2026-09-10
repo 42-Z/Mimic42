@@ -46,6 +46,7 @@ class DatabaseOnboardingRepository:
                 raise OnboardingNotFoundError(onboarding_id)
             return _model_to_session(model)
 
+
 def _model_to_session(model: AgentOnboardingSessionModel) -> OnboardingSession:
     return OnboardingSession(
         onboarding_id=model.id,

@@ -1,0 +1,27 @@
+# Overlay for a containerized Caddy setup (NOT used right now: Caddy on
+# the VPS runs as a system service, see Caddyfile.snippet). Kept so the
+# stack can move to a shared docker network without editing the base file:
+#   docker compose -f docker-compose.yml -f docker-compose.caddy.yml up -d
+#
+# The overlay attaches both services to the external `caddy` network and
+# drops the loopback port publishing (Caddy reaches them by service name).
+
+networks:
+  caddy:
+    name: caddy
+    external: true
+
+services:
+  api:
+    networks:
+      caddy:
+        aliases:
+          - mimic42-api
+    ports: []
+
+  web:
+    networks:
+      caddy:
+        aliases:
+          - mimic42-web
+    ports: []

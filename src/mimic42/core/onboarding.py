@@ -104,6 +104,7 @@ class OnboardingRepository(Protocol):
 
     async def get(self, onboarding_id: UUID) -> OnboardingSession: ...
 
+
 class InMemoryOnboardingRepository:
     def __init__(self) -> None:
         self._sessions: dict[UUID, OnboardingSession] = {}
@@ -116,6 +117,7 @@ class InMemoryOnboardingRepository:
             return self._sessions[onboarding_id].model_copy(deep=True)
         except KeyError as exc:
             raise OnboardingNotFoundError(onboarding_id) from exc
+
 
 class OnboardingNotFoundError(KeyError):
     def __init__(self, onboarding_id: UUID) -> None:

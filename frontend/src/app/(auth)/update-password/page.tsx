@@ -93,7 +93,7 @@ export default function UpdatePasswordPage() {
           </p>
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <form onSubmit={handleSubmit} className="space-y-4" noValidate>
           <Input
             type="password"
             placeholder="Новый пароль"

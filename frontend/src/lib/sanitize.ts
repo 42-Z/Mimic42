@@ -101,6 +101,7 @@ export function sanitizeRichText(input: string | null | undefined): string {
  * only bare allowed tags — every attribute is stripped, so handlers like
  * onmouseover cannot survive the fallback.
  */
+// Linear-time patterns: sequential quantifiers only, no nesting — no ReDoS.
 function sanitizeRichHtmlServer(input: string): string {
   const ALLOWED_BARE = /<(?!\/?(?:b|i|em|strong|p|br|code|pre)\s*\/?>)[^>]*>/g;
   return stripDangerousContent(input)

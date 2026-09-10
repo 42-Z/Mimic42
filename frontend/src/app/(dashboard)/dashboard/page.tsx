@@ -132,6 +132,7 @@ function KPIRow({ agentIds }: { agentIds: string[] }) {
       {cards.map((card) => (
         <Card
           key={card.label}
+          data-testid="kpi-card"
           variant="glass"
           padding="md"
           onClick={card.clickable ? openLatestError : undefined}
@@ -213,7 +214,7 @@ function AgentCard({ agent, details }: { agent: AgentRecord; details?: { phone_n
   };
 
   return (
-    <Card variant="glass" padding="md" className="space-y-3">
+    <Card variant="glass" padding="md" className="space-y-3" data-testid={`agent-card-${agent.agent_id}`}>
       <div className="flex items-start justify-between gap-2">
         <div className="flex items-center gap-3 min-w-0">
           <div className="h-9 w-9 rounded-sm bg-void-800 border border-void-600 flex items-center justify-center shrink-0">

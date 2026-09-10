@@ -2,16 +2,17 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
 from telethon import functions, types
 
-from mimic42.core.agent_runtime import _extract_incoming_text
+from mimic42.core.agent_runtime import TelegramClientLike, _extract_incoming_text
 from mimic42.integrations.telegram_tools import (
     CustomMarkdown,
     TelegramToolbox,
+    TelethonRequestClient,
     build_telegram_langchain_tools,
     format_media_object,
     parse_media_id,
@@ -593,7 +594,7 @@ async def test_get_chat_members() -> None:
 @pytest.mark.asyncio
 async def test_tools_exposed_in_langchain() -> None:
     client = FakeTelethonClient()
-    tools = build_telegram_langchain_tools(client)
+    tools = build_telegram_langchain_tools(cast(TelethonRequestClient, client))
 
     assert len(tools) == 91
     tool_names = [t.name for t in tools]
@@ -763,12 +764,12 @@ async def test_member_tags_caching() -> None:
 
     runtime = MimicAgentRuntime(
         config=config,
-        telegram_client=client,
+        telegram_client=cast(TelegramClientLike, client),
         langchain_agent=langchain,
     )
     runtime._state = AgentRuntimeState.RUNNING
 
-    event = MagicMock()
+    event: Any = MagicMock()
     event.is_group = True
     event.is_channel = True
     event.chat_id = 999
@@ -1063,6 +1064,7 @@ async def test_mute_and_unmute_tools() -> None:
     assert res_dur["success"] is True
     assert len(client.requests) == 2
     req_dur = client.requests[1]
+    assert isinstance(req_dur, functions.account.UpdateNotifySettingsRequest)
     assert req_dur.settings.silent is True
 
     # Test unmute_chat
@@ -1070,6 +1072,7 @@ async def test_mute_and_unmute_tools() -> None:
     assert res_unmute["success"] is True
     assert len(client.requests) == 3
     req_unmute = client.requests[2]
+    assert isinstance(req_unmute, functions.account.UpdateNotifySettingsRequest)
     assert req_unmute.settings.silent is False
     assert req_unmute.settings.mute_until == datetime(1970, 1, 1)
 
@@ -1199,7 +1202,8 @@ async def test_chat_folder_tools() -> None:
     assert len(update_reqs) == 1
     req = update_reqs[0]
     assert req.id == 3
-    assert req.filter.title == "Friends"
+    assert isinstance(req.filter, types.DialogFilter)
+    assert req.filter.title.text == "Friends"
     assert req.filter.emoticon == "👥"
     assert req.filter.color == 2
     assert req.filter.contacts is True

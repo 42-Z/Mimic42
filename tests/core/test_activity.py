@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -31,22 +32,22 @@ def make_config(agent_id: UUID | None = None) -> AgentRuntimeConfig:
     )
 
 
-def make_session_factory() -> async_sessionmaker[Any]:
+@pytest.fixture
+async def session_factory() -> AsyncIterator[async_sessionmaker[Any]]:
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
-    return async_sessionmaker(engine, expire_on_commit=False)
-
-
-async def create_tables(session_factory: async_sessionmaker[Any]) -> None:
-    engine = session_factory.kw["bind"]
+    factory = async_sessionmaker(engine, expire_on_commit=False)
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
+    try:
+        yield factory
+    finally:
+        await engine.dispose()
 
 
 @pytest.mark.asyncio
-async def test_activity_recorder_writes_event_row() -> None:
-    session_factory = make_session_factory()
-    await create_tables(session_factory)
-
+async def test_activity_recorder_writes_event_row(
+    session_factory: async_sessionmaker[Any],
+) -> None:
     agent_id = uuid4()
     recorder = ActivityRecorder(session_factory)
     await recorder.record(
@@ -222,10 +223,9 @@ def _fake_request() -> Any:
 
 
 @pytest.mark.asyncio
-async def test_runtime_start_records_lifecycle_event() -> None:
-    session_factory = make_session_factory()
-    await create_tables(session_factory)
-
+async def test_runtime_start_records_lifecycle_event(
+    session_factory: async_sessionmaker[Any],
+) -> None:
     agent_id = uuid4()
     runtime = MimicAgentRuntime(
         config=make_config(agent_id),
@@ -278,6 +278,7 @@ async def test_manager_start_agent_persists_error_status() -> None:
 @pytest.mark.asyncio
 async def test_failed_turn_records_turn_failed_once(
     monkeypatch: pytest.MonkeyPatch,
+    session_factory: async_sessionmaker[Any],
 ) -> None:
     """A crashing LLM call must yield exactly one turn.failed event.
 
@@ -287,9 +288,6 @@ async def test_failed_turn_records_turn_failed_once(
     from unittest.mock import MagicMock
 
     from telethon.tl import functions
-
-    session_factory = make_session_factory()
-    await create_tables(session_factory)
 
     agent_id = uuid4()
     telegram = FakeTelegramClient()
@@ -319,7 +317,7 @@ async def test_failed_turn_records_turn_failed_once(
     runtime = MimicAgentRuntime(
         config=make_config(agent_id),
         telegram_client=telegram,
-        langchain_agent=BrokenAgent(),  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
+        langchain_agent=BrokenAgent(),  # type: ignore[arg-type]
         session_factory=session_factory,
     )
     await runtime.start()

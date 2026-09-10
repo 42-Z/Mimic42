@@ -43,9 +43,7 @@ class DatabaseAgentStore:
         async with self._session_factory() as db_session:
             # Acquire row-level lock to prevent TOCTOU race on concurrent finalization
             agent = await db_session.scalar(
-                select(AgentModel)
-                .where(AgentModel.id == session.onboarding_id)
-                .with_for_update()
+                select(AgentModel).where(AgentModel.id == session.onboarding_id).with_for_update()
             )
             if agent is None:
                 agent = AgentModel(id=session.onboarding_id)
@@ -335,7 +333,7 @@ class DatabaseAgentStore:
 
             # Reverse so newest first, then apply offset/limit
             turns.reverse()
-            return turns[offset:offset + limit]
+            return turns[offset : offset + limit]
 
 
 def _agent_record(agent: AgentModel) -> AgentRecord:

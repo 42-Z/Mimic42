@@ -210,9 +210,9 @@ class InMemoryAgentStore:
                     incoming=msg.content,
                 )
                 # Look ahead for an outgoing response
-                if (
-                    i + 1 < len(filtered)
-                    and filtered[i + 1].direction in ("agent_response", "outgoing")
+                if i + 1 < len(filtered) and filtered[i + 1].direction in (
+                    "agent_response",
+                    "outgoing",
                 ):
                     turn.outgoing = filtered[i + 1].content
                     turn.direction = "both"

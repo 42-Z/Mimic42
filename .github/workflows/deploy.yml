@@ -1,0 +1,169 @@
+# Build images on main, push to GHCR, roll out to the VPS over SSH.
+#
+# Required repository configuration (once, by a maintainer):
+# - Secrets: DEPLOY_SSH_KEY (fresh ed25519, no passphrase), DEPLOY_HOST,
+#   DEPLOY_USER, DEPLOY_KNOWN_HOSTS (`ssh-keyscan` output, fingerprint
+#   verified against the VPS console).
+# - Variables: NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY
+#   (public client values, baked into the web bundle), NEXT_PUBLIC_API_BASE_URL
+#   (https://mimic42.zomb.top), DEPLOY_PATH (/root/sites/mimic42), DEPLOY_PORT (22).
+# - The ghcr.io/42-z/mimic42-{api,web} packages must be switched to PUBLIC
+#   (private by default even for public repos) so the server can pull
+#   without a docker login. No registry token is needed in CI beyond the
+#   automatic GITHUB_TOKEN.
+
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  API_IMAGE: ghcr.io/42-z/mimic42-api
+  WEB_IMAGE: ghcr.io/42-z/mimic42-web
+
+jobs:
+  build-api:
+    name: build-api
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.API_IMAGE }}
+          tags: |
+            type=sha,format=long
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=mimic42-api
+          cache-to: type=gha,mode=max,scope=mimic42-api
+
+  build-web:
+    name: build-web
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.WEB_IMAGE }}
+          tags: |
+            type=sha,format=long
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            NEXT_PUBLIC_SUPABASE_URL=${{ vars.NEXT_PUBLIC_SUPABASE_URL }}
+            NEXT_PUBLIC_SUPABASE_ANON_KEY=${{ vars.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+            NEXT_PUBLIC_API_BASE_URL=${{ vars.NEXT_PUBLIC_API_BASE_URL }}
+          cache-from: type=gha,scope=mimic42-web
+          cache-to: type=gha,mode=max,scope=mimic42-web
+
+  deploy:
+    name: deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [build-api, build-web]
+    environment: production
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.DEPLOY_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+      - name: Copy compose files
+        run: |
+          scp -i ~/.ssh/deploy_key -P "${{ vars.DEPLOY_PORT }}" \
+            deploy/docker-compose.yml deploy/deploy.sh \
+            "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:${{ vars.DEPLOY_PATH }}/"
+
+      - name: Roll out
+        run: |
+          ssh -i ~/.ssh/deploy_key -p "${{ vars.DEPLOY_PORT }}" \
+            -o StrictHostKeyChecking=yes \
+            "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
+            "cd ${{ vars.DEPLOY_PATH }} && bash deploy.sh sha-${{ github.sha }}"
+
+      - name: Smoke test
+        run: |
+          set -e
+          # A freshly recreated web container needs a few seconds before the
+          # first response; retry instead of flaking on a slow start.
+          login_code=""
+          for i in 1 2 3; do
+            login_code="$(curl -s -o /dev/null -w '%{http_code}' https://mimic42.zomb.top/login)"
+            echo "GET /login -> ${login_code} (attempt ${i})"
+            test "${login_code}" = "200" && break
+            sleep 10
+          done
+          test "${login_code}" = "200"
+          api_code="$(curl -s -o /dev/null -w '%{http_code}' https://mimic42.zomb.top/api/v1/agents)"
+          echo "GET /api/v1/agents -> ${api_code}"
+          test "${api_code}" = "401" || test "${api_code}" = "403"
+          callback_code="$(curl -s -o /dev/null -w '%{http_code}' https://mimic42.zomb.top/api/auth/callback)"
+          echo "GET /api/auth/callback -> ${callback_code}"
+          test "${callback_code}" != "404"
+
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ~/.ssh/deploy_key

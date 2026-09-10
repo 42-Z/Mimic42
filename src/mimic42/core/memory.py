@@ -191,6 +191,7 @@ class RuntimeMemoryService:
                 # never break the agent turn. The error is logged with context
                 # for alerting; the turn itself proceeds.
                 import logging
+
                 logger = logging.getLogger("mimic42.memory")
                 logger.exception(
                     "Failed to save messages to short-term store (agent_id=%s, peer=%s, count=%d)",
