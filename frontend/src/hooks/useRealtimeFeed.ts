@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useCallback, useState, useMemo } from 'react';
+import { useEffect, useRef, useCallback, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { getSupabaseClient } from '@/lib/supabase/client';
 import { queryKeys } from '@/lib/queryClient';
@@ -188,9 +188,7 @@ export function useRealtimeFeed(agentId: string) {
       tools: [tool],
     };
     addTurn(turn);
-  }, [agentId, qc, addTurn]);
-
-  // Reset feed when agent changes
+  }, [agentId, addTurn]);
   useEffect(() => {
     setNewTurns([]);
     setNewMessages([]);
