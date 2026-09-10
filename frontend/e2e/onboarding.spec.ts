@@ -28,8 +28,6 @@ test.describe('onboarding wizard', () => {
     await hideOnboardingDrafts(request, flowUser.id);
 
     await page.goto('/onboarding');
-
-    await page.goto('/onboarding');
     await expect(page.getByRole('heading', { name: 'Как зовут вашего агента?' })).toBeVisible();
 
     // Step 1 — name (client validation first).

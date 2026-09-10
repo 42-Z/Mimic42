@@ -7,56 +7,8 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from mimic42.api.app import create_app
-from mimic42.core.agent_runtime import (
-    AgentRuntimeConfig,
-    AgentRuntimeState,
-    AgentStatus,
-    AgentTrigger,
-    AgentTriggerResult,
-)
 from tests.api.auth_helpers import AUTH_HEADERS, FakeAuthVerifier
-
-
-class FakeAgentManager:
-    def __init__(self, owner_id: UUID) -> None:
-        self.owner_id = owner_id
-
-    async def create_agent(self, config: AgentRuntimeConfig, *, start: bool = False) -> AgentStatus:
-        return AgentStatus(
-            agent_id=config.agent_id,
-            owner_id=self.owner_id,
-            state=AgentRuntimeState.RUNNING,
-        )
-
-    async def get_agent_status(self, agent_id: UUID) -> AgentStatus:
-        return AgentStatus(
-            agent_id=agent_id,
-            owner_id=self.owner_id,
-            state=AgentRuntimeState.RUNNING,
-        )
-
-    async def list_agents(self, *, owner_id: UUID | None = None) -> list[AgentStatus]:
-        return []
-
-    async def start_agent(self, agent_id: UUID) -> None:
-        pass
-
-    async def stop_agent(self, agent_id: UUID) -> None:
-        pass
-
-    async def remove_agent(self, agent_id: UUID) -> None:
-        pass
-
-    async def trigger_message(self, agent_id: UUID, trigger: AgentTrigger) -> AgentTriggerResult:
-        return AgentTriggerResult(
-            agent_id=agent_id,
-            peer=trigger.peer,
-            input_text=trigger.text,
-            response_text="",
-        )
-
-    async def shutdown(self) -> None:
-        pass
+from tests.api.fakes import FakeAgentManager
 
 
 class FakeMem0LongTermMemory:

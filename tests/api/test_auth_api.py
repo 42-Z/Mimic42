@@ -10,7 +10,7 @@ from mimic42.api.app import create_app
 from mimic42.core.agent_runtime import AgentRuntimeState
 from mimic42.core.agent_store import AgentMessageRecord, AgentRecord, InMemoryAgentStore
 from tests.api.auth_helpers import AUTH_HEADERS, FakeAuthVerifier
-from tests.api.test_agents_api import FakeAgentManager
+from tests.api.fakes import FakeAgentManager
 
 
 @pytest.mark.asyncio

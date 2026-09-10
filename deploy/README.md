@@ -49,6 +49,10 @@ EOF
 #    /etc/caddy/Caddyfile, then:
 systemctl reload caddy
 ```
+Prerequisite: the host Caddyfile must define the `(common)` snippet used
+by `import common` (it does on the current VPS — verify before reload,
+a bad Caddyfile takes down every site: `caddy validate --config
+/etc/caddy/Caddyfile --adapter caddyfile`).
 
 ## How deploys work
 
