@@ -88,6 +88,31 @@ export async function readStubRows(
   return (await res.json()) as Record<string, unknown>[];
 }
 
+/**
+ * Hide all visible drafts of an onboarding user (marks them completed).
+ * Makes a wizard test hermetic per attempt: leftover drafts from a previous
+ * attempt become invisible to deriveOnboardingStep, so the new draft is the
+ * only one both the app and the test can see.
+ */
+export async function hideOnboardingDrafts(
+  request: APIRequestContext,
+  ownerId: string,
+): Promise<void> {
+  const drafts = await readStubRows(
+    request,
+    'agent_onboarding_sessions',
+    `select=id&owner_id=eq.${ownerId}&completed_agent_id=is.null`,
+  );
+  for (const draft of drafts) {
+    const id = draft['id'];
+    if (typeof id === 'string') {
+      await patchStubRow(request, 'agent_onboarding_sessions', id, {
+        completed_agent_id: 'e2e-hidden',
+      });
+    }
+  }
+}
+
 /** Mock one FastAPI endpoint with a JSON body (query string is ignored). */
 export function mockApi(
   page: Page,

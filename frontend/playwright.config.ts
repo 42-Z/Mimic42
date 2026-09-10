@@ -2,7 +2,10 @@ import { defineConfig, devices } from '@playwright/test';
 
 const STUB_PORT = Number(process.env.E2E_STUB_PORT ?? 54321);
 const STUB_URL = `http://127.0.0.1:${STUB_PORT}`;
-const APP_URL = 'http://127.0.0.1:3000';
+// Port 3000 is the default (backend CORS is hardcoded to it); override when
+// the port is taken by another project on the dev machine.
+const APP_PORT = Number(process.env.E2E_APP_PORT ?? 3000);
+const APP_URL = `http://127.0.0.1:${APP_PORT}`;
 
 // Dummy-but-valid env for the app under test. The Supabase URL points at the
 // local stub (see e2e/stub/server.ts); the API base is mocked per-test with
@@ -62,7 +65,10 @@ export default defineConfig({
       url: APP_URL,
       reuseExistingServer: !process.env.CI,
       timeout: 180_000,
-      env: testEnv,
+      env: {
+        ...testEnv,
+        PORT: String(APP_PORT),
+      },
     },
   ],
 });

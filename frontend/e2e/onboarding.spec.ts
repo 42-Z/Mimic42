@@ -2,6 +2,7 @@ import { test, expect } from '@playwright/test';
 import {
   STUB_URL,
   USERS,
+  hideOnboardingDrafts,
   mockApi,
   patchStubRow,
   readStubRows,
@@ -22,6 +23,11 @@ test.describe('onboarding wizard', () => {
     request,
   }) => {
     test.slow();
+    // Hermetic per attempt: hide leftovers so the app and the test below
+    // always agree on the single visible draft (same query the app uses).
+    await hideOnboardingDrafts(request, flowUser.id);
+
+    await page.goto('/onboarding');
 
     await page.goto('/onboarding');
     await expect(page.getByRole('heading', { name: 'Как зовут вашего агента?' })).toBeVisible();
@@ -81,10 +87,11 @@ test.describe('onboarding wizard', () => {
     await expect(page.getByRole('heading', { name: 'Код из Telegram' })).toBeVisible();
 
     // Step 4 — code (client validation first, then mocked API + stub flip).
+    // The id the app itself uses (same filter/order/limit as the session query).
     const drafts = await readStubRows(
       request,
       'agent_onboarding_sessions',
-      `select=id&owner_id=eq.${flowUser.id}`,
+      `select=id&owner_id=eq.${flowUser.id}&completed_agent_id=is.null&order=created_at.desc&limit=1`,
     );
     const draftId = drafts[0]?.['id'];
     expect(typeof draftId).toBe('string');

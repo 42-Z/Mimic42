@@ -578,66 +578,80 @@ Bun.serve({
   fetch(req: Request): Response | Promise<Response> {
     const url = new URL(req.url);
     const pathname = url.pathname;
-
+    const logLine = `${req.method} ${pathname}`;
     if (process.env.E2E_STUB_LOG === '1' && !pathname.startsWith('/__')) {
       // eslint-disable-next-line no-console
-      console.log(`[stub] ${req.method} ${pathname}${url.search.slice(0, 160)}`);
+      console.log(`[stub] ${logLine}${url.search.slice(0, 160)}`);
     }
-
-    if (req.method === 'OPTIONS') {
-      return new Response(null, { status: 204, headers: corsHeaders(req) });
-    }
-
-    if (req.method === 'GET' && pathname === '/__health__') {
-      return json({ ok: true });
-    }
-
-    if (req.method === 'POST' && pathname === '/__reset__') {
-      state = seedAll();
-      return json({ ok: true });
-    }
-
-    if (req.method === 'PATCH' && pathname === '/__row__') {
-      return req.json().then((body: unknown) => {
-        const { table, id, patch } = (body as { table?: unknown; id?: unknown; patch?: unknown }) ?? {};
-        if (
-          typeof table !== 'string' ||
-          !TABLES.includes(table as TableName) ||
-          typeof id !== 'string' ||
-          typeof patch !== 'object' ||
-          patch === null
-        ) {
-          return json({ message: 'expected {table, id, patch}' }, 400);
-        }
-        const rows = state[table as TableName];
-        const row = rows.find((candidate) => candidate['id'] === id);
-        if (!row) return json({ message: 'row not found' }, 404);
-        Object.assign(row, patch as Row);
-        return json({ ok: true });
-      }) as Promise<Response>;
-    }
-
-    if (pathname === '/realtime/v1/websocket' || pathname.startsWith('/realtime/')) {
-      // Realtime is out of scope for e2e: refuse the socket so the UI
-      // deterministically renders its OFFLINE state.
-      return new Response('realtime disabled in e2e stub', { status: 404 });
-    }
-
-    if (pathname.startsWith('/auth/v1/')) {
-      return handleAuth(req, pathname, url);
-    }
-
-    if (pathname.startsWith('/rest/v1/')) {
-      const table = pathname.slice('/rest/v1/'.length).split('/')[0] as TableName;
-      if (!TABLES.includes(table)) {
-        return json({ message: `Unknown table ${table} in e2e stub` }, 404);
+    const logged = async (res: Response | Promise<Response>): Promise<Response> => {
+      const out = await res;
+      if (process.env.E2E_STUB_LOG === '1' && !pathname.startsWith('/__')) {
+        // eslint-disable-next-line no-console
+        console.log(`[stub] <- ${out.status} ${logLine}`);
       }
-      return handleRest(req, state, table);
-    }
-
-    return json({ message: `Not implemented in e2e stub: ${req.method} ${pathname}` }, 501);
+      return out;
+    };
+    return logged(handleFetch(req));
   },
 });
+
+function handleFetch(req: Request): Response | Promise<Response> {
+  const url = new URL(req.url);
+  const pathname = url.pathname;
+
+  if (req.method === 'OPTIONS') {
+    return new Response(null, { status: 204, headers: corsHeaders(req) });
+  }
+
+  if (req.method === 'GET' && pathname === '/__health__') {
+    return json({ ok: true });
+  }
+
+  if (req.method === 'POST' && pathname === '/__reset__') {
+    state = seedAll();
+    return json({ ok: true });
+  }
+
+  if (req.method === 'PATCH' && pathname === '/__row__') {
+    return req.json().then((body: unknown) => {
+      const { table, id, patch } = (body as { table?: unknown; id?: unknown; patch?: unknown }) ?? {};
+      if (
+        typeof table !== 'string' ||
+        !TABLES.includes(table as TableName) ||
+        typeof id !== 'string' ||
+        typeof patch !== 'object' ||
+        patch === null
+      ) {
+        return json({ message: 'expected {table, id, patch}' }, 400);
+      }
+      const rows = state[table as TableName];
+      const row = rows.find((candidate) => candidate['id'] === id);
+      if (!row) return json({ message: 'row not found' }, 404);
+      Object.assign(row, patch as Row);
+      return json({ ok: true });
+    }) as Promise<Response>;
+  }
+
+  if (pathname === '/realtime/v1/websocket' || pathname.startsWith('/realtime/')) {
+    // Realtime is out of scope for e2e: refuse the socket so the UI
+    // deterministically renders its OFFLINE state.
+    return new Response('realtime disabled in e2e stub', { status: 404 });
+  }
+
+  if (pathname.startsWith('/auth/v1/')) {
+    return handleAuth(req, pathname, url);
+  }
+
+  if (pathname.startsWith('/rest/v1/')) {
+    const table = pathname.slice('/rest/v1/'.length).split('/')[0] as TableName;
+    if (!TABLES.includes(table)) {
+      return json({ message: `Unknown table ${table} in e2e stub` }, 404);
+    }
+    return handleRest(req, state, table);
+  }
+
+  return json({ message: `Not implemented in e2e stub: ${req.method} ${pathname}` }, 501);
+}
 
 // eslint-disable-next-line no-console
 console.log(`[e2e-stub] listening on http://127.0.0.1:${PORT}`);
