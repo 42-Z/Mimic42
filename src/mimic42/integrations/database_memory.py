@@ -171,9 +171,10 @@ class DatabaseShortTermMemory:
                         payload["structured_response"] = structured_response
                         structured_response = None
 
-                # The CHECK constraint on content was dropped
-                # (migration ..._remove_agent_messages_content_not_blank), so
-                # empty content is stored as "" and the UI renders a fallback.
+                # The CHECK constraint on content was NOT fully dropped — it was
+                # relaxed (migration ..._relax_agent_messages_content_check) to
+                # allow empty content ONLY when payload contains tool_calls,
+                # structured_response, or tool_call_id.
                 if not content:
                     content = ""
 

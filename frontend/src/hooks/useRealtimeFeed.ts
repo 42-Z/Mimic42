@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useCallback, useState } from 'react';
+import { useEffect, useRef, useCallback, useState, useMemo } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { getSupabaseClient } from '@/lib/supabase/client';
 import { queryKeys } from '@/lib/queryClient';
@@ -91,10 +91,40 @@ export function useRealtimeFeed(agentId: string) {
       }
       return updated;
     });
-    qc.invalidateQueries({ queryKey: queryKeys.conversation.byAgent(agentId) });
+  }, []);
+
+  // Debounced invalidation: coalesce rapid realtime bursts into at most
+  // one refetch per second so that a flurry of tool events doesn't hammer
+  // the API with redundant requests.
+  const invalidateTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingInvalidates = useRef<Set<string>>(new Set());
+
+  const flushInvalidates = useCallback(() => {
+    const keys = [...pendingInvalidates.current];
+    pendingInvalidates.current.clear();
+    for (const key of keys) {
+      if (key === 'conversation') {
+        qc.invalidateQueries({ queryKey: queryKeys.conversation.byAgent(agentId) });
+      } else if (key === 'messages') {
+        qc.invalidateQueries({ queryKey: queryKeys.messages.byAgent(agentId) });
+      } else if (key === 'threads') {
+        qc.invalidateQueries({ queryKey: queryKeys.threads.byAgent(agentId) });
+      } else if (key === 'actions') {
+        qc.invalidateQueries({ queryKey: queryKeys.actions.byAgent(agentId) });
+      }
+    }
+    invalidateTimer.current = null;
   }, [agentId, qc]);
 
+  const scheduleInvalidate = useCallback((key: string) => {
+    pendingInvalidates.current.add(key);
+    if (!invalidateTimer.current) {
+      invalidateTimer.current = setTimeout(flushInvalidates, 1000);
+    }
+  }, [flushInvalidates]);
+
   const addMessage = useCallback((msg: AgentMessageRow) => {
+    const isIncoming = msg.direction === 'incoming' || msg.direction === 'dashboard_trigger';
     if (!isTranscriptRow(msg)) {
       setNewMessages((prev) => {
         const updated = [...prev, msg];
@@ -102,11 +132,9 @@ export function useRealtimeFeed(agentId: string) {
           ? updated.slice(updated.length - MAX_FEED_ITEMS)
           : updated;
       });
-      qc.invalidateQueries({ queryKey: queryKeys.messages.byAgent(agentId) });
-      // A brand-new contact must resolve to a human name promptly.
-      qc.invalidateQueries({ queryKey: queryKeys.threads.byAgent(agentId) });
+      scheduleInvalidate('messages');
+      scheduleInvalidate('threads');
     }
-    const isIncoming = msg.direction === 'incoming' || msg.direction === 'dashboard_trigger';
     const turn: ConversationTurn = {
       id: msg.id,
       agent_id: agentId,
@@ -120,7 +148,7 @@ export function useRealtimeFeed(agentId: string) {
       tools: [],
     };
     addTurn(turn);
-  }, [agentId, addTurn]);
+  }, [agentId, addTurn, scheduleInvalidate]);
 
   const addEvent = useCallback((event: AgentEventRow) => {
     setNewEvents((prev) => {
@@ -129,7 +157,7 @@ export function useRealtimeFeed(agentId: string) {
         ? updated.slice(updated.length - MAX_FEED_ITEMS)
         : updated;
     });
-    qc.invalidateQueries({ queryKey: queryKeys.actions.byAgent(agentId) });
+    scheduleInvalidate('actions');
     const started = (event as unknown as Record<string, unknown>).started_at;
     const completed = (event as unknown as Record<string, unknown>).completed_at;
     let duration_ms = 0;
@@ -179,15 +207,13 @@ export function useRealtimeFeed(agentId: string) {
     const supabase = getSupabaseClient();
     const channelName = `agent-feed-${agentId}`;
 
-    const existingChannel = supabase.getChannels().find(
+    // Always recreate the channel to avoid stale closures from prior
+    // hook instances that may have been torn down without cleanup.
+    const stale = supabase.getChannels().find(
       (ch) => ch.topic === `realtime:${channelName}`
     );
-    if (existingChannel) {
-      channelRef.current = existingChannel;
-      setIsConnected(true);
-      return () => {
-        setIsConnected(false);
-      };
+    if (stale) {
+      supabase.removeChannel(stale);
     }
 
     const channel = supabase
@@ -374,12 +400,11 @@ export function useAgentStatusRealtime(agentId: string) {
     const supabase = getSupabaseClient();
     const channelName = `agent-status-${agentId}`;
 
-    const existingChannel = supabase.getChannels().find(
+    const stale = supabase.getChannels().find(
       (ch) => ch.topic === `realtime:${channelName}`
     );
-    if (existingChannel) {
-      channelRef.current = existingChannel;
-      return;
+    if (stale) {
+      supabase.removeChannel(stale);
     }
 
     const channel = supabase

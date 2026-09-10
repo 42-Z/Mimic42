@@ -82,8 +82,8 @@ export function ConversationThread({
         </div>
       )}
 
-      {grouped.map((group) => (
-        <div key={group.date}>
+      {grouped.map((group, idx) => (
+        <div key={group.date || group.turns[0]?.id || idx}>
           <div className="sticky top-0 z-10 text-center py-2 bg-void-950/90 backdrop-blur-sm">
             <span className="text-[10px] text-void-500 bg-void-900 px-3 py-1 rounded-full border border-void-800">
               {group.date}

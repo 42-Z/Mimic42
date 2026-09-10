@@ -59,7 +59,15 @@ export function TabLogsChat({ agentId }: { agentId: string }) {
   });
 
   const handleLoadMore = useCallback(() => {
-    if (hasNextPage) fetchNextPage();
+    if (!hasNextPage || !containerRef.current) return;
+    const el = containerRef.current;
+    const prevScrollHeight = el.scrollHeight;
+    fetchNextPage().then(() => {
+      // Preserve scroll position after prepending older turns
+      requestAnimationFrame(() => {
+        el.scrollTop += el.scrollHeight - prevScrollHeight;
+      });
+    });
   }, [hasNextPage, fetchNextPage]);
 
   // Auto-scroll to bottom on new turns

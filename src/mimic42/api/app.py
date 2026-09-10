@@ -680,16 +680,19 @@ def create_app(
             owned = await memory_store.get_all_memories(agent_id)
         except Exception:
             logger.warning(
-                "Memory ownership pre-check failed, proceeding best-effort",
+                "Memory ownership pre-check failed",
                 exc_info=True,
             )
-            owned = []
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Memory service unavailable",
+            ) from None
         owned_ids = {
             str(item.get("id"))
             for item in owned
             if isinstance(item, dict) and item.get("id") is not None
         }
-        if owned_ids and memory_id not in owned_ids:
+        if not owned_ids or memory_id not in owned_ids:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Memory {memory_id} does not exist",
