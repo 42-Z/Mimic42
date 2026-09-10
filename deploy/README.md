@@ -12,13 +12,14 @@ DEPLOY=/root/sites/mimic42
 mkdir -p "$DEPLOY"
 cd "$DEPLOY"
 
-# 1. Backend secrets — mode 600, never committed, never leaves the server.
+# 1. Backend secrets in /etc/mimic42.env — mode 600, never committed,
+#    never transferred over the network by the pipeline.
 #    Values: same keys as the local .env, but PRODUCTION ones.
 #    SECRET_KEY must match the key that encrypted the stored Telethon
 #    sessions, otherwise no agent resumes after a restart.
 #    DATABASE_CONNECTION_STRING uses the asyncpg driver:
 #      postgresql+asyncpg://postgres:PASSWORD@db.xxx.supabase.co:5432/postgres
-cat > api.env <<'EOF'
+cat > /etc/mimic42.env <<'EOF'
 SUPABASE_URL=
 DATABASE_CONNECTION_STRING=
 MEM0_API_KEY=
@@ -28,7 +29,7 @@ TELEGRAM_API_ID=
 TELEGRAM_API_HASH=
 CORS_ALLOW_ORIGINS=https://mimic42.zomb.top
 EOF
-chmod 600 api.env
+chmod 600 /etc/mimic42.env
 
 # 2. Compose-level variables (no secrets here).
 cat > .env <<'EOF'
@@ -76,7 +77,7 @@ Open the site, log in, check that the agent list loads.
 
 - `docker compose ps` — container + health status; `docker compose logs --tail=100 api web`.
 - Agents stay STOPPED after restart with restore errors in `api` logs:
-  `SECRET_KEY` in `api.env` does not match the encryption key — fix the
+  `SECRET_KEY` in `/etc/mimic42.env` does not match the encryption key — fix the
   value and `docker compose up -d` again.
 - `.session` files appearing inside the api container
   (`docker exec mimic42-api ls -la /app/data`): some path bypasses the

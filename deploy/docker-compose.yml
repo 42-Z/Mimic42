@@ -1,9 +1,10 @@
 # Mimic42 production stack on the VPS.
 #
 # Images come from ghcr.io (built by .github/workflows/deploy.yml); the
-# server only pulls and restarts, never builds. Secrets live in api.env
-# (mode 600, created manually — never committed); plain compose-level
-# variables live in .env (written by deploy.sh).
+# server only pulls and restarts, never builds. Secrets live in
+# /etc/mimic42.env (mode 600, created manually — never committed, never
+# transferred); plain compose-level variables live in .env next to this
+# file (written by deploy.sh).
 #
 # Ports are published on loopback only: the system Caddy proxies
 # mimic42.zomb.top to them (see Caddyfile.snippet).
@@ -15,7 +16,7 @@ services:
     pull_policy: always
     restart: unless-stopped
     env_file:
-      - path: ./api.env
+      - path: /etc/mimic42.env
         required: true
     ports:
       - "127.0.0.1:${API_PORT:-8100}:8000"
