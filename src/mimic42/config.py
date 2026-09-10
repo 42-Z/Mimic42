@@ -1,7 +1,10 @@
 from __future__ import annotations
 
-from pydantic import Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+import json
+from typing import Annotated
+
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -19,6 +22,25 @@ class Settings(BaseSettings):
     secret_key: str | None = Field(default=None, validation_alias="SECRET_KEY")
     telegram_api_id: int | None = Field(default=None, validation_alias="TELEGRAM_API_ID")
     telegram_api_hash: str | None = Field(default=None, validation_alias="TELEGRAM_API_HASH")
+    cors_allow_origins: Annotated[list[str], NoDecode] = Field(
+        default=["http://localhost:3000", "http://127.0.0.1:3000"],
+        validation_alias="CORS_ALLOW_ORIGINS",
+    )
+
+    @field_validator("cors_allow_origins", mode="before")
+    @classmethod
+    def _split_cors_origins(cls, value: object) -> object:
+        # NoDecode passes the raw env string through: accept JSON lists and
+        # plain comma-separated strings (e.g. CORS_ALLOW_ORIGINS=https://a,https://b).
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError:
+                parsed = None
+            if isinstance(parsed, list):
+                return parsed
+            return [origin.strip() for origin in value.split(",") if origin.strip()]
+        return value
 
     model_config = SettingsConfigDict(
         env_file=".env",

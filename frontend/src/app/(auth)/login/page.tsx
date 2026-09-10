@@ -25,7 +25,6 @@ function LoginContent() {
   const [values, setValues] = useState<LoginFormValues>({ email: '', password: '' });
   const [errors, setErrors] = useState<Partial<LoginFormValues>>({});
   const [isLoading, setIsLoading] = useState(false);
-  const [isResetLoading, setIsResetLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [terminalLines, setTerminalLines] = useState<string[]>([]);
 

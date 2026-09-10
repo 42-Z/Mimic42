@@ -1,5 +1,5 @@
 import { type NextRequest, NextResponse } from 'next/server';
-import { createServerClient } from '@supabase/ssr';
+import { createServerClient, type CookieOptions } from '@supabase/ssr';
 import type { Database } from '@/types/supabase';
 
 // Public routes that don't require authentication
@@ -10,6 +10,11 @@ const AUTH_ONLY_PATHS = ['/login', '/register', '/reset-password'];
 
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
+
+  // Liveness probe for the Docker HEALTHCHECK — no auth, no Supabase.
+  if (pathname === '/healthz') {
+    return NextResponse.next();
+  }
 
   // Skip middleware for API routes, static files, etc.
   if (
@@ -34,7 +39,7 @@ export async function middleware(request: NextRequest) {
       getAll() {
         return request.cookies.getAll();
       },
-      setAll(cookiesToSet: { name: string; value: string; options?: any }[]) {
+      setAll(cookiesToSet: { name: string; value: string; options?: CookieOptions }[]) {
         cookiesToSet.forEach(({ name, value }) =>
           request.cookies.set(name, value)
         );

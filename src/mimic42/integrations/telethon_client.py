@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any, cast
 
 from telethon import TelegramClient
 from telethon.sessions import StringSession
@@ -26,5 +27,5 @@ def build_telegram_client(config: AgentRuntimeConfig) -> TelegramClient:
 
     from mimic42.integrations.telegram_tools import CustomMarkdown
 
-    client.parse_mode = CustomMarkdown()
+    client.parse_mode = cast(Any, CustomMarkdown())
     return client

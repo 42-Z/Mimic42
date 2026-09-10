@@ -43,16 +43,25 @@ const TABS: { id: AgentTab; label: string; icon: React.ComponentType<{ className
 export default function AgentPage() {
   const params = useParams();
   const searchParams = useSearchParams();
-  const router = useRouter();
 
   const rawId = params['id'] as string;
   const parsed = agentIdSchema.safeParse(rawId);
   if (!parsed.success) {
     return <div className="p-8 font-mono text-crimson-400">Недопустимый ID агента</div>;
   }
-  const agentId = parsed.data;
-
   const initialTab = (searchParams.get('tab') as AgentTab) ?? 'settings';
+  return <AgentPageContent agentId={parsed.data} initialTab={initialTab} />;
+}
+
+function AgentPageContent({
+  agentId,
+  initialTab,
+}: {
+  agentId: string;
+  initialTab: AgentTab;
+}) {
+  const router = useRouter();
+
   const [activeTab, setActiveTab] = useState<AgentTab>(
     TABS.some(t => t.id === initialTab) ? initialTab : 'settings'
   );
@@ -89,10 +98,11 @@ export default function AgentPage() {
 
       {/* Tabs */}
       <div className="border-b border-void-800">
-        <div className="flex gap-0 overflow-x-auto">
+        <div className="flex gap-0 overflow-x-auto" data-testid="agent-tabs">
           {TABS.map((tab) => (
             <button
               key={tab.id}
+              data-testid={`agent-tab-${tab.id}`}
               onClick={() => handleTabChange(tab.id)}
               className={cn(
                 'flex items-center gap-2 px-4 py-3 font-mono text-xs border-b-2 transition-all duration-150 whitespace-nowrap',

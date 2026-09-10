@@ -79,6 +79,8 @@ class AgentTriggerResult(BaseModel):
 
 
 class TelegramClientLike(Protocol):
+    async def __call__(self, request: Any) -> Any: ...
+
     async def connect(self) -> None: ...
 
     async def disconnect(self) -> None: ...
@@ -89,9 +91,31 @@ class TelegramClientLike(Protocol):
 
     def add_event_handler(
         self,
-        callback: Callable[[object], Awaitable[None]],
+        callback: Callable[[Any], Awaitable[None]],
         event: object | None = None,
     ) -> None: ...
+
+
+class TelegramEventClientLike(Protocol):
+    """The subset of the Telethon client surface used via incoming events."""
+
+    async def __call__(self, request: Any) -> Any: ...
+
+    async def download_media(self, message: Any, file: Any = None, **kwargs: Any) -> Any: ...
+
+
+class TelegramEventLike(Protocol):
+    """Structural type for Telethon NewMessage events used by the runtime."""
+
+    chat_id: int | None
+    sender_id: int | None
+    client: TelegramEventClientLike
+
+    async def get_chat(self) -> Any: ...
+
+    async def get_reply_message(self) -> Any | None: ...
+
+    async def get_input_chat(self) -> Any: ...
 
 
 class LangChainAgentLike(Protocol):
@@ -473,7 +497,7 @@ class MimicAgentRuntime:
                             pass
                     await self._telegram_client(
                         functions.messages.ReadHistoryRequest(
-                            peer=read_entity,
+                            peer=cast(Any, read_entity),
                             max_id=trigger.message_id,
                         )
                     )
@@ -593,7 +617,7 @@ class MimicAgentRuntime:
         self._telegram_client.add_event_handler(self._handle_incoming_message, event_builder)
         self._message_handler_registered = True
 
-    async def _handle_incoming_message(self, event: object) -> None:
+    async def _handle_incoming_message(self, event: TelegramEventLike) -> None:
         logger.info("Incoming message event received")
         logger.info(
             "Incoming message event: chat_id=%s, text=%s",
@@ -753,10 +777,10 @@ class MimicAgentRuntime:
 
             # Check role/title
             title = None
-            if getattr(event, "sender_id", None) and getattr(event, "chat_id", None):
-                chat_id = event.chat_id
-                sender_id = event.sender_id
-                cache_key = (chat_id, sender_id)
+            event_chat_id = event.chat_id
+            event_sender_id = event.sender_id
+            if event_sender_id and event_chat_id:
+                cache_key = (event_chat_id, event_sender_id)
                 import time
 
                 now_ts = time.time()
@@ -775,12 +799,12 @@ class MimicAgentRuntime:
 
                         is_supergroup = getattr(event, "is_channel", False)
                         if is_supergroup:
-                            input_chat = getattr(event, "input_chat", None) or chat_id
-                            input_sender = getattr(event, "input_sender", None) or sender_id
+                            input_chat = getattr(event, "input_chat", None) or event_chat_id
+                            input_sender = getattr(event, "input_sender", None) or event_sender_id
                             res = await event.client(
                                 functions.channels.GetParticipantRequest(
-                                    channel=input_chat,
-                                    participant=input_sender,
+                                    channel=cast(Any, input_chat),
+                                    participant=cast(Any, input_sender),
                                 )
                             )
                             title = (
@@ -1004,7 +1028,7 @@ class MimicAgentRuntime:
 
 
 async def _process_media_and_text(
-    event: object,
+    event: TelegramEventLike,
     text: str,
     *,
     http_client: Any | None = None,
@@ -1186,7 +1210,9 @@ def _message_to_dict(msg: object) -> dict[str, Any]:
     if isinstance(msg, Mapping):
         return dict(cast("Mapping[str, Any]", msg))
     if hasattr(msg, "model_dump"):
-        return msg.model_dump()  # type: ignore[no-any-return]
+        model_dump = getattr(msg, "model_dump", None)
+        if callable(model_dump):
+            return model_dump()
     # Fallback for plain objects with attributes
     result: dict[str, Any] = {}
     for attr in ("type", "role", "content", "tool_calls", "tool_call_id", "id", "name"):

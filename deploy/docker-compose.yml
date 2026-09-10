@@ -1,0 +1,53 @@
+# Mimic42 production stack on the VPS.
+#
+# Images come from ghcr.io (built by .github/workflows/deploy.yml); the
+# server only pulls and restarts, never builds. Secrets live in
+# /etc/mimic42.env (mode 600, created manually — never committed, never
+# transferred); plain compose-level variables live in .env next to this
+# file (written by deploy.sh).
+#
+# Ports are published on loopback only: the system Caddy proxies
+# mimic42.zomb.top to them (see Caddyfile.snippet).
+
+services:
+  api:
+    image: ghcr.io/42-z/mimic42-api:${IMAGE_TAG:-latest}
+    container_name: mimic42-api
+    pull_policy: always
+    restart: unless-stopped
+    env_file:
+      - path: /etc/mimic42.env
+        required: true
+    ports:
+      - "127.0.0.1:${API_PORT:-8100}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health').getcode() == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    mem_limit: 2g
+    mem_reservation: 512m
+    security_opt:
+      - no-new-privileges:true
+
+  web:
+    image: ghcr.io/42-z/mimic42-web:${IMAGE_TAG:-latest}
+    container_name: mimic42-web
+    pull_policy: always
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${WEB_PORT:-8101}:3000"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/healthz').then((r) => { if (!r.ok) process.exit(1) }).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    mem_limit: 1g
+    mem_reservation: 256m
+    security_opt:
+      - no-new-privileges:true

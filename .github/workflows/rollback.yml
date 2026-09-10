@@ -1,0 +1,57 @@
+# Manual rollback to a previously released image tag.
+# Tags come from releases.log on the server (every deploy appends there).
+
+name: Rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Image tag to roll back to, as stored in releases.log (format sha-<full-sha>)"
+        required: true
+        type: string
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  rollback:
+    name: rollback
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    steps:
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.DEPLOY_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+      - name: Roll back
+        run: |
+          ssh -i ~/.ssh/deploy_key -p "${{ vars.DEPLOY_PORT }}" \
+            -o StrictHostKeyChecking=yes \
+            "${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }}" \
+            "cd ${{ vars.DEPLOY_PATH }} && bash deploy.sh ${{ inputs.tag }}"
+
+      - name: Smoke test
+        run: |
+          set -e
+          login_code=""
+          for i in 1 2 3; do
+            login_code="$(curl -s -o /dev/null -w '%{http_code}' https://mimic42.zomb.top/login)"
+            echo "GET /login -> ${login_code} (attempt ${i})"
+            test "${login_code}" = "200" && break
+            sleep 10
+          done
+          test "${login_code}" = "200"
+
+      - name: Remove SSH key
+        if: always()
+        run: rm -f ~/.ssh/deploy_key

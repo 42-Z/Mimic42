@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 import pytest
@@ -16,7 +17,7 @@ from mimic42.core.agent_runtime import (
 )
 from mimic42.core.manager import AgentManager
 
-type FakeHandlerEntry = tuple[Callable[[object], Awaitable[None]], object | None]
+type FakeHandlerEntry = tuple[Callable[[Any], Awaitable[None]], object | None]
 
 
 class FakeTelegramClient:
@@ -51,7 +52,7 @@ class FakeTelegramClient:
 
     def add_event_handler(
         self,
-        callback: Callable[[object], Awaitable[None]],
+        callback: Callable[[Any], Awaitable[None]],
         event: object | None = None,
     ) -> None:
         self.handlers.append((callback, event))
@@ -146,6 +147,12 @@ class FakeIncomingMessage:
         self.reply_to = FakeReplyTo(reply_to_msg_id) if reply_to_msg_id else None
 
 
+@dataclass
+class FakeReplyMessage:
+    raw_text: str = ""
+    text: str = ""
+
+
 class FakeIncomingEvent:
     def __init__(
         self,
@@ -154,23 +161,28 @@ class FakeIncomingEvent:
         message_id: int = 42,
         text: str = "hello",
         reply_to_msg_id: int | None = None,
+        sender_id: int | None = None,
+        client: Any | None = None,
     ) -> None:
         self.chat_id = chat_id
         self.id = message_id
         self.raw_text = text
         self.is_private = True
         self.message = FakeIncomingMessage(reply_to_msg_id=reply_to_msg_id)
+        self.sender_id = sender_id
+        self.client = client
 
     async def get_chat(self) -> str:
         return f"chat:{self.chat_id}"
 
+    async def get_input_chat(self) -> Any | None:
+        return None
+
     async def get_reply_message(self) -> object | None:
         if self.message.reply_to is None:
             return None
-        msg = type("Msg", (), {})()
-        msg.raw_text = f"original text {self.message.reply_to.reply_to_msg_id}"
-        msg.text = msg.raw_text
-        return msg
+        reply_text = f"original text {self.message.reply_to.reply_to_msg_id}"
+        return FakeReplyMessage(raw_text=reply_text, text=reply_text)
 
 
 def make_config(agent_id: UUID | None = None, owner_id: UUID | None = None) -> AgentRuntimeConfig:
@@ -708,11 +720,11 @@ async def test_runtime_triggers_unmuted_chats(monkeypatch: pytest.MonkeyPatch) -
 @pytest.mark.asyncio
 async def test_trigger_handles_telegram_permission_errors_gracefully() -> None:
     class FailingTelegramClient(FakeTelegramClient):
-        async def send_message(self, entity: str, message: str) -> object:
+        async def send_message(self, entity: str, message: str, **kwargs: Any) -> object:
             from telethon.errors import ChatAdminRequiredError
             from telethon.tl.functions.messages import SendMessageRequest
 
-            req = SendMessageRequest(peer=entity, message=message)
+            req = SendMessageRequest(peer=cast(Any, entity), message=message)
             raise ChatAdminRequiredError(request=req)
 
     telegram = FailingTelegramClient()
@@ -849,7 +861,7 @@ async def test_trigger_marks_read_only_when_replies(monkeypatch: pytest.MonkeyPa
         ) -> dict[str, object]:
             return {"send_any_message": False, "text": ""}
 
-    runtime._langchain_agent = SilentAgent()  # type: ignore
+    runtime._langchain_agent = SilentAgent()
     result2 = await runtime.trigger_message(AgentTrigger(peer="me", text="Ping", message_id=43))
     assert result2.response_text == ""
     read_requests = [

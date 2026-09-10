@@ -388,7 +388,7 @@ class TelegramToolbox:
             if action == "record_audio":
                 action_obj = types.SendMessageRecordAudioAction()
             elif action == "upload_document":
-                action_obj = types.SendMessageUploadDocumentAction()
+                action_obj = types.SendMessageUploadDocumentAction(progress=0)
             elif action == "record_video":
                 action_obj = types.SendMessageRecordVideoAction()
 
@@ -402,7 +402,7 @@ class TelegramToolbox:
         """Set a reaction on a message."""
         try:
             entity = await self._resolve_peer(peer)
-            reaction_list = [types.ReactionEmoji(emoticon=emoji)] if emoji else []
+            reaction_list: list[Any] = [types.ReactionEmoji(emoticon=emoji)] if emoji else []
             await self._client(
                 functions.messages.SendReactionRequest(
                     peer=entity,
@@ -1400,7 +1400,10 @@ class TelegramToolbox:
     async def create_group(self, title: str, users: list[str]) -> dict[str, Any]:
         """Create a simple group chat."""
         try:
-            await self._client(functions.messages.CreateChatRequest(title=title, users=users))
+            resolved_users = [await self._resolve_peer(u) for u in users]
+            await self._client(
+                functions.messages.CreateChatRequest(title=title, users=resolved_users)
+            )
             return {"success": True}
         except Exception as e:
             return _tool_failure(e)
@@ -1423,8 +1426,9 @@ class TelegramToolbox:
         """Invite users to channel/supergroup."""
         try:
             ch_entity = await self._resolve_peer(channel)
+            resolved_users = [await self._resolve_peer(u) for u in users]
             await self._client(
-                functions.channels.InviteToChannelRequest(channel=ch_entity, users=users)
+                functions.channels.InviteToChannelRequest(channel=ch_entity, users=resolved_users)
             )
             return {"success": True}
         except Exception as e:
@@ -1504,7 +1508,7 @@ class TelegramToolbox:
             if filter_type == "admins":
                 filter_obj = types.ChannelParticipantsAdmins()
             elif filter_type == "banned":
-                filter_obj = types.ChannelParticipantsKicked()
+                filter_obj = types.ChannelParticipantsKicked(q="")
             elif filter_type == "bots":
                 filter_obj = types.ChannelParticipantsBots()
 
@@ -1867,7 +1871,7 @@ class TelegramToolbox:
                     updates = await self._client(
                         functions.messages.ImportChatInviteRequest(hash=invite_hash)
                     )
-                    result = {"success": True, "type": "private_invite"}
+                    result: dict[str, Any] = {"success": True, "type": "private_invite"}
                     if hasattr(updates, "chats") and updates.chats:
                         chat = updates.chats[0]
                         result["chat_id"] = getattr(chat, "id", None)
@@ -1901,7 +1905,7 @@ class TelegramToolbox:
                 # Public channel or exact peer
                 entity = await self._resolve_peer(channel)
                 updates = await self._client(functions.channels.JoinChannelRequest(channel=entity))
-                result = {"success": True, "type": "public"}
+                result: dict[str, Any] = {"success": True, "type": "public"}
                 if hasattr(updates, "chats") and updates.chats:
                     chat = updates.chats[0]
                     result["chat_id"] = getattr(chat, "id", None)
@@ -1933,9 +1937,12 @@ class TelegramToolbox:
             poll = types.Poll(
                 id=0,
                 hash=0,
-                question=question,
+                question=types.TextWithEntities(text=question, entities=[]),
                 answers=[
-                    types.PollAnswer(text=opt, option=bytes([i])) for i, opt in enumerate(options)
+                    types.PollAnswer(
+                        text=types.TextWithEntities(text=opt, entities=[]), option=bytes([i])
+                    )
+                    for i, opt in enumerate(options)
                 ],
                 closed=False,
                 public_voters=not is_anonymous,
@@ -1944,9 +1951,7 @@ class TelegramToolbox:
             )
             media = types.InputMediaPoll(
                 poll=poll,
-                correct_answers=[bytes([correct_option_id])]
-                if correct_option_id is not None
-                else None,
+                correct_answers=[correct_option_id] if correct_option_id is not None else None,
             )
             msg = await self._client.send_file(entity, media)
             return {"success": True, "message_id": msg.id}
@@ -2278,7 +2283,7 @@ class TelegramToolbox:
 
             folder = types.DialogFilter(
                 id=folder_id,
-                title=title,
+                title=types.TextWithEntities(text=title, entities=[]),
                 pinned_peers=pinned,
                 include_peers=included,
                 exclude_peers=excluded,
