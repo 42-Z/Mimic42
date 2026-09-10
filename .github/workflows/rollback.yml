@@ -37,7 +37,7 @@ jobs:
         run: |
           ssh -i ~/.ssh/deploy_key -p "${{ vars.DEPLOY_PORT }}" \
             -o StrictHostKeyChecking=yes \
-            "${{ vars.DEPLOY_USER }}@${{ vars.DEPLOY_HOST }}" \
+            "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
             "cd ${{ vars.DEPLOY_PATH }} && bash deploy.sh ${{ inputs.tag }}"
 
       - name: Smoke test
