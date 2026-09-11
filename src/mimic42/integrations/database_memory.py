@@ -171,12 +171,22 @@ class DatabaseShortTermMemory:
                         payload["structured_response"] = structured_response
                         structured_response = None
 
-                # The CHECK constraint on content was NOT fully dropped — it was
-                # relaxed (migration ..._relax_agent_messages_content_check) to
-                # allow empty content ONLY when payload contains tool_calls,
-                # structured_response, or tool_call_id.
+                # The CHECK constraint (migration ..._relax_agent_messages_content_check)
+                # allows empty content ONLY when payload contains tool_calls,
+                # structured_response, or tool_call_id.  If none of those keys are
+                # present, an empty content="" would violate the constraint and roll
+                # back the entire save_messages transaction (silent data loss).
+                # Skip such empty assistant strings — they carry no useful data.
                 if not content:
-                    content = ""
+                    allowed = (
+                        "tool_calls" in payload
+                        or "structured_response" in payload
+                        or "tool_call_id" in payload
+                    )
+                    if allowed:
+                        content = ""
+                    else:
+                        continue
 
                 # Map to database direction enum
                 direction = self._resolve_direction(role, msg)
