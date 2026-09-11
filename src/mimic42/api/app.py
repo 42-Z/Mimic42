@@ -71,6 +71,8 @@ class AgentManagerLike(Protocol):
 
     async def stop_agent(self, agent_id: UUID) -> None: ...
 
+    async def reload_agent(self, agent_id: UUID) -> None: ...
+
     async def remove_agent(self, agent_id: UUID) -> None: ...
 
     async def trigger_message(
@@ -598,6 +600,21 @@ def create_app(
         try:
             await _ensure_runtime_owner(app, agent_id=agent_id, user_id=current_user.user_id)
             await _get_agent_manager(app).stop_agent(agent_id)
+        except AgentNotFoundError as exc:
+            raise _not_found(exc.agent_id) from exc
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    @app.post(
+        "/api/v1/agents/{agent_id}/reload",
+        status_code=status.HTTP_204_NO_CONTENT,
+    )
+    async def reload_agent(
+        agent_id: UUID,
+        current_user: CurrentUserDep,
+    ) -> Response:
+        try:
+            await _ensure_runtime_owner(app, agent_id=agent_id, user_id=current_user.user_id)
+            await _get_agent_manager(app).reload_agent(agent_id)
         except AgentNotFoundError as exc:
             raise _not_found(exc.agent_id) from exc
         return Response(status_code=status.HTTP_204_NO_CONTENT)

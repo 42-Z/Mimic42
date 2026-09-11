@@ -27,6 +27,7 @@ class FakeAgentManager:
         self.started: list[UUID] = []
         self.stopped: list[UUID] = []
         self.removed: list[UUID] = []
+        self.reloaded: list[UUID] = []
         self.triggers: list[tuple[UUID, str, str]] = []
 
     async def create_agent(
@@ -53,6 +54,9 @@ class FakeAgentManager:
 
     async def remove_agent(self, agent_id: UUID) -> None:
         self.removed.append(agent_id)
+
+    async def reload_agent(self, agent_id: UUID) -> None:
+        self.reloaded.append(agent_id)
 
     async def get_agent_status(self, agent_id: UUID) -> AgentStatus:
         item = self.created.get(agent_id)
