@@ -13,10 +13,9 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from mimic42.core.model_catalog import DEFAULT_LLM_MODEL
-
 from mimic42.core.activity import ActivityRecorder
 from mimic42.core.memory import MemoryServiceLike, RuntimeMemoryService
+from mimic42.core.model_catalog import DEFAULT_LLM_MODEL
 
 logger = logging.getLogger("mimic42.agent_runtime")
 logger.setLevel(logging.INFO)
