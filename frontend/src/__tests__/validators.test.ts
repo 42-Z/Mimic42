@@ -134,6 +134,28 @@ describe('agentSettingsSchema', () => {
     expect(result.success).toBe(false);
   });
 
+  it('accepts any gateway reasoning effort level', () => {
+    for (const reasoning_effort of ['max', 'xhigh', 'high', 'medium', 'low', 'minimal', 'none']) {
+      const result = agentSettingsSchema.safeParse({
+        name: 'My Agent',
+        soul_prompt: 'Some personality',
+        model: 'z-ai/glm-5.3-flash',
+        reasoning_effort,
+      });
+      expect(result.success).toBe(true);
+    }
+  });
+
+  it('rejects an unknown reasoning effort level', () => {
+    const result = agentSettingsSchema.safeParse({
+      name: 'My Agent',
+      soul_prompt: 'Some personality',
+      model: 'z-ai/glm-5.3-flash',
+      reasoning_effort: 'ultra',
+    });
+    expect(result.success).toBe(false);
+  });
+
   it('rejects empty name', () => {
     expect(agentSettingsSchema.safeParse({ name: '', soul_prompt: '', system_prompt: '' }).success).toBe(false);
   });

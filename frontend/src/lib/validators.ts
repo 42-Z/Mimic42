@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { MODEL_OPTIONS } from '@/lib/models';
+import { GATEWAY_EFFORTS } from '@/lib/reasoning';
 
 // ── Security: agent_id from URL must be alphanumeric + dash/underscore only ───
 // Prevents path traversal attacks
@@ -116,7 +117,7 @@ export const agentSettingsSchema = z.object({
     .min(0)
     .max(50_000, 'Характер не должен превышать 50 000 символов')
     .trim(),
-  reasoning_effort: z.enum(['none', 'medium', 'high']).optional(),
+  reasoning_effort: z.enum(GATEWAY_EFFORTS).optional(),
   model: z.enum(MODEL_VALUES),
 });
 

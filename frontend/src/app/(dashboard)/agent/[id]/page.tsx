@@ -24,6 +24,12 @@ import {
 } from '@/lib/validators';
 import { DEFAULT_MODEL, MODEL_OPTIONS } from '@/lib/models';
 import { agentsApi } from '@/lib/api';
+import { useModelReasoning } from '@/hooks/useModelReasoning';
+import {
+  pickReasoningValue,
+  reasoningLabel,
+  reasoningOptionValues,
+} from '@/lib/reasoning';
 import {
   Settings, ScrollText, Zap, MessageSquare, BarChart2, Brain,
   Play, Square, Send, AlertTriangle, RefreshCw,
@@ -213,6 +219,7 @@ function TabSettings({ agentId }: { agentId: string }) {
   const { toast } = useToast();
   const { data: details, isLoading } = useAgentDetails(agentId);
   const update = useUpdateAgentSettings(agentId);
+  const { data: reasoningByModel, isLoading: reasoningLoading } = useModelReasoning();
 
   const [values, setValues] = useState<AgentSettingsValues>({
     name: '', soul_prompt: '', reasoning_effort: 'high', model: DEFAULT_MODEL,
@@ -225,11 +232,23 @@ function TabSettings({ agentId }: { agentId: string }) {
       setValues({
         name: details.name,
         soul_prompt: details.soul_prompt ?? '',
-        reasoning_effort: (details.settings?.reasoning_effort as 'none' | 'medium' | 'high') ?? 'high',
+        reasoning_effort:
+          (details.settings?.reasoning_effort as AgentSettingsValues['reasoning_effort']) ?? 'high',
         model: (details.settings?.model as string) ?? DEFAULT_MODEL,
       });
     }
   }, [details]);
+
+  const reasoningMeta = reasoningByModel?.[values.model];
+  const reasoningOptions = reasoningOptionValues(reasoningMeta);
+
+  useEffect(() => {
+    const current = values.reasoning_effort ?? '';
+    const picked = pickReasoningValue(current, reasoningOptions, reasoningMeta);
+    if (picked !== undefined && picked !== current) {
+      setValues((v) => ({ ...v, reasoning_effort: picked as AgentSettingsValues['reasoning_effort'] }));
+    }
+  }, [values.model, values.reasoning_effort, reasoningOptions, reasoningMeta]);
 
   const set = (field: keyof AgentSettingsValues, value: string) => {
     setValues((v) => ({ ...v, [field]: value }));
@@ -301,7 +320,7 @@ function TabSettings({ agentId }: { agentId: string }) {
         >
           {MODEL_OPTIONS.map((m) => (
             <option key={m.value} value={m.value}>
-              {m.label}{m.freeVariant ? ' · есть бесплатный лимит' : ''}
+              {m.label}
             </option>
           ))}
         </select>
@@ -321,15 +340,29 @@ function TabSettings({ agentId }: { agentId: string }) {
         <label className="text-xs font-mono font-medium text-void-300 uppercase tracking-wider">
           Уровень рассуждения (Reasoning Effort)
         </label>
-        <select
-          value={values.reasoning_effort}
-          onChange={(e) => set('reasoning_effort', e.target.value)}
-          className="flex h-10 w-full rounded-sm bg-void-800 border border-void-600 px-3 py-2 font-mono text-base sm:text-sm text-void-100 placeholder:text-void-500 transition-colors duration-150 focus:outline-none focus:ring-1 focus:ring-plasma-500 focus:border-plasma-600 hover:border-void-500 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          <option value="none">None (Без рассуждения)</option>
-          <option value="medium">Medium (Среднее рассуждение)</option>
-          <option value="high">High (Глубокое рассуждение)</option>
-        </select>
+        {reasoningOptions === null ? (
+          <p className="text-xs font-mono text-void-400">
+            Эта модель управляет уровнем рассуждения сама — настраивать его не нужно.
+          </p>
+        ) : (
+          <>
+            <select
+              value={values.reasoning_effort ?? ''}
+              onChange={(e) => set('reasoning_effort', e.target.value)}
+              disabled={reasoningLoading}
+              className="flex h-10 w-full rounded-sm bg-void-800 border border-void-600 px-3 py-2 font-mono text-base sm:text-sm text-void-100 placeholder:text-void-500 transition-colors duration-150 focus:outline-none focus:ring-1 focus:ring-plasma-500 focus:border-plasma-600 hover:border-void-500 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {reasoningOptions.map((effort) => (
+                <option key={effort} value={effort}>
+                  {reasoningLabel(effort)}
+                </option>
+              ))}
+            </select>
+            {reasoningLoading && (
+              <p className="text-xs font-mono text-void-400">Загружаю доступные уровни…</p>
+            )}
+          </>
+        )}
         {formErrors.reasoning_effort && (
           <p className="text-xs text-crimson-400 font-mono flex items-center gap-1">
             <span aria-hidden="true">✗</span>
