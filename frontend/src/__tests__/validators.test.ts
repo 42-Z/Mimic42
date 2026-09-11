@@ -117,11 +117,20 @@ describe('agentSettingsSchema', () => {
     expect(result.success).toBe(true);
   });
 
-  it('rejects an unknown model', () => {
+  it('accepts a legacy model outside the catalog', () => {
     const result = agentSettingsSchema.safeParse({
       name: 'My Agent',
       soul_prompt: 'Some personality',
       model: 'google/gemini-3.1-flash-lite',
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects an empty model', () => {
+    const result = agentSettingsSchema.safeParse({
+      name: 'My Agent',
+      soul_prompt: 'Some personality',
+      model: '',
     });
     expect(result.success).toBe(false);
   });

@@ -7,13 +7,13 @@ export interface ModelReasoningMeta {
 }
 
 export const GATEWAY_EFFORTS = [
-  'none',
-  'minimal',
-  'low',
-  'medium',
-  'high',
-  'xhigh',
   'max',
+  'xhigh',
+  'high',
+  'medium',
+  'low',
+  'minimal',
+  'none',
 ] as const;
 
 export const REASONING_LABELS: Record<string, string> = {

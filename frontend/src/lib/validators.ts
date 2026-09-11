@@ -1,6 +1,5 @@
 import { z } from 'zod';
 
-import { MODEL_OPTIONS } from '@/lib/models';
 import { GATEWAY_EFFORTS } from '@/lib/reasoning';
 
 // ── Security: agent_id from URL must be alphanumeric + dash/underscore only ───
@@ -104,8 +103,6 @@ export const telegram2FASchema = z.object({
 });
 
 // ── Agent settings form ───────────────────────────────────────────────────────
-const MODEL_VALUES = MODEL_OPTIONS.map((m) => m.value) as [string, ...string[]];
-
 export const agentSettingsSchema = z.object({
   name: z
     .string()
@@ -118,7 +115,9 @@ export const agentSettingsSchema = z.object({
     .max(50_000, 'Характер не должен превышать 50 000 символов')
     .trim(),
   reasoning_effort: z.enum(GATEWAY_EFFORTS).optional(),
-  model: z.enum(MODEL_VALUES),
+  // The backend treats slugs outside the catalog as passthrough, so legacy
+  // values are accepted instead of bricking the whole form.
+  model: z.string().min(1, 'Модель обязательна'),
 });
 
 // ── Trigger message form ──────────────────────────────────────────────────────

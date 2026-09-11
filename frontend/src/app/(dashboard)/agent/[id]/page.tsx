@@ -22,7 +22,7 @@ import {
   agentSettingsSchema, triggerMessageSchema,
   type AgentSettingsValues, type TriggerMessageValues,
 } from '@/lib/validators';
-import { DEFAULT_MODEL, MODEL_OPTIONS } from '@/lib/models';
+import { DEFAULT_MODEL, optionsIncluding } from '@/lib/models';
 import { agentsApi } from '@/lib/api';
 import { useModelReasoning } from '@/hooks/useModelReasoning';
 import {
@@ -273,7 +273,9 @@ function TabSettings({ agentId }: { agentId: string }) {
         soul_prompt: result.data.soul_prompt,
         settings: {
           ...existingSettings,
-          reasoning_effort: result.data.reasoning_effort,
+          // Models without exposed effort selection must not receive a stale
+          // stored effort: "none" keeps the request clean.
+          reasoning_effort: reasoningOptions === null ? 'none' : result.data.reasoning_effort,
           model: result.data.model,
         },
       };
@@ -318,7 +320,7 @@ function TabSettings({ agentId }: { agentId: string }) {
           onChange={(e) => set('model', e.target.value)}
           className="flex h-10 w-full rounded-sm bg-void-800 border border-void-600 px-3 py-2 font-mono text-base sm:text-sm text-void-100 placeholder:text-void-500 transition-colors duration-150 focus:outline-none focus:ring-1 focus:ring-plasma-500 focus:border-plasma-600 hover:border-void-500 disabled:cursor-not-allowed disabled:opacity-50"
         >
-          {MODEL_OPTIONS.map((m) => (
+          {optionsIncluding(values.model).map((m) => (
             <option key={m.value} value={m.value}>
               {m.label}
             </option>
