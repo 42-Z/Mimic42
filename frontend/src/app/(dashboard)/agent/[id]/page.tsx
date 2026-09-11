@@ -219,7 +219,7 @@ function TabSettings({ agentId }: { agentId: string }) {
   const { toast } = useToast();
   const { data: details, isLoading } = useAgentDetails(agentId);
   const update = useUpdateAgentSettings(agentId);
-  const { data: reasoningByModel, isLoading: reasoningLoading } = useModelReasoning();
+  const { data: reasoningByModel } = useModelReasoning();
 
   const [values, setValues] = useState<AgentSettingsValues>({
     name: '', soul_prompt: '', reasoning_effort: 'high', model: DEFAULT_MODEL,
@@ -324,10 +324,6 @@ function TabSettings({ agentId }: { agentId: string }) {
             </option>
           ))}
         </select>
-        <p className="text-xs font-mono text-void-400">
-          У моделей с бесплатным лимитом он расходуется первым; при его исчерпании
-          автоматически используется платная версия.
-        </p>
         {formErrors.model && (
           <p className="text-xs text-crimson-400 font-mono flex items-center gap-1">
             <span aria-hidden="true">✗</span>
@@ -336,40 +332,30 @@ function TabSettings({ agentId }: { agentId: string }) {
         )}
       </div>
 
-      <div className="flex flex-col gap-1.5">
-        <label className="text-xs font-mono font-medium text-void-300 uppercase tracking-wider">
-          Уровень рассуждения (Reasoning Effort)
-        </label>
-        {reasoningOptions === null ? (
-          <p className="text-xs font-mono text-void-400">
-            Эта модель управляет уровнем рассуждения сама — настраивать его не нужно.
-          </p>
-        ) : (
-          <>
-            <select
-              value={values.reasoning_effort ?? ''}
-              onChange={(e) => set('reasoning_effort', e.target.value)}
-              disabled={reasoningLoading}
-              className="flex h-10 w-full rounded-sm bg-void-800 border border-void-600 px-3 py-2 font-mono text-base sm:text-sm text-void-100 placeholder:text-void-500 transition-colors duration-150 focus:outline-none focus:ring-1 focus:ring-plasma-500 focus:border-plasma-600 hover:border-void-500 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {reasoningOptions.map((effort) => (
-                <option key={effort} value={effort}>
-                  {reasoningLabel(effort)}
-                </option>
-              ))}
-            </select>
-            {reasoningLoading && (
-              <p className="text-xs font-mono text-void-400">Загружаю доступные уровни…</p>
-            )}
-          </>
-        )}
-        {formErrors.reasoning_effort && (
-          <p className="text-xs text-crimson-400 font-mono flex items-center gap-1">
-            <span aria-hidden="true">✗</span>
-            {formErrors.reasoning_effort}
-          </p>
-        )}
-      </div>
+      {reasoningOptions !== null && (
+        <div className="flex flex-col gap-1.5">
+          <label className="text-xs font-mono font-medium text-void-300 uppercase tracking-wider">
+            Уровень рассуждения (Reasoning Effort)
+          </label>
+          <select
+            value={values.reasoning_effort ?? ''}
+            onChange={(e) => set('reasoning_effort', e.target.value)}
+            className="flex h-10 w-full rounded-sm bg-void-800 border border-void-600 px-3 py-2 font-mono text-base sm:text-sm text-void-100 placeholder:text-void-500 transition-colors duration-150 focus:outline-none focus:ring-1 focus:ring-plasma-500 focus:border-plasma-600 hover:border-void-500 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {reasoningOptions.map((effort) => (
+              <option key={effort} value={effort}>
+                {reasoningLabel(effort)}
+              </option>
+            ))}
+          </select>
+          {formErrors.reasoning_effort && (
+            <p className="text-xs text-crimson-400 font-mono flex items-center gap-1">
+              <span aria-hidden="true">✗</span>
+              {formErrors.reasoning_effort}
+            </p>
+          )}
+        </div>
+      )}
 
       <div className="flex items-center gap-3 pt-2">
         <Button type="submit" isLoading={update.isPending} disabled={!dirty}>
