@@ -13,6 +13,8 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from mimic42.core.model_catalog import DEFAULT_LLM_MODEL
+
 from mimic42.core.activity import ActivityRecorder
 from mimic42.core.memory import MemoryServiceLike, RuntimeMemoryService
 
@@ -30,9 +32,6 @@ class AgentRuntimeState(StrEnum):
     RUNNING = "running"
     STOPPING = "stopping"
     ERROR = "error"
-
-
-DEFAULT_LLM_MODEL = "google/gemini-3.1-flash-lite"
 
 
 class AgentRuntimeConfig(BaseModel):

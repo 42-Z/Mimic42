@@ -10,6 +10,7 @@ from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from mimic42.core.agent_runtime import AgentRuntimeState
+from mimic42.core.model_catalog import DEFAULT_LLM_MODEL
 from mimic42.core.onboarding import OnboardingSession, TelegramLoginStatus
 from mimic42.integrations.database_agent_store import DatabaseAgentStore
 from mimic42.integrations.database_models import (
@@ -78,7 +79,7 @@ async def test_database_agent_store_creates_agent_session_and_runtime_config(
     assert agents[0].name == "Mimic"
     assert runtime_config.telegram_api_hash == "encrypted-hash"
     assert runtime_config.telegram_session_string == "encrypted-session"
-    assert runtime_config.llm_model == "google/gemini-3.1-flash-lite"
+    assert runtime_config.llm_model == DEFAULT_LLM_MODEL
     assert updated_agents[0].state is AgentRuntimeState.RUNNING
 
 
