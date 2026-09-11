@@ -139,6 +139,10 @@ export const agentsApi = {
   stop: (id: string) =>
     apiClient.post<void>(`/agents/${id}/stop`).then(() => undefined),
 
+  /** POST /api/v1/agents/:id/reload — re-applies settings to the runtime */
+  reload: (id: string) =>
+    apiClient.post<void>(`/agents/${id}/reload`).then(() => undefined),
+
   /** DELETE /api/v1/agents/:id */
   remove: (id: string) =>
     apiClient.delete<void>(`/agents/${id}`).then(() => undefined),

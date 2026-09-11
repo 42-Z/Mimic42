@@ -22,6 +22,8 @@ import {
   agentSettingsSchema, triggerMessageSchema,
   type AgentSettingsValues, type TriggerMessageValues,
 } from '@/lib/validators';
+import { DEFAULT_MODEL, MODEL_OPTIONS } from '@/lib/models';
+import { agentsApi } from '@/lib/api';
 import {
   Settings, ScrollText, Zap, MessageSquare, BarChart2, Brain,
   Play, Square, Send, AlertTriangle, RefreshCw,
@@ -213,7 +215,7 @@ function TabSettings({ agentId }: { agentId: string }) {
   const update = useUpdateAgentSettings(agentId);
 
   const [values, setValues] = useState<AgentSettingsValues>({
-    name: '', soul_prompt: '', reasoning_effort: 'high',
+    name: '', soul_prompt: '', reasoning_effort: 'high', model: DEFAULT_MODEL,
   });
   const [formErrors, setFormErrors] = useState<Partial<Record<keyof AgentSettingsValues, string>>>({});
   const [dirty, setDirty] = useState(false);
@@ -224,6 +226,7 @@ function TabSettings({ agentId }: { agentId: string }) {
         name: details.name,
         soul_prompt: details.soul_prompt ?? '',
         reasoning_effort: (details.settings?.reasoning_effort as 'none' | 'medium' | 'high') ?? 'high',
+        model: (details.settings?.model as string) ?? DEFAULT_MODEL,
       });
     }
   }, [details]);
@@ -244,15 +247,20 @@ function TabSettings({ agentId }: { agentId: string }) {
     }
     setFormErrors({});
     try {
-      // Create settings object if there's any non-core settings field
+      // Merge instead of overwrite: keep settings keys the form does not own.
+      const existingSettings = (details?.settings ?? {}) as Record<string, unknown>;
       const submissionData = {
         name: result.data.name,
         soul_prompt: result.data.soul_prompt,
         settings: {
-          reasoning_effort: result.data.reasoning_effort
-        }
+          ...existingSettings,
+          reasoning_effort: result.data.reasoning_effort,
+          model: result.data.model,
+        },
       };
       await update.mutateAsync(submissionData);
+      // The runtime is built once: new settings need a rebuild.
+      await agentsApi.reload(agentId);
       toast('Настройки сохранены', 'success');
       setDirty(false);
     } catch (e: unknown) {
@@ -281,6 +289,33 @@ function TabSettings({ agentId }: { agentId: string }) {
         maxLength={50000}
         hint="Описание личности, стиля общения и особенностей агента"
       />
+
+      <div className="flex flex-col gap-1.5">
+        <label className="text-xs font-mono font-medium text-void-300 uppercase tracking-wider">
+          Модель
+        </label>
+        <select
+          value={values.model}
+          onChange={(e) => set('model', e.target.value)}
+          className="flex h-10 w-full rounded-sm bg-void-800 border border-void-600 px-3 py-2 font-mono text-base sm:text-sm text-void-100 placeholder:text-void-500 transition-colors duration-150 focus:outline-none focus:ring-1 focus:ring-plasma-500 focus:border-plasma-600 hover:border-void-500 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {MODEL_OPTIONS.map((m) => (
+            <option key={m.value} value={m.value}>
+              {m.label}{m.freeVariant ? ' · есть бесплатный лимит' : ''}
+            </option>
+          ))}
+        </select>
+        <p className="text-xs font-mono text-void-400">
+          У моделей с бесплатным лимитом он расходуется первым; при его исчерпании
+          автоматически используется платная версия.
+        </p>
+        {formErrors.model && (
+          <p className="text-xs text-crimson-400 font-mono flex items-center gap-1">
+            <span aria-hidden="true">✗</span>
+            {formErrors.model}
+          </p>
+        )}
+      </div>
 
       <div className="flex flex-col gap-1.5">
         <label className="text-xs font-mono font-medium text-void-300 uppercase tracking-wider">
