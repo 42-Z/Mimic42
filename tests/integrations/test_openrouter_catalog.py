@@ -18,7 +18,7 @@ def _reset_cache() -> Iterator[None]:
 
 
 @pytest.mark.asyncio
-async def test_reasoning_map_extracts_reasoning_field(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_reasoning_map_extracts_catalog_models_only(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[int] = []
 
     async def fake_fetch() -> dict[str, Any]:
@@ -26,8 +26,10 @@ async def test_reasoning_map_extracts_reasoning_field(monkeypatch: pytest.Monkey
         return {
             "data": [
                 {"id": "z-ai/glm-5.3-flash", "reasoning": {"supported_efforts": ["max"]}},
+                {"id": "deepseek/deepseek-v4-flash-0731", "reasoning": {"mandatory": False}},
                 {"id": "poolside/laguna-s-2.1", "reasoning": {"mandatory": False}},
-                {"id": "no-reasoning-model"},
+                {"id": "some/other-gateway-model", "reasoning": {"supported_efforts": ["high"]}},
+                {"id": "another/one"},
             ]
         }
 
@@ -35,11 +37,16 @@ async def test_reasoning_map_extracts_reasoning_field(monkeypatch: pytest.Monkey
 
     result = await openrouter_catalog.fetch_reasoning_by_model()
 
-    assert result == {
-        "z-ai/glm-5.3-flash": {"supported_efforts": ["max"]},
-        "poolside/laguna-s-2.1": {"mandatory": False},
-        "no-reasoning-model": None,
+    # Только модели из каталога меню: остальной гейтвей не нужен дашборду.
+    assert set(result) == {
+        "z-ai/glm-5.3-flash",
+        "deepseek/deepseek-v4-flash-0731",
+        "inclusionai/ling-3.0-flash-vl",
+        "meituan/longcat-2.0",
+        "poolside/laguna-s-2.1",
     }
+    assert result["z-ai/glm-5.3-flash"] == {"supported_efforts": ["max"]}
+    assert result["meituan/longcat-2.0"] is None
 
 
 @pytest.mark.asyncio

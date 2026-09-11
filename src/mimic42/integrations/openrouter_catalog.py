@@ -12,6 +12,8 @@ from typing import Any
 
 import aiohttp
 
+from mimic42.core.model_catalog import MODEL_CATALOG
+
 _MODELS_URL = "https://openrouter.ai/api/v1/models"
 _CACHE_TTL: float = 600.0
 
@@ -35,16 +37,24 @@ def _reasoning_meta(model: dict[str, Any]) -> dict[str, Any] | None:
 
 
 async def fetch_reasoning_by_model() -> dict[str, dict[str, Any] | None]:
-    """Return ``{slug: reasoning_meta}`` for all OpenRouter models, cached."""
+    """Return ``{slug: reasoning_meta}`` for the switcher menu models.
+
+    Only the models of :data:`~mimic42.core.model_catalog.MODEL_CATALOG` are
+    kept — the dashboard does not need the whole OpenRouter gateway.
+    """
     global _cache, _cache_time
     now = time.monotonic()
     if _cache is not None and now - _cache_time < _CACHE_TTL:
         return _cache
     payload = await _fetch_models()
-    _cache = {
-        model["id"]: _reasoning_meta(model)
+    models_by_id = {
+        model.get("id"): model
         for model in payload.get("data", [])
         if isinstance(model, dict) and "id" in model
+    }
+    _cache = {
+        slug: _reasoning_meta(models_by_id[slug]) if slug in models_by_id else None
+        for slug in MODEL_CATALOG
     }
     _cache_time = now
     return _cache

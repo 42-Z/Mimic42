@@ -156,7 +156,13 @@ class AgentManager:
         await old_runtime.stop()
         runtime = await self.get_agent(agent_id)
         if was_running:
-            await runtime.start()
+            try:
+                await runtime.start()
+            except Exception:
+                # Persist the failure like start_agent does: without this the
+                # database keeps RUNNING while the rebuilt runtime is ERROR.
+                await self._save_status(agent_id, AgentRuntimeState.ERROR)
+                raise
 
     async def remove_agent(self, agent_id: UUID) -> None:
         """Unregister the agent runtime and stop it. Missing agents are ignored.
