@@ -31,7 +31,12 @@ def recorded(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
         calls.append(kwargs)
         return kwargs
 
+    class StubSettings:
+        openrouter_api_key: str | None = None
+
     monkeypatch.setattr(langchain_agent_module, "ChatOpenRouter", fake_chat_open_router)
+    # Tests must not depend on a local .env providing OPENROUTER_API_KEY.
+    monkeypatch.setattr(langchain_agent_module, "Settings", StubSettings)
     return calls
 
 

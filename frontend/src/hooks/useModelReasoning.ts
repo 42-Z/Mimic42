@@ -2,32 +2,34 @@
 
 import { useQuery } from '@tanstack/react-query';
 
+import { apiClient } from '@/lib/api';
+import { MODEL_OPTIONS } from '@/lib/models';
 import type { ModelReasoningMeta } from '@/lib/reasoning';
 
-interface OpenRouterModel {
-  id: string;
-  reasoning?: ModelReasoningMeta;
-}
-
 /**
- * Per-model reasoning metadata from the OpenRouter Models API (public, no
- * key required). Keyed by model slug, undefined for models without the
- * `reasoning` field.
+ * Per-model reasoning metadata, proxied through our backend: openrouter.ai
+ * is unreachable from some countries, the server can always reach it.
+ * Keyed by model slug, undefined for models without the `reasoning` field.
  */
 export function useModelReasoning() {
   return useQuery({
-    queryKey: ['openrouter', 'models'],
+    queryKey: ['openrouter', 'reasoning'],
     queryFn: async () => {
-      const response = await fetch('https://openrouter.ai/api/v1/models');
-      if (!response.ok) {
-        throw new Error(`OpenRouter Models API error: ${response.status}`);
+      try {
+        const response = await apiClient.get<{ models: Record<string, ModelReasoningMeta | undefined> }>(
+          '/openrouter/reasoning'
+        );
+        return response.data.models;
+      } catch {
+        // Backend could not reach OpenRouter: fall back to the documented
+        // "null → all gateway efforts accepted" semantics per model, so the
+        // settings form stays usable.
+        const fallback: Record<string, ModelReasoningMeta | undefined> = {};
+        for (const option of MODEL_OPTIONS) {
+          fallback[option.value] = { supported_efforts: null };
+        }
+        return fallback;
       }
-      const json = (await response.json()) as { data: OpenRouterModel[] };
-      const reasoningByModel: Record<string, ModelReasoningMeta | undefined> = {};
-      for (const model of json.data) {
-        reasoningByModel[model.id] = model.reasoning;
-      }
-      return reasoningByModel;
     },
     staleTime: 10 * 60 * 1000,
     retry: 1,
