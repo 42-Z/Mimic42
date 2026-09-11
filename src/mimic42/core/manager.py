@@ -137,6 +137,33 @@ class AgentManager:
         await (await self.get_agent(agent_id)).stop()
         await self._save_status(agent_id, AgentRuntimeState.STOPPED)
 
+    async def reload_agent(self, agent_id: UUID) -> None:
+        """Rebuild the runtime from the persistent config.
+
+        The runtime is built once and never hot-reloads its config, so
+        settings changes (model, prompts) require a rebuild: stop the old
+        runtime, drop it from the registry and re-materialise from the
+        config loader. No tombstone is set — the agent still exists in the
+        database. A runtime that was RUNNING is started again.
+        """
+        async with self._lock:
+            old_runtime = self._agents.pop(agent_id, None)
+        if old_runtime is None:
+            # Not materialised in this process: the next get_agent/start
+            # already reads the fresh config from the database.
+            return
+        was_running = old_runtime.status.state is AgentRuntimeState.RUNNING
+        await old_runtime.stop()
+        runtime = await self.get_agent(agent_id)
+        if was_running:
+            try:
+                await runtime.start()
+            except Exception:
+                # Persist the failure like start_agent does: without this the
+                # database keeps RUNNING while the rebuilt runtime is ERROR.
+                await self._save_status(agent_id, AgentRuntimeState.ERROR)
+                raise
+
     async def remove_agent(self, agent_id: UUID) -> None:
         """Unregister the agent runtime and stop it. Missing agents are ignored.
 

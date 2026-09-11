@@ -112,8 +112,57 @@ describe('agentSettingsSchema', () => {
       name: 'My Agent',
       soul_prompt: 'Some personality',
       system_prompt: 'You are an AI assistant',
+      model: 'z-ai/glm-5.3-flash',
     });
     expect(result.success).toBe(true);
+  });
+
+  it('accepts a legacy model outside the catalog', () => {
+    const result = agentSettingsSchema.safeParse({
+      name: 'My Agent',
+      soul_prompt: 'Some personality',
+      model: 'google/gemini-3.1-flash-lite',
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects an empty model', () => {
+    const result = agentSettingsSchema.safeParse({
+      name: 'My Agent',
+      soul_prompt: 'Some personality',
+      model: '',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a missing model', () => {
+    const result = agentSettingsSchema.safeParse({
+      name: 'My Agent',
+      soul_prompt: 'Some personality',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('accepts any gateway reasoning effort level', () => {
+    for (const reasoning_effort of ['max', 'xhigh', 'high', 'medium', 'low', 'minimal', 'none']) {
+      const result = agentSettingsSchema.safeParse({
+        name: 'My Agent',
+        soul_prompt: 'Some personality',
+        model: 'z-ai/glm-5.3-flash',
+        reasoning_effort,
+      });
+      expect(result.success).toBe(true);
+    }
+  });
+
+  it('rejects an unknown reasoning effort level', () => {
+    const result = agentSettingsSchema.safeParse({
+      name: 'My Agent',
+      soul_prompt: 'Some personality',
+      model: 'z-ai/glm-5.3-flash',
+      reasoning_effort: 'ultra',
+    });
+    expect(result.success).toBe(false);
   });
 
   it('rejects empty name', () => {
@@ -133,6 +182,7 @@ describe('agentSettingsSchema', () => {
       name: '  My Agent  ',
       soul_prompt: '',
       system_prompt: '',
+      model: 'z-ai/glm-5.3-flash',
     });
     if (result.success) {
       expect(result.data.name).toBe('My Agent');

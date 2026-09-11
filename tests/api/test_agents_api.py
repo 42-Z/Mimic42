@@ -80,6 +80,63 @@ async def test_create_start_and_trigger_agent_through_api() -> None:
 
 
 @pytest.mark.asyncio
+async def test_reload_agent_returns_204_for_owner() -> None:
+    manager = FakeAgentManager()
+    owner_id = uuid4()
+    app = create_app(manager=manager, auth_verifier=FakeAuthVerifier(owner_id))
+    agent_id = uuid4()
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        await client.post(
+            "/api/v1/agents",
+            headers=AUTH_HEADERS,
+            json={
+                "agent_id": str(agent_id),
+                "telegram_session_name": "sessions/api-agent",
+                "telegram_api_id": 12345,
+                "telegram_api_hash": "hash",
+                "soul_prompt": "Short replies",
+                "auto_start": True,
+            },
+        )
+        response = await client.post(
+            f"/api/v1/agents/{agent_id}/reload",
+            headers=AUTH_HEADERS,
+        )
+
+    assert response.status_code == 204
+    assert manager.reloaded == [agent_id]
+
+
+@pytest.mark.asyncio
+async def test_reload_agent_returns_404_for_unknown_agent() -> None:
+    manager = FakeAgentManager()
+    owner_id = uuid4()
+    unknown_agent_id = uuid4()
+    store = InMemoryAgentStore()
+    app = create_app(
+        manager=manager,
+        agent_store=store,
+        auth_verifier=FakeAuthVerifier(owner_id),
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        response = await client.post(
+            f"/api/v1/agents/{unknown_agent_id}/reload",
+            headers=AUTH_HEADERS,
+        )
+
+    assert response.status_code == 404
+    assert manager.reloaded == []
+
+
+@pytest.mark.asyncio
 async def test_delete_agent_returns_204_for_owner() -> None:
     manager = FakeAgentManager()
     owner_id = uuid4()

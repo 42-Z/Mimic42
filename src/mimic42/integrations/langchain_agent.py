@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from mimic42.config import Settings
 from mimic42.core.activity import ActivityRecorder
 from mimic42.core.agent_runtime import AgentRuntimeConfig, LangChainAgentLike, TurnContext
+from mimic42.core.model_catalog import resolve_model_chain
 from mimic42.integrations.activity_middleware import ActivityMiddleware
 from mimic42.integrations.agent_response_schema import AgentResponse
 
@@ -29,33 +30,45 @@ class LangChainGraphAgent:
         return await self._graph.ainvoke(input_data)
 
 
+def build_chat_model(
+    config: AgentRuntimeConfig,
+) -> str | ChatOpenRouter:
+    """Build the chat model, wiring the OpenRouter fallback chain.
+
+    Models with a free variant are requested through the free slug with the
+    ``models`` parameter carrying ``[free, paid]``: OpenRouter switches to
+    the paid model itself when the free variant is rate-limited. Unknown
+    slugs keep the historical behaviour of the previous implementation.
+    """
+    if not (config.llm_model.startswith("openrouter/") or "/" in config.llm_model):
+        return config.llm_model
+
+    settings = Settings()
+    chain = resolve_model_chain(config.llm_model)
+    primary = chain[0]
+    if primary.startswith("openrouter/") and primary != "openrouter/free":
+        primary = primary.replace("openrouter/", "", 1)
+    api_key = (
+        SecretStr(settings.openrouter_api_key) if settings.openrouter_api_key is not None else None
+    )
+    model_kwargs: dict[str, Any] = {"models": chain} if len(chain) > 1 else {}
+    if config.reasoning_effort != "none":
+        return ChatOpenRouter(
+            model=primary,
+            api_key=api_key,
+            reasoning={"effort": config.reasoning_effort},
+            model_kwargs=model_kwargs,
+        )
+    return ChatOpenRouter(model=primary, api_key=api_key, model_kwargs=model_kwargs)
+
+
 def build_langchain_agent(
     config: AgentRuntimeConfig,
     *,
     tools: list[BaseTool] | None = None,
     session_factory: async_sessionmaker[AsyncSession] | None = None,
 ) -> LangChainAgentLike:
-    model: str | ChatOpenRouter
-    if config.llm_model.startswith("openrouter/") or "/" in config.llm_model:
-        settings = Settings()
-        model_name = config.llm_model
-        if model_name.startswith("openrouter/") and model_name != "openrouter/free":
-            model_name = model_name.replace("openrouter/", "", 1)
-        api_key = (
-            SecretStr(settings.openrouter_api_key)
-            if settings.openrouter_api_key is not None
-            else None
-        )
-        if config.reasoning_effort != "none":
-            model = ChatOpenRouter(
-                model=model_name,
-                api_key=api_key,
-                reasoning={"effort": config.reasoning_effort},
-            )
-        else:
-            model = ChatOpenRouter(model=model_name, api_key=api_key)
-    else:
-        model = config.llm_model
+    model = build_chat_model(config)
 
     middleware: list[Any] = []
     if session_factory is not None:

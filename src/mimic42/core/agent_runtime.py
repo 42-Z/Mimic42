@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mimic42.core.activity import ActivityRecorder
 from mimic42.core.memory import MemoryServiceLike, RuntimeMemoryService
+from mimic42.core.model_catalog import DEFAULT_LLM_MODEL
 
 logger = logging.getLogger("mimic42.agent_runtime")
 logger.setLevel(logging.INFO)
@@ -30,9 +31,6 @@ class AgentRuntimeState(StrEnum):
     RUNNING = "running"
     STOPPING = "stopping"
     ERROR = "error"
-
-
-DEFAULT_LLM_MODEL = "google/gemini-3.1-flash-lite"
 
 
 class AgentRuntimeConfig(BaseModel):

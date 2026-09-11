@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { GATEWAY_EFFORTS } from '@/lib/reasoning';
+
 // ── Security: agent_id from URL must be alphanumeric + dash/underscore only ───
 // Prevents path traversal attacks
 export const agentIdSchema = z
@@ -112,7 +114,10 @@ export const agentSettingsSchema = z.object({
     .min(0)
     .max(50_000, 'Характер не должен превышать 50 000 символов')
     .trim(),
-  reasoning_effort: z.enum(['none', 'medium', 'high']).optional(),
+  reasoning_effort: z.enum(GATEWAY_EFFORTS).optional(),
+  // The backend treats slugs outside the catalog as passthrough, so legacy
+  // values are accepted instead of bricking the whole form.
+  model: z.string().min(1, 'Модель обязательна'),
 });
 
 // ── Trigger message form ──────────────────────────────────────────────────────

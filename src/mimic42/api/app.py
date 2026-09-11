@@ -41,6 +41,7 @@ from mimic42.core.onboarding import (
     TelegramCredentials,
     TelegramPasswordRequiredError,
 )
+from mimic42.integrations import openrouter_catalog
 from mimic42.integrations.database_agent_store import DatabaseAgentStore
 from mimic42.integrations.database_memory import DatabaseShortTermMemory
 from mimic42.integrations.database_onboarding import (
@@ -70,6 +71,8 @@ class AgentManagerLike(Protocol):
     async def start_agent(self, agent_id: UUID) -> None: ...
 
     async def stop_agent(self, agent_id: UUID) -> None: ...
+
+    async def reload_agent(self, agent_id: UUID) -> None: ...
 
     async def remove_agent(self, agent_id: UUID) -> None: ...
 
@@ -601,6 +604,35 @@ def create_app(
         except AgentNotFoundError as exc:
             raise _not_found(exc.agent_id) from exc
         return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    @app.post(
+        "/api/v1/agents/{agent_id}/reload",
+        status_code=status.HTTP_204_NO_CONTENT,
+    )
+    async def reload_agent(
+        agent_id: UUID,
+        current_user: CurrentUserDep,
+    ) -> Response:
+        try:
+            await _ensure_runtime_owner(app, agent_id=agent_id, user_id=current_user.user_id)
+            await _get_agent_manager(app).reload_agent(agent_id)
+        except AgentNotFoundError as exc:
+            raise _not_found(exc.agent_id) from exc
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    @app.get("/api/v1/openrouter/reasoning")
+    async def openrouter_reasoning(current_user: CurrentUserDep) -> dict[str, Any]:
+        """Per-model reasoning metadata, proxied so users behind blocks or
+        without direct access to openrouter.ai still get effort options."""
+        try:
+            models = await openrouter_catalog.fetch_reasoning_by_model()
+        except Exception as exc:
+            logger.exception("Failed to fetch OpenRouter reasoning metadata")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Не удалось получить данные о моделях OpenRouter.",
+            ) from exc
+        return {"models": models}
 
     @app.post(
         "/api/v1/agents/{agent_id}/messages/trigger",
