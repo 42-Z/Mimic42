@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { MODEL_OPTIONS } from '@/lib/models';
+
 // ── Security: agent_id from URL must be alphanumeric + dash/underscore only ───
 // Prevents path traversal attacks
 export const agentIdSchema = z
@@ -101,6 +103,8 @@ export const telegram2FASchema = z.object({
 });
 
 // ── Agent settings form ───────────────────────────────────────────────────────
+const MODEL_VALUES = MODEL_OPTIONS.map((m) => m.value) as [string, ...string[]];
+
 export const agentSettingsSchema = z.object({
   name: z
     .string()
@@ -113,6 +117,7 @@ export const agentSettingsSchema = z.object({
     .max(50_000, 'Характер не должен превышать 50 000 символов')
     .trim(),
   reasoning_effort: z.enum(['none', 'medium', 'high']).optional(),
+  model: z.enum(MODEL_VALUES),
 });
 
 // ── Trigger message form ──────────────────────────────────────────────────────

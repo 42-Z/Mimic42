@@ -112,8 +112,26 @@ describe('agentSettingsSchema', () => {
       name: 'My Agent',
       soul_prompt: 'Some personality',
       system_prompt: 'You are an AI assistant',
+      model: 'z-ai/glm-5.3-flash',
     });
     expect(result.success).toBe(true);
+  });
+
+  it('rejects an unknown model', () => {
+    const result = agentSettingsSchema.safeParse({
+      name: 'My Agent',
+      soul_prompt: 'Some personality',
+      model: 'google/gemini-3.1-flash-lite',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a missing model', () => {
+    const result = agentSettingsSchema.safeParse({
+      name: 'My Agent',
+      soul_prompt: 'Some personality',
+    });
+    expect(result.success).toBe(false);
   });
 
   it('rejects empty name', () => {
@@ -133,6 +151,7 @@ describe('agentSettingsSchema', () => {
       name: '  My Agent  ',
       soul_prompt: '',
       system_prompt: '',
+      model: 'z-ai/glm-5.3-flash',
     });
     if (result.success) {
       expect(result.data.name).toBe('My Agent');
