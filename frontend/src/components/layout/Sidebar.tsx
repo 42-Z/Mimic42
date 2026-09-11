@@ -12,6 +12,7 @@ import {
   ChevronRight,
   Plus,
   Zap,
+  X,
 } from 'lucide-react';
 import { getSupabaseClient } from '@/lib/supabase/client';
 import { useRouter } from 'next/navigation';
@@ -30,9 +31,11 @@ const mainNav: NavItem[] = [
 
 interface SidebarProps {
   className?: string;
+  mobileOpen?: boolean;
+  onMobileClose?: () => void;
 }
 
-export function Sidebar({ className }: SidebarProps) {
+export function Sidebar({ className, mobileOpen = false, onMobileClose }: SidebarProps) {
   const pathname = usePathname();
   const router = useRouter();
   const [collapsed, setCollapsed] = React.useState(false);
@@ -50,12 +53,26 @@ export function Sidebar({ className }: SidebarProps) {
   };
 
   return (
+    <>
+      {/* Mobile backdrop */}
+      {mobileOpen && (
+        <div
+          className="fixed inset-0 bg-black/50 z-40 md:hidden"
+          onClick={onMobileClose}
+          aria-hidden="true"
+        />
+      )}
+
     <aside
       className={cn(
-        'relative flex flex-col h-screen',
+        'relative flex flex-col h-dvh',
         'bg-void-900 border-r border-void-700',
         'transition-[width] duration-300 ease-spring',
-        collapsed ? 'w-16' : 'w-64',
+        'md:translate-x-0',
+        collapsed ? 'md:w-16' : 'md:w-64',
+        // Mobile: fixed drawer
+        'fixed inset-y-0 left-0 z-50 w-64 transform transition-transform duration-300 md:relative',
+        mobileOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0',
         className
       )}
     >
@@ -66,7 +83,7 @@ export function Sidebar({ className }: SidebarProps) {
       <div
         className={cn(
           'flex items-center h-16 px-4 border-b border-void-800',
-          collapsed ? 'justify-center' : 'gap-3'
+          collapsed ? 'md:justify-center' : 'gap-3'
         )}
       >
         <div className="relative shrink-0">
@@ -85,6 +102,14 @@ export function Sidebar({ className }: SidebarProps) {
             </span>
           </div>
         )}
+        {/* Mobile close button */}
+        <button
+          onClick={onMobileClose}
+          className="ml-auto md:hidden text-void-500 hover:text-void-300 transition-colors"
+          aria-label="Закрыть меню"
+        >
+          <X className="h-5 w-5" />
+        </button>
       </div>
 
       {/* Navigation */}
@@ -98,6 +123,7 @@ export function Sidebar({ className }: SidebarProps) {
             icon={item.icon}
             isActive={isActive(item.href, item.exact)}
             collapsed={collapsed}
+            onNavigate={onMobileClose}
           />
         ))}
 
@@ -114,6 +140,7 @@ export function Sidebar({ className }: SidebarProps) {
           <Link
             key={agent.agent_id}
             href={`/agent/${agent.agent_id}`}
+            onClick={onMobileClose}
             className={cn(
               'flex items-center rounded-sm transition-colors duration-150',
               'hover:bg-void-800 text-void-400 hover:text-void-100',
@@ -147,6 +174,7 @@ export function Sidebar({ className }: SidebarProps) {
         {/* New agent */}
         <Link
           href="/onboarding"
+          onClick={onMobileClose}
           className={cn(
             'flex items-center rounded-sm transition-colors duration-150',
             'text-void-500 hover:text-plasma-400 hover:bg-void-800/50',
@@ -200,6 +228,7 @@ export function Sidebar({ className }: SidebarProps) {
         )}
       </button>
     </aside>
+    </>
   );
 }
 
@@ -211,12 +240,14 @@ interface SidebarLinkProps {
   isActive: boolean;
   collapsed: boolean;
   badge?: string;
+  onNavigate?: () => void;
 }
 
-function SidebarLink({ href, label, icon: Icon, isActive, collapsed, badge }: SidebarLinkProps) {
+function SidebarLink({ href, label, icon: Icon, isActive, collapsed, badge, onNavigate }: SidebarLinkProps) {
   return (
     <Link
       href={href}
+      onClick={onNavigate}
       className={cn(
         'flex items-center rounded-sm transition-all duration-150',
         isActive

@@ -69,7 +69,9 @@ export function AgentStatusBadge({
   size = 'md',
   className,
 }: AgentStatusBadgeProps) {
+  // eslint-disable-next-line security/detect-object-injection -- key is typed AgentState union, not user input
   const config = stateConfig[state];
+  // eslint-disable-next-line security/detect-object-injection -- key is typed size union, not user input
   const sizeConfig = sizes[size];
 
   return (
@@ -102,6 +104,7 @@ export function AgentStatusBadge({
  * Dot-only indicator for compact contexts.
  */
 export function StatusDot({ state, className }: { state: AgentState; className?: string }) {
+  // eslint-disable-next-line security/detect-object-injection -- key is typed AgentState union, not user input
   const config = stateConfig[state];
 
   return (

@@ -127,6 +127,9 @@ class FakeRuntimeMemoryService:
         input_messages: list[dict[str, Any]],
         output_messages: list[dict[str, Any]],
         structured_response: dict[str, Any] | None = None,
+        peer_name: str = "",
+        agent_name: str = "",
+        raw_user_text: str = "",
         turn_id: str | None = None,
         thread_id: UUID | None = None,
     ) -> None:

@@ -5,13 +5,14 @@ import { useParams, useSearchParams, useRouter } from 'next/navigation';
 import { agentIdSchema } from '@/lib/validators';
 import { useAgentStatus, useAgentDetails, useUpdateAgentSettings } from '@/hooks/useAgent';
 import { useAgentStatusRealtime } from '@/hooks/useRealtimeFeed';
+import { TabLogsChat } from '@/components/chat/TabLogsChat';
+import { TabLogs } from '@/components/agent/TabLogs';
+import { TabAnalytics } from '@/components/agent/TabAnalytics';
 import { useTelegramSession } from '@/hooks/useTelegramSession';
 import { useStartAgent, useStopAgent, useTriggerMessage, useDeleteAgent } from '@/hooks/useAgents';
 import { useAgentMemories, useAgentMemoryHistory } from '@/hooks/useMemory';
 import { useToast } from '@/components/ui/toast';
 import { AgentStatusBadge } from '@/components/agents/AgentStatusBadge';
-import { TabLogs } from '@/components/agent/TabLogs';
-import { TabAnalytics } from '@/components/agent/TabAnalytics';
 import { Button } from '@/components/ui/button';
 import { Input, Textarea } from '@/components/ui/input';
 import { Card, Skeleton, Spinner, Divider } from '@/components/ui/card';
@@ -65,6 +66,7 @@ function AgentPageContent({
   const [activeTab, setActiveTab] = useState<AgentTab>(
     TABS.some(t => t.id === initialTab) ? initialTab : 'settings'
   );
+  const [logsView, setLogsView] = useState<'activity' | 'chat'>('activity');
 
   const handleTabChange = (tab: AgentTab) => {
     setActiveTab(tab);
@@ -93,7 +95,9 @@ function AgentPageContent({
             <p className="font-mono text-xs text-void-600 mt-0.5">{agentId}</p>
           </div>
         </div>
-        <AgentControls agentId={agentId} state={status?.state} />
+        <div className="hidden sm:block">
+          <AgentControls agentId={agentId} state={status?.state} />
+        </div>
       </div>
 
       {/* Tabs */}
@@ -121,7 +125,29 @@ function AgentPageContent({
       {/* Tab content */}
       <div>
         {activeTab === 'settings'  && <TabSettings  agentId={agentId} />}
-        {activeTab === 'logs'      && <TabLogs       agentId={agentId} />}
+        {activeTab === 'logs'      && (
+          <div className="space-y-4">
+            <div className="flex items-center gap-2">
+              {(['activity', 'chat'] as const).map((v) => (
+                <button
+                  key={v}
+                  onClick={() => setLogsView(v)}
+                  className={cn(
+                    'px-4 py-1.5 rounded-sm font-mono text-xs border transition-colors',
+                    logsView === v
+                      ? 'bg-plasma-950 border-plasma-800 text-plasma-400'
+                      : 'border-void-700 text-void-500 hover:text-void-300'
+                  )}
+                >
+                  {v === 'activity' ? 'Активность' : 'Чат'}
+                </button>
+              ))}
+            </div>
+            {logsView === 'activity'
+              ? <TabLogs agentId={agentId} />
+              : <TabLogsChat agentId={agentId} />}
+          </div>
+        )}
         {activeTab === 'actions'   && <TabActions    agentId={agentId} />}
         {activeTab === 'telegram'  && <TabTelegram   agentId={agentId} />}
         {activeTab === 'analytics' && <TabAnalytics  agentId={agentId} />}
@@ -263,7 +289,7 @@ function TabSettings({ agentId }: { agentId: string }) {
         <select
           value={values.reasoning_effort}
           onChange={(e) => set('reasoning_effort', e.target.value)}
-          className="flex h-10 w-full rounded-sm bg-void-800 border border-void-600 px-3 py-2 font-mono text-sm text-void-100 placeholder:text-void-500 transition-colors duration-150 focus:outline-none focus:ring-1 focus:ring-plasma-500 focus:border-plasma-600 hover:border-void-500 disabled:cursor-not-allowed disabled:opacity-50"
+          className="flex h-10 w-full rounded-sm bg-void-800 border border-void-600 px-3 py-2 font-mono text-base sm:text-sm text-void-100 placeholder:text-void-500 transition-colors duration-150 focus:outline-none focus:ring-1 focus:ring-plasma-500 focus:border-plasma-600 hover:border-void-500 disabled:cursor-not-allowed disabled:opacity-50"
         >
           <option value="none">None (Без рассуждения)</option>
           <option value="medium">Medium (Среднее рассуждение)</option>

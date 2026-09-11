@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -12,6 +13,9 @@ from mimic42.core.agent_runtime import AgentRuntimeState
 from mimic42.core.onboarding import OnboardingSession, TelegramLoginStatus
 from mimic42.integrations.database_agent_store import DatabaseAgentStore
 from mimic42.integrations.database_models import (
+    AgentEventModel,
+    AgentMessageModel,
+    AgentModel,
     AgentOnboardingSessionModel,
     Base,
     ProfileModel,
@@ -177,3 +181,92 @@ async def test_delete_agent_for_missing_agent_is_noop(
     store = DatabaseAgentStore(session_factory)
 
     await store.delete_agent(uuid4())
+
+
+@pytest.mark.asyncio
+async def test_database_conversation_groups_messages_and_tool_events(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    owner_id = uuid4()
+    agent_id = uuid4()
+    base = datetime(2026, 5, 19, 23, 30, tzinfo=UTC)
+    # NOTE: profile, agent, and messages are committed in separate sessions.
+    # Same-flush parent+child inserts misorder under the FK pragma
+    # (pre-existing SQLAlchemy UoW quirk, unrelated to conversation logic).
+    async with session_factory() as session:
+        session.add(ProfileModel(id=owner_id))
+        await session.commit()
+    async with session_factory() as session:
+        session.add(
+            AgentModel(
+                id=agent_id,
+                owner_id=owner_id,
+                name="Mimic",
+                status=AgentRuntimeState.STOPPED.value,
+                soul_prompt="Soul",
+            )
+        )
+        await session.commit()
+    async with session_factory() as session:
+        session.add(
+            AgentMessageModel(
+                agent_id=agent_id,
+                direction="incoming",
+                role="user",
+                content="hi",
+                payload={"peer": "chat", "peer_name": "Ivan"},
+                created_at=base,
+            )
+        )
+        session.add(
+            AgentEventModel(
+                agent_id=agent_id,
+                event_type="get_profile",
+                status="succeeded",
+                payload={"args": {"peer": "chat"}, "parent_peer": "chat"},
+                created_at=base + timedelta(seconds=1),
+                started_at=base,
+                completed_at=base + timedelta(seconds=1),
+            )
+        )
+        session.add(
+            AgentMessageModel(
+                agent_id=agent_id,
+                direction="agent_response",
+                role="assistant",
+                content="hello",
+                payload={"peer": "chat", "agent_name": "Mimic"},
+                created_at=base + timedelta(seconds=2),
+            )
+        )
+        # Orphan outgoing (proactive message, direction "outgoing")
+        session.add(
+            AgentMessageModel(
+                agent_id=agent_id,
+                direction="outgoing",
+                role="assistant",
+                content="proactive",
+                payload={"peer": "chat", "agent_name": "Mimic"},
+                created_at=base + timedelta(seconds=3),
+            )
+        )
+        await session.commit()
+
+    store = DatabaseAgentStore(session_factory)
+    turns = await store.get_conversation(agent_id=agent_id)
+
+    # Newest first: proactive outgoing, then the grouped both-turn.
+    assert len(turns) == 2
+    assert turns[0].direction == "outgoing"
+    assert turns[0].outgoing == "proactive"
+    grouped = turns[1]
+    assert grouped.direction == "both"
+    assert grouped.incoming == "hi"
+    assert grouped.outgoing == "hello"
+    assert len(grouped.tools) == 1
+    assert grouped.tools[0].name == "get_profile"
+    assert grouped.tools[0].duration_ms == 1000.0
+
+    limited = await store.get_conversation(agent_id=agent_id, limit=1)
+    assert len(limited) == 1
+    assert limited[0].outgoing == "proactive"

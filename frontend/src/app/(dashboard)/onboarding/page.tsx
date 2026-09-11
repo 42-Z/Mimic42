@@ -295,8 +295,9 @@ function StepTelegramCredentials({ session }: { session: OnboardingSessionRow | 
     if (!result.success) {
       const fe: Partial<typeof values> = {};
       result.error.issues.forEach((issue) => {
-        const f = issue.path[0] as keyof typeof values;
-        if (!fe[f]) fe[f] = issue.message;
+        // Explicit key (no computed indexing) — keeps security/detect-object-injection clean.
+        const key = issue.path[0];
+        if (key === 'phone_number' && !fe.phone_number) fe.phone_number = issue.message;
       });
       setErrors(fe);
       return;

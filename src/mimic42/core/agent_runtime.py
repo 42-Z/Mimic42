@@ -65,6 +65,9 @@ class AgentStatus(BaseModel):
 class AgentTrigger(BaseModel):
     peer: str = Field(min_length=1)
     text: str = Field(min_length=1)
+    raw_text: str = Field(default="")
+    peer_name: str = Field(default="")
+    chat_name: str = Field(default="")
     message_id: int | None = Field(default=None, gt=0)
     thread_id: UUID | None = None
     thread_title: str | None = None
@@ -544,6 +547,9 @@ class MimicAgentRuntime:
                 input_messages=messages,
                 output_messages=output_messages,
                 structured_response=structured,
+                peer_name=trigger.peer_name,
+                agent_name=self.config.name,
+                raw_user_text=trigger.raw_text,
                 turn_id=turn_id,
                 thread_id=trigger.thread_id,
             )
@@ -772,8 +778,11 @@ class MimicAgentRuntime:
                 sender_str = f"{name_str}{details_str}"
             else:
                 chat = await event.get_chat()
-                chat_title = getattr(chat, "title", "Unknown")
-                sender_str = chat_title
+                if isinstance(chat, str):
+                    sender_str = chat
+                else:
+                    chat_title = getattr(chat, "title", None)
+                    sender_str = chat_title if isinstance(chat_title, str) else "Unknown"
 
             # Check role/title
             title = None
@@ -917,6 +926,9 @@ class MimicAgentRuntime:
                 AgentTrigger(
                     peer=peer,
                     text=text,
+                    raw_text=raw_text,
+                    peer_name=sender_str,
+                    chat_name=chat_type_str,
                     message_id=_extract_incoming_message_id(event),
                     thread_id=thread_id,
                     thread_title=thread_title,

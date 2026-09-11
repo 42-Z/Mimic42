@@ -1,13 +1,18 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { ReactQueryDevtools } from '@tanstack/react-query-devtools';
 import { createQueryClient } from '@/lib/queryClient';
 import { ToastProvider } from '@/components/ui/toast';
+import { preloadSanitizer } from '@/lib/sanitize';
 
 export function Providers({ children }: { children: React.ReactNode }) {
   const [queryClient] = useState(() => createQueryClient());
+
+  useEffect(() => {
+    preloadSanitizer();
+  }, []);
 
   return (
     <QueryClientProvider client={queryClient}>

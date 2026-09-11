@@ -1,13 +1,20 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mimic42.core.agent_runtime import DEFAULT_LLM_MODEL, AgentRuntimeConfig, AgentRuntimeState
-from mimic42.core.agent_store import AgentActivity, AgentMessageRecord, AgentRecord
+from mimic42.core.agent_store import (
+    AgentActivity,
+    AgentMessageRecord,
+    AgentRecord,
+    ConversationTurn,
+    ToolCallRecord,
+)
 from mimic42.core.onboarding import OnboardingSession, SecretCipher
 from mimic42.integrations.database_models import (
     AgentEventModel,
@@ -34,7 +41,10 @@ class DatabaseAgentStore:
             raise ValueError("Onboarding session is missing agent profile fields")
 
         async with self._session_factory() as db_session:
-            agent = await db_session.get(AgentModel, session.onboarding_id)
+            # Acquire row-level lock to prevent TOCTOU race on concurrent finalization
+            agent = await db_session.scalar(
+                select(AgentModel).where(AgentModel.id == session.onboarding_id).with_for_update()
+            )
             if agent is None:
                 agent = AgentModel(id=session.onboarding_id)
                 db_session.add(agent)
@@ -45,9 +55,9 @@ class DatabaseAgentStore:
             agent.soul_prompt = session.soul_prompt
 
             telegram_session = await db_session.scalar(
-                select(TelegramSessionModel).where(
-                    TelegramSessionModel.agent_id == session.onboarding_id
-                )
+                select(TelegramSessionModel)
+                .where(TelegramSessionModel.agent_id == session.onboarding_id)
+                .with_for_update()
             )
             if telegram_session is None:
                 telegram_session = TelegramSessionModel(agent_id=session.onboarding_id)
@@ -143,12 +153,15 @@ class DatabaseAgentStore:
             await db_session.execute(delete(AgentModel).where(AgentModel.id == agent_id))
             await db_session.commit()
 
-    async def list_messages(self, *, agent_id: UUID, limit: int = 50) -> list[AgentMessageRecord]:
+    async def list_messages(
+        self, *, agent_id: UUID, limit: int = 50, offset: int = 0
+    ) -> list[AgentMessageRecord]:
         async with self._session_factory() as db_session:
             messages = await db_session.scalars(
                 select(AgentMessageModel)
                 .where(AgentMessageModel.agent_id == agent_id)
                 .order_by(AgentMessageModel.created_at.desc())
+                .offset(offset)
                 .limit(limit)
             )
             records = []
@@ -165,6 +178,8 @@ class DatabaseAgentStore:
                         id=message.id,
                         agent_id=message.agent_id,
                         peer=str(message.payload.get("peer", "")),
+                        peer_name=str(message.payload.get("peer_name", "")),
+                        agent_name=str(message.payload.get("agent_name", "")),
                         role=message.role,
                         content=content,
                         direction=message.direction,
@@ -175,12 +190,15 @@ class DatabaseAgentStore:
                 )
             return records
 
-    async def list_activities(self, *, agent_id: UUID, limit: int = 50) -> list[AgentActivity]:
+    async def list_activities(
+        self, *, agent_id: UUID, limit: int = 50, offset: int = 0
+    ) -> list[AgentActivity]:
         async with self._session_factory() as db_session:
             activities = await db_session.scalars(
                 select(AgentEventModel)
                 .where(AgentEventModel.agent_id == agent_id)
                 .order_by(AgentEventModel.created_at.desc())
+                .offset(offset)
                 .limit(limit)
             )
             return [
@@ -198,6 +216,124 @@ class DatabaseAgentStore:
                 )
                 for activity in activities
             ]
+
+    async def get_conversation(
+        self,
+        *,
+        agent_id: UUID,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[ConversationTurn]:
+        # Bounded read: fetch only the window needed for the requested page
+        # instead of the full history. Each turn consumes at most ~2 messages
+        # but can hold many tool events, so over-fetch both sides.
+        msg_fetch = (offset + limit) * 2 + 50
+        evt_fetch = (offset + limit) * 4 + 100
+        async with self._session_factory() as db_session:
+            messages = await db_session.scalars(
+                select(AgentMessageModel)
+                .where(AgentMessageModel.agent_id == agent_id)
+                .order_by(AgentMessageModel.created_at.desc())
+                .limit(msg_fetch)
+            )
+            recent_messages = list(reversed(list(messages)))
+
+            events = await db_session.scalars(
+                select(AgentEventModel)
+                .where(AgentEventModel.agent_id == agent_id)
+                .where(AgentEventModel.event_type.not_in(["start_agent", "stop_agent"]))
+                .order_by(AgentEventModel.created_at.desc())
+                .limit(evt_fetch)
+            )
+            recent_events = list(reversed(list(events)))
+
+            # Build unified timeline
+            timeline: list[tuple[str, datetime, Any]] = []
+            for msg in recent_messages:
+                timeline.append(("msg", msg.created_at, msg))
+            for evt in recent_events:
+                timeline.append(("evt", evt.created_at, evt))
+            timeline.sort(key=lambda x: x[1])
+
+            turns: list[ConversationTurn] = []
+            current_turn: ConversationTurn | None = None
+
+            def _message_content(msg: AgentMessageModel) -> str:
+                content = msg.content
+                if not content and msg.role == "assistant":
+                    structured = msg.payload.get("structured_response")
+                    if isinstance(structured, dict):
+                        content = structured.get("text", "")
+                return content
+
+            for item_type, _timestamp, item in timeline:
+                if item_type == "msg":
+                    msg = item
+                    content = _message_content(msg)
+                    if msg.direction in ("incoming", "dashboard_trigger"):
+                        if current_turn is not None:
+                            turns.append(current_turn)
+                        current_turn = ConversationTurn(
+                            id=msg.id,
+                            agent_id=agent_id,
+                            timestamp=msg.created_at,
+                            peer_id=str(msg.payload.get("peer", "")),
+                            peer_name=str(msg.payload.get("peer_name", "")),
+                            agent_name=str(msg.payload.get("agent_name", "")),
+                            incoming=content,
+                            direction="incoming",
+                        )
+                    elif msg.direction in ("agent_response", "outgoing"):
+                        if current_turn is not None and current_turn.direction == "incoming":
+                            current_turn.outgoing = content
+                            current_turn.direction = "both"
+                        else:
+                            if current_turn is not None:
+                                turns.append(current_turn)
+                            current_turn = ConversationTurn(
+                                id=msg.id,
+                                agent_id=agent_id,
+                                timestamp=msg.created_at,
+                                peer_id=str(msg.payload.get("peer", "")),
+                                peer_name=str(msg.payload.get("peer_name", "")),
+                                agent_name=str(msg.payload.get("agent_name", "")),
+                                outgoing=content,
+                                direction="outgoing",
+                            )
+                elif item_type == "evt":
+                    evt = item
+                    duration_ms = 0.0
+                    if evt.started_at and evt.completed_at:
+                        duration_ms = (evt.completed_at - evt.started_at).total_seconds() * 1000
+                    tool = ToolCallRecord(
+                        id=evt.id,
+                        name=evt.event_type,
+                        status=evt.status,
+                        payload=evt.payload or {},
+                        result=evt.result,
+                        error=evt.error,
+                        duration_ms=duration_ms,
+                        created_at=evt.created_at,
+                    )
+                    if current_turn is not None:
+                        current_turn.tools.append(tool)
+                    else:
+                        # Orphan event — create a tools-only turn
+                        current_turn = ConversationTurn(
+                            id=evt.id,
+                            agent_id=agent_id,
+                            timestamp=evt.created_at,
+                            peer_id=str((evt.payload or {}).get("parent_peer", "")),
+                            direction="tools",
+                            tools=[tool],
+                        )
+
+            if current_turn is not None:
+                turns.append(current_turn)
+
+            # Reverse so newest first, then apply offset/limit
+            turns.reverse()
+            return turns[offset : offset + limit]
 
 
 def _agent_record(agent: AgentModel) -> AgentRecord:

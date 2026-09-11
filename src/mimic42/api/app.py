@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from typing import Annotated, Any, Protocol
 from uuid import UUID, uuid4
 
-from fastapi import Depends, FastAPI, HTTPException, Response, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -20,7 +20,13 @@ from mimic42.core.agent_runtime import (
     AgentTriggerResult,
     TelegramAuthorizationRequired,
 )
-from mimic42.core.agent_store import AgentActivity, AgentMessageRecord, AgentRecord, AgentStore
+from mimic42.core.agent_store import (
+    AgentActivity,
+    AgentMessageRecord,
+    AgentRecord,
+    AgentStore,
+    ConversationTurn,
+)
 from mimic42.core.crypto import FernetSecretCipher
 from mimic42.core.manager import AgentManager, AgentNotFoundError
 from mimic42.core.memory import RuntimeMemoryService
@@ -109,7 +115,7 @@ class TriggerMessageRequest(BaseModel):
     text: str = Field(min_length=1)
 
     def to_trigger(self) -> AgentTrigger:
-        return AgentTrigger(peer=self.peer, text=self.text)
+        return AgentTrigger(peer=self.peer, text=self.text, raw_text=self.text)
 
 
 class TelegramLoginRequest(BaseModel):
@@ -359,11 +365,16 @@ def create_app(
     ) -> OnboardingPublicStatus:
         try:
             status_result = await _get_onboarding_service(app).get_status(onboarding_id)
+        except OnboardingNotFoundError as exc:
+            raise _onboarding_not_found(onboarding_id) from exc
+        # Unified owner check — do not leak session existence via status codes
+        try:
             _ensure_owner(status_result.owner_id, current_user.user_id)
+        except HTTPException:
+            raise _onboarding_not_found(onboarding_id) from None
+        try:
             result = await _get_onboarding_service(app).verify_telegram_code(onboarding_id, payload)
             return result
-        except OnboardingNotFoundError as exc:
-            raise _onboarding_not_found(exc.onboarding_id) from exc
         except TelegramPasswordRequiredError as exc:
             raise HTTPException(
                 status_code=status.HTTP_428_PRECONDITION_REQUIRED,
@@ -420,11 +431,16 @@ def create_app(
     ) -> AgentStatus:
         try:
             status_result = await _get_onboarding_service(app).get_status(onboarding_id)
+        except OnboardingNotFoundError as exc:
+            raise _onboarding_not_found(onboarding_id) from exc
+        # Unified owner check — do not leak session existence via status codes
+        try:
             _ensure_owner(status_result.owner_id, current_user.user_id)
+        except HTTPException:
+            raise _onboarding_not_found(onboarding_id) from None
+        try:
             result = await _get_onboarding_service(app).finalize_agent(onboarding_id, payload)
             return result
-        except OnboardingNotFoundError as exc:
-            raise _onboarding_not_found(exc.onboarding_id) from exc
         except TelegramAuthorizationIncompleteError as exc:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -435,25 +451,40 @@ def create_app(
     async def list_agent_messages(
         agent_id: UUID,
         current_user: CurrentUserDep,
-        limit: int = 50,
+        limit: Annotated[int, Query(ge=1, le=1000)] = 50,
+        offset: Annotated[int, Query(ge=0)] = 0,
     ) -> list[AgentMessageRecord]:
         store = _get_agent_store(app)
         if store is None:
             return []
         await _ensure_agent_owner(store, agent_id=agent_id, user_id=current_user.user_id)
-        return await store.list_messages(agent_id=agent_id, limit=limit)
+        return await store.list_messages(agent_id=agent_id, limit=limit, offset=offset)
 
     @app.get("/api/v1/agents/{agent_id}/actions", response_model=list[AgentActivity])
     async def list_agent_actions(
         agent_id: UUID,
         current_user: CurrentUserDep,
-        limit: int = 50,
+        limit: Annotated[int, Query(ge=1, le=1000)] = 50,
+        offset: Annotated[int, Query(ge=0)] = 0,
     ) -> list[AgentActivity]:
         store = _get_agent_store(app)
         if store is None:
             return []
         await _ensure_agent_owner(store, agent_id=agent_id, user_id=current_user.user_id)
-        return await store.list_activities(agent_id=agent_id, limit=limit)
+        return await store.list_activities(agent_id=agent_id, limit=limit, offset=offset)
+
+    @app.get("/api/v1/agents/{agent_id}/conversation", response_model=list[ConversationTurn])
+    async def get_agent_conversation(
+        agent_id: UUID,
+        current_user: CurrentUserDep,
+        limit: Annotated[int, Query(ge=1, le=1000)] = 50,
+        offset: Annotated[int, Query(ge=0)] = 0,
+    ) -> list[ConversationTurn]:
+        store = _get_agent_store(app)
+        if store is None:
+            return []
+        await _ensure_agent_owner(store, agent_id=agent_id, user_id=current_user.user_id)
+        return await store.get_conversation(agent_id=agent_id, limit=limit, offset=offset)
 
     @app.post(
         "/api/v1/agents",
@@ -496,7 +527,11 @@ def create_app(
     ) -> AgentStatus:
         try:
             status_result = await _get_agent_manager(app).get_agent_status(agent_id)
-            _ensure_owner(status_result.owner_id, current_user.user_id)
+            try:
+                _ensure_owner(status_result.owner_id, current_user.user_id)
+            except HTTPException:
+                # Unified 404 like sibling endpoints — do not leak existence.
+                raise _not_found(agent_id) from None
             return status_result
         except AgentNotFoundError as exc:
             raise _not_found(exc.agent_id) from exc
@@ -637,6 +672,30 @@ def create_app(
             raise HTTPException(
                 status_code=status.HTTP_501_NOT_IMPLEMENTED,
                 detail="Долгосрочная память Mem0 не настроена на сервере.",
+            )
+
+        # Scope memory_id to this agent: Mem0 history() is unscoped, so
+        # verify membership first (ids are unguessable; defense in depth).
+        try:
+            owned = await memory_store.get_all_memories(agent_id)
+        except Exception:
+            logger.warning(
+                "Memory ownership pre-check failed",
+                exc_info=True,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Memory service unavailable",
+            ) from None
+        owned_ids = {
+            str(item.get("id"))
+            for item in owned
+            if isinstance(item, dict) and item.get("id") is not None
+        }
+        if not owned_ids or memory_id not in owned_ids:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Memory {memory_id} does not exist",
             )
 
         try:

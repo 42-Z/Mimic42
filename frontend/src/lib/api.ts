@@ -1,6 +1,6 @@
 import axios, { type AxiosError, type InternalAxiosRequestConfig } from 'axios';
 import { getSupabaseClient } from '@/lib/supabase/client';
-import type { ApiError } from '@/types';
+import type { ApiError, ConversationTurn } from '@/types';
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000';
 
@@ -144,15 +144,21 @@ export const agentsApi = {
     apiClient.delete<void>(`/agents/${id}`).then(() => undefined),
 
   /** GET /api/v1/agents/:id/messages */
-  getMessages: (id: string, limit = 50) =>
+  getMessages: (id: string, limit = 50, offset = 0) =>
     apiClient
-      .get<AgentMessageRecord[]>(`/agents/${id}/messages`, { params: { limit } })
+      .get<AgentMessageRecord[]>(`/agents/${id}/messages`, { params: { limit, offset } })
       .then((r) => r.data),
 
   /** GET /api/v1/agents/:id/actions */
-  getActions: (id: string, limit = 50) =>
+  getActions: (id: string, limit = 50, offset = 0) =>
     apiClient
-      .get<AgentActivity[]>(`/agents/${id}/actions`, { params: { limit } })
+      .get<AgentActivity[]>(`/agents/${id}/actions`, { params: { limit, offset } })
+      .then((r) => r.data),
+
+  /** GET /api/v1/agents/:id/conversation */
+  getConversation: (id: string, limit = 50, offset = 0) =>
+    apiClient
+      .get<ConversationTurn[]>(`/agents/${id}/conversation`, { params: { limit, offset } })
       .then((r) => r.data),
 
   /** POST /api/v1/agents/:id/messages/trigger */

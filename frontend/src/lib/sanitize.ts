@@ -15,26 +15,68 @@ import type { DOMPurify } from 'dompurify';
 /**
  * Strips ALL HTML — returns plain text only.
  * Use for content that should never contain HTML.
+ *
+ * Deterministic pipeline (no DOMPurify): identical behaviour on
+ * server, in bun tests (happy-dom) and in the browser. Dangerous elements are
+ * removed WITH their content; unclosed opens consume to end of input.
  */
 export function sanitizeText(input: string | null | undefined): string {
   if (!input) return '';
+  return stripDangerousContent(input).replace(/<[^>]*>/g, '').trim();
+}
 
-  // Server-side: DOMPurify needs a DOM — use simple stripping
-  if (typeof window === 'undefined') {
-    return stripHtmlServer(input);
+// Elements whose content must never survive (even as text).
+const DANGEROUS_ELEMENTS = ['script', 'style', 'iframe', 'object', 'embed', 'svg', 'form', 'link', 'meta', 'base'] as const;
+
+// Hard bound: Telegram messages are ≤ 4096 chars, soul prompts ≤ 50000.
+const MAX_SANITIZE_LEN = 200_000;
+
+/** Finds the next `<tag …>` open (not a close) for a dangerous tag. */
+function findOpenTag(
+  lower: string,
+  from: number,
+): { start: number; end: number; tag: string } | null {
+  let idx = lower.indexOf('<', from);
+  while (idx !== -1) {
+    const m = /^<([a-z][a-z0-9]*)[\s>]/.exec(lower.slice(idx, idx + 16));
+    if (m?.[1] && (DANGEROUS_ELEMENTS as readonly string[]).includes(m[1])) {
+      const gt = lower.indexOf('>', idx);
+      return gt === -1
+        ? { start: idx, end: lower.length, tag: m[1] }
+        : { start: idx, end: gt + 1, tag: m[1] };
+    }
+    idx = lower.indexOf('<', idx + 1);
   }
+  return null;
+}
 
-  // Client-side: use DOMPurify
-  return sanitizeClientSide(input, { ALLOWED_TAGS: [], ALLOWED_ATTR: [] });
+function stripDangerousContent(input: string): string {
+  const src = input.length > MAX_SANITIZE_LEN ? input.slice(0, MAX_SANITIZE_LEN) : input;
+  const lower = src.toLowerCase();
+  let out = '';
+  let i = 0;
+  // Linear scan: a removed inner block may reconstitute an outer open
+  // (e.g. <scr<script>..</script>), but every open is consumed at most
+  // once going forward, so this always terminates.
+  while (i < src.length) {
+    const open = findOpenTag(lower, i);
+    if (open === null) {
+      out += src.slice(i);
+      break;
+    }
+    out += src.slice(i, open.start);
+    const closeIdx = lower.indexOf(`</${open.tag}`, open.end);
+    if (closeIdx === -1) break; // Unclosed open consumes to end of input.
+    const closeEnd = lower.indexOf('>', closeIdx);
+    i = closeEnd === -1 ? src.length : closeEnd + 1;
+  }
+  return out;
 }
 
 /**
  * Allows a small safe set of HTML tags for rich content display.
  * Use for system prompts / soul prompts shown in preview.
  * Still strips any dangerous attributes or scripts.
- */
-/**
- * Allows a small safe set of HTML tags for rich content display.
  */
 export function sanitizeRichText(input: string | null | undefined): string {
   if (!input) return '';
@@ -55,26 +97,14 @@ export function sanitizeRichText(input: string | null | undefined): string {
 
 /**
  * Server-side / pre-DOMPurify cleanup for rich text.
- * Removes dangerous tags, keeps only bare allowed tags — every attribute
- * is stripped, so handlers like onmouseover cannot survive the fallback.
+ * Removes dangerous blocks (with content) via the linear scanner, keeps
+ * only bare allowed tags — every attribute is stripped, so handlers like
+ * onmouseover cannot survive the fallback.
  */
 // Linear-time patterns: sequential quantifiers only, no nesting — no ReDoS.
-const SCRIPT_BLOCK = /<script\b[^>]*>[\s\S]*?<\/script\s*>/gi;
-const STYLE_BLOCK = /<style\b[^>]*>[\s\S]*?<\/style\s*>/gi;
-const UNCLOSED_SCRIPT = /<script\b[^>]*>?/gi;
-const UNCLOSED_STYLE = /<style\b[^>]*>?/gi;
-
-function stripDangerousBlocks(input: string): string {
-  return input
-    .replace(SCRIPT_BLOCK, '')
-    .replace(STYLE_BLOCK, '')
-    .replace(UNCLOSED_SCRIPT, '')
-    .replace(UNCLOSED_STYLE, '');
-}
-
 function sanitizeRichHtmlServer(input: string): string {
   const ALLOWED_BARE = /<(?!\/?(?:b|i|em|strong|p|br|code|pre)\s*\/?>)[^>]*>/g;
-  return stripDangerousBlocks(input)
+  return stripDangerousContent(input)
     // Rewrite allowed tags to their bare, attribute-less form
     .replace(/<(\/?)(b|i|em|strong|p|br|code|pre)\b[^>]*>/gi, '<$1$2>')
     // Drop every tag that is not a bare allowed tag
@@ -130,12 +160,14 @@ export async function preloadSanitizer(): Promise<void> {
 }
 
 /**
- * Server-side fallback: strip HTML tags with regex.
- * Less safe than DOMPurify but acceptable for SSR where
- * the output is escaped by React anyway.
+ * Server-side fallback: strip HTML tags (plain text only).
+ * Reuses the linear dangerous-content scanner, so behaviour matches
+ * sanitizeText and no nested-quantifier regexes are needed.
  */
 function stripHtmlServer(input: string): string {
-  return stripDangerousBlocks(input).replace(/<[^>]+>/g, '').trim();
+  return stripDangerousContent(input)
+    .replace(/<[^>]+>/g, '')
+    .trim();
 }
 
 /**

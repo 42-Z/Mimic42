@@ -599,6 +599,9 @@ async def test_tools_exposed_in_langchain() -> None:
     assert len(tools) == 91
     tool_names = [t.name for t in tools]
     assert "send_text_message" in tool_names
+    assert "join_channel_discussion" in tool_names
+    assert "get_discussion_messages" in tool_names
+    assert "set_discussion_group" in tool_names
     assert "view_image" in tool_names
     assert "check_admin_permissions" in tool_names
     assert "transcribe_voice_note" in tool_names

@@ -50,6 +50,7 @@ class TelegramCredentials(BaseModel):
     api_id: int = Field(gt=0)
     api_hash: str = Field(min_length=1)
     phone_number: str = Field(min_length=5)
+    onboarding_id: UUID | None = Field(default=None)
 
 
 class TelegramCodeVerification(BaseModel):

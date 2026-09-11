@@ -50,12 +50,38 @@ export interface AgentMessageRecord {
   id: string;
   agent_id: string;
   peer: string;        // telegram peer id/username
+  peer_name: string;    // human-readable sender name (e.g. "Саша")
+  agent_name: string;   // human-readable agent name (e.g. "Акакий 42")
   role: 'user' | 'assistant' | string;
   content: string;
   created_at: string;  // ISO 8601
   direction?: AgentMessageDirection;
   thread_id?: string;
   payload?: Record<string, unknown>;
+}
+
+export interface ToolCallRecord {
+  id: string;
+  name: string;
+  status: EventStatus;
+  payload?: Record<string, unknown>;
+  result?: Record<string, unknown> | null;
+  error: string | null;
+  duration_ms: number;
+  created_at: string;
+}
+
+export interface ConversationTurn {
+  id: string;
+  agent_id: string;
+  timestamp: string;
+  peer_id: string;
+  peer_name: string;
+  agent_name: string;
+  incoming: string;
+  outgoing: string;
+  direction: 'incoming' | 'outgoing' | 'both' | 'tools';
+  tools: ToolCallRecord[];
 }
 
 /**
@@ -184,9 +210,9 @@ export interface AgentEventRow {
   agent_id: string;
   event_type: string;
   status: EventStatus;
-  error: string | null;
   payload: Record<string, unknown> | null;
   result: Record<string, unknown> | null;
+  error: string | null;
   created_at: string;
   started_at: string | null;
   completed_at: string | null;

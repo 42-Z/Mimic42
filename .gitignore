@@ -113,6 +113,9 @@ desktop.ini
 !.vscode/extensions.json
 !.vscode/settings.json
 
+# Scratch / experiment files
+scratch/
+
 # Docker / deployment local overrides
 docker-compose.override.yml
 render.local.yaml

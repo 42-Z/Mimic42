@@ -23,6 +23,8 @@ class AgentMessageRecord(BaseModel):
     id: UUID = Field(default_factory=uuid4)
     agent_id: UUID
     peer: str
+    peer_name: str = ""
+    agent_name: str = ""
     role: str
     content: str
     direction: str = "inbound"
@@ -44,6 +46,32 @@ class AgentActivity(BaseModel):
     completed_at: datetime | None = None
 
 
+class ToolCallRecord(BaseModel):
+    id: UUID = Field(default_factory=uuid4)
+    name: str
+    status: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+    result: dict[str, Any] | None = None
+    error: str | None = None
+    duration_ms: float = 0.0
+    created_at: datetime
+
+
+class ConversationTurn(BaseModel):
+    """A single conversation turn: incoming + outgoing + metadata + tools."""
+
+    id: UUID = Field(default_factory=uuid4)
+    agent_id: UUID
+    timestamp: datetime
+    peer_id: str
+    peer_name: str = ""
+    agent_name: str = ""
+    incoming: str = ""  # user message
+    outgoing: str = ""  # agent response
+    direction: str = ""  # "incoming" | "outgoing" | "both" | "tools"
+    tools: list[ToolCallRecord] = Field(default_factory=list)
+
+
 class AgentStore(Protocol):
     async def create_from_onboarding(self, session: OnboardingSession) -> AgentRecord: ...
 
@@ -60,9 +88,20 @@ class AgentStore(Protocol):
         *,
         agent_id: UUID,
         limit: int = 50,
+        offset: int = 0,
     ) -> list[AgentMessageRecord]: ...
 
-    async def list_activities(self, *, agent_id: UUID, limit: int = 50) -> list[AgentActivity]: ...
+    async def list_activities(
+        self, *, agent_id: UUID, limit: int = 50, offset: int = 0
+    ) -> list[AgentActivity]: ...
+
+    async def get_conversation(
+        self,
+        *,
+        agent_id: UUID,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[ConversationTurn]: ...
 
 
 class InMemoryAgentStore:
@@ -130,8 +169,73 @@ class InMemoryAgentStore:
         self._agents.pop(agent_id, None)
         self._configs.pop(agent_id, None)
 
-    async def list_messages(self, *, agent_id: UUID, limit: int = 50) -> list[AgentMessageRecord]:
-        return [message for message in self._messages if message.agent_id == agent_id][-limit:]
+    async def list_messages(
+        self, *, agent_id: UUID, limit: int = 50, offset: int = 0
+    ) -> list[AgentMessageRecord]:
+        filtered = [message for message in self._messages if message.agent_id == agent_id]
+        # In-memory store keeps ascending order; return from the end for DESC semantics
+        start = max(0, len(filtered) - offset - limit)
+        end = max(0, len(filtered) - offset)
+        return filtered[start:end]
 
-    async def list_activities(self, *, agent_id: UUID, limit: int = 50) -> list[AgentActivity]:
-        return [activity for activity in self._activities if activity.agent_id == agent_id][-limit:]
+    async def list_activities(
+        self, *, agent_id: UUID, limit: int = 50, offset: int = 0
+    ) -> list[AgentActivity]:
+        filtered = [activity for activity in self._activities if activity.agent_id == agent_id]
+        start = max(0, len(filtered) - offset - limit)
+        end = max(0, len(filtered) - offset)
+        return filtered[start:end]
+
+    async def get_conversation(
+        self,
+        *,
+        agent_id: UUID,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[ConversationTurn]:
+        # Simplistic grouping for in-memory store: pair incoming + outgoing
+        filtered = [msg for msg in self._messages if msg.agent_id == agent_id]
+        turns: list[ConversationTurn] = []
+        i = 0
+        while i < len(filtered):
+            msg = filtered[i]
+            if msg.direction in ("incoming", "dashboard_trigger"):
+                turn = ConversationTurn(
+                    id=msg.id,
+                    agent_id=agent_id,
+                    timestamp=msg.created_at,
+                    peer_id=msg.peer,
+                    peer_name=msg.peer_name,
+                    agent_name=msg.agent_name,
+                    incoming=msg.content,
+                )
+                # Look ahead for an outgoing response
+                if i + 1 < len(filtered) and filtered[i + 1].direction in (
+                    "agent_response",
+                    "outgoing",
+                ):
+                    turn.outgoing = filtered[i + 1].content
+                    turn.direction = "both"
+                    i += 1
+                else:
+                    turn.direction = "incoming"
+                turns.append(turn)
+            elif msg.direction in ("agent_response", "outgoing"):
+                # Orphan outgoing (e.g. proactive message)
+                turns.append(
+                    ConversationTurn(
+                        id=msg.id,
+                        agent_id=agent_id,
+                        timestamp=msg.created_at,
+                        peer_id=msg.peer,
+                        peer_name=msg.peer_name,
+                        agent_name=msg.agent_name,
+                        outgoing=msg.content,
+                        direction="outgoing",
+                    )
+                )
+            i += 1
+        # Apply offset/limit
+        start = max(0, len(turns) - offset - limit)
+        end = max(0, len(turns) - offset)
+        return turns[start:end]
