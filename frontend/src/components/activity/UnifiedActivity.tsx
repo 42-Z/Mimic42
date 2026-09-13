@@ -33,6 +33,34 @@ function matchesSearch(item: ActivityItem, q: string): boolean {
   );
 }
 
+/**
+ * Build a stable peerNames Map that only changes when the underlying
+ * thread data actually differs (deep-equality by peer_id→title pairs).
+ */
+function useStablePeerNames(threads: ReturnType<typeof useMessageThreads>['data']) {
+  const ref = useRef<Map<string, string>>(new Map());
+
+  const peerNames = useMemo(() => {
+    const next = new Map(
+      (threads ?? [])
+        .filter((t) => t.title)
+        .map((t) => [t.telegram_peer_id, t.title as string]),
+    );
+    // Deep-compare: if contents are identical, keep the old reference
+    if (ref.current.size === next.size) {
+      let identical = true;
+      for (const [k, v] of next) {
+        if (ref.current.get(k) !== v) { identical = false; break; }
+      }
+      if (identical) return ref.current;
+    }
+    ref.current = next;
+    return next;
+  }, [threads]);
+
+  return peerNames;
+}
+
 export function UnifiedActivity({ agentId }: { agentId: string }) {
   const { data: messages, isLoading: messagesLoading } = useAgentMessages(agentId, 200);
   const { data: actions, isLoading: actionsLoading } = useAgentActions(agentId, 200);
@@ -43,16 +71,9 @@ export function UnifiedActivity({ agentId }: { agentId: string }) {
   const [search, setSearch] = useState('');
   const [autoScroll, setAutoScroll] = useState(true);
   const topRef = useRef<HTMLDivElement>(null);
+  const prevItemCountRef = useRef(0);
 
-  const peerNames = useMemo(
-    () =>
-      new Map(
-        (threads ?? [])
-          .filter((t) => t.title)
-          .map((t) => [t.telegram_peer_id, t.title as string]),
-      ),
-    [threads],
-  );
+  const peerNames = useStablePeerNames(threads);
 
   const items = useMemo(() => {
     const initial = buildActivityFeed(
@@ -84,9 +105,14 @@ export function UnifiedActivity({ agentId }: { agentId: string }) {
     });
   }, [items, filter, search]);
 
+  // P1 #1: Auto-scroll only on new data arrival (items.length increases),
+  // not on filter/search changes.
   useEffect(() => {
-    if (autoScroll) topRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [filtered.length, autoScroll]);
+    if (autoScroll && items.length > prevItemCountRef.current) {
+      topRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+    prevItemCountRef.current = items.length;
+  }, [items.length, autoScroll]);
 
   const isLoading = messagesLoading || actionsLoading;
 
@@ -120,6 +146,7 @@ export function UnifiedActivity({ agentId }: { agentId: string }) {
         <div className="flex items-center gap-2 ml-auto">
           <button
             onClick={() => setAutoScroll((v) => !v)}
+            title={autoScroll ? 'Автоматически прокручивать к новым записям' : 'Авто-скролл отключён'}
             className={cn(
               'font-mono text-xs px-3 py-1.5 rounded-sm border transition-colors',
               autoScroll ? 'border-neon-800 text-neon-500' : 'border-void-700 text-void-600',

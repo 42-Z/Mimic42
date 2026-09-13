@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import {
   ChevronDown,
   CornerDownRight,
@@ -67,17 +67,24 @@ function TurnBlock({
   const time = formatTime(item.createdAt);
   const peerLabel = item.peerTitle ?? (item.peer ? `ID ${item.peer}` : null);
   const toolCount = countActions(item);
+
+  // P2 #6: memoize body to avoid recomputing incomingBody() on every render.
+  // Must be before conditional return to satisfy rules-of-hooks.
+  const body = useMemo(
+    () =>
+      item.incoming
+        ? incomingBody(item.incoming.content)
+        : item.trigger
+          ? incomingBody(item.trigger.content)
+          : '',
+    [item.incoming, item.trigger],
+  );
+
   const hasContent =
     Boolean(item.incoming || item.trigger || item.response) ||
     (showTools && toolCount > 0);
 
   if (!hasContent) return null;
-
-  const body = item.incoming
-    ? incomingBody(item.incoming.content)
-    : item.trigger
-      ? incomingBody(item.trigger.content)
-      : '';
 
   return (
     <div
