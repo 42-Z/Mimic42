@@ -32,6 +32,7 @@ const messages = [
     created_at: STAMP,
     direction: 'incoming',
     thread_id: 'thread-1',
+    payload: { turn_id: 't-1' },
   },
   {
     id: 'msg-2',
@@ -42,6 +43,7 @@ const messages = [
     created_at: STAMP,
     direction: 'agent_response',
     thread_id: 'thread-1',
+    payload: { turn_id: 't-1' },
   },
 ];
 
@@ -107,14 +109,14 @@ test.describe('agent page', () => {
     await mockApi(page, 'GET', `/agents/${AGENT_RUNNING}/actions`, actions);
 
     await page.goto(`/agent/${AGENT_RUNNING}?tab=logs`);
-    // Both mock turns should render: one successful, one failed
+    // t-1 turn (incoming + response + tool) + t-2 lifecycle (failed tool) = 2 items
     await expect(page.getByText('2 записей')).toBeVisible();
 
-    // Errors filter: only the failed turn (ev-2) should appear
+    // Chat filter: only turns with messages (t-1), t-2 lifecycle is excluded
     await page.getByTestId('activity-filter-chat').click();
     await expect(page.getByText('1 записей')).toBeVisible();
 
-    // Back to full view
+    // Back to full view: both items
     await page.getByTestId('activity-filter-full').click();
     await expect(page.getByText('2 записей')).toBeVisible();
   });
