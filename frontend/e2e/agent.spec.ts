@@ -78,7 +78,8 @@ test.describe('agent page', () => {
     await expect(page.getByText('Здравствуйте!')).toBeVisible();
 =======
     await page.goto(`/agent/${AGENT_RUNNING}?tab=logs`);
-    // t-1 turn (incoming + response + tool) + t-2 lifecycle (failed tool) = 2 items
+    // Mock data: 2 messages (turn_id: t-1) + 2 actions (turn_id: t-1, t-2)
+    // buildActivityFeed groups them into 2 turns: t-1 (incoming+response+tool) and t-2 (lifecycle)
     await expect(page.getByText('2 записей')).toBeVisible();
 >>>>>>> 01301b4 (test: fix mock data with turn_ids for proper activity grouping)
 
