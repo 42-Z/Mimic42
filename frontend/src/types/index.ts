@@ -303,7 +303,7 @@ export interface OnboardingState {
 /**
  * Agent tab IDs
  */
-export type AgentTab = 'settings' | 'logs' | 'actions' | 'telegram' | 'analytics' | 'memory';
+export type AgentTab = 'settings' | 'activity' | 'actions' | 'telegram' | 'analytics' | 'memory';
 
 /**
  * KPI Dashboard metrics

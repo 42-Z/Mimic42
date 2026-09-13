@@ -23,13 +23,15 @@ const FILTER_LABELS: Record<ActivityFilter, string> = {
   chat: 'Только чат',
 };
 
+// P2 #5: Pre-compute toLowerCase to avoid redundant calls per keystroke.
 function matchesSearch(item: ActivityItem, q: string): boolean {
-  if (item.peerTitle?.toLowerCase().includes(q)) return true;
-  if (item.incoming?.content.toLowerCase().includes(q)) return true;
-  if (item.response?.content.toLowerCase().includes(q)) return true;
-  if (item.trigger?.content.toLowerCase().includes(q)) return true;
+  const ql = q.toLowerCase();
+  if (item.peerTitle?.toLowerCase().includes(ql)) return true;
+  if (item.incoming?.content.toLowerCase().includes(ql)) return true;
+  if (item.response?.content.toLowerCase().includes(ql)) return true;
+  if (item.trigger?.content.toLowerCase().includes(ql)) return true;
   return item.actions.some(
-    (a) => a.label.toLowerCase().includes(q) || a.hint?.toLowerCase().includes(q),
+    (a) => a.label.toLowerCase().includes(ql) || a.hint?.toLowerCase().includes(ql),
   );
 }
 
@@ -81,6 +83,8 @@ export function UnifiedActivity({ agentId }: { agentId: string }) {
       (actions ?? []) as unknown as EventLike[],
       peerNames,
     );
+    // P2 #4: Apply peerNames to realtime items here — buildActivityFeed
+    // already resolved peerNames for initial items, so no double lookup.
     const realtime = realtimeItems.map((item) => ({
       ...item,
       peerTitle: item.peerTitle ?? peerNames.get(item.peer) ?? null,

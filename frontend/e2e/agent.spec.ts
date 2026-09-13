@@ -89,8 +89,8 @@ test.describe('agent page', () => {
     await page.goto(`/agent/${AGENT_RUNNING}`);
     await expect(page.getByTestId('agent-tabs')).toBeVisible();
 
-    await page.getByTestId('agent-tab-logs').click();
-    await expect(page).toHaveURL(/[?&]tab=logs/);
+    await page.getByTestId('agent-tab-activity').click();
+    await expect(page).toHaveURL(/[?&]tab=activity/);
     await expect(page.getByTestId('activity-filter-full')).toBeVisible();
 
     await page.getByTestId('agent-tab-memory').click();
@@ -108,7 +108,7 @@ test.describe('agent page', () => {
     await mockApi(page, 'GET', `/agents/${AGENT_RUNNING}/messages`, messages);
     await mockApi(page, 'GET', `/agents/${AGENT_RUNNING}/actions`, actions);
 
-    await page.goto(`/agent/${AGENT_RUNNING}?tab=logs`);
+    await page.goto(`/agent/${AGENT_RUNNING}?tab=activity`);
     // Mock data: 2 messages (turn_id: t-1) + 2 actions (turn_id: t-1, t-2)
     // buildActivityFeed groups them into 2 turns: t-1 (incoming+response+tool) and t-2 (lifecycle)
     await expect(page.getByText('2 записей')).toBeVisible();
@@ -188,7 +188,7 @@ test.describe('empty states', () => {
     await mockApi(page, 'GET', `/agents/${AGENT_STOPPED}/messages`, []);
     await mockApi(page, 'GET', `/agents/${AGENT_STOPPED}/actions`, []);
 
-    await page.goto(`/agent/${AGENT_STOPPED}?tab=logs`);
+    await page.goto(`/agent/${AGENT_STOPPED}?tab=activity`);
     await expect(page.getByText('Нет записей')).toBeVisible();
   });
 
