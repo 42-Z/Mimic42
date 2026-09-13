@@ -2,7 +2,7 @@ import axios, { type AxiosError, type InternalAxiosRequestConfig } from 'axios';
 import { getSupabaseClient } from '@/lib/supabase/client';
 import type { ApiError, ConversationTurn } from '@/types';
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000';
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || '';
 
 /**
  * Central Axios instance for all FastAPI requests.
