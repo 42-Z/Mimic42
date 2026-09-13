@@ -98,6 +98,7 @@ function TurnBlock({
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
         className="flex items-center gap-2.5 w-full px-3 py-2.5 text-left select-none"
       >
         <span className="font-mono text-[10px] text-void-600 w-16 shrink-0 tabular-nums">
@@ -124,10 +125,10 @@ function TurnBlock({
           </span>
         )}
 
-        {/* Tool count badge */}
+        {/* Tool count badge — countActions filters to tool.* only */}
         {showTools && toolCount > 0 && (
           <span className="shrink-0 font-mono text-[10px] px-1.5 py-0.5 rounded bg-amber-950/60 text-amber-400 border border-amber-900/40">
-            {toolCount} tools
+            {toolCount} инстр.
           </span>
         )}
 
@@ -162,17 +163,21 @@ function TurnBlock({
             </div>
           )}
 
-          {/* Tool calls */}
-          {showTools && item.actions.length > 0 && (
-            <div className="rounded-[2px] bg-void-800/20 border border-void-800/60 divide-y divide-void-800/40">
-              <p className="font-mono text-[10px] text-void-500 uppercase tracking-wider px-3 pt-2 pb-1">
-                Действия ({item.actions.length})
-              </p>
-              {item.actions.map((action) => (
-                <ActionRow key={action.id} action={action} />
-              ))}
-            </div>
-          )}
+          {/* Tool calls — P2 #3: filter to tool.* only so badge count matches rendered rows */}
+          {showTools && item.actions.length > 0 && (() => {
+            const toolActions = item.actions.filter((a) => a.eventType.startsWith('tool.'));
+            if (toolActions.length === 0) return null;
+            return (
+              <div className="rounded-[2px] bg-void-800/20 border border-void-800/60 divide-y divide-void-800/40">
+                <p className="font-mono text-[10px] text-void-500 uppercase tracking-wider px-3 pt-2 pb-1">
+                  Действия ({toolActions.length})
+                </p>
+                {toolActions.map((action) => (
+                  <ActionRow key={action.id} action={action} />
+                ))}
+              </div>
+            );
+          })()}
 
           {/* Agent response */}
           {item.response && (

@@ -111,15 +111,15 @@ test.describe('agent page', () => {
     await page.goto(`/agent/${AGENT_RUNNING}?tab=activity`);
     // Mock data: 2 messages (turn_id: t-1) + 2 actions (turn_id: t-1, t-2)
     // buildActivityFeed groups them into 2 turns: t-1 (incoming+response+tool) and t-2 (lifecycle)
-    await expect(page.getByText('2 записей')).toBeVisible();
+    await expect(page.getByText('2 записи')).toBeVisible();
 
     // Chat filter: only turns with messages (t-1), t-2 lifecycle is excluded
     await page.getByTestId('activity-filter-chat').click();
-    await expect(page.getByText('1 записей')).toBeVisible();
+    await expect(page.getByText('1 запись')).toBeVisible();
 
     // Back to full view: both items
     await page.getByTestId('activity-filter-full').click();
-    await expect(page.getByText('2 записей')).toBeVisible();
+    await expect(page.getByText('2 записи')).toBeVisible();
   });
 
   test('stop confirm dialog calls the API and toasts', async ({ page }) => {

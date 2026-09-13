@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { ScrollText, Wifi, WifiOff } from 'lucide-react';
 import { useAgentMessages, useAgentActions } from '@/hooks/useAgentMessages';
 import { useRealtimeFeed } from '@/hooks/useRealtimeFeed';
@@ -16,12 +17,15 @@ import {
 } from '@/lib/activity/normalize';
 import { cn } from '@/lib/utils';
 
-type ActivityFilter = 'full' | 'chat';
+type ActivityFilter = 'full' | 'chat' | 'errors';
 
 const FILTER_LABELS: Record<ActivityFilter, string> = {
   full: 'Полный',
   chat: 'Только чат',
+  errors: 'Ошибки',
 };
+
+const VALID_FILTERS = new Set<string>(Object.keys(FILTER_LABELS));
 
 // P2 #5: Pre-compute toLowerCase to avoid redundant calls per keystroke.
 function matchesSearch(item: ActivityItem, q: string): boolean {
@@ -64,12 +68,17 @@ function useStablePeerNames(threads: ReturnType<typeof useMessageThreads>['data'
 }
 
 export function UnifiedActivity({ agentId }: { agentId: string }) {
-  const { data: messages, isLoading: messagesLoading } = useAgentMessages(agentId, 200);
-  const { data: actions, isLoading: actionsLoading } = useAgentActions(agentId, 200);
+  const searchParams = useSearchParams();
+  const initialFilter = searchParams.get('filter') as ActivityFilter | null;
+
+  const { data: messages, isLoading: messagesLoading } = useAgentMessages(agentId, 50);
+  const { data: actions, isLoading: actionsLoading } = useAgentActions(agentId, 50);
   const { data: threads } = useMessageThreads(agentId);
   const { items: realtimeItems, isConnected } = useRealtimeFeed(agentId);
 
-  const [filter, setFilter] = useState<ActivityFilter>('full');
+  const [filter, setFilter] = useState<ActivityFilter>(
+    initialFilter && VALID_FILTERS.has(initialFilter) ? initialFilter : 'full',
+  );
   const [search, setSearch] = useState('');
   const [autoScroll, setAutoScroll] = useState(true);
   const topRef = useRef<HTMLDivElement>(null);
@@ -83,8 +92,8 @@ export function UnifiedActivity({ agentId }: { agentId: string }) {
       (actions ?? []) as unknown as EventLike[],
       peerNames,
     );
-    // P2 #4: Apply peerNames to realtime items here — buildActivityFeed
-    // already resolved peerNames for initial items, so no double lookup.
+    // Apply peerNames to realtime items — buildActivityFeed already
+    // resolved peerNames for initial items, so no double lookup.
     const realtime = realtimeItems.map((item) => ({
       ...item,
       peerTitle: item.peerTitle ?? peerNames.get(item.peer) ?? null,
@@ -98,18 +107,18 @@ export function UnifiedActivity({ agentId }: { agentId: string }) {
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return items.filter((item) => {
-      // Chat-only filter: skip lifecycle events and tool-only turns
       if (filter === 'chat') {
         if (item.kind === 'lifecycle') return false;
         const hasMessage = Boolean(item.incoming || item.trigger || item.response);
         if (!hasMessage) return false;
       }
+      if (filter === 'errors' && !item.failed) return false;
       if (q && !matchesSearch(item, q)) return false;
       return true;
     });
   }, [items, filter, search]);
 
-  // P1 #1: Auto-scroll only on new data arrival (items.length increases),
+  // Auto-scroll only on new data arrival (items.length increases),
   // not on filter/search changes.
   useEffect(() => {
     if (autoScroll && items.length > prevItemCountRef.current) {
@@ -134,6 +143,7 @@ export function UnifiedActivity({ agentId }: { agentId: string }) {
           {(Object.keys(FILTER_LABELS) as ActivityFilter[]).map((f) => (
             <button
               key={f}
+              type="button"
               data-testid={`activity-filter-${f}`}
               onClick={() => setFilter(f)}
               className={cn(
@@ -149,6 +159,7 @@ export function UnifiedActivity({ agentId }: { agentId: string }) {
         </div>
         <div className="flex items-center gap-2 ml-auto">
           <button
+            type="button"
             onClick={() => setAutoScroll((v) => !v)}
             title={autoScroll ? 'Автоматически прокручивать к новым записям' : 'Авто-скролл отключён'}
             className={cn(
@@ -197,7 +208,7 @@ export function UnifiedActivity({ agentId }: { agentId: string }) {
       </Card>
 
       <p className="font-mono text-xs text-void-600 text-right">
-        {filtered.length} записей
+        {filtered.length} {filtered.length === 1 ? 'запись' : filtered.length >= 2 && filtered.length <= 4 ? 'записи' : 'записей'}
       </p>
     </div>
   );
