@@ -42,7 +42,7 @@ test.describe('agent page', () => {
 
     await page.getByTestId('agent-tab-logs').click();
     await expect(page).toHaveURL(/[?&]tab=logs/);
-    await expect(page.getByTestId('log-filter-all')).toBeVisible();
+    await expect(page.getByTestId('activity-filter-full')).toBeVisible();
 
     await page.getByTestId('agent-tab-memory').click();
     await expect(page).toHaveURL(/[?&]tab=memory/);
@@ -76,12 +76,13 @@ test.describe('agent page', () => {
     await page.goto(`/agent/${agentId}?tab=logs`);
     await expect(page.getByText('Здравствуйте!')).toBeVisible();
 
-    await page.getByTestId('log-filter-errors').click();
-    await expect(page.getByText('Здравствуйте!')).toHaveCount(0);
+    // Errors filter: only the failed turn (ev-2) should appear
+    await page.getByTestId('activity-filter-chat').click();
     await expect(page.getByText('1 записей')).toBeVisible();
 
-    await page.getByTestId('log-filter-all').click();
-    await expect(page.getByText('Здравствуйте!')).toBeVisible();
+    // Back to full view
+    await page.getByTestId('activity-filter-full').click();
+    await expect(page.getByText('2 записей')).toBeVisible();
   });
 
   test('stop confirm dialog calls the API and toasts', async ({ page, request }) => {
