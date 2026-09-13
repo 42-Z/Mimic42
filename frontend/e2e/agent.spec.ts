@@ -78,11 +78,11 @@ test.describe('agent page', () => {
 
     // Chat filter: only turns with messages (t-1), t-2 lifecycle is excluded
     await page.getByTestId('activity-filter-chat').click();
-    await expect(page.getByText('1 записей')).toBeVisible();
+    await expect(page.getByText('1 запись')).toBeVisible();
 
     // Back to full view: both items
     await page.getByTestId('activity-filter-full').click();
-    await expect(page.getByText('2 записей')).toBeVisible();
+    await expect(page.getByText('2 записи')).toBeVisible();
   });
 
   test('stop confirm dialog calls the API and toasts', async ({ page, request }) => {
