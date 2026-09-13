@@ -8,7 +8,7 @@ import { useRealtimeFeed } from '@/hooks/useRealtimeFeed';
 import { useMessageThreads } from '@/hooks/useTelegramSession';
 import { Card, Spinner } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
-import { UnifiedItem } from './UnifiedItem';
+import { TurnCard } from './TurnCard';
 import {
   buildActivityFeed,
   type ActivityItem,
@@ -27,7 +27,6 @@ const FILTER_LABELS: Record<ActivityFilter, string> = {
 
 const VALID_FILTERS = new Set<string>(Object.keys(FILTER_LABELS));
 
-// P2 #5: Pre-compute toLowerCase to avoid redundant calls per keystroke.
 function matchesSearch(item: ActivityItem, q: string): boolean {
   const ql = q.toLowerCase();
   if (item.peerTitle?.toLowerCase().includes(ql)) return true;
@@ -52,7 +51,6 @@ function useStablePeerNames(threads: ReturnType<typeof useMessageThreads>['data'
         .filter((t) => t.title)
         .map((t) => [t.telegram_peer_id, t.title as string]),
     );
-    // Deep-compare: if contents are identical, keep the old reference
     if (ref.current.size === next.size) {
       let identical = true;
       for (const [k, v] of next) {
@@ -65,6 +63,12 @@ function useStablePeerNames(threads: ReturnType<typeof useMessageThreads>['data'
   }, [threads]);
 
   return peerNames;
+}
+
+function recordWord(n: number): string {
+  if (n === 1) return 'запись';
+  if (n >= 2 && n <= 4) return 'записи';
+  return 'записей';
 }
 
 export function UnifiedActivity({ agentId }: { agentId: string }) {
@@ -92,8 +96,6 @@ export function UnifiedActivity({ agentId }: { agentId: string }) {
       (actions ?? []) as unknown as EventLike[],
       peerNames,
     );
-    // Apply peerNames to realtime items — buildActivityFeed already
-    // resolved peerNames for initial items, so no double lookup.
     const realtime = realtimeItems.map((item) => ({
       ...item,
       peerTitle: item.peerTitle ?? peerNames.get(item.peer) ?? null,
@@ -128,6 +130,7 @@ export function UnifiedActivity({ agentId }: { agentId: string }) {
   }, [items.length, autoScroll]);
 
   const isLoading = messagesLoading || actionsLoading;
+  const showTools = filter === 'full';
 
   return (
     <div className="space-y-4">
@@ -182,7 +185,7 @@ export function UnifiedActivity({ agentId }: { agentId: string }) {
         </div>
       </div>
 
-      {/* Feed */}
+      {/* Feed — uses TurnCard for each item */}
       <Card variant="glass" padding="none">
         <div className="h-[600px] overflow-y-auto">
           <div ref={topRef} />
@@ -197,10 +200,10 @@ export function UnifiedActivity({ agentId }: { agentId: string }) {
             </div>
           ) : (
             filtered.map((item) => (
-              <UnifiedItem
+              <TurnCard
                 key={item.id}
                 item={item}
-                showTools={filter === 'full'}
+                showTools={showTools}
               />
             ))
           )}
@@ -208,7 +211,7 @@ export function UnifiedActivity({ agentId }: { agentId: string }) {
       </Card>
 
       <p className="font-mono text-xs text-void-600 text-right">
-        {filtered.length} {filtered.length === 1 ? 'запись' : filtered.length >= 2 && filtered.length <= 4 ? 'записи' : 'записей'}
+        {filtered.length} {recordWord(filtered.length)}
       </p>
     </div>
   );
