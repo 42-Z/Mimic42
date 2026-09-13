@@ -73,14 +73,20 @@ test.describe('agent page', () => {
       error: 'FloodWait',
     });
 
+<<<<<<< HEAD
     await page.goto(`/agent/${agentId}?tab=logs`);
     await expect(page.getByText('Здравствуйте!')).toBeVisible();
+=======
+    await page.goto(`/agent/${AGENT_RUNNING}?tab=logs`);
+    // t-1 turn (incoming + response + tool) + t-2 lifecycle (failed tool) = 2 items
+    await expect(page.getByText('2 записей')).toBeVisible();
+>>>>>>> 01301b4 (test: fix mock data with turn_ids for proper activity grouping)
 
-    // Errors filter: only the failed turn (ev-2) should appear
+    // Chat filter: only turns with messages (t-1), t-2 lifecycle is excluded
     await page.getByTestId('activity-filter-chat').click();
     await expect(page.getByText('1 записей')).toBeVisible();
 
-    // Back to full view
+    // Back to full view: both items
     await page.getByTestId('activity-filter-full').click();
     await expect(page.getByText('2 записей')).toBeVisible();
   });
