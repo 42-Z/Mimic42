@@ -40,8 +40,8 @@ test.describe('agent page', () => {
     await page.goto(`/agent/${agentId}`);
     await expect(page.getByTestId('agent-tabs')).toBeVisible();
 
-    await page.getByTestId('agent-tab-logs').click();
-    await expect(page).toHaveURL(/[?&]tab=logs/);
+    await page.getByTestId('agent-tab-activity').click();
+    await expect(page).toHaveURL(/[?&]tab=activity/);
     await expect(page.getByTestId('activity-filter-full')).toBeVisible();
 
     await page.getByTestId('agent-tab-memory').click();
@@ -73,15 +73,8 @@ test.describe('agent page', () => {
       error: 'FloodWait',
     });
 
-<<<<<<< HEAD
     await page.goto(`/agent/${agentId}?tab=logs`);
     await expect(page.getByText('Здравствуйте!')).toBeVisible();
-=======
-    await page.goto(`/agent/${AGENT_RUNNING}?tab=logs`);
-    // Mock data: 2 messages (turn_id: t-1) + 2 actions (turn_id: t-1, t-2)
-    // buildActivityFeed groups them into 2 turns: t-1 (incoming+response+tool) and t-2 (lifecycle)
-    await expect(page.getByText('2 записей')).toBeVisible();
->>>>>>> 01301b4 (test: fix mock data with turn_ids for proper activity grouping)
 
     // Chat filter: only turns with messages (t-1), t-2 lifecycle is excluded
     await page.getByTestId('activity-filter-chat').click();

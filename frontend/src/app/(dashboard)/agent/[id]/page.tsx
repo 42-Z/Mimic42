@@ -41,7 +41,7 @@ import type { AgentTab, ApiError } from '@/types';
 
 const TABS: { id: AgentTab; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
   { id: 'settings',  label: 'Настройки',  icon: Settings },
-  { id: 'logs',      label: 'Активность',  icon: ScrollText },
+  { id: 'activity',  label: 'Активность',  icon: ScrollText },
   { id: 'actions',   label: 'Управление',  icon: Zap },
   { id: 'telegram',  label: 'Telegram',    icon: MessageSquare },
   { id: 'analytics', label: 'Аналитика',   icon: BarChart2 },
@@ -131,7 +131,7 @@ function AgentPageContent({
       {/* Tab content */}
       <div>
         {activeTab === 'settings'  && <TabSettings  agentId={agentId} />}
-        {activeTab === 'logs'      && <UnifiedActivity agentId={agentId} />}
+        {activeTab === 'activity'  && <UnifiedActivity agentId={agentId} />}
         {activeTab === 'actions'   && <TabActions    agentId={agentId} />}
         {activeTab === 'telegram'  && <TabTelegram   agentId={agentId} />}
         {activeTab === 'analytics' && <TabAnalytics  agentId={agentId} />}
