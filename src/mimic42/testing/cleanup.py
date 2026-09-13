@@ -5,12 +5,12 @@ from __future__ import annotations
 
 import asyncpg
 
-from mimic42.testing.slots import Slot, plain_dsn
+from mimic42.testing.slots import CONNECT_TIMEOUT_SECONDS, Slot, plain_dsn
 
 
 async def purge_slot_data(dsn: str, slot: Slot) -> None:
     owner_ids = [persona.user_id for persona in slot.personas]
-    connection = await asyncpg.connect(plain_dsn(dsn))
+    connection = await asyncpg.connect(plain_dsn(dsn), timeout=CONNECT_TIMEOUT_SECONDS)
     try:
         async with connection.transaction():
             await connection.execute(

@@ -73,8 +73,11 @@ async def acquire_slot(
         await asyncio.sleep(2)
 
 
+CONNECT_TIMEOUT_SECONDS = 20.0
+
+
 async def _try_acquire(dsn: str, *, holder: str, ttl_seconds: int) -> Slot | None:
-    connection = await asyncpg.connect(plain_dsn(dsn))
+    connection = await asyncpg.connect(plain_dsn(dsn), timeout=CONNECT_TIMEOUT_SECONDS)
     try:
         row = await connection.fetchrow(
             """
@@ -103,7 +106,7 @@ async def _try_acquire(dsn: str, *, holder: str, ttl_seconds: int) -> Slot | Non
 
 
 async def release_slot(dsn: str, slot: Slot) -> None:
-    connection = await asyncpg.connect(plain_dsn(dsn))
+    connection = await asyncpg.connect(plain_dsn(dsn), timeout=CONNECT_TIMEOUT_SECONDS)
     try:
         await connection.execute(
             "update test_support.slot_leases "

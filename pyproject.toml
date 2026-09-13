@@ -41,6 +41,10 @@ packages = ["src/mimic42"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+    "db: требует подключения к тестовой базе Mimic42 Dev",
+]
 
 [tool.ruff]
 line-length = 100
