@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import os
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import FastAPI
 from pydantic import BaseModel
@@ -15,6 +15,9 @@ from pydantic import BaseModel
 from mimic42.api.app import create_app
 from mimic42.api.auth import AuthVerifier
 from mimic42.config import Settings
+from mimic42.core.agent_runtime import AgentRuntimeState
+from mimic42.core.crypto import FernetSecretCipher
+from mimic42.core.onboarding import OnboardingSession, TelegramLoginStatus
 from mimic42.testing import registry
 from mimic42.testing.cleanup import purge_slot_data
 from mimic42.testing.llm import ScriptedAgentFactory
@@ -34,6 +37,15 @@ class DeliverRequest(BaseModel):
 class OnboardingScriptRequest(BaseModel):
     code: str | None = None
     password: str | None = None
+
+
+class CreateTestAgentRequest(BaseModel):
+    owner_id: UUID
+    name: str
+    soul_prompt: str = "спокойный помощник, отвечает коротко"
+    state: str = "stopped"
+    phone_number: str | None = None
+    with_telegram_session: bool = True
 
 
 def _test_settings() -> Settings:
@@ -103,6 +115,44 @@ def _mount_test_routes(application: FastAPI, settings: Settings) -> None:
         if request.password is not None:
             account.require_password(request.password)
         return {"status": "ok"}
+
+    @application.post("/__test__/agents")
+    async def create_test_agent(request: CreateTestAgentRequest) -> dict[str, str]:
+        """Заводит настоящего агента в базе в обход онбординга — для тестов,
+        которым нужен готовый агент, а не сама процедура его создания."""
+        agent_id = uuid4()
+        cipher = FernetSecretCipher(settings.secret_key) if settings.secret_key else None
+        store = application.state.agent_store
+        await store.create_from_onboarding(
+            OnboardingSession(
+                onboarding_id=agent_id,
+                owner_id=request.owner_id,
+                authorization_status=TelegramLoginStatus.AUTHORIZED,
+                api_id=1,
+                api_hash_secret=(cipher.encrypt("test-api-hash") if cipher else "test-api-hash"),
+                phone_number=request.phone_number,
+                name=request.name,
+                soul_prompt=request.soul_prompt,
+            )
+        )
+        if not request.with_telegram_session:
+            # create_from_onboarding always writes a telegram_sessions row —
+            # some UI states (e.g. "session not found") only occur when that
+            # row is genuinely absent, so drop it back out here.
+            from sqlalchemy import delete
+
+            from mimic42.integrations.database_models import TelegramSessionModel
+
+            async with store._session_factory() as db_session:  # noqa: SLF001
+                await db_session.execute(
+                    delete(TelegramSessionModel).where(TelegramSessionModel.agent_id == agent_id)
+                )
+                await db_session.commit()
+        if request.state == "running":
+            await store.update_status(agent_id, AgentRuntimeState.RUNNING)
+            config = await store.get_runtime_config(agent_id)
+            await application.state.agent_manager.create_agent(config, start=True)
+        return {"agent_id": str(agent_id)}
 
 
 if os.environ.get("TEST_DATABASE_CONNECTION_STRING"):

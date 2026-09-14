@@ -1,12 +1,11 @@
 import { test, expect } from '@playwright/test';
-import {
-  STUB_URL,
-  USERS,
-  hideOnboardingDrafts,
-  mockApi,
-  patchStubRow,
-  readStubRows,
-} from './helpers';
+import { USERS, hideOnboardingDrafts, currentDraftId, scriptOnboardingLogin } from './helpers';
+
+// Онбординг держит состояние входа в один общий фейковый Telegram-аккаунт
+// на сервере (registry.onboarding_account) — параллельные онбординги в
+// этом файле затирали бы код/пароль друг друга, поэтому весь файл идёт
+// последовательно.
+test.describe.configure({ mode: 'serial' });
 
 const flowUser = USERS.flow;
 const twofaUser = USERS.twofa;
@@ -45,84 +44,25 @@ test.describe('onboarding wizard', () => {
     await page.getByRole('button', { name: 'Продолжить →' }).click();
     await expect(page.getByRole('heading', { name: 'Подключение Telegram' })).toBeVisible();
 
-    // Step 3 — credentials (client validation first, then mocked API + stub flip).
+    // The draft row now exists (created directly against Supabase by the
+    // name/soul steps) — this is the real id the finished agent will get.
+    const draftId = await currentDraftId(request, flowUser.id);
+
+    // Step 3 — credentials (client validation first, then the real backend:
+    // FastAPI -> AgentOnboardingService -> fake Telegram auth client).
     await page.getByLabel('Номер телефона').fill('123');
     await page.getByRole('button', { name: 'Получить код →' }).click();
     await expect(page.getByText(/Номер телефона должен быть в формате E\.164/)).toBeVisible();
     await page.getByLabel('Номер телефона').fill('+79990000000');
-
-    await page.route(
-      (url) => url.origin + url.pathname === 'http://127.0.0.1:8000/api/v1/onboarding/telegram',
-      async (route) => {
-        if (route.request().method() !== 'POST') {
-          await route.fallback();
-          return;
-        }
-        const body = route.request().postDataJSON() as {
-          phone_number: string;
-          onboarding_id: string | null;
-        };
-        const draftId = body.onboarding_id;
-        if (typeof draftId === 'string') {
-          await patchStubRow(request, 'agent_onboarding_sessions', draftId, {
-            authorization_status: 'code_requested',
-            phone_number: '+79990000000',
-          });
-        }
-        await route.fulfill({
-          status: 201,
-          contentType: 'application/json',
-          body: JSON.stringify({
-            onboarding_id: draftId,
-            owner_id: flowUser.id,
-            phone_number: '+79990000000',
-            authorization_status: 'code_requested',
-          }),
-        });
-      },
-    );
     await page.getByRole('button', { name: 'Получить код →' }).click();
     await expect(page.getByRole('heading', { name: 'Код из Telegram' })).toBeVisible();
 
-    // Step 4 — code (client validation first, then mocked API + stub flip).
-    // The id the app itself uses (same filter/order/limit as the session query).
-    const drafts = await readStubRows(
-      request,
-      'agent_onboarding_sessions',
-      `select=id&owner_id=eq.${flowUser.id}&completed_agent_id=is.null&order=created_at.desc&limit=1`,
-    );
-    const draftId = drafts[0]?.['id'];
-    expect(typeof draftId).toBe('string');
-
+    // Step 4 — code (client validation first). The fake accepts any 5+
+    // digit code by default (no code was scripted for this attempt).
     await page.getByLabel('Код подтверждения').fill('12');
     await page.getByRole('button', { name: 'Подтвердить →' }).click();
     await expect(page.getByText('Код должен содержать минимум 5 цифр')).toBeVisible();
     await page.getByLabel('Код подтверждения').fill('12345');
-
-    await page.route(
-      (url) =>
-        url.origin + url.pathname ===
-        `http://127.0.0.1:8000/api/v1/onboarding/${String(draftId)}/telegram/code`,
-      async (route) => {
-        if (route.request().method() !== 'POST') {
-          await route.fallback();
-          return;
-        }
-        await patchStubRow(request, 'agent_onboarding_sessions', String(draftId), {
-          authorization_status: 'authorized',
-        });
-        await route.fulfill({
-          status: 200,
-          contentType: 'application/json',
-          body: JSON.stringify({
-            onboarding_id: draftId,
-            owner_id: flowUser.id,
-            phone_number: '+79990000000',
-            authorization_status: 'authorized',
-          }),
-        });
-      },
-    );
     await page.getByRole('button', { name: 'Подтвердить →' }).click();
     await expect(page.getByRole('heading', { name: 'Всё готово!' })).toBeVisible();
 
@@ -133,45 +73,10 @@ test.describe('onboarding wizard', () => {
       })
       .toBeNull();
 
-    // Step 5 — finalize.
-    await mockApi(page, 'GET', '/agents', [
-      { agent_id: draftId, owner_id: flowUser.id, name: 'Тест', state: 'stopped' },
-    ]);
-    await page.route(
-      (url) =>
-        url.origin + url.pathname ===
-        `http://127.0.0.1:8000/api/v1/onboarding/${String(draftId)}/agent`,
-      async (route) => {
-        if (route.request().method() !== 'POST') {
-          await route.fallback();
-          return;
-        }
-        // Emulate the backend side-effect: the created agent appears in Supabase.
-        await request.post(`${STUB_URL}/rest/v1/agents`, {
-          data: {
-            id: draftId,
-            owner_id: flowUser.id,
-            name: 'Тест',
-            status: 'stopped',
-          },
-          headers: { apikey: 'e2e-test-anon-key' },
-        });
-        await route.fulfill({
-          status: 201,
-          contentType: 'application/json',
-          body: JSON.stringify({
-            agent_id: draftId,
-            owner_id: flowUser.id,
-            state: 'stopped',
-          }),
-        });
-      },
-    );
+    // Step 5 — finalize: the real backend creates the agent for real.
     await page.getByRole('button', { name: 'Создать агента' }).click();
     await expect(page).toHaveURL(/\/dashboard/);
-    await expect(
-      page.getByTestId(`agent-card-${String(draftId)}`).getByText('Тест'),
-    ).toBeVisible();
+    await expect(page.getByTestId(`agent-card-${draftId}`).getByText('Тест')).toBeVisible();
   });
 });
 
@@ -180,17 +85,29 @@ test.describe('onboarding 2FA branch', () => {
 
   test('submits the 2FA password and finishes without keeping the SMS code', async ({
     page,
-    context,
     request,
   }) => {
     test.slow();
-
-    // The SMS code from the previous step lives in sessionStorage in prod.
-    await context.addInitScript(() => {
-      sessionStorage.setItem('_m42_tc_state', '12345');
-    });
+    await hideOnboardingDrafts(request, twofaUser.id);
+    // Arms the shared fake Telegram account: the next sign-in without this
+    // exact password must be refused, exactly like a real 2FA-protected
+    // account refuses a code-only login.
+    await scriptOnboardingLogin(request, null, 'secret2fa');
 
     await page.goto('/onboarding');
+    await page.getByLabel('Имя агента').fill('Тест 2FA');
+    await page.getByRole('button', { name: 'Продолжить →' }).click();
+    await page.getByLabel(/SOUL\.md/).fill(SOUL_TEXT);
+    await page.getByRole('button', { name: 'Продолжить →' }).click();
+    await page.getByLabel('Номер телефона').fill('+79990000000');
+    await page.getByRole('button', { name: 'Получить код →' }).click();
+    await expect(page.getByRole('heading', { name: 'Код из Telegram' })).toBeVisible();
+
+    // The code itself is accepted (not scripted), but the account still
+    // requires its 2FA password — the real backend persists that as
+    // authorization_status=password_required and the wizard moves on.
+    await page.getByLabel('Код подтверждения').fill('12345');
+    await page.getByRole('button', { name: 'Подтвердить →' }).click();
     await expect(
       page.getByRole('heading', { name: 'Двухфакторная аутентификация' }),
     ).toBeVisible();
@@ -199,33 +116,6 @@ test.describe('onboarding 2FA branch', () => {
     await expect(page.getByText('2FA пароль обязателен')).toBeVisible();
 
     await page.getByLabel('Пароль 2FA').fill('secret2fa');
-    await page.route(
-      (url) =>
-        url.origin + url.pathname ===
-        'http://127.0.0.1:8000/api/v1/onboarding/draft-2fa-1/telegram/code',
-      async (route) => {
-        if (route.request().method() !== 'POST') {
-          await route.fallback();
-          return;
-        }
-        const body = route.request().postDataJSON() as { code?: unknown; password?: unknown };
-        expect(body.code).toBe('12345');
-        expect(body.password).toBe('secret2fa');
-        await patchStubRow(request, 'agent_onboarding_sessions', 'draft-2fa-1', {
-          authorization_status: 'authorized',
-        });
-        await route.fulfill({
-          status: 200,
-          contentType: 'application/json',
-          body: JSON.stringify({
-            onboarding_id: 'draft-2fa-1',
-            owner_id: twofaUser.id,
-            phone_number: '+79990000000',
-            authorization_status: 'authorized',
-          }),
-        });
-      },
-    );
     await page.getByRole('button', { name: 'Подтвердить →' }).click();
     await expect(page.getByRole('heading', { name: 'Всё готово!' })).toBeVisible();
 
@@ -242,8 +132,24 @@ test.describe('onboarding from stored step', () => {
 
   test('code-requested draft opens the code step, back returns to credentials', async ({
     page,
+    request,
   }) => {
+    await hideOnboardingDrafts(request, codeUser.id);
+
+    // Arrange: walk to the credentials step for real, so a code_requested
+    // draft actually exists in the database before the reload below.
     await page.goto('/onboarding');
+    await page.getByLabel('Имя агента').fill('Тест возврата');
+    await page.getByRole('button', { name: 'Продолжить →' }).click();
+    await page.getByLabel(/SOUL\.md/).fill(SOUL_TEXT);
+    await page.getByRole('button', { name: 'Продолжить →' }).click();
+    await page.getByLabel('Номер телефона').fill('+79990000000');
+    await page.getByRole('button', { name: 'Получить код →' }).click();
+    await expect(page.getByRole('heading', { name: 'Код из Telegram' })).toBeVisible();
+
+    // Act: a fresh load must resume at the code step from the stored draft,
+    // not restart the wizard from the name step.
+    await page.reload();
     await expect(page.getByRole('heading', { name: 'Код из Telegram' })).toBeVisible();
     await expect(page.getByTestId('onboarding-step-telegram_credentials')).toBeVisible();
 

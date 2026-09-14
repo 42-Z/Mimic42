@@ -1,8 +1,13 @@
 import { expect, type APIRequestContext, type Page } from '@playwright/test';
 
-export const STUB_PORT = Number(process.env.E2E_STUB_PORT ?? 54321);
-export const STUB_URL = `http://127.0.0.1:${STUB_PORT}`;
-export const API_ORIGIN = 'http://127.0.0.1:8000';
+export const API_ORIGIN = process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://127.0.0.1:8000';
+export const SUPABASE_URL = requiredEnv('TEST_SUPABASE_URL');
+
+function requiredEnv(name: string): string {
+  const value = process.env[name];
+  if (!value) throw new Error(`${name} не задан — источник .env.test перед запуском e2e`);
+  return value;
+}
 
 export interface E2EUser {
   key: string;
@@ -12,105 +17,140 @@ export interface E2EUser {
   stateFile: string;
 }
 
+interface SlotDescription {
+  slot: string;
+  password: string;
+  personas: { key: string; id: string; email: string }[];
+}
+
 /**
- * Fixed users served by e2e/stub/server.ts. Server-side code (middleware,
- * route handlers) cannot see per-request test context, so isolation is done
- * by owner: every spec file logs in as its own user and touches only its
- * own rows.
+ * Персоны текущего слота (задаётся global-setup.ts перед стартом всех
+ * воркеров). Слот на весь прогон один — по нему настоящие Supabase-учётки
+ * не пересекаются с параллельным прогоном на другой машине/ветке.
  */
-export const USERS: Record<string, E2EUser> = {
-  empty: {
-    key: 'empty',
-    id: '11111111-1111-1111-1111-111111111111',
-    email: 'e2e@mimic42.test',
-    password: 'password123',
-    stateFile: 'e2e/.auth/empty.json',
-  },
-  full: {
-    key: 'full',
-    id: '22222222-2222-2222-2222-222222222222',
-    email: 'e2e-full@mimic42.test',
-    password: 'password123',
-    stateFile: 'e2e/.auth/full.json',
-  },
-  flow: {
-    key: 'flow',
-    id: '33333333-3333-3333-3333-333333333333',
-    email: 'e2e-flow@mimic42.test',
-    password: 'password123',
-    stateFile: 'e2e/.auth/flow.json',
-  },
-  twofa: {
-    key: '2fa',
-    id: '44444444-4444-4444-4444-444444444444',
-    email: 'e2e-2fa@mimic42.test',
-    password: 'password123',
-    stateFile: 'e2e/.auth/twofa.json',
-  },
-  code: {
-    key: 'code',
-    id: '55555555-5555-5555-5555-555555555555',
-    email: 'e2e-code@mimic42.test',
-    password: 'password123',
-    stateFile: 'e2e/.auth/code.json',
-  },
-};
+function loadUsers(): Record<string, E2EUser> {
+  const raw = process.env['E2E_SLOT_DESCRIPTION'];
+  if (!raw) {
+    throw new Error('E2E_SLOT_DESCRIPTION не задан — global-setup.ts должен был его выставить');
+  }
+  const description = JSON.parse(raw) as SlotDescription;
+  const users: Record<string, E2EUser> = {};
+  for (const persona of description.personas) {
+    users[persona.key] = {
+      key: persona.key,
+      id: persona.id,
+      email: persona.email,
+      password: description.password,
+      stateFile: `e2e/.auth/${persona.key}.json`,
+    };
+  }
+  return users;
+}
 
-/** Reseed the whole stub (called once from auth.setup before all logins). */
-export async function resetStub(request: APIRequestContext): Promise<void> {
-  const res = await request.post(`${STUB_URL}/__reset__`, { data: {} });
+export const USERS: Record<string, E2EUser> = loadUsers();
+
+function serviceRoleHeaders(): Record<string, string> {
+  const key = requiredEnv('TEST_SUPABASE_SERVICE_ROLE_KEY');
+  return { apikey: key, Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' };
+}
+
+/** Reset the real backend (both the slot's DB rows and the fake Telegram/LLM state). */
+export async function resetBackend(request: APIRequestContext, slot: string): Promise<void> {
+  const res = await request.post(`${API_ORIGIN}/__test__/reset`, { data: { slot } });
   expect(res.ok()).toBeTruthy();
 }
 
-/** Emulate a backend side-effect on a Supabase row (the real FastAPI is mocked in e2e). */
-export async function patchStubRow(
+/** Create a real agent (bypassing onboarding) for a given owner; returns its id. */
+export async function createTestAgent(
   request: APIRequestContext,
-  table: string,
-  id: string,
-  patch: Record<string, unknown>,
+  ownerId: string,
+  name: string,
+  state: 'running' | 'stopped' = 'stopped',
+  phoneNumber: string | null = null,
+  withTelegramSession = true,
+): Promise<string> {
+  const res = await request.post(`${API_ORIGIN}/__test__/agents`, {
+    data: {
+      owner_id: ownerId,
+      name,
+      state,
+      phone_number: phoneNumber,
+      with_telegram_session: withTelegramSession,
+    },
+  });
+  expect(res.ok()).toBeTruthy();
+  const { agent_id: agentId } = (await res.json()) as { agent_id: string };
+  return agentId;
+}
+
+/** Feed a fake incoming Telegram message straight to the agent's runtime. */
+export async function deliverMessage(
+  request: APIRequestContext,
+  agentId: string,
+  chatId: number,
+  text: string,
 ): Promise<void> {
-  const res = await request.patch(`${STUB_URL}/__row__`, {
-    data: { table, id, patch },
+  const res = await request.post(`${API_ORIGIN}/__test__/telegram/${agentId}/deliver`, {
+    data: { chat_id: chatId, text },
   });
   expect(res.ok()).toBeTruthy();
 }
 
-/** Read rows from the stub (e.g. to discover ids created through the UI). */
-export async function readStubRows(
+/** Read what the fake Telegram account for this agent has sent so far. */
+export async function sentMessages(
   request: APIRequestContext,
-  table: string,
-  query = 'select=*',
-): Promise<Record<string, unknown>[]> {
-  const res = await request.get(`${STUB_URL}/rest/v1/${table}?${query}`, {
-    headers: { apikey: 'e2e-test-anon-key' },
+  agentId: string,
+): Promise<{ chat_id: string; text: string }[]> {
+  const res = await request.get(`${API_ORIGIN}/__test__/telegram/${agentId}/sent`);
+  expect(res.ok()).toBeTruthy();
+  return (await res.json()) as { chat_id: string; text: string }[];
+}
+
+/** Script the code (and optional 2FA password) the fake onboarding login accepts. */
+export async function scriptOnboardingLogin(
+  request: APIRequestContext,
+  code: string | null,
+  password: string | null = null,
+): Promise<void> {
+  const res = await request.post(`${API_ORIGIN}/__test__/telegram/onboarding/script`, {
+    data: { code, password },
   });
   expect(res.ok()).toBeTruthy();
-  return (await res.json()) as Record<string, unknown>[];
 }
 
 /**
- * Hide all visible drafts of an onboarding user (marks them completed).
- * Makes a wizard test hermetic per attempt: leftover drafts from a previous
- * attempt become invisible to deriveOnboardingStep, so the new draft is the
- * only one both the app and the test can see.
+ * Deletes leftover incomplete onboarding drafts of a user, straight against
+ * Supabase with the service-role key (bypasses RLS; test-only cleanup, not
+ * something a real user session could do). Makes a wizard test hermetic
+ * across retries: without it, a leftover draft from a previous attempt
+ * would be the "most recent incomplete draft" deriveOnboardingStep resumes.
  */
 export async function hideOnboardingDrafts(
   request: APIRequestContext,
   ownerId: string,
 ): Promise<void> {
-  const drafts = await readStubRows(
-    request,
-    'agent_onboarding_sessions',
-    `select=id&owner_id=eq.${ownerId}&completed_agent_id=is.null`,
+  const res = await request.delete(
+    `${SUPABASE_URL}/rest/v1/agent_onboarding_sessions?owner_id=eq.${ownerId}&completed_agent_id=is.null`,
+    { headers: serviceRoleHeaders() },
   );
-  for (const draft of drafts) {
-    const id = draft['id'];
-    if (typeof id === 'string') {
-      await patchStubRow(request, 'agent_onboarding_sessions', id, {
-        completed_agent_id: 'e2e-hidden',
-      });
-    }
-  }
+  expect(res.ok()).toBeTruthy();
+}
+
+/** Read the single most recent incomplete onboarding draft id for a user. */
+export async function currentDraftId(
+  request: APIRequestContext,
+  ownerId: string,
+): Promise<string> {
+  const res = await request.get(
+    `${SUPABASE_URL}/rest/v1/agent_onboarding_sessions` +
+      `?select=id&owner_id=eq.${ownerId}&completed_agent_id=is.null&order=created_at.desc&limit=1`,
+    { headers: serviceRoleHeaders() },
+  );
+  expect(res.ok()).toBeTruthy();
+  const rows = (await res.json()) as { id: string }[];
+  const id = rows[0]?.id;
+  if (!id) throw new Error(`Нет черновика онбординга для owner_id=${ownerId}`);
+  return id;
 }
 
 /** Mock one FastAPI endpoint with a JSON body (query string is ignored). */
