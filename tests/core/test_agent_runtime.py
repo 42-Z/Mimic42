@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, cast
 from uuid import UUID, uuid4
@@ -16,50 +14,12 @@ from mimic42.core.agent_runtime import (
     TelegramAuthorizationRequired,
 )
 from mimic42.core.manager import AgentManager
-
-type FakeHandlerEntry = tuple[Callable[[Any], Awaitable[None]], object | None]
-
-
-class FakeTelegramClient:
-    def __init__(self, *, authorized: bool = True) -> None:
-        self.authorized = authorized
-        self.connected = False
-        self.connect_calls = 0
-        self.disconnect_calls = 0
-        self.sent_messages: list[tuple[str, str]] = []
-        self.handlers: list[FakeHandlerEntry] = []
-
-    async def connect(self) -> None:
-        self.connect_calls += 1
-        self.connected = True
-
-    async def disconnect(self) -> None:
-        self.disconnect_calls += 1
-        self.connected = False
-
-    async def is_user_authorized(self) -> bool:
-        return self.authorized
-
-    async def send_message(self, entity: str, message: str, **kwargs: Any) -> object:
-        self.sent_messages.append((str(entity), message))
-        return {"id": len(self.sent_messages), "entity": str(entity), "message": message}
-
-    async def __call__(self, request: object) -> object:
-        if not hasattr(self, "requests"):
-            self.requests = []
-        self.requests.append(request)
-        return {}
-
-    def add_event_handler(
-        self,
-        callback: Callable[[Any], Awaitable[None]],
-        event: object | None = None,
-    ) -> None:
-        self.handlers.append((callback, event))
-
-    async def emit_message(self, event: object) -> None:
-        callback, _ = self.handlers[0]
-        await callback(event)
+from mimic42.testing.telegram import (
+    FakeIncomingEvent,
+    FakeTelegramAccount,
+    FakeTelegramClient,
+    IncomingMessage,
+)
 
 
 class FakeLangChainAgent:
@@ -140,54 +100,6 @@ class FakeRuntimeMemoryService:
         self.saved_turn_ids.append(turn_id)
 
 
-class FakeReplyTo:
-    def __init__(self, reply_to_msg_id: int) -> None:
-        self.reply_to_msg_id = reply_to_msg_id
-
-
-class FakeIncomingMessage:
-    def __init__(self, *, reply_to_msg_id: int | None = None) -> None:
-        self.reply_to = FakeReplyTo(reply_to_msg_id) if reply_to_msg_id else None
-
-
-@dataclass
-class FakeReplyMessage:
-    raw_text: str = ""
-    text: str = ""
-
-
-class FakeIncomingEvent:
-    def __init__(
-        self,
-        *,
-        chat_id: int = 10,
-        message_id: int = 42,
-        text: str = "hello",
-        reply_to_msg_id: int | None = None,
-        sender_id: int | None = None,
-        client: Any | None = None,
-    ) -> None:
-        self.chat_id = chat_id
-        self.id = message_id
-        self.raw_text = text
-        self.is_private = True
-        self.message = FakeIncomingMessage(reply_to_msg_id=reply_to_msg_id)
-        self.sender_id = sender_id
-        self.client = client
-
-    async def get_chat(self) -> str:
-        return f"chat:{self.chat_id}"
-
-    async def get_input_chat(self) -> Any | None:
-        return None
-
-    async def get_reply_message(self) -> object | None:
-        if self.message.reply_to is None:
-            return None
-        reply_text = f"original text {self.message.reply_to.reply_to_msg_id}"
-        return FakeReplyMessage(raw_text=reply_text, text=reply_text)
-
-
 def make_config(agent_id: UUID | None = None, owner_id: UUID | None = None) -> AgentRuntimeConfig:
     return AgentRuntimeConfig(
         agent_id=agent_id or uuid4(),
@@ -229,7 +141,7 @@ async def test_runtime_start_and_stop_are_idempotent() -> None:
 async def test_runtime_refuses_unauthorized_userbot_session() -> None:
     runtime = MimicAgentRuntime(
         config=make_config(),
-        telegram_client=FakeTelegramClient(authorized=False),
+        telegram_client=FakeTelegramClient(FakeTelegramAccount()),
         langchain_agent=FakeLangChainAgent(),
     )
 
@@ -389,7 +301,7 @@ async def test_runtime_registers_incoming_message_handler_and_replies() -> None:
     )
 
     await runtime.start()
-    await telegram.emit_message(FakeIncomingEvent(chat_id=99, message_id=777, text="incoming"))
+    await telegram.account.deliver(chat_id=99, text="incoming")
 
     assert len(telegram.handlers) == 1
     assert telegram.sent_messages == [("99", "reply to incoming")]
@@ -595,8 +507,7 @@ async def test_runtime_ignores_muted_chats(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr("mimic42.core.agent_runtime._extract_incoming_peer", mock_peer)
     monkeypatch.setattr("mimic42.core.agent_runtime._extract_incoming_message_id", lambda ev: 777)
 
-    event = FakeIncomingEvent(chat_id=12345, message_id=777, text="incoming text")
-    await telegram.emit_message(event)
+    await telegram.account.deliver(chat_id=12345, text="incoming text")
 
     await runtime.stop()
 
@@ -640,8 +551,7 @@ async def test_runtime_triggers_unmuted_chats(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr("mimic42.core.agent_runtime._extract_incoming_peer", mock_peer)
     monkeypatch.setattr("mimic42.core.agent_runtime._extract_incoming_message_id", lambda ev: 777)
 
-    event = FakeIncomingEvent(chat_id=12345, message_id=777, text="incoming text")
-    await telegram.emit_message(event)
+    await telegram.account.deliver(chat_id=12345, text="incoming text")
 
     await runtime.stop()
 
@@ -713,8 +623,7 @@ async def test_handle_incoming_message_handles_exceptions_gracefully(
     monkeypatch.setattr(MimicAgentRuntime, "trigger_message", mock_trigger_message)
 
     # This should not raise an exception, preventing crash
-    event = FakeIncomingEvent(chat_id=12345, message_id=777, text="incoming text")
-    await telegram.emit_message(event)
+    await telegram.account.deliver(chat_id=12345, text="incoming text")
 
     await runtime.stop()
 
@@ -735,12 +644,14 @@ async def test_incoming_message_reply_annotation(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr("mimic42.core.agent_runtime._extract_incoming_peer", mock_peer)
     monkeypatch.setattr("mimic42.core.agent_runtime._extract_incoming_message_id", lambda ev: 777)
 
-    event = FakeIncomingEvent(
+    message = IncomingMessage(
         chat_id=12345,
         message_id=777,
         text="original text",
+        sender_id=999,
         reply_to_msg_id=100,
     )
+    event = FakeIncomingEvent(message, client=telegram)
 
     await telegram.emit_message(event)
     await runtime.stop()

@@ -15,6 +15,7 @@ from mimic42.core.manager import AgentManager
 from mimic42.integrations.activity_middleware import ActivityMiddleware
 from mimic42.integrations.database_models import AgentEventModel, AgentModel
 from mimic42.testing.slots import Slot
+from mimic42.testing.telegram import IncomingMessage
 
 from ..core.test_agent_runtime import FakeIncomingEvent, FakeLangChainAgent, FakeTelegramClient
 
@@ -340,7 +341,10 @@ async def test_failed_turn_records_turn_failed_once(
     monkeypatch.setattr("mimic42.core.agent_runtime._extract_incoming_peer", mock_peer)
     monkeypatch.setattr("mimic42.core.agent_runtime._extract_incoming_message_id", lambda ev: 708)
 
-    event = FakeIncomingEvent(chat_id=6121153070, message_id=708, text="ты любишь 42?")
+    message = IncomingMessage(
+        chat_id=6121153070, message_id=708, text="ты любишь 42?", sender_id=999
+    )
+    event = FakeIncomingEvent(message, client=telegram)
     await telegram.emit_message(event)  # must not raise
 
     await runtime.stop()

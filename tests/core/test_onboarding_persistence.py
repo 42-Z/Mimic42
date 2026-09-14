@@ -16,45 +16,11 @@ from mimic42.core.onboarding import (
     TelegramCredentials,
     TelegramLoginStatus,
 )
+from mimic42.testing.telegram import FakeTelegramAccount, FakeTelegramAuthClientFactory
 
 
-class FakeTelegramAuthClient:
-    def __init__(self) -> None:
-        self.connect_calls = 0
-        self.disconnect_calls = 0
-
-    async def connect(self) -> None:
-        self.connect_calls += 1
-
-    async def disconnect(self) -> None:
-        self.disconnect_calls += 1
-
-    async def send_code_request(self, phone: str) -> object:
-        return {"phone_code_hash": f"hash-for-{phone}"}
-
-    async def sign_in(
-        self,
-        *,
-        phone: str | None = None,
-        code: str | None = None,
-        phone_code_hash: str | None = None,
-        password: str | None = None,
-    ) -> object:
-        return {}
-
-    def save_session(self) -> str:
-        return "session-string"
-
-
-class FakeTelegramAuthFactory:
-    def build(
-        self,
-        *,
-        api_id: int,
-        api_hash: str,
-        session_string: str | None = None,
-    ) -> TelegramAuthClient:
-        return FakeTelegramAuthClient()  # type: ignore[return-value]
+def _fake_telegram_factory() -> FakeTelegramAuthClientFactory:
+    return FakeTelegramAuthClientFactory(FakeTelegramAccount())
 
 
 class UnusedTelegramFactory:
@@ -114,7 +80,7 @@ async def test_two_onboarding_runs_create_two_distinct_sessions() -> None:
     repository = InMemoryOnboardingRepository()
     service = AgentOnboardingService(
         repository=repository,
-        telegram_factory=FakeTelegramAuthFactory(),
+        telegram_factory=_fake_telegram_factory(),
     )
     credentials = TelegramCredentials(
         owner_id=owner_id,
@@ -146,7 +112,7 @@ async def test_request_code_with_existing_onboarding_id_reuses_draft() -> None:
     )
     service = AgentOnboardingService(
         repository=repository,
-        telegram_factory=FakeTelegramAuthFactory(),
+        telegram_factory=_fake_telegram_factory(),
     )
     credentials = TelegramCredentials(
         owner_id=owner_id,
@@ -179,7 +145,7 @@ async def test_request_code_for_foreign_onboarding_is_rejected() -> None:
     )
     service = AgentOnboardingService(
         repository=repository,
-        telegram_factory=FakeTelegramAuthFactory(),
+        telegram_factory=_fake_telegram_factory(),
     )
     credentials = TelegramCredentials(
         owner_id=owner_id,
