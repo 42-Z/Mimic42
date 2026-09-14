@@ -9,7 +9,22 @@ from uuid import UUID
 
 import asyncpg
 
+PROD_PROJECT_REF = "ajcznltdbwvhmhgzufzv"
+
 PERSONA_KEYS = ("empty", "full", "flow", "twofa", "code")
+
+
+def assert_not_prod(*values: str | None) -> None:
+    """Отказ, если хоть одно значение (DSN, Supabase URL, ...) ссылается на прод.
+
+    Единая точка проверки для всего, что имеет доступ на запись/удаление
+    в тестовую базу: pytest-фикстуры, разовые скрипты и тестовый сервер."""
+    for value in values:
+        if value and PROD_PROJECT_REF in value:
+            raise RuntimeError(
+                "отказ: тестовые настройки указывают на прод "
+                f"(project ref {PROD_PROJECT_REF} найден в значении)"
+            )
 
 
 @dataclass(frozen=True)

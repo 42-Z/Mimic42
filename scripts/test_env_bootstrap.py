@@ -14,7 +14,7 @@ import sys
 import asyncpg
 import httpx
 
-from mimic42.testing.slots import SLOTS
+from mimic42.testing.slots import SLOTS, assert_not_prod
 
 CREATE_SCHEMA_SQL = """
 create schema if not exists test_support;
@@ -77,8 +77,10 @@ async def main() -> int:
     supabase_url = os.environ["TEST_SUPABASE_URL"]
     service_key = os.environ["TEST_SUPABASE_SERVICE_ROLE_KEY"]
     password = os.environ["TEST_USER_PASSWORD"]
-    if "ajcznltdbwvhmhgzufzv" in dsn or "ajcznltdbwvhmhgzufzv" in supabase_url:
-        raise SystemExit("отказ: настройки указывают на прод")
+    try:
+        assert_not_prod(dsn, supabase_url)
+    except RuntimeError as exc:
+        raise SystemExit(str(exc)) from exc
     await ensure_schema(_plain_dsn(dsn))
     await ensure_users(supabase_url, service_key, password)
     return 0

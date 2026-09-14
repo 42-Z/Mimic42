@@ -12,9 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from mimic42.integrations.database_session import create_engine, create_session_factory
 from mimic42.testing.cleanup import purge_slot_data
-from mimic42.testing.slots import Slot, acquire_slot, release_slot
-
-PROD_REF = "ajcznltdbwvhmhgzufzv"
+from mimic42.testing.slots import Slot, acquire_slot, assert_not_prod, release_slot
 
 
 @pytest.fixture(scope="session")
@@ -22,8 +20,10 @@ def test_dsn() -> str:
     dsn = os.environ.get("TEST_DATABASE_CONNECTION_STRING")
     if not dsn:
         pytest.skip("TEST_DATABASE_CONNECTION_STRING не задан: тесты на базе пропущены")
-    if PROD_REF in dsn:
-        pytest.fail("TEST_DATABASE_CONNECTION_STRING указывает на прод")
+    try:
+        assert_not_prod(dsn)
+    except RuntimeError as exc:
+        pytest.fail(str(exc))
     return dsn
 
 

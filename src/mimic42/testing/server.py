@@ -21,7 +21,7 @@ from mimic42.core.onboarding import OnboardingSession, TelegramLoginStatus
 from mimic42.testing import registry
 from mimic42.testing.cleanup import purge_slot_data
 from mimic42.testing.llm import ScriptedAgentFactory
-from mimic42.testing.slots import SLOTS
+from mimic42.testing.slots import SLOTS, assert_not_prod
 from mimic42.testing.telegram import FakeTelegramAuthClientFactory, FakeTelegramClient
 
 
@@ -49,9 +49,12 @@ class CreateTestAgentRequest(BaseModel):
 
 
 def _test_settings() -> Settings:
+    database_connection_string = os.environ["TEST_DATABASE_CONNECTION_STRING"]
+    supabase_url = os.environ["TEST_SUPABASE_URL"]
+    assert_not_prod(database_connection_string, supabase_url)
     return Settings(
-        database_connection_string=os.environ["TEST_DATABASE_CONNECTION_STRING"],
-        supabase_url=os.environ["TEST_SUPABASE_URL"],
+        database_connection_string=database_connection_string,
+        supabase_url=supabase_url,
         secret_key=os.environ["TEST_SECRET_KEY"],
         telegram_api_id=int(os.environ.get("TEST_TELEGRAM_API_ID", "1")),
         telegram_api_hash=os.environ.get("TEST_TELEGRAM_API_HASH", "test-api-hash"),
