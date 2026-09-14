@@ -13,6 +13,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 
 from mimic42.api.app import create_app
+from mimic42.api.auth import AuthVerifier
 from mimic42.config import Settings
 from mimic42.testing import registry
 from mimic42.testing.cleanup import purge_slot_data
@@ -45,7 +46,11 @@ def _test_settings() -> Settings:
     )
 
 
-def build_test_app(settings: Settings | None = None) -> FastAPI:
+def build_test_app(
+    settings: Settings | None = None,
+    *,
+    auth_verifier: AuthVerifier | None = None,
+) -> FastAPI:
     app_settings = settings or _test_settings()
     scripted = ScriptedAgentFactory()
     application = create_app(
@@ -55,6 +60,7 @@ def build_test_app(settings: Settings | None = None) -> FastAPI:
             registry.account_for(config.agent_id)
         ),
         langchain_agent_factory=scripted,
+        auth_verifier=auth_verifier,
     )
     application.state.scripted_agents = scripted
     _mount_test_routes(application, app_settings)
