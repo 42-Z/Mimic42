@@ -31,6 +31,11 @@ class DeliverRequest(BaseModel):
     text: str
 
 
+class OnboardingScriptRequest(BaseModel):
+    code: str | None = None
+    password: str | None = None
+
+
 def _test_settings() -> Settings:
     return Settings(
         database_connection_string=os.environ["TEST_DATABASE_CONNECTION_STRING"],
@@ -84,6 +89,20 @@ def _mount_test_routes(application: FastAPI, settings: Settings) -> None:
     async def sent(agent_id: UUID) -> list[dict[str, str]]:
         account = registry.account_for(agent_id)
         return [{"chat_id": str(item.chat_id), "text": item.text} for item in account.sent]
+
+    @application.post("/__test__/telegram/onboarding/script")
+    async def script_onboarding(request: OnboardingScriptRequest) -> dict[str, str]:
+        """Задаёт код и/или 2FA-пароль, которые примет подделка входа в
+        Telegram во время онбординга. Без вызова любой 5+-значный код
+        принимается как есть (FakeTelegramAuthClient.sign_in по умолчанию
+        не проверяет код) — эндпоинт нужен только для сценариев с
+        конкретным кодом или паролем 2FA."""
+        account = registry.onboarding_account()
+        if request.code is not None:
+            account.script_code(request.code)
+        if request.password is not None:
+            account.require_password(request.password)
+        return {"status": "ok"}
 
 
 if os.environ.get("TEST_DATABASE_CONNECTION_STRING"):
