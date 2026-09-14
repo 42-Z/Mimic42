@@ -42,7 +42,41 @@ jobs:
         run: uv run ty check --output-format=github
 
       - name: Tests
-        run: uv run pytest -W error -q
+        run: uv run pytest -m "not db" -W error -q
+
+  backend-db:
+    name: backend-db
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    concurrency:
+      group: mimic42-dev-testdb
+      cancel-in-progress: false
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install Python
+        run: uv python install
+
+      - name: Install dependencies
+        run: uv sync --locked --all-groups
+
+      - name: Tests against Dev database
+        run: uv run pytest -m db -W error -q
+        env:
+          TEST_DATABASE_CONNECTION_STRING: ${{ secrets.TEST_DATABASE_CONNECTION_STRING }}
+          TEST_SUPABASE_URL: ${{ secrets.TEST_SUPABASE_URL }}
+          TEST_SUPABASE_ANON_KEY: ${{ secrets.TEST_SUPABASE_ANON_KEY }}
+          TEST_SECRET_KEY: ${{ secrets.TEST_SECRET_KEY }}
+          TEST_USER_PASSWORD: ${{ secrets.TEST_USER_PASSWORD }}
+          TEST_TELEGRAM_API_ID: '1'
+          TEST_TELEGRAM_API_HASH: test-api-hash
 
   frontend:
     name: frontend
@@ -74,18 +108,31 @@ jobs:
     name: e2e
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    defaults:
-      run:
-        working-directory: frontend
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    concurrency:
+      group: mimic42-dev-testdb
+      cancel-in-progress: false
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install Python
+        run: uv python install
+
+      - name: Install backend dependencies
+        run: uv sync --locked --all-groups
+
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
 
-      - name: Install dependencies
+      - name: Install frontend dependencies
         run: bun install --frozen-lockfile
+        working-directory: frontend
 
       - name: Cache Playwright browsers
         uses: actions/cache@v4
@@ -97,11 +144,21 @@ jobs:
 
       - name: Install Playwright browsers
         run: bunx playwright install --with-deps chromium
+        working-directory: frontend
 
       - name: Run Playwright tests
         run: bun run test:e2e
+        working-directory: frontend
         env:
           CI: true
+          TEST_DATABASE_CONNECTION_STRING: ${{ secrets.TEST_DATABASE_CONNECTION_STRING }}
+          TEST_SUPABASE_URL: ${{ secrets.TEST_SUPABASE_URL }}
+          TEST_SUPABASE_ANON_KEY: ${{ secrets.TEST_SUPABASE_ANON_KEY }}
+          TEST_SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.TEST_SUPABASE_SERVICE_ROLE_KEY }}
+          TEST_SECRET_KEY: ${{ secrets.TEST_SECRET_KEY }}
+          TEST_USER_PASSWORD: ${{ secrets.TEST_USER_PASSWORD }}
+          TEST_TELEGRAM_API_ID: '1'
+          TEST_TELEGRAM_API_HASH: test-api-hash
 
       - name: Upload Playwright report
         if: failure()
@@ -110,3 +167,34 @@ jobs:
           name: playwright-report
           path: frontend/playwright-report/
           retention-days: 7
+
+  migrations-drift:
+    name: migrations-drift
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Compare local migrations with Dev
+        run: supabase migration list --linked | tee migrations.txt
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.TEST_DB_PASSWORD }}
+          SUPABASE_PROJECT_ID: ipqylrdmmjitemjrygej
+
+      - name: Fail on migration drift
+        run: |
+          if awk -F'|' 'NR > 2 {
+            gsub(/[ \t]/, "", $1); gsub(/[ \t]/, "", $2);
+            if ($1 != "" && $2 == "") { found = 1 }
+          } END { exit !found }' migrations.txt; then
+            echo "::error::Есть локальные миграции, не применённые в Mimic42 Dev — см. таблицу выше"
+            exit 1
+          fi
