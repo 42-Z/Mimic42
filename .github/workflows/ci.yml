@@ -182,8 +182,24 @@ jobs:
         with:
           version: latest
 
+      - name: Link Supabase project
+        # GitHub-hosted runners have no IPv6, and a direct `migration list`
+        # without linking first fails silently down the pipe otherwise
+        # ("IPv6 is not supported on your current network"). Linking first
+        # makes the CLI fall back to an IPv4-reachable connection.
+        run: supabase link --project-ref "$SUPABASE_PROJECT_ID"
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.TEST_DB_PASSWORD }}
+          SUPABASE_PROJECT_ID: ipqylrdmmjitemjrygej
+
       - name: Compare local migrations with Dev
-        run: supabase migration list --linked | tee migrations.txt
+        # pipefail matters here: without it, a failing `migration list` still
+        # exits 0 through `tee`, and the next step would silently pass on an
+        # empty/error migrations.txt instead of catching real drift.
+        run: |
+          set -o pipefail
+          supabase migration list --linked | tee migrations.txt
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
           SUPABASE_DB_PASSWORD: ${{ secrets.TEST_DB_PASSWORD }}
