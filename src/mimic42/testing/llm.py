@@ -55,6 +55,17 @@ class ScriptedAgent:
         self._default_reply = default_reply
         self.calls: list[dict[str, object]] = []
 
+    def set_script(self, script: list[ScriptedTurn]) -> None:
+        """Подменить оставшийся сценарий уже построенного агента.
+
+        Нужен ``ScriptedAgentFactory``: агента создают (``langchain_agent_factory``
+        вызывается внутри ``AgentManager.create_agent``) раньше, чем тест
+        успевает узнать его ``agent_id`` и вызвать ``set_script`` — без
+        этого метода такой поздний вызов не долетал бы до уже собранного
+        объекта.
+        """
+        self._script = list(script)
+
     async def ainvoke(
         self,
         input_data: dict[str, object],
@@ -98,7 +109,11 @@ class ScriptedAgentFactory:
     built: dict[UUID, ScriptedAgent] = field(default_factory=dict)
 
     def set_script(self, agent_id: UUID, script: list[ScriptedTurn]) -> None:
+        """Задать сценарий по agent_id — до или после того, как агент построен."""
         self.scripts[agent_id] = script
+        built = self.built.get(agent_id)
+        if built is not None:
+            built.set_script(script)
 
     def __call__(
         self,

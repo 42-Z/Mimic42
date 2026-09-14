@@ -38,6 +38,10 @@ def _test_settings() -> Settings:
         telegram_api_id=int(os.environ.get("TEST_TELEGRAM_API_ID", "1")),
         telegram_api_hash=os.environ.get("TEST_TELEGRAM_API_HASH", "test-api-hash"),
         cors_allow_origins=["http://127.0.0.1:3000", "http://localhost:3000"],
+        # Явно отключает Mem0: без этого Settings() подхватил бы боевой
+        # MEM0_API_KEY из .env разработчика, и тесты били бы по настоящему
+        # внешнему сервису.
+        mem0_api_key=None,
     )
 
 
