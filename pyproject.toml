@@ -6,7 +6,6 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "aiohttp>=3.14.3",
-    "aiosqlite>=0.22.1",
     "asyncpg>=0.31.0",
     "cryptography>=48.0.0",
     "fastapi>=0.136.1",
@@ -41,6 +40,8 @@ packages = ["src/mimic42"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
 testpaths = ["tests"]
 markers = [
     "db: требует подключения к тестовой базе Mimic42 Dev",

@@ -60,10 +60,14 @@ async def acquire_slot(
     holder: str,
     ttl_seconds: int = 1800,
     wait_timeout: int = 600,
+    pool: tuple[str, ...] | None = None,
 ) -> Slot:
+    """pool сужает выбор до перечисленных имён строк — нужно только тестам
+    самого механизма аренды, чтобы не зависеть от того, какой реальный слот
+    сейчас держит текущая pytest-сессия. Реальные вызовы pool не передают."""
     deadline = datetime.now(UTC) + timedelta(seconds=wait_timeout)
     while True:
-        taken = await _try_acquire(dsn, holder=holder, ttl_seconds=ttl_seconds)
+        taken = await _try_acquire(dsn, holder=holder, ttl_seconds=ttl_seconds, pool=pool)
         if taken is not None:
             return taken
         if datetime.now(UTC) >= deadline:
@@ -76,7 +80,9 @@ async def acquire_slot(
 CONNECT_TIMEOUT_SECONDS = 20.0
 
 
-async def _try_acquire(dsn: str, *, holder: str, ttl_seconds: int) -> Slot | None:
+async def _try_acquire(
+    dsn: str, *, holder: str, ttl_seconds: int, pool: tuple[str, ...] | None = None
+) -> Slot | None:
     connection = await asyncpg.connect(plain_dsn(dsn), timeout=CONNECT_TIMEOUT_SECONDS)
     try:
         row = await connection.fetchrow(
@@ -88,7 +94,8 @@ async def _try_acquire(dsn: str, *, holder: str, ttl_seconds: int) -> Slot | Non
              where slot = (
                  select slot
                    from test_support.slot_leases
-                  where holder is null or expires_at < now()
+                  where (holder is null or expires_at < now())
+                    and ($3::text[] is null or slot = any($3::text[]))
                   order by slot
                     for update skip locked
                   limit 1
@@ -97,12 +104,20 @@ async def _try_acquire(dsn: str, *, holder: str, ttl_seconds: int) -> Slot | Non
             """,
             holder,
             float(ttl_seconds),
+            list(pool) if pool is not None else None,
         )
     finally:
         await connection.close()
     if row is None:
         return None
-    return next(slot for slot in SLOTS if slot.name == row["slot"])
+    return _find_slot(row["slot"])
+
+
+def _find_slot(name: str) -> Slot:
+    """Именованные слоты пула резолвятся в SLOTS; любые другие строки
+    таблицы (например, временные ряды, которые заводят тесты самого
+    механизма аренды) возвращают заглушку без персон."""
+    return next((slot for slot in SLOTS if slot.name == name), Slot(name=name, personas=()))
 
 
 async def release_slot(dsn: str, slot: Slot) -> None:
