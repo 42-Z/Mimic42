@@ -28,7 +28,12 @@ from mimic42.core.agent_store import (
     ConversationTurn,
 )
 from mimic42.core.crypto import FernetSecretCipher
-from mimic42.core.manager import AgentManager, AgentNotFoundError
+from mimic42.core.manager import (
+    AgentManager,
+    AgentNotFoundError,
+    LangChainAgentFactory,
+    TelegramClientFactory,
+)
 from mimic42.core.memory import RuntimeMemoryService
 from mimic42.core.onboarding import (
     AgentOnboardingService,
@@ -36,6 +41,7 @@ from mimic42.core.onboarding import (
     OnboardingNotFoundError,
     OnboardingOwnershipError,
     OnboardingPublicStatus,
+    TelegramAuthClientFactory,
     TelegramAuthorizationIncompleteError,
     TelegramCodeVerification,
     TelegramCredentials,
@@ -154,11 +160,18 @@ def create_app(
     agent_store: AgentStore | None = None,
     auth_verifier: AuthVerifier | None = None,
     settings: Settings | None = None,
+    telegram_factory: TelegramAuthClientFactory | None = None,
+    telegram_client_factory: TelegramClientFactory | None = None,
+    langchain_agent_factory: LangChainAgentFactory | None = None,
 ) -> FastAPI:
     app_settings = settings or Settings()
-    app_manager = manager or AgentManager()
+    app_telegram_factory = telegram_factory or TelethonAuthClientFactory()
+    app_manager = manager or AgentManager(
+        telegram_client_factory=telegram_client_factory,
+        langchain_agent_factory=langchain_agent_factory,
+    )
     app_onboarding_service = onboarding_service or AgentOnboardingService(
-        telegram_factory=TelethonAuthClientFactory(),
+        telegram_factory=app_telegram_factory,
         agent_store=agent_store,
     )
 
@@ -184,7 +197,7 @@ def create_app(
             if onboarding_service is None:
                 app.state.onboarding_service = AgentOnboardingService(
                     repository=DatabaseOnboardingRepository(session_factory),
-                    telegram_factory=TelethonAuthClientFactory(),
+                    telegram_factory=app_telegram_factory,
                     cipher=cipher,
                     agent_store=database_agent_store,
                 )
@@ -199,6 +212,8 @@ def create_app(
                     config_loader=database_agent_store.get_runtime_config,
                     status_sink=database_agent_store.update_status,
                     session_factory=session_factory,
+                    telegram_client_factory=telegram_client_factory,
+                    langchain_agent_factory=langchain_agent_factory,
                 )
         try:
             # Restore running agents from database after restart
