@@ -88,10 +88,12 @@
 - **pytest** — `conftest.py` до создания `Settings` подгружает в `os.environ` сначала
   `.env`, затем `.env.test` с `override=True` (так тестовые значения перекрывают
   базовые: `TELEGRAM_API_ID=1` вместо рабочего приложения, тестовый пароль).
-- **Playwright** — `playwright.config.ts` грузит те же два файла через
-  `loadEnvConfig` из `@next/env` (тот же загрузчик, что использует Next) и мапит
-  значения в `NEXT_PUBLIC_*` для `webServer.env`. `process.env` у Next в наивысшем
-  приоритете, поэтому тестовый бандл не подхватит прод-переменные.
+- **Playwright** — `playwright.config.ts` грузит те же два файла через `dotenv`
+  (объявлен явно в `frontend/devDependencies`) и мапит значения в `NEXT_PUBLIC_*`
+  для `webServer.env`. `@next/env` для этого не годится: он читает `.env.test`
+  только при `NODE_ENV=test`, а выставлять этот режим нельзя — под ним не
+  собирается и не стартует Next. `process.env` у Next в наивысшем приоритете,
+  поэтому тестовый бандл не подхватит прод-переменные.
 - **Тестовый сервер** — `_test_settings()` сохраняет явный `mem0_api_key=None`:
   боевой ключ из `.env` не должен попадать в тесты при любой схеме имён.
 - **Anon-ключ фронта** не дублируется в корневой `.env`: он нужен только браузеру,
@@ -254,8 +256,9 @@ ruleset'у. Принятый остаточный зазор: актор с пр
 - `scripts/test_env_bootstrap.py` — новые имена переменных.
 - `pyproject.toml` — явный `python-dotenv` в dev-группе, `addopts = ["-m", "not db"]`,
   объявление маркера `db`.
-- `frontend/playwright.config.ts` — загрузка через `@next/env`, новые имена,
+- `frontend/playwright.config.ts` — загрузка через `dotenv`, новые имена,
   маппинг в `NEXT_PUBLIC_*`.
+- `frontend/package.json` — `dotenv` в devDependencies.
 - `frontend/.env.test` — удаление.
 - `.github/workflows/ci.yml` — имена секретов в трёх джобах.
 - `README.md` — раздел про тесты: авто-загрузка, opt-in db-тестов, что локальный
