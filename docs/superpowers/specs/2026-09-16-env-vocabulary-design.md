@@ -25,9 +25,15 @@
 3. **Никто не грузит `.env.test`.** Тестовый слой читает только `os.environ`
    (`conftest.py`, `mimic42/testing/server.py`), а `pytest` и Playwright такой файл
    сами не читают. Последствия:
-   - `uv run pytest` (команда из README) не подхватывает `.env.test`, и 38 db-тестов
-     уходят в `pytest.skip` — в отчёте это выглядит как «38 deselected», то есть
-     незаметно;
+   - `uv run pytest` — команда из README — сегодня вообще красный:
+     `2 failed, 149 passed, 28 skipped`. Оба падения в
+     `tests/integration/test_testing_server.py` (`test_onboarding_script_endpoint_sets_code_and_password`
+     и `test_onboarding_reset_endpoint_clears_the_script`) — это
+     `KeyError: TEST_DATABASE_CONNECTION_STRING` из `build_test_app()`: эти два теста
+     не берут фикстуру `clean_slot`, поэтому мимо них проходит и скип, а
+     `_test_settings()` требует переменные напрямую;
+   - остальные 28 db-тестов уходят в `pytest.skip` — в отчёте это выглядит как
+     «их и не было»;
    - `bun run test:e2e` падает с «TEST_SUPABASE_URL не задан»;
    - рабочий рецепт — руками `set -a && source .env.test && set +a`, и он не
      задокументирован.
@@ -101,22 +107,32 @@
 `pydantic-settings`, но раз мы импортируем его напрямую — добавляется явно в
 dev-группу `pyproject.toml`.
 
-### db-тесты — явный opt-in
+### db-тесты — opt-in через выбор, без флагов
 
 Сейчас 38 db-тестов не запускаются «сами» только потому, что переменных нет в
 окружении. После перехода на общую загрузку `.env` они начнут запускаться на
 каждом `uv run pytest`, а это ~6 минут и очистка слотов в общей Dev-базе. Поэтому
-opt-in делается явным:
+исключение db-тестов становится явным правилом, а не побочным эффектом:
 
-- `MIMIC42_DB_TESTS` не задан → db-тесты скипаются с понятной причиной;
-- `MIMIC42_DB_TESTS=1`, но нет `DATABASE_CONNECTION_STRING`/`SUPABASE_URL` →
-  **падение** с объяснением (раз попросили явно, тихий скип недопустим);
-- переменные есть → `assert_test_project` проверяет значения, и при несоответствии
-  Dev-референсу тесты падают до первой записи.
+```toml
+[tool.pytest.ini_options]
+addopts = ["-m", "not db"]
+markers = ["db: тесты против настоящей базы Mimic42 Dev"]
+```
 
-Флаг не кладётся в `.env.test` намеренно: иначе он был бы всегда включён и opt-in
-превратился бы в фикцию. README документирует вызов:
-`MIMIC42_DB_TESTS=1 uv run pytest -m db`.
+- `uv run pytest` — 141 passed, 38 deselected. Быстро и безопасно.
+- `uv run pytest -m db` — 38 против Dev. Явный `-m` с командной строки перекрывает
+  addopts (проверено: pytest 9.0.3 берёт последний `-m`), поэтому отдельная
+  переменная-переключатель не нужна: сам факт «прошу db» и есть opt-in.
+- `-k` или путь сами по себе db-тесты не включают — addopts продолжает
+  действовать; сузить прогон можно как `uv run pytest -m db -k slots`.
+- Нет `.env` и/или `DATABASE_CONNECTION_STRING` → **падение** с объяснением
+  (в `conftest.py` это `pytest.fail` вместо нынешнего `pytest.skip`). Раз db-тесты
+  нельзя получить случайно, отсутствие настроек при явном запросе — ошибка
+  конфигурации, а не повод отчитаться зелёным на нуле прогонов.
+- Два теста, которые сегодня падают (см. п. 3), переписывать не нужно: их
+  требование к окружению закрывает авто-загрузка `.env`, а если `.env` нет, они
+  упадут вместе с остальными db-тестами — что и требуется по предыдущему пункту.
 
 ### Единый `SECRET_KEY`
 
@@ -178,13 +194,13 @@ ruleset'у. Принятый остаточный зазор: актор с пр
 ## Изменения в CI
 
 `ci.yml`: джобы `backend-db`, `e2e` и `migrations-drift` переходят на новые имена.
-Джоба `backend-db` **обязана** выставлять `MIMIC42_DB_TESTS=1` — иначе её тесты
-уйдут в скип, джоба отработает зелёной на нуле прогонов и создаст ложное «всё
-хорошо». `e2e` флаг не нужен: она ходит через тестовый сервер, а не через
-pytest-фикстуры. `migrations-drift` берёт `secrets.SUPABASE_ACCESS_TOKEN` и
-`secrets.SUPABASE_DB_PASSWORD` (имя секрета совпадает с именем переменной, которую
-читает CLI). Заглушки телеги (`TELEGRAM_API_ID=1`, `TELEGRAM_API_HASH=test-api-hash`)
-остаются литералами в джобах.
+Джоба `backend-db` продолжает вызывать `pytest -m db`: её `-m` перекрывает addopts,
+поэтому ни новых переменных, ни правок логики ей не нужно. Джоба `backend` гоняет
+`-m "not db"` — то же, что и addopts по умолчанию, но оставлено явным, чтобы
+намерение читалось из воркфлоу. `migrations-drift` берёт
+`secrets.SUPABASE_ACCESS_TOKEN` и `secrets.SUPABASE_DB_PASSWORD` (имя секрета
+совпадает с именем переменной, которую читает CLI). Заглушки телеги
+(`TELEGRAM_API_ID=1`, `TELEGRAM_API_HASH=test-api-hash`) остаются литералами в джобах.
 
 ## Что осознанно не делаем
 
@@ -209,10 +225,10 @@ pytest-фикстуры. `migrations-drift` берёт `secrets.SUPABASE_ACCESS_
 
 - `uv run ruff check .` и `uv run ruff format --check .` — чисто.
 - `uv run ty check` — чисто.
-- `uv run pytest -q` — 141 passed, 38 skipped (db без флага).
-- `MIMIC42_DB_TESTS=1 uv run pytest -m db -q` — 38 passed против Dev.
-- `MIMIC42_DB_TESTS=1 uv run pytest -m db` без `.env` — падение с внятным текстом,
-  а не тихий скип.
+- `uv run pytest -q` — 141 passed, 38 deselected (db исключены addopts'ом).
+- `uv run pytest -m db -q` — 38 passed против Dev, без `source`.
+- `uv run pytest -m db` во временно переименованном `.env` (настроек нет) —
+  падение с внятным текстом, а не тихий скип.
 - `cd frontend && bunx tsc --noEmit && bun test` — чисто.
 - `cd frontend && bun run test:e2e` **без** `source` — проходит.
 - `grep -rn "TEST_SUPABASE\|TEST_SECRET\|TEST_DATABASE\|TEST_TELEGRAM"` по репозиторию
@@ -224,8 +240,8 @@ pytest-фикстуры. `migrations-drift` берёт `secrets.SUPABASE_ACCESS_
 
 - `.env`, `.env.test`, `.env.example` — содержимое; `.env.test.example` — удаление.
 - `.gitignore` — минус `!.env.template`, минус `!.env.test.example`.
-- `conftest.py` — загрузка `.env` + `.env.test`, opt-in по `MIMIC42_DB_TESTS`,
-  проверка значений под новыми именами.
+- `conftest.py` — загрузка `.env` + `.env.test`, `pytest.fail` вместо `pytest.skip`
+  при отсутствии настроек, проверка значений под новыми именами.
 - `src/mimic42/testing/server.py` — `_test_settings()` под новые имена; заодно
   гард module-level `app` (сейчас `if os.environ.get("TEST_DATABASE_CONNECTION_STRING")`):
   после переименования локально он станет истинным всегда, и `app` будет собираться
@@ -236,7 +252,8 @@ pytest-фикстуры. `migrations-drift` берёт `secrets.SUPABASE_ACCESS_
 - `tests/integration/test_app_lifespan.py`, `tests/integration/test_conversation.py` —
   `TEST_SECRET_KEY` → `SECRET_KEY`.
 - `scripts/test_env_bootstrap.py` — новые имена переменных.
-- `pyproject.toml` — явный `python-dotenv` в dev-группе.
+- `pyproject.toml` — явный `python-dotenv` в dev-группе, `addopts = ["-m", "not db"]`,
+  объявление маркера `db`.
 - `frontend/playwright.config.ts` — загрузка через `@next/env`, новые имена,
   маппинг в `NEXT_PUBLIC_*`.
 - `frontend/.env.test` — удаление.
