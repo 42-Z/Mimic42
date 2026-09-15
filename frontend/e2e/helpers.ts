@@ -1,7 +1,7 @@
 import { expect, type APIRequestContext, type Page } from '@playwright/test';
 
-export const API_ORIGIN = process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://127.0.0.1:8000';
-export const SUPABASE_URL = requiredEnv('TEST_SUPABASE_URL');
+export const API_ORIGIN =
+  process.env.NEXT_PUBLIC_API_BASE_URL ?? `http://127.0.0.1:${process.env.E2E_API_PORT ?? 8000}`;
 
 function requiredEnv(name: string): string {
   const value = process.env[name];
@@ -19,7 +19,6 @@ export interface E2EUser {
 
 interface SlotDescription {
   slot: string;
-  password: string;
   personas: { key: string; id: string; email: string }[];
 }
 
@@ -34,13 +33,16 @@ function loadUsers(): Record<string, E2EUser> {
     throw new Error('E2E_SLOT_DESCRIPTION не задан — global-setup.ts должен был его выставить');
   }
   const description = JSON.parse(raw) as SlotDescription;
+  // Пароля в описании слота нет: он не должен попадать в stdout slot_cli
+  // (и дальше в логи CI), поэтому берётся прямо из окружения.
+  const password = requiredEnv('TEST_USER_PASSWORD');
   const users: Record<string, E2EUser> = {};
   for (const persona of description.personas) {
     users[persona.key] = {
       key: persona.key,
       id: persona.id,
       email: persona.email,
-      password: description.password,
+      password,
       stateFile: `e2e/.auth/${persona.key}.json`,
     };
   }
@@ -48,11 +50,6 @@ function loadUsers(): Record<string, E2EUser> {
 }
 
 export const USERS: Record<string, E2EUser> = loadUsers();
-
-function serviceRoleHeaders(): Record<string, string> {
-  const key = requiredEnv('TEST_SUPABASE_SERVICE_ROLE_KEY');
-  return { apikey: key, Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' };
-}
 
 /** Reset the real backend (both the slot's DB rows and the fake Telegram/LLM state). */
 export async function resetBackend(request: APIRequestContext, slot: string): Promise<void> {
@@ -118,21 +115,56 @@ export async function scriptOnboardingLogin(
   expect(res.ok()).toBeTruthy();
 }
 
+/** Clear the scripted code/2FA password so a wizard test starts clean. */
+export async function resetOnboardingLogin(request: APIRequestContext): Promise<void> {
+  const res = await request.post(`${API_ORIGIN}/__test__/telegram/onboarding/reset`);
+  expect(res.ok()).toBeTruthy();
+}
+
+/** Script the fake model's reply for the agent's next turn. */
+export async function scriptAgentReply(
+  request: APIRequestContext,
+  agentId: string,
+  text: string,
+): Promise<void> {
+  const res = await request.post(`${API_ORIGIN}/__test__/agents/${agentId}/script`, {
+    data: { text },
+  });
+  expect(res.ok()).toBeTruthy();
+}
+
+/** Write a real agent_events row through the same recorder prod uses. */
+export async function recordAgentEvent(
+  request: APIRequestContext,
+  agentId: string,
+  event: {
+    event_type: string;
+    status: string;
+    payload?: Record<string, unknown>;
+    result?: Record<string, unknown>;
+    error?: string;
+  },
+): Promise<void> {
+  const res = await request.post(`${API_ORIGIN}/__test__/agents/${agentId}/events`, {
+    data: event,
+  });
+  expect(res.ok()).toBeTruthy();
+}
+
 /**
- * Deletes leftover incomplete onboarding drafts of a user, straight against
- * Supabase with the service-role key (bypasses RLS; test-only cleanup, not
- * something a real user session could do). Makes a wizard test hermetic
- * across retries: without it, a leftover draft from a previous attempt
- * would be the "most recent incomplete draft" deriveOnboardingStep resumes.
+ * Deletes leftover incomplete onboarding drafts of a user. Runs on the test
+ * server (guarded against the prod project), not straight against Supabase:
+ * the service-role key never reaches the e2e environment. Makes a wizard test
+ * hermetic across retries — without it, a leftover draft from a previous
+ * attempt would be the "most recent incomplete draft" the wizard resumes.
  */
 export async function hideOnboardingDrafts(
   request: APIRequestContext,
   ownerId: string,
 ): Promise<void> {
-  const res = await request.delete(
-    `${SUPABASE_URL}/rest/v1/agent_onboarding_sessions?owner_id=eq.${ownerId}&completed_agent_id=is.null`,
-    { headers: serviceRoleHeaders() },
-  );
+  const res = await request.post(`${API_ORIGIN}/__test__/onboarding/drafts/hide`, {
+    data: { owner_id: ownerId },
+  });
   expect(res.ok()).toBeTruthy();
 }
 
@@ -141,43 +173,13 @@ export async function currentDraftId(
   request: APIRequestContext,
   ownerId: string,
 ): Promise<string> {
-  const res = await request.get(
-    `${SUPABASE_URL}/rest/v1/agent_onboarding_sessions` +
-      `?select=id&owner_id=eq.${ownerId}&completed_agent_id=is.null&order=created_at.desc&limit=1`,
-    { headers: serviceRoleHeaders() },
-  );
+  const res = await request.get(`${API_ORIGIN}/__test__/onboarding/drafts/current`, {
+    params: { owner_id: ownerId },
+  });
   expect(res.ok()).toBeTruthy();
-  const rows = (await res.json()) as { id: string }[];
-  const id = rows[0]?.id;
+  const { id } = (await res.json()) as { id: string };
   if (!id) throw new Error(`Нет черновика онбординга для owner_id=${ownerId}`);
   return id;
-}
-
-/** Mock one FastAPI endpoint with a JSON body (query string is ignored). */
-export function mockApi(
-  page: Page,
-  method: 'GET' | 'POST' | 'PATCH' | 'DELETE' | 'PUT',
-  path: string,
-  body: unknown,
-  status = 200,
-): Promise<void> {
-  const target = `${API_ORIGIN}/api/v1${path}`;
-  return page
-    .route(
-      (url) => url.origin + url.pathname === target,
-      async (route) => {
-        if (route.request().method() !== method) {
-          await route.fallback();
-          return;
-        }
-        await route.fulfill({
-          status,
-          contentType: 'application/json',
-          body: JSON.stringify(body),
-        });
-      },
-    )
-    .then(() => undefined);
 }
 
 /** Log in through the real login form. */

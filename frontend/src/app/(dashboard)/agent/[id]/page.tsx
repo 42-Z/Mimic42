@@ -406,8 +406,9 @@ function TabActions({ agentId }: { agentId: string }) {
     setTriggerErrors({});
     try {
       const res = await trigger.mutateAsync(result.data);
-      setTriggerResult(res.sent ? '✓ Отправлено' : `✗ ${res.error ?? 'Ошибка'}`);
-      toast(res.sent ? 'Сообщение отправлено' : (res.error ?? 'Ошибка'), res.sent ? 'success' : 'error');
+      const sent = res.telegram_message_id !== null;
+      setTriggerResult(sent ? '✓ Отправлено' : '✗ Не отправлено');
+      toast(sent ? 'Сообщение отправлено' : 'Сообщение не отправлено', sent ? 'success' : 'error');
     } catch (e: unknown) {
       toast((e as ApiError).message, 'error');
     }

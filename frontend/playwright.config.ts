@@ -15,10 +15,23 @@ function requiredEnv(name: string): string {
   return value;
 }
 
+// Allowlist: e2e — единственный слой, который логинится в настоящую
+// Supabase Auth, поэтому адрес обязан указывать на Dev-проект. Иначе
+// уведённая переменная окружения отправила бы реальные сессии в чужой проект.
+const DEV_PROJECT_REF = 'ipqylrdmmjitemjrygej';
+
+function requiredDevSupabaseUrl(): string {
+  const url = requiredEnv('TEST_SUPABASE_URL');
+  if (!url.includes(DEV_PROJECT_REF)) {
+    throw new Error(`TEST_SUPABASE_URL не указывает на Dev-проект (${DEV_PROJECT_REF})`);
+  }
+  return url;
+}
+
 // Настоящий проект Mimic42 Dev: фронт ходит в настоящую Supabase Auth, а
 // API — в mimic42.testing.server:app, поднятый ниже поверх настоящей базы.
 const testEnv = {
-  NEXT_PUBLIC_SUPABASE_URL: requiredEnv('TEST_SUPABASE_URL'),
+  NEXT_PUBLIC_SUPABASE_URL: requiredDevSupabaseUrl(),
   NEXT_PUBLIC_SUPABASE_ANON_KEY: requiredEnv('TEST_SUPABASE_ANON_KEY'),
   NEXT_PUBLIC_API_BASE_URL: API_URL,
 };
@@ -30,7 +43,11 @@ export default defineConfig({
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
-  workers: process.env.CI ? 2 : undefined,
+  // Один воркер: слот тестовых аккаунтов — общий на весь прогон, а тесты
+  // пишут в одни и те же строки (агенты пользователя full, общий фейковый
+  // аккаунт онбординга). Параллельные воркеры — это гонки на общей базе,
+  // а не выигрыш: прогон и так упирается в сеть до Dev.
+  workers: 1,
   reporter: process.env.CI
     ? [['github'], ['html', { outputFolder: 'playwright-report', open: 'never' }]]
     : [['list'], ['html', { outputFolder: 'playwright-report', open: 'never' }]],

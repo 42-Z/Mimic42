@@ -1,5 +1,11 @@
 import { test, expect } from '@playwright/test';
-import { USERS, hideOnboardingDrafts, currentDraftId, scriptOnboardingLogin } from './helpers';
+import {
+  USERS,
+  hideOnboardingDrafts,
+  currentDraftId,
+  resetOnboardingLogin,
+  scriptOnboardingLogin,
+} from './helpers';
 
 // Онбординг держит состояние входа в один общий фейковый Telegram-аккаунт
 // на сервере (registry.onboarding_account) — параллельные онбординги в
@@ -23,7 +29,10 @@ test.describe('onboarding wizard', () => {
   }) => {
     test.slow();
     // Hermetic per attempt: hide leftovers so the app and the test below
-    // always agree on the single visible draft (same query the app uses).
+    // always agree on the single visible draft (same query the app uses),
+    // and clear any code/2FA scripted by a previous test or retry.
+    await resetOnboardingLogin(request);
+    await scriptOnboardingLogin(request, '12345');
     await hideOnboardingDrafts(request, flowUser.id);
 
     await page.goto('/onboarding');
@@ -57,8 +66,8 @@ test.describe('onboarding wizard', () => {
     await page.getByRole('button', { name: 'Получить код →' }).click();
     await expect(page.getByRole('heading', { name: 'Код из Telegram' })).toBeVisible();
 
-    // Step 4 — code (client validation first). The fake accepts any 5+
-    // digit code by default (no code was scripted for this attempt).
+    // Step 4 — code (client validation first). The fake was scripted with
+    // the exact code above.
     await page.getByLabel('Код подтверждения').fill('12');
     await page.getByRole('button', { name: 'Подтвердить →' }).click();
     await expect(page.getByText('Код должен содержать минимум 5 цифр')).toBeVisible();
@@ -88,11 +97,12 @@ test.describe('onboarding 2FA branch', () => {
     request,
   }) => {
     test.slow();
+    await resetOnboardingLogin(request);
     await hideOnboardingDrafts(request, twofaUser.id);
     // Arms the shared fake Telegram account: the next sign-in without this
     // exact password must be refused, exactly like a real 2FA-protected
     // account refuses a code-only login.
-    await scriptOnboardingLogin(request, null, 'secret2fa');
+    await scriptOnboardingLogin(request, '12345', 'secret2fa');
 
     await page.goto('/onboarding');
     await page.getByLabel('Имя агента').fill('Тест 2FA');
@@ -103,8 +113,8 @@ test.describe('onboarding 2FA branch', () => {
     await page.getByRole('button', { name: 'Получить код →' }).click();
     await expect(page.getByRole('heading', { name: 'Код из Telegram' })).toBeVisible();
 
-    // The code itself is accepted (not scripted), but the account still
-    // requires its 2FA password — the real backend persists that as
+    // The scripted code is accepted, but the account still requires its 2FA
+    // password — the real backend persists that as
     // authorization_status=password_required and the wizard moves on.
     await page.getByLabel('Код подтверждения').fill('12345');
     await page.getByRole('button', { name: 'Подтвердить →' }).click();
@@ -134,6 +144,8 @@ test.describe('onboarding from stored step', () => {
     page,
     request,
   }) => {
+    await resetOnboardingLogin(request);
+    await scriptOnboardingLogin(request, '12345');
     await hideOnboardingDrafts(request, codeUser.id);
 
     // Arrange: walk to the credentials step for real, so a code_requested

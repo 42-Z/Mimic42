@@ -10,6 +10,9 @@ test.use({ storageState: fullUser.stateFile });
 async function seedAgents(
   request: APIRequestContext,
 ): Promise<{ runningId: string; stoppedId: string }> {
+  // Агенты копятся в течение прогона и не удаляются по ходу: данные слота
+  // чистит reset в начале следующего прогона (auth.setup.ts), а тесты
+  // проверяют только заведённых ими агентов и чужим строкам не мешают.
   const runningId = await createTestAgent(request, fullUser.id, 'Бегущий', 'running');
   const stoppedId = await createTestAgent(request, fullUser.id, 'Остановленный', 'stopped');
   return { runningId, stoppedId };

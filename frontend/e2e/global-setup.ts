@@ -17,9 +17,18 @@ function runSlotCli(args: string[]): string {
 }
 
 export default function globalSetup(): void {
-  const slot = runSlotCli(['acquire']);
-  process.env['E2E_SLOT'] = slot;
-  // Описание слота (персоны + пароль) кладётся в окружение здесь, а не в
-  // helpers.ts — чтобы каждый воркер не перезапускал uv run на импорте.
-  process.env['E2E_SLOT_DESCRIPTION'] = runSlotCli(['describe', slot]);
+  const acquired = JSON.parse(runSlotCli(['acquire'])) as { slot: string; holder: string };
+  try {
+    process.env['E2E_SLOT'] = acquired.slot;
+    // Holder нужен teardown'у: освобождать слот можно только от имени того,
+    // кто его занял, иначе протухший воркер снимет чужой живой лиз.
+    process.env['E2E_SLOT_HOLDER'] = acquired.holder;
+    // Описание слота (персоны) кладётся в окружение здесь, а не в
+    // helpers.ts — чтобы каждый воркер не перезапускал uv run на импорте.
+    // Пароля в нём нет: он берётся из TEST_USER_PASSWORD.
+    process.env['E2E_SLOT_DESCRIPTION'] = runSlotCli(['describe', acquired.slot]);
+  } catch (error) {
+    runSlotCli(['release', acquired.slot, acquired.holder]);
+    throw error;
+  }
 }
