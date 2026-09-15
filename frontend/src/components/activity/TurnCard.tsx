@@ -109,7 +109,7 @@ export function TurnCard({ item, defaultOpen = false, showTools = true }: TurnCa
 
         {showTools && item.actions.length > 0 && (
           <div className="mt-1.5 space-y-0.5">
-            {item.actions.filter((a) => a.eventType.startsWith('tool.')).map((action) => (
+            {item.actions.map((action) => (
               <ActionRow key={action.id} action={action} />
             ))}
           </div>
@@ -139,23 +139,19 @@ export function TurnCard({ item, defaultOpen = false, showTools = true }: TurnCa
             </section>
           )}
 
-          {showTools && item.actions.length > 0 && (() => {
-            const toolActions = item.actions.filter((a) => a.eventType.startsWith('tool.'));
-            if (toolActions.length === 0) return null;
-            return (
-              <section>
-                <h4 className="font-mono text-[10px] text-void-600 uppercase tracking-wider mb-1.5">
-                  Действия ({toolActions.length})
-                </h4>
-                {toolActions.map((action) => (
-                  <div key={`d-${action.id}`}>
-                    <ActionRow action={action} />
-                    <ActivityDetails action={action} />
-                  </div>
-                ))}
-              </section>
-            );
-          })()}
+          {showTools && item.actions.length > 0 && (
+            <section>
+              <h4 className="font-mono text-[10px] text-void-600 uppercase tracking-wider mb-1.5">
+                Действия ({item.actions.length})
+              </h4>
+              {item.actions.map((action) => (
+                <div key={`d-${action.id}`}>
+                  <ActionRow action={action} />
+                  <ActivityDetails action={action} agentId={item.agentId} />
+                </div>
+              ))}
+            </section>
+          )}
 
           {item.response && (
             <section>

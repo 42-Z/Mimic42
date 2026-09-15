@@ -2,7 +2,7 @@ import axios, { type AxiosError, type InternalAxiosRequestConfig } from 'axios';
 import { getSupabaseClient } from '@/lib/supabase/client';
 import type { ApiError, ConversationTurn } from '@/types';
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || '';
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000';
 
 /**
  * Central Axios instance for all FastAPI requests.
@@ -163,6 +163,12 @@ export const agentsApi = {
   getConversation: (id: string, limit = 50, offset = 0) =>
     apiClient
       .get<ConversationTurn[]>(`/agents/${id}/conversation`, { params: { limit, offset } })
+      .then((r) => r.data),
+
+  /** GET /api/v1/agents/:id/media — Telegram media bytes as a Blob. */
+  getMedia: (id: string, mediaId: string) =>
+    apiClient
+      .get<Blob>(`/agents/${id}/media`, { params: { media_id: mediaId }, responseType: 'blob' })
       .then((r) => r.data),
 
   /** POST /api/v1/agents/:id/messages/trigger */

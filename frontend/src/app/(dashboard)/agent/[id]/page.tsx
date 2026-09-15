@@ -71,7 +71,7 @@ function AgentPageContent({
   const router = useRouter();
 
   const [activeTab, setActiveTab] = useState<AgentTab>(
-    TABS.some(t => t.id === initialTab) ? initialTab : 'settings'
+    TABS.some(t => t.id === initialTab) ? initialTab : (initialTab as string) === 'logs' ? 'activity' : 'settings'
   );
 
   const handleTabChange = (tab: AgentTab) => {
