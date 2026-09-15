@@ -42,7 +42,41 @@ jobs:
         run: uv run ty check --output-format=github
 
       - name: Tests
-        run: uv run pytest -W error -q
+        run: uv run pytest -m "not db" -W error -q
+
+  backend-db:
+    name: backend-db
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    concurrency:
+      group: mimic42-dev-testdb
+      cancel-in-progress: false
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install Python
+        run: uv python install
+
+      - name: Install dependencies
+        run: uv sync --locked --all-groups
+
+      - name: Tests against Dev database
+        run: uv run pytest -m db -W error -q
+        env:
+          TEST_DATABASE_CONNECTION_STRING: ${{ secrets.TEST_DATABASE_CONNECTION_STRING }}
+          TEST_SUPABASE_URL: ${{ secrets.TEST_SUPABASE_URL }}
+          TEST_SUPABASE_ANON_KEY: ${{ secrets.TEST_SUPABASE_ANON_KEY }}
+          TEST_SECRET_KEY: ${{ secrets.TEST_SECRET_KEY }}
+          TEST_USER_PASSWORD: ${{ secrets.TEST_USER_PASSWORD }}
+          TEST_TELEGRAM_API_ID: '1'
+          TEST_TELEGRAM_API_HASH: test-api-hash
 
   frontend:
     name: frontend
@@ -74,18 +108,36 @@ jobs:
     name: e2e
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    defaults:
-      run:
-        working-directory: frontend
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    # Данные Dev-базы чистятся ПЕРЕД прогоном (auth.setup.ts дергает
+    # /__test__/reset), а не после: после падения остатки видно глазами,
+    # а следующий прогон всё равно начинает с чистого листа. Service-role
+    # ключ e2e-джобе не нужен: грязную работу с базой делает тестовый
+    # сервер под своим заслоном, в CI-логи ключ не попадает.
+    concurrency:
+      group: mimic42-dev-testdb
+      cancel-in-progress: false
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install Python
+        run: uv python install
+
+      - name: Install backend dependencies
+        run: uv sync --locked --all-groups
+
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
 
-      - name: Install dependencies
+      - name: Install frontend dependencies
         run: bun install --frozen-lockfile
+        working-directory: frontend
 
       - name: Cache Playwright browsers
         uses: actions/cache@v4
@@ -97,11 +149,20 @@ jobs:
 
       - name: Install Playwright browsers
         run: bunx playwright install --with-deps chromium
+        working-directory: frontend
 
       - name: Run Playwright tests
         run: bun run test:e2e
+        working-directory: frontend
         env:
           CI: true
+          TEST_DATABASE_CONNECTION_STRING: ${{ secrets.TEST_DATABASE_CONNECTION_STRING }}
+          TEST_SUPABASE_URL: ${{ secrets.TEST_SUPABASE_URL }}
+          TEST_SUPABASE_ANON_KEY: ${{ secrets.TEST_SUPABASE_ANON_KEY }}
+          TEST_SECRET_KEY: ${{ secrets.TEST_SECRET_KEY }}
+          TEST_USER_PASSWORD: ${{ secrets.TEST_USER_PASSWORD }}
+          TEST_TELEGRAM_API_ID: '1'
+          TEST_TELEGRAM_API_HASH: test-api-hash
 
       - name: Upload Playwright report
         if: failure()
@@ -110,3 +171,58 @@ jobs:
           name: playwright-report
           path: frontend/playwright-report/
           retention-days: 7
+
+  migrations-drift:
+    name: migrations-drift
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Link Supabase project
+        # GitHub-hosted runners have no IPv6, and a direct `migration list`
+        # without linking first fails silently down the pipe otherwise
+        # ("IPv6 is not supported on your current network"). Linking first
+        # makes the CLI fall back to an IPv4-reachable connection.
+        run: supabase link --project-ref "$SUPABASE_PROJECT_ID"
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.TEST_DB_PASSWORD }}
+          SUPABASE_PROJECT_ID: ipqylrdmmjitemjrygej
+
+      - name: Compare local migrations with Dev
+        # pipefail matters here: without it, a failing `migration list` still
+        # exits 0 through `tee`, and the next step would silently pass on an
+        # empty/error migrations.txt instead of catching real drift.
+        run: |
+          set -o pipefail
+          supabase migration list --linked | tee migrations.txt
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_DB_PASSWORD: ${{ secrets.TEST_DB_PASSWORD }}
+          SUPABASE_PROJECT_ID: ipqylrdmmjitemjrygej
+
+      - name: Fail on migration drift
+        # Дрейф в обе стороны: и «локально есть, в Dev нет», и «в Dev
+        # накатано мимо репозитория». Строки ищутся по 14-значным
+        # таймстампам, а не по номеру строки, — формат шапки не важен.
+        run: |
+          drift=$(awk -F'|' '
+            {
+              l = $1; r = $2
+              gsub(/[[:space:]]/, "", l); gsub(/[[:space:]]/, "", r)
+              if (l ~ /^[0-9]{14}$/ && r == "") print "есть локально, не применена в Dev: " l
+              if (l == "" && r ~ /^[0-9]{14}$/) print "применена в Dev, нет в репозитории: " r
+            }' migrations.txt)
+          if [ -n "$drift" ]; then
+            echo "::error::Дрейф миграций между репозиторием и Mimic42 Dev — см. таблицу выше"
+            echo "$drift"
+            exit 1
+          fi

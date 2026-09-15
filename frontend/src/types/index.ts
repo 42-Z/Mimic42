@@ -160,11 +160,17 @@ export interface TriggerMessageInput {
 
 /**
  * POST /api/v1/agents/{id}/messages/trigger — response
+ *
+ * Совпадает с backend-моделью AgentTriggerResult
+ * (src/mimic42/core/agent_runtime.py): отдельного флага «отправлено» сервер
+ * не возвращает, факт доставки — непустой telegram_message_id.
  */
 export interface TriggerMessageResponse {
-  sent: boolean;
-  message_id?: string;
-  error?: string;
+  agent_id: string;
+  peer: string;
+  input_text: string;
+  response_text: string;
+  telegram_message_id: string | null;
 }
 
 // ============================================================

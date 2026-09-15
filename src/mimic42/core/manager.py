@@ -6,6 +6,7 @@ from collections.abc import Callable
 from typing import Protocol, cast
 from uuid import UUID
 
+from langchain_core.tools import BaseTool
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mimic42.core.agent_runtime import (
@@ -14,6 +15,7 @@ from mimic42.core.agent_runtime import (
     AgentStatus,
     AgentTrigger,
     AgentTriggerResult,
+    LangChainAgentLike,
     MimicAgentRuntime,
     TelegramClientLike,
 )
@@ -36,6 +38,11 @@ RuntimeFactory = Callable[[AgentRuntimeConfig], MimicAgentRuntime]
 MemoryServiceFactory = Callable[[AgentRuntimeConfig], RuntimeMemoryService]
 ConfigLoader = Callable[[UUID], object]
 StatusSink = Callable[[UUID, AgentRuntimeState], object]
+TelegramClientFactory = Callable[[AgentRuntimeConfig], TelegramClientLike]
+LangChainAgentFactory = Callable[
+    [AgentRuntimeConfig, list[BaseTool], "async_sessionmaker[AsyncSession] | None"],
+    LangChainAgentLike,
+]
 
 
 class RuntimeFactoryWithSession(Protocol):
@@ -57,12 +64,22 @@ class AgentManager:
         config_loader: ConfigLoader | None = None,
         status_sink: StatusSink | None = None,
         session_factory: async_sessionmaker[AsyncSession] | None = None,
+        telegram_client_factory: TelegramClientFactory | None = None,
+        langchain_agent_factory: LangChainAgentFactory | None = None,
     ) -> None:
         self._runtime_factory = runtime_factory or _build_runtime
         self._memory_service_factory = memory_service_factory
         self._config_loader = config_loader
         self._status_sink = status_sink
         self.session_factory = session_factory
+        self._telegram_client_factory: TelegramClientFactory = telegram_client_factory or (
+            lambda config: cast(TelegramClientLike, build_telegram_client(config))
+        )
+        self._langchain_agent_factory: LangChainAgentFactory = langchain_agent_factory or (
+            lambda config, tools, session_factory: build_langchain_agent(
+                config, tools=tools, session_factory=session_factory
+            )
+        )
         self._agents: dict[UUID, MimicAgentRuntime] = {}
         self._removed: set[UUID] = set()
         self._lock = asyncio.Lock()
@@ -74,45 +91,59 @@ class AgentManager:
         start: bool = False,
     ) -> MimicAgentRuntime:
         async with self._lock:
-            if config.agent_id in self._agents:
-                raise ValueError(f"Agent {config.agent_id} already exists")
-            if self._memory_service_factory is not None:
-                runtime = self._build_runtime_with_memory(config)
-            else:
-                sig = inspect.signature(self._runtime_factory)
-                if "session_factory" in sig.parameters:
-                    factory_with_session = cast(RuntimeFactoryWithSession, self._runtime_factory)
-                    runtime = factory_with_session(
-                        config,
-                        session_factory=self.session_factory,
-                    )
-                else:
-                    runtime = self._runtime_factory(config)
-            self._agents[config.agent_id] = runtime
-            self._removed.discard(config.agent_id)
-
+            runtime = self._register_locked(config)
         if start:
             await runtime.start()
         return runtime
+
+    def _register_locked(self, config: AgentRuntimeConfig) -> MimicAgentRuntime:
+        """Собрать и положить рантайм в реестр. Вызывать только под ``_lock``."""
+        if config.agent_id in self._agents:
+            raise ValueError(f"Agent {config.agent_id} already exists")
+        runtime = self._build_runtime_for(config)
+        self._agents[config.agent_id] = runtime
+        self._removed.discard(config.agent_id)
+        return runtime
+
+    def _build_runtime_for(self, config: AgentRuntimeConfig) -> MimicAgentRuntime:
+        if self._memory_service_factory is not None:
+            return self._build_runtime_with_memory(config)
+        sig = inspect.signature(self._runtime_factory)
+        if "session_factory" in sig.parameters:
+            factory_with_session = cast(RuntimeFactoryWithSession, self._runtime_factory)
+            return factory_with_session(
+                config,
+                session_factory=self.session_factory,
+            )
+        return self._runtime_factory(config)
 
     async def get_agent(self, agent_id: UUID) -> MimicAgentRuntime:
         if agent_id in self._removed:
             # The agent was deleted during this process lifetime: never
             # re-materialise it from the persistent config.
             raise AgentNotFoundError(agent_id)
-        if agent_id not in self._agents and self._config_loader is not None:
-            try:
-                config = await _await_result(self._config_loader(agent_id))
-            except KeyError as exc:
-                # The config loader signals a missing agent row with KeyError.
-                raise AgentNotFoundError(agent_id) from exc
-            if not isinstance(config, AgentRuntimeConfig):
-                raise TypeError("config_loader must return AgentRuntimeConfig")
-            await self.create_agent(config)
+        agent = self._agents.get(agent_id)
+        if agent is not None:
+            return agent
+        if self._config_loader is None:
+            raise AgentNotFoundError(agent_id)
         try:
-            return self._agents[agent_id]
+            config = await _await_result(self._config_loader(agent_id))
         except KeyError as exc:
+            # The config loader signals a missing agent row with KeyError.
             raise AgentNotFoundError(agent_id) from exc
+        if not isinstance(config, AgentRuntimeConfig):
+            raise TypeError("config_loader must return AgentRuntimeConfig")
+        async with self._lock:
+            # Повторная проверка под локом: конкурентные обращения к одному
+            # агенту (например, поллинг статуса и триггер) не должны оба
+            # собирать рантайм — второй получал бы «already exists».
+            if agent_id in self._removed:
+                raise AgentNotFoundError(agent_id)
+            existing = self._agents.get(agent_id)
+            if existing is not None:
+                return existing
+            return self._register_locked(config)
 
     async def get_agent_status(self, agent_id: UUID) -> AgentStatus:
         return (await self.get_agent(agent_id)).status
@@ -198,7 +229,7 @@ class AgentManager:
         await asyncio.gather(*(agent.stop() for agent in agents), return_exceptions=True)
 
     def _build_runtime_with_memory(self, config: AgentRuntimeConfig) -> MimicAgentRuntime:
-        telegram_client = cast(TelegramClientLike, build_telegram_client(config))
+        telegram_client = self._telegram_client_factory(config)
         if self._memory_service_factory is None:
             memory_service = RuntimeMemoryService()
         else:
@@ -206,14 +237,14 @@ class AgentManager:
         return MimicAgentRuntime(
             config=config,
             telegram_client=telegram_client,
-            langchain_agent=build_langchain_agent(
+            langchain_agent=self._langchain_agent_factory(
                 config,
-                tools=build_telegram_langchain_tools(
+                build_telegram_langchain_tools(
                     cast(TelethonRequestClient, telegram_client),
                     agent_id=config.agent_id,
                     session_factory=self.session_factory,
                 ),
-                session_factory=self.session_factory,
+                self.session_factory,
             ),
             memory_service=memory_service,
             session_factory=self.session_factory,

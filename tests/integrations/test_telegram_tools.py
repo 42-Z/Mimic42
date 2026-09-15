@@ -17,12 +17,16 @@ from mimic42.integrations.telegram_tools import (
     format_media_object,
     parse_media_id,
 )
+from mimic42.testing.telegram import FakeTelegramClient
 
 
-class FakeTelethonClient:
+class FakeTelethonClient(FakeTelegramClient):
+    """Расширяет общую подделку набором Telethon-запросов, которые нужны
+    только инструментам TelegramToolbox (get_dialogs, send_file и т.д.)."""
+
     def __init__(self) -> None:
+        super().__init__()
         self.calls: list[tuple[str, dict[str, Any]]] = []
-        self.requests: list[object] = []
 
     async def __call__(self, request: object) -> Any:
         self.requests.append(request)
