@@ -26,10 +26,15 @@ from mimic42.testing.cleanup import (
     hide_incomplete_onboarding_drafts,
     purge_slot_data,
 )
+from mimic42.testing.env import load_test_env
 from mimic42.testing.llm import Reply, ScriptedAgentFactory
 from mimic42.testing.memory import FakeLongTermMemory
 from mimic42.testing.slots import SLOTS, assert_test_project
 from mimic42.testing.telegram import FakeTelegramAuthClientFactory, FakeTelegramClient
+
+# Точка входа для `uvicorn mimic42.testing.server:app`: файлы грузятся здесь,
+# чтобы сервер поднимался без предварительного `source .env.test`.
+load_test_env()
 
 
 class ResetRequest(BaseModel):
@@ -72,14 +77,14 @@ class CreateTestAgentRequest(BaseModel):
 
 
 def _test_settings() -> Settings:
-    database_connection_string = os.environ["TEST_DATABASE_CONNECTION_STRING"]
-    supabase_url = os.environ["TEST_SUPABASE_URL"]
+    database_connection_string = os.environ["DATABASE_CONNECTION_STRING"]
+    supabase_url = os.environ["SUPABASE_URL"]
     return Settings(
         database_connection_string=database_connection_string,
         supabase_url=supabase_url,
-        secret_key=os.environ["TEST_SECRET_KEY"],
-        telegram_api_id=int(os.environ.get("TEST_TELEGRAM_API_ID", "1")),
-        telegram_api_hash=os.environ.get("TEST_TELEGRAM_API_HASH", "test-api-hash"),
+        secret_key=os.environ["SECRET_KEY"],
+        telegram_api_id=int(os.environ.get("TELEGRAM_API_ID", "1")),
+        telegram_api_hash=os.environ.get("TELEGRAM_API_HASH", "test-api-hash"),
         cors_allow_origins=["http://127.0.0.1:3000", "http://localhost:3000"],
         # Явно отключает Mem0: без этого Settings() подхватил бы боевой
         # MEM0_API_KEY из .env разработчика, и тесты били бы по настоящему
@@ -233,7 +238,7 @@ def _mount_test_routes(application: FastAPI, settings: Settings) -> None:
         return {"agent_id": str(agent_id)}
 
 
-if os.environ.get("TEST_DATABASE_CONNECTION_STRING"):
+if os.environ.get("DATABASE_CONNECTION_STRING"):
     # Строится только когда переменные окружения реально заданы: иначе
     # простой импорт этого модуля (например, во время сбора тестов без
     # базы) падал бы независимо от маркера db.
