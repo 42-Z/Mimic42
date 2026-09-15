@@ -44,6 +44,10 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "session"
 asyncio_default_test_loop_scope = "session"
 testpaths = ["tests"]
+# Тесты против настоящей базы по умолчанию исключены: они занимают слот
+# тестовых аккаунтов и чистят данные в общей Dev-базе. Явный `-m db` с
+# командной строки перекрывает этот addopts и включает их.
+addopts = ["-m", "not db"]
 markers = [
     "db: требует подключения к тестовой базе Mimic42 Dev",
 ]
