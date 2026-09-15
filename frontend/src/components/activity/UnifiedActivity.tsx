@@ -130,7 +130,7 @@ export function UnifiedActivity({ agentId }: { agentId: string }) {
   }, [items.length, autoScroll]);
 
   const isLoading = messagesLoading || actionsLoading;
-  const showTools = filter === 'full';
+  const showTools = filter !== 'chat';
 
   return (
     <div className="space-y-4">
@@ -188,7 +188,6 @@ export function UnifiedActivity({ agentId }: { agentId: string }) {
       {/* Feed — uses TurnCard for each item */}
       <Card variant="glass" padding="none">
         <div className="h-[600px] overflow-y-auto">
-          <div ref={topRef} />
           {isLoading ? (
             <div className="flex items-center justify-center h-full">
               <Spinner />
@@ -199,7 +198,7 @@ export function UnifiedActivity({ agentId }: { agentId: string }) {
               <p className="font-mono text-sm">Нет записей</p>
             </div>
           ) : (
-            filtered.map((item) => (
+            [...filtered].reverse().map((item) => (
               <TurnCard
                 key={item.id}
                 item={item}
@@ -207,6 +206,7 @@ export function UnifiedActivity({ agentId }: { agentId: string }) {
               />
             ))
           )}
+          <div ref={topRef} />
         </div>
       </Card>
 

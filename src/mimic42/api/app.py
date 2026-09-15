@@ -88,6 +88,8 @@ class AgentManagerLike(Protocol):
         trigger: AgentTrigger,
     ) -> AgentTriggerResult: ...
 
+    async def get_agent(self, agent_id: UUID) -> Any: ...
+
     async def shutdown(self) -> None: ...
 
 
@@ -504,6 +506,42 @@ def create_app(
             return []
         await _ensure_agent_owner(store, agent_id=agent_id, user_id=current_user.user_id)
         return await store.get_conversation(agent_id=agent_id, limit=limit, offset=offset)
+
+    @app.get("/api/v1/agents/{agent_id}/media")
+    async def get_agent_media(
+        agent_id: UUID,
+        media_id: Annotated[str, Query(min_length=1)],
+        current_user: CurrentUserDep,
+    ) -> Response:
+        """Download Telegram media through the agent's live session.
+
+        Serves bytes stored behind a media ID found in the activity log,
+        so images stay viewable without reusing stale file references.
+        """
+        from telethon.errors import FileReferenceExpiredError
+
+        try:
+            await _ensure_runtime_owner(app, agent_id=agent_id, user_id=current_user.user_id)
+            runtime = await _get_agent_manager(app).get_agent(agent_id)
+            data, mime_type = await runtime.download_media_by_id(media_id)
+            return Response(content=data, media_type=mime_type)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=str(exc),
+            ) from exc
+        except FileReferenceExpiredError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_410_GONE,
+                detail="Ссылка на файл устарела — Telegram больше не отдаёт этот файл",
+            ) from exc
+        except AgentNotFoundError as exc:
+            raise _not_found(exc.agent_id) from exc
+        except TelegramAuthorizationRequired as exc:
+            raise HTTPException(
+                status_code=status.HTTP_428_PRECONDITION_REQUIRED,
+                detail=str(exc),
+            ) from exc
 
     @app.post(
         "/api/v1/agents",

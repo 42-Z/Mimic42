@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 from uuid import UUID
 
 from mimic42.core.agent_runtime import (
@@ -29,6 +30,7 @@ class FakeAgentManager:
         self.removed: list[UUID] = []
         self.reloaded: list[UUID] = []
         self.triggers: list[tuple[UUID, str, str]] = []
+        self.runtimes: dict[UUID, Any] = {}
 
     async def create_agent(
         self,
@@ -102,6 +104,14 @@ class FakeAgentManager:
             response_text="api response",
             telegram_message_id="42",
         )
+
+    async def get_agent(self, agent_id: UUID) -> Any:
+        from mimic42.core.manager import AgentNotFoundError
+
+        runtime = self.runtimes.get(agent_id)
+        if runtime is None:
+            raise AgentNotFoundError(agent_id)
+        return runtime
 
     async def shutdown(self) -> None:
         return None

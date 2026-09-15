@@ -20,7 +20,6 @@ export async function middleware(request: NextRequest) {
   if (
     pathname.startsWith('/_next') ||
     pathname.startsWith('/api/auth') ||
-    pathname.startsWith('/api/v1') ||
     pathname.includes('.') // static files
   ) {
     return NextResponse.next();
