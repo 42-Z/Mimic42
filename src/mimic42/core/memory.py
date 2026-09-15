@@ -63,6 +63,20 @@ class LongTermMemoryStore(Protocol):
     ) -> None: ...
 
 
+class LongTermMemoryLike(LongTermMemoryStore, Protocol):
+    """Полный контракт долгосрочной памяти: рантайму нужны только search и
+    save_turn, маршрутам API — чтение, поиск и очистка. Прод реализует его
+    через Mem0, тесты — подделкой в памяти."""
+
+    async def get_all_memories(self, agent_id: UUID) -> list[dict[str, Any]]: ...
+
+    async def search_memories(self, agent_id: UUID, query: str) -> list[dict[str, Any]]: ...
+
+    async def get_memory_history(self, memory_id: str) -> list[dict[str, Any]]: ...
+
+    async def clear_all_memories(self, agent_id: UUID) -> None: ...
+
+
 class MemoryServiceLike(Protocol):
     async def build_messages(
         self,

@@ -6,7 +6,29 @@ from typing import Any
 from mimic42.testing.telegram.account import FakeTelegramAccount, SentMessage
 
 
+def _peer_key(peer: Any) -> str:
+    """Каноничный ключ пира для отметок о прочтении.
+
+    Рантайм передаёт то int, то InputPeer-объект; у объекта id живёт в
+    атрибутах. Строковый repr сюда не годится: по нему нельзя сравнить
+    пиров на равенство."""
+    for attr in ("user_id", "chat_id", "id"):
+        value = getattr(peer, attr, None)
+        if isinstance(value, int):
+            return str(value)
+    return str(peer)
+
+
 class FakeTelegramClient:
+    """Подделка клиента-пользователя: связь, отправка, отметки, события.
+
+    Отвечает на служебные запросы рантайма (typing, read, notify) пустым
+    объектом, потому что рантайм читает из них поля через getattr с
+    дефолтом. Полноценные RPC-ответы (диалоги, история, медиа) здесь не
+    эмулируются: инструменты телеги проверяются своими тестами против
+    адресных заглушек, а не против этой подделки.
+    """
+
     def __init__(self, account: FakeTelegramAccount | None = None) -> None:
         # Рабочий клиент по умолчанию изображает уже прошедшую онбординг
         # сессию — в отличие от голого FakeTelegramAccount() для входа.
@@ -23,7 +45,7 @@ class FakeTelegramClient:
         self.requests.append(request)
         name = type(request).__name__
         if "ReadHistory" in name:
-            self.account.read_marks.append(str(getattr(request, "peer", "")))
+            self.account.read_marks.append(_peer_key(getattr(request, "peer", "")))
         return {}
 
     async def connect(self) -> None:
@@ -38,7 +60,14 @@ class FakeTelegramClient:
         return self.account.authorized
 
     async def send_message(self, entity: str, message: str, **kwargs: Any) -> object:
-        self.account.sent.append(SentMessage(chat_id=str(entity), text=message, kwargs=kwargs))
+        self.account.sent.append(
+            SentMessage(
+                chat_id=str(entity),
+                text=message,
+                kwargs=kwargs,
+                order=self.account.next_order(),
+            )
+        )
         return type("Message", (), {"id": len(self.account.sent)})()
 
     def add_event_handler(

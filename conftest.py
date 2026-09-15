@@ -11,8 +11,9 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from mimic42.integrations.database_session import create_engine, create_session_factory
+from mimic42.testing import registry
 from mimic42.testing.cleanup import purge_slot_data
-from mimic42.testing.slots import Slot, acquire_slot, assert_not_prod, release_slot
+from mimic42.testing.slots import Slot, acquire_slot, assert_test_project, release_slot
 
 
 @pytest.fixture(scope="session")
@@ -21,7 +22,9 @@ def test_dsn() -> str:
     if not dsn:
         pytest.skip("TEST_DATABASE_CONNECTION_STRING не задан: тесты на базе пропущены")
     try:
-        assert_not_prod(dsn)
+        # Проверяем и DSN, и адрес проекта: фикстуры пишут и через SQLAlchemy,
+        # и через Supabase-подобные вызовы, а заслон должен стоять на входе.
+        assert_test_project(dsn, os.environ.get("TEST_SUPABASE_URL"))
     except RuntimeError as exc:
         pytest.fail(str(exc))
     return dsn
@@ -34,7 +37,7 @@ async def test_slot(test_dsn: str) -> AsyncIterator[Slot]:
     try:
         yield slot
     finally:
-        await release_slot(test_dsn, slot)
+        await release_slot(test_dsn, slot, holder=holder)
 
 
 @pytest.fixture(scope="session")
@@ -55,6 +58,9 @@ def db_session_factory(db_engine: AsyncEngine) -> async_sessionmaker[AsyncSessio
 async def clean_slot(test_dsn: str, test_slot: Slot) -> AsyncIterator[Slot]:
     """Чистит данные слота ПЕРЕД тестом: после падения остатки видно."""
     await purge_slot_data(test_dsn, test_slot)
+    # Внутрипроцессные подделки (телега, сценарии) живут вне базы: без сброса
+    # тест зависел бы от порядка запуска соседей.
+    registry.reset()
     yield test_slot
 
 

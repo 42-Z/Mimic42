@@ -13,6 +13,9 @@ class SentMessage:
     chat_id: str
     text: str
     kwargs: dict[str, Any] = field(default_factory=dict)
+    # Порядковый номер в общем потоке аккаунта: по нему история диалога
+    # склеивается в хронологии, а не «входящие, потом исходящие».
+    order: int = 0
 
 
 @dataclass
@@ -22,6 +25,7 @@ class IncomingMessage:
     text: str
     sender_id: int
     reply_to_msg_id: int | None = None
+    order: int = 0
 
 
 class _FakeReplyTo:
@@ -79,6 +83,12 @@ class FakeTelegramAccount:
         self.read_marks: list[str] = []
         self.handlers: list[Callable[[Any], Awaitable[None]]] = []
         self._next_message_id = 1000
+        self._next_order_value = 0
+
+    def next_order(self) -> int:
+        """Сквозной номер события для хронологии переписки."""
+        self._next_order_value += 1
+        return self._next_order_value
 
     def script_code(self, code: str) -> None:
         self.expected_code = code
@@ -94,6 +104,7 @@ class FakeTelegramAccount:
             message_id=self._next_message_id,
             text=text,
             sender_id=sender_id,
+            order=self.next_order(),
         )
         self.incoming.append(message)
         for handler in list(self.handlers):

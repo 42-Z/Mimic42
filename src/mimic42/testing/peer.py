@@ -16,7 +16,7 @@ from mimic42.testing.telegram import FakeTelegramAccount
 class ConversationPeer(Protocol):
     async def send(self, text: str) -> None: ...
 
-    async def wait_for_reply(self, timeout: float = 10.0) -> str: ...
+    async def wait_for_reply(self, timeout: float = 30.0) -> str: ...
 
     async def history(self) -> list[str]: ...
 
@@ -32,7 +32,9 @@ class FakePeer:
     async def send(self, text: str) -> None:
         await self._account.deliver(chat_id=self._chat_id, text=text)
 
-    async def wait_for_reply(self, timeout: float = 10.0) -> str:
+    async def wait_for_reply(self, timeout: float = 30.0) -> str:
+        # Дефолт с запасом: рантайм отвечает не мгновенно — перед отправкой
+        # он выдерживает человекоподобную паузу печати (до 15 секунд).
         deadline = asyncio.get_running_loop().time() + timeout
         while asyncio.get_running_loop().time() < deadline:
             replies = self._replies()
@@ -43,14 +45,20 @@ class FakePeer:
         raise TimeoutError(f"Ответ не пришёл за {timeout} секунд")
 
     async def history(self) -> list[str]:
-        incoming = [
-            message.text for message in self._account.incoming if message.chat_id == self._chat_id
+        events = [
+            (message.order, message.text)
+            for message in self._account.incoming
+            if message.chat_id == self._chat_id
         ]
-        outgoing = self._replies()
-        return incoming + outgoing
+        events.extend(
+            (message.order, message.text)
+            for message in self._account.sent
+            if message.chat_id == str(self._chat_id)
+        )
+        return [text for _, text in sorted(events)]
 
     async def was_read(self) -> bool:
-        return str(self._chat_id) in " ".join(self._account.read_marks)
+        return str(self._chat_id) in self._account.read_marks
 
     def _replies(self) -> list[str]:
         return [

@@ -34,7 +34,7 @@ from mimic42.core.manager import (
     LangChainAgentFactory,
     TelegramClientFactory,
 )
-from mimic42.core.memory import RuntimeMemoryService
+from mimic42.core.memory import LongTermMemoryLike, RuntimeMemoryService
 from mimic42.core.onboarding import (
     AgentOnboardingService,
     AgentProfileInput,
@@ -54,7 +54,7 @@ from mimic42.integrations.database_onboarding import (
     DatabaseOnboardingRepository,
 )
 from mimic42.integrations.database_session import create_engine, create_session_factory
-from mimic42.integrations.mem0_memory import Mem0LongTermMemory, build_mem0_memory
+from mimic42.integrations.mem0_memory import build_mem0_memory
 from mimic42.integrations.telegram_auth import TelethonAuthClientFactory
 
 logger = logging.getLogger("mimic42.api.app")
@@ -163,6 +163,7 @@ def create_app(
     telegram_factory: TelegramAuthClientFactory | None = None,
     telegram_client_factory: TelegramClientFactory | None = None,
     langchain_agent_factory: LangChainAgentFactory | None = None,
+    long_term_memory: LongTermMemoryLike | None = None,
 ) -> FastAPI:
     app_settings = settings or Settings()
     app_telegram_factory = telegram_factory or TelethonAuthClientFactory()
@@ -202,12 +203,12 @@ def create_app(
                     agent_store=database_agent_store,
                 )
             if manager is None:
-                long_term_memory = build_mem0_memory(app_settings.mem0_api_key)
-                app.state.long_term_memory = long_term_memory
+                agent_memory = long_term_memory or build_mem0_memory(app_settings.mem0_api_key)
+                app.state.long_term_memory = agent_memory
                 app.state.agent_manager = AgentManager(
                     memory_service_factory=lambda _config: RuntimeMemoryService(
                         short_term=DatabaseShortTermMemory(session_factory),
-                        long_term=long_term_memory,
+                        long_term=agent_memory,
                     ),
                     config_loader=database_agent_store.get_runtime_config,
                     status_sink=database_agent_store.update_status,
@@ -782,7 +783,7 @@ def _get_agent_store(app: FastAPI) -> AgentStore | None:
     return app.state.agent_store
 
 
-def _get_long_term_memory(app: FastAPI) -> Mem0LongTermMemory | None:
+def _get_long_term_memory(app: FastAPI) -> LongTermMemoryLike | None:
     return getattr(app.state, "long_term_memory", None)
 
 

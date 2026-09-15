@@ -7,26 +7,37 @@
 from __future__ import annotations
 
 import os
+from typing import Any
 from uuid import UUID, uuid4
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, status
 from pydantic import BaseModel
 
 from mimic42.api.app import create_app
 from mimic42.api.auth import AuthVerifier
 from mimic42.config import Settings
+from mimic42.core.activity import ActivityRecorder
 from mimic42.core.agent_runtime import AgentRuntimeState
 from mimic42.core.crypto import FernetSecretCipher
 from mimic42.core.onboarding import OnboardingSession, TelegramLoginStatus
 from mimic42.testing import registry
-from mimic42.testing.cleanup import purge_slot_data
-from mimic42.testing.llm import ScriptedAgentFactory
-from mimic42.testing.slots import SLOTS, assert_not_prod
+from mimic42.testing.cleanup import (
+    current_onboarding_draft_id,
+    hide_incomplete_onboarding_drafts,
+    purge_slot_data,
+)
+from mimic42.testing.llm import Reply, ScriptedAgentFactory
+from mimic42.testing.memory import FakeLongTermMemory
+from mimic42.testing.slots import SLOTS, assert_test_project
 from mimic42.testing.telegram import FakeTelegramAuthClientFactory, FakeTelegramClient
 
 
 class ResetRequest(BaseModel):
     slot: str
+
+
+class OwnerRequest(BaseModel):
+    owner_id: UUID
 
 
 class DeliverRequest(BaseModel):
@@ -37,6 +48,18 @@ class DeliverRequest(BaseModel):
 class OnboardingScriptRequest(BaseModel):
     code: str | None = None
     password: str | None = None
+
+
+class AgentScriptRequest(BaseModel):
+    text: str
+
+
+class AgentEventRequest(BaseModel):
+    event_type: str
+    status: str
+    payload: dict[str, Any] | None = None
+    result: dict[str, Any] | None = None
+    error: str | None = None
 
 
 class CreateTestAgentRequest(BaseModel):
@@ -51,7 +74,6 @@ class CreateTestAgentRequest(BaseModel):
 def _test_settings() -> Settings:
     database_connection_string = os.environ["TEST_DATABASE_CONNECTION_STRING"]
     supabase_url = os.environ["TEST_SUPABASE_URL"]
-    assert_not_prod(database_connection_string, supabase_url)
     return Settings(
         database_connection_string=database_connection_string,
         supabase_url=supabase_url,
@@ -61,7 +83,7 @@ def _test_settings() -> Settings:
         cors_allow_origins=["http://127.0.0.1:3000", "http://localhost:3000"],
         # Явно отключает Mem0: без этого Settings() подхватил бы боевой
         # MEM0_API_KEY из .env разработчика, и тесты били бы по настоящему
-        # внешнему сервису.
+        # внешнему сервису. Память подменяется FakeLongTermMemory ниже.
         mem0_api_key=None,
     )
 
@@ -72,6 +94,9 @@ def build_test_app(
     auth_verifier: AuthVerifier | None = None,
 ) -> FastAPI:
     app_settings = settings or _test_settings()
+    # Заслон стоит здесь, а не только в _test_settings: сюда можно передать
+    # произвольные настройки мимо env, и они тоже обязаны указывать на Dev.
+    assert_test_project(app_settings.database_connection_string, app_settings.supabase_url)
     scripted = ScriptedAgentFactory()
     application = create_app(
         settings=app_settings,
@@ -80,6 +105,7 @@ def build_test_app(
             registry.account_for(config.agent_id)
         ),
         langchain_agent_factory=scripted,
+        long_term_memory=FakeLongTermMemory(),
         auth_verifier=auth_verifier,
     )
     application.state.scripted_agents = scripted
@@ -88,11 +114,61 @@ def build_test_app(
 
 
 def _mount_test_routes(application: FastAPI, settings: Settings) -> None:
+    dsn = settings.database_connection_string or ""
+
     @application.post("/__test__/reset")
     async def reset(request: ResetRequest) -> dict[str, str]:
         slot = next(item for item in SLOTS if item.name == request.slot)
-        await purge_slot_data(settings.database_connection_string or "", slot)
+        await purge_slot_data(dsn, slot)
         registry.reset()
+        # Сценарии привязаны к id уже удалённых агентов: чистим, чтобы
+        # следующий прогон не унаследовал чужие заготовки.
+        application.state.scripted_agents.scripts.clear()
+        application.state.scripted_agents.built.clear()
+        return {"status": "ok"}
+
+    @application.post("/__test__/onboarding/drafts/hide")
+    async def hide_onboarding_drafts(request: OwnerRequest) -> dict[str, int]:
+        """Прячет незавершённые черновики владельца перед попыткой визарда."""
+        removed = await hide_incomplete_onboarding_drafts(dsn, request.owner_id)
+        return {"removed": removed}
+
+    @application.get("/__test__/onboarding/drafts/current")
+    async def current_draft(owner_id: UUID) -> dict[str, str]:
+        draft_id = await current_onboarding_draft_id(dsn, owner_id)
+        if draft_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Нет незавершённого черновика онбординга для {owner_id}",
+            )
+        return {"id": str(draft_id)}
+
+    @application.post("/__test__/agents/{agent_id}/script")
+    async def script_agent(agent_id: UUID, request: AgentScriptRequest) -> dict[str, str]:
+        """Задаёт ответ поддельной модели для следующих ходов агента."""
+        application.state.scripted_agents.set_script(agent_id, [Reply(request.text)])
+        return {"status": "ok"}
+
+    @application.post("/__test__/agents/{agent_id}/events")
+    async def record_agent_event(agent_id: UUID, request: AgentEventRequest) -> dict[str, str]:
+        """Пишет настоящее событие агента тем же recorder'ом, что и прод."""
+        store = application.state.agent_store
+        recorder = ActivityRecorder(store._session_factory)  # noqa: SLF001
+        await recorder.record(
+            agent_id=agent_id,
+            event_type=request.event_type,
+            status=request.status,
+            payload=request.payload,
+            result=request.result,
+            error=request.error,
+        )
+        return {"status": "ok"}
+
+    @application.post("/__test__/telegram/onboarding/reset")
+    async def reset_onboarding_login() -> dict[str, str]:
+        """Снимает сценарий входа (код/2FA), чтобы следующий тест визарда
+        начинал с чистого фейкового аккаунта."""
+        registry.reset_onboarding_account()
         return {"status": "ok"}
 
     @application.post("/__test__/telegram/{agent_id}/deliver")
@@ -108,10 +184,9 @@ def _mount_test_routes(application: FastAPI, settings: Settings) -> None:
     @application.post("/__test__/telegram/onboarding/script")
     async def script_onboarding(request: OnboardingScriptRequest) -> dict[str, str]:
         """Задаёт код и/или 2FA-пароль, которые примет подделка входа в
-        Telegram во время онбординга. Без вызова любой 5+-значный код
-        принимается как есть (FakeTelegramAuthClient.sign_in по умолчанию
-        не проверяет код) — эндпоинт нужен только для сценариев с
-        конкретным кодом или паролем 2FA."""
+        Telegram во время онбординга. Без вызова код не проверяется
+        (любой непустой принимается как есть) — эндпоинт нужен только для
+        сценариев с конкретным кодом или паролем 2FA."""
         account = registry.onboarding_account()
         if request.code is not None:
             account.script_code(request.code)

@@ -5,9 +5,9 @@
 для e2e, чтобы список пользователей не расходился по двум языкам.
 
 Команды:
-    acquire            занять свободный слот, напечатать его имя
-    release <slot>     освободить слот
-    describe <slot>    напечатать JSON-описание слота (персоны + пароль)
+    acquire                  занять свободный слот, напечатать JSON с slot и holder
+    release <slot> <holder>  освободить слот, занятый этим holder'ом
+    describe <slot>          напечатать JSON-описание слота (персоны)
 """
 
 from __future__ import annotations
@@ -18,11 +18,13 @@ import os
 import socket
 import sys
 
-from mimic42.testing.slots import SLOTS, Slot, acquire_slot, release_slot
+from mimic42.testing.slots import SLOTS, Slot, acquire_slot, assert_test_project, release_slot
 
 
 def _dsn() -> str:
-    return os.environ["TEST_DATABASE_CONNECTION_STRING"]
+    value = os.environ["TEST_DATABASE_CONNECTION_STRING"]
+    assert_test_project(value)
+    return value
 
 
 def _find_slot(name: str) -> Slot:
@@ -35,18 +37,19 @@ def _find_slot(name: str) -> Slot:
 async def _acquire() -> None:
     holder = f"{socket.gethostname()}:{os.getpid()}:e2e"
     slot = await acquire_slot(_dsn(), holder=holder)
-    print(slot.name)
+    print(json.dumps({"slot": slot.name, "holder": holder}, ensure_ascii=False))
 
 
-async def _release(name: str) -> None:
-    await release_slot(_dsn(), _find_slot(name))
+async def _release(name: str, holder: str) -> None:
+    await release_slot(_dsn(), _find_slot(name), holder=holder)
 
 
 def _describe(name: str) -> None:
     slot = _find_slot(name)
+    # Пароль здесь не печатается: его несёт TEST_USER_PASSWORD из окружения,
+    # а stdout глобального setup утекает в логи CI.
     payload = {
         "slot": slot.name,
-        "password": os.environ.get("TEST_USER_PASSWORD", ""),
         "personas": [
             {"key": persona.key, "id": str(persona.user_id), "email": persona.email}
             for persona in slot.personas
@@ -57,14 +60,16 @@ def _describe(name: str) -> None:
 
 def main(argv: list[str]) -> int:
     if not argv:
-        raise SystemExit("Использование: slot_cli acquire | release <slot> | describe <slot>")
+        raise SystemExit(
+            "Использование: slot_cli acquire | release <slot> <holder> | describe <slot>"
+        )
     command = argv[0]
     if command == "acquire":
         asyncio.run(_acquire())
     elif command == "release":
-        if len(argv) < 2 or not argv[1]:
-            raise SystemExit("release требует имя слота")
-        asyncio.run(_release(argv[1]))
+        if len(argv) < 3 or not argv[1] or not argv[2]:
+            raise SystemExit("release требует имя слота и holder")
+        asyncio.run(_release(argv[1], argv[2]))
     elif command == "describe":
         if len(argv) < 2 or not argv[1]:
             raise SystemExit("describe требует имя слота")

@@ -34,6 +34,8 @@ class FakeTelegramAuthClient:
             account.password_satisfied = True
             account.authorized = True
             return type("User", (), {"id": 777})()
+        if code is None or not code.strip():
+            raise ValueError("Код подтверждения не указан")
         if account.expected_code is not None and code != account.expected_code:
             raise ValueError("Неверный код подтверждения")
         if not account.password_satisfied:

@@ -41,6 +41,26 @@ async def test_wrong_code_is_rejected() -> None:
     assert account.authorized is False
 
 
+async def test_missing_code_is_rejected_even_when_unscripted() -> None:
+    account = FakeTelegramAccount()
+    auth = FakeTelegramAuthClientFactory(account).build(api_id=1, api_hash="hash")
+    await auth.send_code_request("+79990000000")
+
+    with pytest.raises(ValueError, match="Код подтверждения не указан"):
+        await auth.sign_in(phone="+79990000000", code=None)
+    assert account.authorized is False
+
+
+async def test_unscripted_code_is_accepted_when_present() -> None:
+    """Содержимое SMS подделке неизвестно, но сам код в реальном входе обязателен."""
+    account = FakeTelegramAccount()
+    auth = FakeTelegramAuthClientFactory(account).build(api_id=1, api_hash="hash")
+    await auth.send_code_request("+79990000000")
+
+    await auth.sign_in(phone="+79990000000", code="54321")
+    assert account.authorized is True
+
+
 async def test_two_factor_password_is_requested() -> None:
     account = FakeTelegramAccount()
     account.script_code("12345")

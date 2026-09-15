@@ -33,5 +33,14 @@ def reset() -> None:
     прямую ссылку на этот экземпляр, и подмена объекта её бы не затронула.
     """
     _ACCOUNTS.clear()
+    reset_onboarding_account()
+
+
+def reset_onboarding_account() -> None:
+    """Снять сценарий входа (код и 2FA-пароль) с общего аккаунта онбординга.
+
+    Сценарий живёт на весь процесс: без сброса пароль, заготовленный одним
+    тестом, требует ввода от следующего — включая повторные прогоны упавших
+    тестов."""
     fresh = FakeTelegramAccount()
     _ONBOARDING_ACCOUNT.__dict__.update(fresh.__dict__)

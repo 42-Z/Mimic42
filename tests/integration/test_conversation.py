@@ -16,21 +16,8 @@ from mimic42.testing.llm import Reply
 from mimic42.testing.peer import FakePeer
 from mimic42.testing.server import build_test_app
 from mimic42.testing.slots import Slot
-from mimic42.testing.telegram import FakeTelegramAccount, FakeTelegramClient
 
-
-@pytest.mark.asyncio
-async def test_peer_sends_and_waits_for_reply() -> None:
-    account = FakeTelegramAccount()
-    account.authorized = True
-    peer = FakePeer(account, chat_id=42)
-
-    await peer.send("привет")
-    # Ответ появляется, когда агент кладёт сообщение в отправленные.
-    await FakeTelegramClient(account).send_message("42", "привет, чем помочь")
-
-    assert await peer.wait_for_reply(timeout=1.0) == "привет, чем помочь"
-    assert await peer.history() == ["привет", "привет, чем помочь"]
+# Разговор один на один (FakePeer) проверяется без базы в tests/testing/test_peer.py.
 
 
 class _StubAuthVerifier:
@@ -76,7 +63,7 @@ async def test_whole_turn_reaches_the_database_and_the_api(
 
         peer = FakePeer(registry.account_for(agent_id), chat_id=4242)
         await peer.send("привет")
-        assert await peer.wait_for_reply(timeout=10.0) == "привет, чем помочь"
+        assert await peer.wait_for_reply(timeout=30.0) == "привет, чем помочь"
 
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://testserver"

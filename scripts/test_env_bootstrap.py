@@ -14,7 +14,7 @@ import sys
 import asyncpg
 import httpx
 
-from mimic42.testing.slots import SLOTS, assert_not_prod
+from mimic42.testing.slots import SLOTS, assert_test_project
 
 CREATE_SCHEMA_SQL = """
 create schema if not exists test_support;
@@ -78,7 +78,9 @@ async def main() -> int:
     service_key = os.environ["TEST_SUPABASE_SERVICE_ROLE_KEY"]
     password = os.environ["TEST_USER_PASSWORD"]
     try:
-        assert_not_prod(dsn, supabase_url)
+        # service_key сразу пойдёт в Admin API: проверяем и его, а не только
+        # DSN с адресом, — иначе чужим ключом можно завести юзеров не туда.
+        assert_test_project(dsn, supabase_url, service_key)
     except RuntimeError as exc:
         raise SystemExit(str(exc)) from exc
     await ensure_schema(_plain_dsn(dsn))
