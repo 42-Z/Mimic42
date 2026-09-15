@@ -13,18 +13,28 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from mimic42.integrations.database_session import create_engine, create_session_factory
 from mimic42.testing import registry
 from mimic42.testing.cleanup import purge_slot_data
+from mimic42.testing.env import load_test_env
 from mimic42.testing.slots import Slot, acquire_slot, assert_test_project, release_slot
+
+# До сбора тестов: значения из .env/.env.test нужны и фикстурам, и тестовому
+# серверу, и они же закрывают заслон от прод-проекта реальными значениями.
+load_test_env()
 
 
 @pytest.fixture(scope="session")
 def test_dsn() -> str:
-    dsn = os.environ.get("TEST_DATABASE_CONNECTION_STRING")
-    if not dsn:
-        pytest.skip("TEST_DATABASE_CONNECTION_STRING не задан: тесты на базе пропущены")
+    dsn = os.environ.get("DATABASE_CONNECTION_STRING")
+    url = os.environ.get("SUPABASE_URL")
+    if not dsn or not url:
+        pytest.fail(
+            "DATABASE_CONNECTION_STRING/SUPABASE_URL не заданы: "
+            "скопируйте .env.example в .env. db-тесты запускаются явно: "
+            "`uv run pytest -m db`"
+        )
     try:
         # Проверяем и DSN, и адрес проекта: фикстуры пишут и через SQLAlchemy,
         # и через Supabase-подобные вызовы, а заслон должен стоять на входе.
-        assert_test_project(dsn, os.environ.get("TEST_SUPABASE_URL"))
+        assert_test_project(dsn, url)
     except RuntimeError as exc:
         pytest.fail(str(exc))
     return dsn
