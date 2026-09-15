@@ -19,10 +19,10 @@ from mimic42.testing.slots import Slot
 
 
 def _cipher() -> FernetSecretCipher:
-    """Тот же ключ, что build_test_app() берёт из TEST_SECRET_KEY — без
+    """Тот же ключ, что build_test_app() берёт из SECRET_KEY — без
     этого настоящий lifespan не сможет расшифровать данные, записанные
     тестом другим ключом (или вообще без шифрования)."""
-    return FernetSecretCipher(os.environ["TEST_SECRET_KEY"])
+    return FernetSecretCipher(os.environ["SECRET_KEY"])
 
 
 @pytest.mark.asyncio
