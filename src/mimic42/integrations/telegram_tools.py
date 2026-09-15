@@ -112,6 +112,55 @@ def parse_media_id(media_id: str) -> tuple[str, int, int, bytes, int]:
     return media_type, obj_id, access_hash, file_reference, dc_id
 
 
+# MIME types assumed when rebuilding a media object for download.
+# Telegram doesn't return the MIME in the reference; these match what the
+# toolbox historically used per media kind.
+_MEDIA_MIME_TYPES = {
+    "photo": "image/jpeg",
+    "sticker": "image/webp",
+    "doc": "image/png",
+    "voice": "audio/ogg",
+    "round": "video/mp4",
+}
+
+
+def build_media_object(media_id: str) -> tuple[Any, str]:
+    """Rebuild a Telethon media object from a media ID string.
+
+    Returns (media_object, mime_type). Raises ValueError for unknown
+    formats or media kinds.
+    """
+    media_type, obj_id, access_hash, file_reference, dc_id = parse_media_id(media_id)
+    mime_type = _MEDIA_MIME_TYPES.get(media_type)
+    if mime_type is None:
+        raise ValueError(f"Invalid media type: {media_type}")
+    if media_type == "photo":
+        media_obj = types.Photo(
+            id=obj_id,
+            access_hash=access_hash,
+            file_reference=file_reference,
+            date=datetime.now(),
+            sizes=[types.PhotoSize(type="x", w=0, h=0, size=0)],
+            dc_id=dc_id,
+        )
+    else:
+        media_obj = types.Document(
+            id=obj_id,
+            access_hash=access_hash,
+            file_reference=file_reference,
+            date=datetime.now(),
+            mime_type=mime_type,
+            size=0,
+            dc_id=dc_id,
+            attributes=(
+                [types.DocumentAttributeSticker(alt="", stickerset=types.InputStickerSetEmpty())]
+                if media_type == "sticker"
+                else []
+            ),
+        )
+    return media_obj, mime_type
+
+
 def format_media_object(msg: Any) -> str | None:
     """Format message media to serialized media ID string."""
     if not msg or not getattr(msg, "media", None):
@@ -669,47 +718,11 @@ class TelegramToolbox:
     async def view_image(self, media_id: str) -> list[dict[str, Any]]:
         """View image/sticker and return Base64 image payload."""
         try:
-            media_type, obj_id, access_hash, file_reference, dc_id = parse_media_id(media_id)
-            if media_type == "photo":
-                media_obj = types.Photo(
-                    id=obj_id,
-                    access_hash=access_hash,
-                    file_reference=file_reference,
-                    date=datetime.now(),
-                    sizes=[types.PhotoSize(type="x", w=0, h=0, size=0)],
-                    dc_id=dc_id,
-                )
-                mime_type = "image/jpeg"
-            elif media_type == "sticker":
-                media_obj = types.Document(
-                    id=obj_id,
-                    access_hash=access_hash,
-                    file_reference=file_reference,
-                    date=datetime.now(),
-                    mime_type="image/webp",
-                    size=0,
-                    dc_id=dc_id,
-                    attributes=[
-                        types.DocumentAttributeSticker(
-                            alt="", stickerset=types.InputStickerSetEmpty()
-                        )
-                    ],
-                )
-                mime_type = "image/webp"
-            elif media_type == "doc":
-                media_obj = types.Document(
-                    id=obj_id,
-                    access_hash=access_hash,
-                    file_reference=file_reference,
-                    date=datetime.now(),
-                    mime_type="image/png",
-                    size=0,
-                    dc_id=dc_id,
-                    attributes=[],
-                )
-                mime_type = "image/png"
-            else:
-                return [{"type": "text", "text": f"Unsupported media type: {media_type}"}]
+            try:
+                media_obj, mime_type = build_media_object(media_id)
+            except ValueError:
+                unsupported = media_id.split(":")[0]
+                return [{"type": "text", "text": f"Unsupported media type: {unsupported}"}]
 
             data = await self._client.download_media(media_obj, file=bytes)
             if not data:

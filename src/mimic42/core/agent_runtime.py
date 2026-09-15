@@ -90,6 +90,8 @@ class TelegramClientLike(Protocol):
 
     async def send_message(self, entity: str, message: str, **kwargs: Any) -> object: ...
 
+    async def download_media(self, message: Any, file: Any = None, **kwargs: Any) -> Any: ...
+
     def add_event_handler(
         self,
         callback: Callable[[Any], Awaitable[None]],
@@ -561,6 +563,21 @@ class MimicAgentRuntime:
                 _extract_message_id(sent_message) if sent_message is not None else None
             ),
         )
+
+    async def download_media_by_id(self, media_id: str) -> tuple[bytes, str]:
+        """Download Telegram media by media ID string.
+
+        Returns (raw bytes, MIME type). Raises ValueError for malformed
+        references; Telethon errors (e.g. FileReferenceExpiredError for
+        stale references) propagate to the caller.
+        """
+        from mimic42.integrations.telegram_tools import build_media_object
+
+        media_obj, mime_type = build_media_object(media_id)
+        data = await self._telegram_client.download_media(media_obj, file=bytes)
+        if not data or not isinstance(data, bytes):
+            raise ValueError(f"Failed to download media: {media_id.split(':')[0]}")
+        return data, mime_type
 
     async def _upsert_thread(
         self,

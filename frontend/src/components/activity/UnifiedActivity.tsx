@@ -8,61 +8,87 @@ import { useRealtimeFeed } from '@/hooks/useRealtimeFeed';
 import { useMessageThreads } from '@/hooks/useTelegramSession';
 import { Card, Spinner } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
-import { TurnCard } from '@/components/activity/TurnCard';
-import { buildActivityFeed, type ActivityItem, type EventLike, type MessageLike } from '@/lib/activity/normalize';
+import { TurnCard } from './TurnCard';
+import {
+  buildActivityFeed,
+  type ActivityItem,
+  type EventLike,
+  type MessageLike,
+} from '@/lib/activity/normalize';
 import { cn } from '@/lib/utils';
 
-type LogFilter = 'all' | 'messages' | 'actions' | 'errors';
+type ActivityFilter = 'full' | 'chat' | 'errors';
 
-const FILTER_LABELS: Record<LogFilter, string> = {
-  all: 'Все',
-  messages: 'Сообщения',
-  actions: 'Действия',
+const FILTER_LABELS: Record<ActivityFilter, string> = {
+  full: 'Полный',
+  chat: 'Только чат',
   errors: 'Ошибки',
 };
 
-function isMessageish(item: ActivityItem): boolean {
-  return Boolean(item.incoming || item.trigger);
-}
-
-function hasActions(item: ActivityItem): boolean {
-  return item.actions.length > 0;
-}
+const VALID_FILTERS = new Set<string>(Object.keys(FILTER_LABELS));
 
 function matchesSearch(item: ActivityItem, q: string): boolean {
-  if (item.peerTitle?.toLowerCase().includes(q)) return true;
-  if (item.incoming?.content.toLowerCase().includes(q)) return true;
-  if (item.response?.content.toLowerCase().includes(q)) return true;
-  if (item.trigger?.content.toLowerCase().includes(q)) return true;
+  const ql = q.toLowerCase();
+  if (item.peerTitle?.toLowerCase().includes(ql)) return true;
+  if (item.incoming?.content.toLowerCase().includes(ql)) return true;
+  if (item.response?.content.toLowerCase().includes(ql)) return true;
+  if (item.trigger?.content.toLowerCase().includes(ql)) return true;
   return item.actions.some(
-    (a) => a.label.toLowerCase().includes(q) || a.hint?.toLowerCase().includes(q),
+    (a) => a.label.toLowerCase().includes(ql) || a.hint?.toLowerCase().includes(ql),
   );
 }
 
-export function TabLogs({ agentId }: { agentId: string }) {
+/**
+ * Build a stable peerNames Map that only changes when the underlying
+ * thread data actually differs (deep-equality by peer_id→title pairs).
+ */
+function useStablePeerNames(threads: ReturnType<typeof useMessageThreads>['data']) {
+  const ref = useRef<Map<string, string>>(new Map());
+
+  const peerNames = useMemo(() => {
+    const next = new Map(
+      (threads ?? [])
+        .filter((t) => t.title)
+        .map((t) => [t.telegram_peer_id, t.title as string]),
+    );
+    if (ref.current.size === next.size) {
+      let identical = true;
+      for (const [k, v] of next) {
+        if (ref.current.get(k) !== v) { identical = false; break; }
+      }
+      if (identical) return ref.current;
+    }
+    ref.current = next;
+    return next;
+  }, [threads]);
+
+  return peerNames;
+}
+
+function recordWord(n: number): string {
+  if (n === 1) return 'запись';
+  if (n >= 2 && n <= 4) return 'записи';
+  return 'записей';
+}
+
+export function UnifiedActivity({ agentId }: { agentId: string }) {
   const searchParams = useSearchParams();
-  const initialFilter = searchParams.get('filter') as LogFilter | null;
+  const initialFilter = searchParams.get('filter') as ActivityFilter | null;
+
   const { data: messages, isLoading: messagesLoading } = useAgentMessages(agentId, 50);
   const { data: actions, isLoading: actionsLoading } = useAgentActions(agentId, 50);
   const { data: threads } = useMessageThreads(agentId);
   const { items: realtimeItems, isConnected } = useRealtimeFeed(agentId);
 
-  const [filter, setFilter] = useState<LogFilter>(
-    initialFilter && initialFilter in FILTER_LABELS ? initialFilter : 'all',
+  const [filter, setFilter] = useState<ActivityFilter>(
+    initialFilter && VALID_FILTERS.has(initialFilter) ? initialFilter : 'full',
   );
   const [search, setSearch] = useState('');
   const [autoScroll, setAutoScroll] = useState(true);
   const topRef = useRef<HTMLDivElement>(null);
+  const prevItemCountRef = useRef(0);
 
-  const peerNames = useMemo(
-    () =>
-      new Map(
-        (threads ?? [])
-          .filter((t) => t.title)
-          .map((t) => [t.telegram_peer_id, t.title as string]),
-      ),
-    [threads],
-  );
+  const peerNames = useStablePeerNames(threads);
 
   const items = useMemo(() => {
     const initial = buildActivityFeed(
@@ -83,21 +109,32 @@ export function TabLogs({ agentId }: { agentId: string }) {
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return items.filter((item) => {
-      if (filter === 'messages' && !isMessageish(item)) return false;
-      if (filter === 'actions' && !hasActions(item)) return false;
+      if (filter === 'chat') {
+        if (item.kind === 'lifecycle') return false;
+        const hasMessage = Boolean(item.incoming || item.trigger || item.response);
+        if (!hasMessage) return false;
+      }
       if (filter === 'errors' && !item.failed) return false;
       if (q && !matchesSearch(item, q)) return false;
       return true;
     });
   }, [items, filter, search]);
 
+  // Auto-scroll only on new data arrival (items.length increases),
+  // not on filter/search changes.
   useEffect(() => {
-    // The list is newest-first, so "follow the latest" means the top.
-    if (autoScroll) topRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [filtered.length, autoScroll]);
+    if (autoScroll && items.length > prevItemCountRef.current) {
+      topRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+    prevItemCountRef.current = items.length;
+  }, [items.length, autoScroll]);
+
+  const isLoading = messagesLoading || actionsLoading;
+  const showTools = filter !== 'chat';
 
   return (
     <div className="space-y-4">
+      {/* Controls */}
       <div className="flex flex-col sm:flex-row gap-3">
         <Input
           placeholder="Поиск по содержимому..."
@@ -106,10 +143,11 @@ export function TabLogs({ agentId }: { agentId: string }) {
           className="sm:max-w-xs"
         />
         <div className="flex items-center gap-1">
-          {(Object.keys(FILTER_LABELS) as LogFilter[]).map((f) => (
+          {(Object.keys(FILTER_LABELS) as ActivityFilter[]).map((f) => (
             <button
               key={f}
-              data-testid={`log-filter-${f}`}
+              type="button"
+              data-testid={`activity-filter-${f}`}
               onClick={() => setFilter(f)}
               className={cn(
                 'px-3 py-1.5 rounded-sm font-mono text-xs border transition-colors',
@@ -124,13 +162,15 @@ export function TabLogs({ agentId }: { agentId: string }) {
         </div>
         <div className="flex items-center gap-2 ml-auto">
           <button
+            type="button"
             onClick={() => setAutoScroll((v) => !v)}
+            title={autoScroll ? 'Автоматически прокручивать к новым записям' : 'Авто-скролл отключён'}
             className={cn(
               'font-mono text-xs px-3 py-1.5 rounded-sm border transition-colors',
               autoScroll ? 'border-neon-800 text-neon-500' : 'border-void-700 text-void-600',
             )}
           >
-            {autoScroll ? '⬇ Авто-скролл' : '— Авто-скролл'}
+            {autoScroll ? '↓ Авто-скролл' : '— Авто-скролл'}
           </button>
           <div className="flex items-center gap-1.5">
             {isConnected ? (
@@ -145,26 +185,33 @@ export function TabLogs({ agentId }: { agentId: string }) {
         </div>
       </div>
 
+      {/* Feed — uses TurnCard for each item */}
       <Card variant="glass" padding="none">
         <div className="h-[600px] overflow-y-auto">
-          <div ref={topRef} />
-          {messagesLoading || actionsLoading ? (
+          {isLoading ? (
             <div className="flex items-center justify-center h-full">
               <Spinner />
             </div>
           ) : filtered.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full text-void-600 gap-2">
               <ScrollText className="h-8 w-8 opacity-30" />
-              <p>Нет записей</p>
+              <p className="font-mono text-sm">Нет записей</p>
             </div>
           ) : (
-            filtered.map((item) => <TurnCard key={item.id} item={item} />)
+            [...filtered].reverse().map((item) => (
+              <TurnCard
+                key={item.id}
+                item={item}
+                showTools={showTools}
+              />
+            ))
           )}
+          <div ref={topRef} />
         </div>
       </Card>
 
       <p className="font-mono text-xs text-void-600 text-right">
-        {filtered.length} записей
+        {filtered.length} {recordWord(filtered.length)}
       </p>
     </div>
   );

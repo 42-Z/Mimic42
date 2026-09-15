@@ -3,6 +3,8 @@
 import { useState } from 'react';
 import { ChevronDown, Braces } from 'lucide-react';
 import type { ActivityAction } from '@/lib/activity/normalize';
+import { findMediaRefs } from '@/lib/activity/media';
+import { MediaThumb } from './MediaThumb';
 import { cn } from '@/lib/utils';
 
 function valueToString(value: unknown): string {
@@ -57,7 +59,7 @@ function RawJson({ title, value }: { title: string; value: Record<string, unknow
   );
 }
 
-export function ActivityDetails({ action }: { action: ActivityAction }) {
+export function ActivityDetails({ action, agentId }: { action: ActivityAction; agentId?: string }) {
   const args = action.args;
   const result = action.result;
   const argRows: [string, unknown][] = args ? Object.entries(args).filter(([k]) => k !== 'turn_id' && k !== 'peer') : [];
@@ -68,11 +70,19 @@ export function ActivityDetails({ action }: { action: ActivityAction }) {
     : [];
 
   const hasStructured = argRows.length > 0 || resultRows.length > 0;
+  const mediaRefs = [...findMediaRefs(args), ...findMediaRefs(result)];
 
   return (
     <div className="mt-1 mb-2 ml-9 space-y-2">
       {action.hint && (
         <p className="font-mono text-[11px] text-crimson-400">{action.hint}</p>
+      )}
+      {agentId && mediaRefs.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {mediaRefs.map((ref) => (
+            <MediaThumb key={ref} agentId={agentId} reference={ref} />
+          ))}
+        </div>
       )}
       {hasStructured && (
         <>

@@ -165,6 +165,12 @@ export const agentsApi = {
       .get<ConversationTurn[]>(`/agents/${id}/conversation`, { params: { limit, offset } })
       .then((r) => r.data),
 
+  /** GET /api/v1/agents/:id/media — Telegram media bytes as a Blob. */
+  getMedia: (id: string, mediaId: string) =>
+    apiClient
+      .get<Blob>(`/agents/${id}/media`, { params: { media_id: mediaId }, responseType: 'blob' })
+      .then((r) => r.data),
+
   /** POST /api/v1/agents/:id/messages/trigger */
   triggerMessage: (id: string, body: TriggerMessageInput) =>
     apiClient

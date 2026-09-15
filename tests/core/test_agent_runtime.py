@@ -44,6 +44,9 @@ class FakeTelegramClient:
         self.sent_messages.append((str(entity), message))
         return {"id": len(self.sent_messages), "entity": str(entity), "message": message}
 
+    async def download_media(self, message: Any, file: Any = None, **kwargs: Any) -> Any:
+        return b"fake-bytes"
+
     async def __call__(self, request: object) -> object:
         if not hasattr(self, "requests"):
             self.requests = []
