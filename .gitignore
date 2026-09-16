@@ -2,8 +2,6 @@
 .env
 .env.*
 !.env.example
-!.env.template
-!.env.test.example
 *.local
 *.secret
 secrets/

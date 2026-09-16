@@ -2,7 +2,8 @@
 
 Создаёт схему test_support с таблицей аренды слотов и заводит
 тестовые учётки через Admin API GoTrue. Запускается руками, требует
-TEST_SUPABASE_SERVICE_ROLE_KEY. Повторный запуск ничего не ломает.
+TEST_SUPABASE_SERVICE_ROLE_KEY в окружении (в файлах он не хранится —
+см. .env.example). Повторный запуск ничего не ломает.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ import sys
 import asyncpg
 import httpx
 
+from mimic42.testing.env import load_test_env
 from mimic42.testing.slots import SLOTS, assert_test_project
 
 CREATE_SCHEMA_SQL = """
@@ -73,10 +75,18 @@ async def ensure_users(supabase_url: str, service_key: str, password: str) -> No
 
 
 async def main() -> int:
-    dsn = os.environ["TEST_DATABASE_CONNECTION_STRING"]
-    supabase_url = os.environ["TEST_SUPABASE_URL"]
-    service_key = os.environ["TEST_SUPABASE_SERVICE_ROLE_KEY"]
+    load_test_env()
+    dsn = os.environ["DATABASE_CONNECTION_STRING"]
+    supabase_url = os.environ["SUPABASE_URL"]
     password = os.environ["TEST_USER_PASSWORD"]
+    # Сервисный ключ намеренно не лежит в env-файлах: он нужен ровно этому
+    # скрипту, поэтому передаётся явно и не попадает в окружение тестов.
+    service_key = os.environ.get("TEST_SUPABASE_SERVICE_ROLE_KEY", "")
+    if not service_key:
+        raise SystemExit(
+            "TEST_SUPABASE_SERVICE_ROLE_KEY не задан. Запуск:\n"
+            "  TEST_SUPABASE_SERVICE_ROLE_KEY=... uv run python scripts/test_env_bootstrap.py"
+        )
     try:
         # service_key сразу пойдёт в Admin API: проверяем и его, а не только
         # DSN с адресом, — иначе чужим ключом можно завести юзеров не туда.

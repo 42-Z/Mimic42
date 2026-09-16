@@ -1,3 +1,4 @@
+import { config as loadDotenv } from 'dotenv';
 import { defineConfig, devices } from '@playwright/test';
 
 // Port 3000 is the default (backend CORS is hardcoded to it); override when
@@ -7,10 +8,25 @@ const APP_URL = `http://127.0.0.1:${APP_PORT}`;
 const API_PORT = Number(process.env.E2E_API_PORT ?? 8000);
 const API_URL = `http://127.0.0.1:${API_PORT}`;
 
+// Те же два файла, что грузят backend-тесты: .env — база, .env.test —
+// переопределения (заглушки телеги, пароль тестовых учёток). .env и .env.local
+// не перетирают уже заданные переменные, .env.test перетирает всё: он и есть
+// тестовые переопределения.
+loadDotenv({ path: '../.env', quiet: true });
+loadDotenv({ path: '../.env.test', override: true, quiet: true });
+// Локальный публичный конфиг фронта: отсюда берётся anon-ключ, которого нет
+// в корневых файлах. В CI этого файла нет, значение приходит секретом.
+loadDotenv({ path: '.env.local', quiet: true });
+
+// Тестовый процесс обязан ходить на тот же API, что поднимается ниже
+// (webServer), поэтому адрес задаётся здесь, а не берётся из .env.local:
+// иначе при E2E_API_PORT=8010 хелперы ушли бы в 8000 из файла.
+process.env.NEXT_PUBLIC_API_BASE_URL = API_URL;
+
 function requiredEnv(name: string): string {
   const value = process.env[name];
   if (!value) {
-    throw new Error(`${name} не задан — источник .env.test перед запуском e2e`);
+    throw new Error(`${name} не задан — источник .env/.env.test перед запуском e2e`);
   }
   return value;
 }
@@ -21,9 +37,9 @@ function requiredEnv(name: string): string {
 const DEV_PROJECT_REF = 'ipqylrdmmjitemjrygej';
 
 function requiredDevSupabaseUrl(): string {
-  const url = requiredEnv('TEST_SUPABASE_URL');
+  const url = requiredEnv('SUPABASE_URL');
   if (!url.includes(DEV_PROJECT_REF)) {
-    throw new Error(`TEST_SUPABASE_URL не указывает на Dev-проект (${DEV_PROJECT_REF})`);
+    throw new Error(`SUPABASE_URL не указывает на Dev-проект (${DEV_PROJECT_REF})`);
   }
   return url;
 }
@@ -32,7 +48,8 @@ function requiredDevSupabaseUrl(): string {
 // API — в mimic42.testing.server:app, поднятый ниже поверх настоящей базы.
 const testEnv = {
   NEXT_PUBLIC_SUPABASE_URL: requiredDevSupabaseUrl(),
-  NEXT_PUBLIC_SUPABASE_ANON_KEY: requiredEnv('TEST_SUPABASE_ANON_KEY'),
+  NEXT_PUBLIC_SUPABASE_ANON_KEY:
+    process.env.SUPABASE_ANON_KEY ?? requiredEnv('NEXT_PUBLIC_SUPABASE_ANON_KEY'),
   NEXT_PUBLIC_API_BASE_URL: API_URL,
 };
 

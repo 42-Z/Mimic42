@@ -38,10 +38,10 @@ async def test_whole_turn_reaches_the_database_and_the_api(
     """Сообщение пришло, агент ответил, переписка сохранилась и видна через API."""
     owner_id = clean_slot.persona("full").user_id
     agent_id = uuid4()
-    # Тот же ключ, что build_test_app() берёт из TEST_SECRET_KEY: конфиг
+    # Тот же ключ, что build_test_app() берёт из SECRET_KEY: конфиг
     # агента читается настоящим app.state.agent_store внутри lifespan,
     # а он расшифровывает api_hash этим ключом.
-    cipher = FernetSecretCipher(os.environ["TEST_SECRET_KEY"])
+    cipher = FernetSecretCipher(os.environ["SECRET_KEY"])
     store = DatabaseAgentStore(db_session_factory, cipher=cipher)
     await store.create_from_onboarding(
         OnboardingSession(

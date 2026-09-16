@@ -18,11 +18,13 @@ import os
 import socket
 import sys
 
+from mimic42.testing.env import load_test_env
 from mimic42.testing.slots import SLOTS, Slot, acquire_slot, assert_test_project, release_slot
 
 
 def _dsn() -> str:
-    value = os.environ["TEST_DATABASE_CONNECTION_STRING"]
+    load_test_env()
+    value = os.environ["DATABASE_CONNECTION_STRING"]
     assert_test_project(value)
     return value
 

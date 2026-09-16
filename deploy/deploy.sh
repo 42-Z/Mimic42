@@ -2,7 +2,7 @@
 # Idempotent Mimic42 rollout on the VPS: deploy.sh <image-tag>.
 #
 # - Atomically writes IMAGE_TAG into .env (compose-level variables only;
-#   secrets live in api.env and are never touched here).
+#   secrets live in /etc/mimic42.env and are never touched here).
 # - Pulls images, recreates containers, waits for both healthchecks (180s).
 # - On failure dumps logs and rolls back to the previous tag automatically.
 # - Appends every attempted tag to releases.log (source for manual rollback).

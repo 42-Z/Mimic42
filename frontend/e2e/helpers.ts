@@ -5,7 +5,9 @@ export const API_ORIGIN =
 
 function requiredEnv(name: string): string {
   const value = process.env[name];
-  if (!value) throw new Error(`${name} не задан — источник .env.test перед запуском e2e`);
+  if (!value) {
+    throw new Error(`${name} не задан: заполните .env и .env.test (грузятся автоматически)`);
+  }
   return value;
 }
 
