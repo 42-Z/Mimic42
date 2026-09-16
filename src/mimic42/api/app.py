@@ -634,6 +634,13 @@ def create_app(
             except Exception:
                 logger.exception("Failed to clear Mem0 memories for agent %s", agent_id)
 
+        media_storage: MediaUploader | None = getattr(app.state, "media_uploader", None)
+        if media_storage is not None:
+            try:
+                await media_storage.remove_prefix(agent_id)
+            except Exception:
+                logger.warning("Failed to remove media for agent %s", agent_id, exc_info=True)
+
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     @app.post(

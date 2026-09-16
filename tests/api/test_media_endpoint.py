@@ -132,3 +132,23 @@ async def test_media_404_when_storage_not_configured() -> None:
         )
 
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_agent_delete_clears_stored_media() -> None:
+    owner_id = uuid4()
+    agent_id = uuid4()
+    storage = FakeMediaStorage({f"{agent_id}/{uuid4()}/img.jpeg": b"IMG"})
+    app = create_app(
+        agent_store=_store_with_agent(owner_id, agent_id),
+        auth_verifier=FakeAuthVerifier(owner_id),
+        media_uploader=storage,
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        resp = await client.delete(f"/api/v1/agents/{agent_id}", headers=AUTH_HEADERS)
+
+    assert resp.status_code == 204
+    assert storage.files == {}
