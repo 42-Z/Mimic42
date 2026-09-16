@@ -3,7 +3,41 @@
 import { useState } from 'react';
 import { ChevronDown, Braces } from 'lucide-react';
 import type { ActivityAction } from '@/lib/activity/normalize';
+import { MediaContent } from './MediaContent';
+import type { MediaItem } from '@/types';
 import { cn } from '@/lib/utils';
+
+const MEDIA_REF_KINDS = new Set(['photo', 'sticker', 'voice', 'round', 'doc']);
+
+/** Collect `media_ref` items a tool left in its result (e.g. view_image). */
+function mediaRefsOf(result: Record<string, unknown> | null): MediaItem[] {
+  if (!result) return [];
+  const candidates: unknown[] = [];
+  const items = result.items;
+  if (Array.isArray(items)) {
+    candidates.push(...items);
+  } else {
+    candidates.push(result);
+  }
+  const refs: MediaItem[] = [];
+  for (const entry of candidates) {
+    if (!entry || typeof entry !== 'object') continue;
+    const record = entry as Record<string, unknown>;
+    if (record.type !== 'media_ref' || typeof record.storage_path !== 'string') continue;
+    const kind = typeof record.kind === 'string' ? record.kind : 'doc';
+    const name = typeof record.name === 'string' ? record.name : 'media';
+    const mimeType = typeof record.mime_type === 'string' ? record.mime_type : '';
+    const size = typeof record.size === 'number' ? record.size : 0;
+    refs.push({
+      kind: (MEDIA_REF_KINDS.has(kind) ? kind : 'doc') as MediaItem['kind'],
+      name,
+      mime_type: mimeType,
+      size,
+      storage_path: record.storage_path,
+    });
+  }
+  return refs;
+}
 
 function valueToString(value: unknown): string {
   if (value === null || value === undefined) return '—';
@@ -57,22 +91,32 @@ function RawJson({ title, value }: { title: string; value: Record<string, unknow
   );
 }
 
-export function ActivityDetails({ action }: { action: ActivityAction }) {
+export function ActivityDetails({
+  action,
+  agentId,
+}: {
+  action: ActivityAction;
+  agentId?: string;
+}) {
   const args = action.args;
   const result = action.result;
   const argRows: [string, unknown][] = args ? Object.entries(args).filter(([k]) => k !== 'turn_id' && k !== 'peer') : [];
   const resultRows: [string, unknown][] = result
     ? Object.entries(result)
-        .filter(([k]) => !['success', 'error', 'error_code'].includes(k))
+        .filter(([k]) => !['success', 'error', 'error_code', 'items'].includes(k))
         .map(([k, v]) => [k, v] as [string, unknown])
     : [];
+  const mediaRefs = mediaRefsOf(result);
 
-  const hasStructured = argRows.length > 0 || resultRows.length > 0;
+  const hasStructured = argRows.length > 0 || resultRows.length > 0 || mediaRefs.length > 0;
 
   return (
     <div className="mt-1 mb-2 ml-9 space-y-2">
       {action.hint && (
         <p className="font-mono text-[11px] text-crimson-400">{action.hint}</p>
+      )}
+      {mediaRefs.length > 0 && agentId && (
+        <MediaContent agentId={agentId} items={mediaRefs} />
       )}
       {hasStructured && (
         <>

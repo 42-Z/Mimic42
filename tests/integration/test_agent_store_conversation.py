@@ -145,3 +145,74 @@ async def test_incoming_media_surfaces_on_turn(
 
     assert page.turns[0].turn_id == "t-media"
     assert page.turns[0].incoming_media == media
+
+
+async def test_real_write_order_keeps_one_merged_turn(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    """Tool events are persisted while the turn runs; the incoming and
+    response rows are saved afterwards with a later timestamp. Grouping by
+    turn_id must still yield one block (incoming + tools + response)."""
+    owner_id = clean_slot.persona("twofa").user_id
+    base = datetime(2026, 5, 19, 23, 30, tzinfo=UTC)
+    agent_id = uuid4()
+    async with db_session_factory() as session:
+        session.add(
+            AgentModel(
+                id=agent_id,
+                owner_id=owner_id,
+                name="Mimic",
+                status=AgentRuntimeState.STOPPED.value,
+                soul_prompt="Soul",
+            )
+        )
+        await session.commit()
+    async with db_session_factory() as session:
+        # 1) Tool events recorded mid-turn (earliest timestamps)...
+        session.add(
+            AgentEventModel(
+                agent_id=agent_id,
+                event_type="tool.get_dialogs",
+                status="succeeded",
+                payload={"turn_id": "t-real"},
+                created_at=base,
+                started_at=base,
+                completed_at=base + timedelta(seconds=1),
+            )
+        )
+        # 2) ...then the incoming row (written by save_messages at turn end)...
+        session.add(
+            AgentMessageModel(
+                agent_id=agent_id,
+                direction="incoming",
+                role="user",
+                content="Привет",
+                payload={"peer": "chat", "peer_name": "Ivan", "turn_id": "t-real"},
+                created_at=base + timedelta(seconds=5),
+            )
+        )
+        # 3) ...and the response row, saved in the same batch.
+        session.add(
+            AgentMessageModel(
+                agent_id=agent_id,
+                direction="agent_response",
+                role="assistant",
+                content="Здравствуйте!",
+                payload={"peer": "chat", "turn_id": "t-real"},
+                created_at=base + timedelta(seconds=5, microseconds=1000),
+            )
+        )
+        await session.commit()
+
+    store = DatabaseAgentStore(db_session_factory)
+    page = await store.get_conversation(agent_id=agent_id, limit=10)
+
+    assert len(page.turns) == 1
+    turn = page.turns[0]
+    assert turn.turn_id == "t-real"
+    assert turn.incoming == "Привет"
+    assert turn.outgoing == "Здравствуйте!"
+    assert turn.direction == "both"
+    assert [tool.name for tool in turn.tools] == ["tool.get_dialogs"]
+    assert turn.timestamp == base  # oldest item of the turn

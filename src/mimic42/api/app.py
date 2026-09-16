@@ -171,16 +171,25 @@ def create_app(
 ) -> FastAPI:
     app_settings = settings or Settings()
     app_telegram_factory = telegram_factory or TelethonAuthClientFactory()
-    app_media_storage: MediaUploader | None = media_uploader
+    # Resolution order: explicit argument → uploader of an injected manager →
+    # storage built from settings. A broken Storage configuration must degrade
+    # to "media unavailable", not crash application startup.
+    app_media_storage: MediaUploader | None = media_uploader or getattr(
+        manager, "media_uploader", None
+    )
     if (
         app_media_storage is None
         and app_settings.supabase_url
         and app_settings.supabase_service_key
     ):
-        app_media_storage = SupabaseMediaStorage(
-            supabase_url=app_settings.supabase_url,
-            service_key=app_settings.supabase_service_key,
-        )
+        try:
+            app_media_storage = SupabaseMediaStorage(
+                supabase_url=app_settings.supabase_url,
+                service_key=app_settings.supabase_service_key,
+            )
+        except Exception:
+            logger.warning("Failed to initialise Supabase media storage", exc_info=True)
+            app_media_storage = None
     app_manager = manager or AgentManager(
         telegram_client_factory=telegram_client_factory,
         langchain_agent_factory=langchain_agent_factory,
@@ -533,8 +542,15 @@ def create_app(
         if store is None or media_storage is None:
             raise HTTPException(status_code=404, detail="Медиа недоступно")
         await _ensure_agent_owner(store, agent_id=agent_id, user_id=current_user.user_id)
-        # Объект обязан лежать внутри папки агента — иначе доступ к чужому файлу.
-        if not media_path.startswith(f"{agent_id}/"):
+        # Объект обязан лежать внутри папки агента — иначе доступ к чужому
+        # файлу. `..`-сегменты отклоняются: URL-нормализация внутри storage-клиента
+        # иначе увела бы запрос в чужую папку ({agent_id}/../{other}/file).
+        path_segments = [segment for segment in media_path.split("/") if segment]
+        if (
+            not media_path.startswith(f"{agent_id}/")
+            or ".." in path_segments
+            or media_path.startswith("/")
+        ):
             raise HTTPException(status_code=403, detail="Нет доступа к этому файлу")
         data = await media_storage.open(media_path)
         if data is None:
@@ -553,6 +569,7 @@ def create_app(
         return Response(
             content=data,
             media_type=content_types.get(extension, "application/octet-stream"),
+            headers={"Cache-Control": "private, max-age=300"},
         )
 
     @app.post(

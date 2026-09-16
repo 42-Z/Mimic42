@@ -32,7 +32,7 @@ def _sanitize_result(result: dict[str, Any] | None) -> dict[str, Any] | None:
     def clean(value: Any) -> Any:
         if isinstance(value, str):
             if value.startswith("data:") and len(value) > _BASE64_DATA_URL_MIN:
-                return '{"_omitted": "base64 media, archived in Storage"}'
+                return {"_omitted": "base64 media, archived in Storage"}
             return value
         if isinstance(value, dict):
             return {key: clean(item) for key, item in value.items()}

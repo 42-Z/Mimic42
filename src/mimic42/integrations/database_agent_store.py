@@ -264,9 +264,6 @@ class DatabaseAgentStore:
             timeline.append(("evt", evt.created_at, evt))
         timeline.sort(key=lambda x: x[1])
 
-        turns: list[ConversationTurn] = []
-        current_turn: ConversationTurn | None = None
-
         def _message_content(msg: AgentMessageModel) -> str:
             content = msg.content
             if not content and msg.role == "assistant":
@@ -275,17 +272,81 @@ class DatabaseAgentStore:
                     content = structured.get("text", "")
             return content
 
-        for item_type, _timestamp, item in timeline:
+        # Rows of one turn share payload.turn_id. Tool events are written while
+        # the turn runs, i.e. *before* the incoming/response rows are persisted,
+        # so time-boundary grouping alone would split a turn apart. Group by
+        # turn_id when present; rows without it (legacy data) fall back to
+        # sequential grouping.
+        by_turn_id: dict[str, ConversationTurn] = {}
+        legacy_turns: list[ConversationTurn] = []
+        legacy_current: ConversationTurn | None = None
+
+        def _turn_for(turn_id: str, item_id: UUID, timestamp: datetime) -> ConversationTurn:
+            turn = by_turn_id.get(turn_id)
+            if turn is None:
+                turn = ConversationTurn(
+                    id=item_id,
+                    agent_id=agent_id,
+                    timestamp=timestamp,
+                    turn_id=turn_id,
+                    peer_id="",
+                    direction="tools",
+                )
+                by_turn_id[turn_id] = turn
+            elif timestamp < turn.timestamp:
+                turn.timestamp = timestamp
+            return turn
+
+        for item_type, timestamp, item in timeline:
+            payload: dict[str, Any] = item.payload or {}
+            turn_id = str(payload.get("turn_id") or "") or None
+
             if item_type == "msg":
                 msg = item
                 content = _message_content(msg)
                 media = [
                     entry for entry in (msg.payload.get("media") or []) if isinstance(entry, dict)
                 ]
+                if turn_id is not None:
+                    turn = _turn_for(turn_id, msg.id, timestamp)
+                    if msg.direction in ("incoming", "dashboard_trigger"):
+                        if turn.incoming:
+                            # Second incoming row in one turn (duplicate save):
+                            # keep them in separate blocks to lose nothing.
+                            turn = ConversationTurn(
+                                id=msg.id,
+                                agent_id=agent_id,
+                                timestamp=timestamp,
+                                peer_id=str(payload.get("peer", "")),
+                                peer_name=str(payload.get("peer_name", "")),
+                                agent_name=str(payload.get("agent_name", "")),
+                                incoming=content,
+                                direction="incoming",
+                                turn_id=turn_id,
+                                incoming_media=media,
+                            )
+                            legacy_turns.append(turn)
+                            continue
+                        turn.id = msg.id
+                        turn.peer_id = str(payload.get("peer", ""))
+                        turn.peer_name = str(payload.get("peer_name", ""))
+                        turn.agent_name = str(payload.get("agent_name", ""))
+                        turn.incoming = content
+                        turn.incoming_media = media
+                        turn.direction = "both" if turn.outgoing else "incoming"
+                    elif msg.direction in ("agent_response", "outgoing"):
+                        turn.outgoing = content
+                        if not turn.peer_id:
+                            turn.peer_id = str(payload.get("peer", ""))
+                            turn.peer_name = str(payload.get("peer_name", ""))
+                            turn.agent_name = str(payload.get("agent_name", ""))
+                        turn.direction = "both" if turn.incoming else "outgoing"
+                    continue
+
                 if msg.direction in ("incoming", "dashboard_trigger"):
-                    if current_turn is not None:
-                        turns.append(current_turn)
-                    current_turn = ConversationTurn(
+                    if legacy_current is not None:
+                        legacy_turns.append(legacy_current)
+                    legacy_current = ConversationTurn(
                         id=msg.id,
                         agent_id=agent_id,
                         timestamp=msg.created_at,
@@ -294,17 +355,16 @@ class DatabaseAgentStore:
                         agent_name=str(msg.payload.get("agent_name", "")),
                         incoming=content,
                         direction="incoming",
-                        turn_id=str(msg.payload.get("turn_id") or "") or None,
                         incoming_media=media,
                     )
                 elif msg.direction in ("agent_response", "outgoing"):
-                    if current_turn is not None and current_turn.direction == "incoming":
-                        current_turn.outgoing = content
-                        current_turn.direction = "both"
+                    if legacy_current is not None and legacy_current.direction == "incoming":
+                        legacy_current.outgoing = content
+                        legacy_current.direction = "both"
                     else:
-                        if current_turn is not None:
-                            turns.append(current_turn)
-                        current_turn = ConversationTurn(
+                        if legacy_current is not None:
+                            legacy_turns.append(legacy_current)
+                        legacy_current = ConversationTurn(
                             id=msg.id,
                             agent_id=agent_id,
                             timestamp=msg.created_at,
@@ -313,9 +373,8 @@ class DatabaseAgentStore:
                             agent_name=str(msg.payload.get("agent_name", "")),
                             outgoing=content,
                             direction="outgoing",
-                            turn_id=str(msg.payload.get("turn_id") or "") or None,
                         )
-            elif item_type == "evt":
+            else:
                 evt = item
                 duration_ms = 0.0
                 if evt.started_at and evt.completed_at:
@@ -330,11 +389,17 @@ class DatabaseAgentStore:
                     duration_ms=duration_ms,
                     created_at=evt.created_at,
                 )
-                if current_turn is not None:
-                    current_turn.tools.append(tool)
+                if turn_id is not None:
+                    turn = _turn_for(turn_id, evt.id, timestamp)
+                    turn.tools.append(tool)
+                    if not turn.peer_id:
+                        turn.peer_id = str(payload.get("parent_peer") or payload.get("peer") or "")
+                    continue
+                if legacy_current is not None:
+                    legacy_current.tools.append(tool)
                 else:
                     # Orphan event — create a tools-only turn
-                    current_turn = ConversationTurn(
+                    legacy_current = ConversationTurn(
                         id=evt.id,
                         agent_id=agent_id,
                         timestamp=evt.created_at,
@@ -343,9 +408,10 @@ class DatabaseAgentStore:
                         tools=[tool],
                     )
 
-        if current_turn is not None:
-            turns.append(current_turn)
+        if legacy_current is not None:
+            legacy_turns.append(legacy_current)
 
+        turns = [*by_turn_id.values(), *legacy_turns]
         turns.sort(key=lambda turn: turn.timestamp, reverse=True)
         page = turns[:limit]
         next_before = page[-1].timestamp if page else None

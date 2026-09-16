@@ -135,6 +135,32 @@ async def test_media_404_when_storage_not_configured() -> None:
 
 
 @pytest.mark.asyncio
+async def test_media_rejects_path_traversal() -> None:
+    owner_id = uuid4()
+    agent_id = uuid4()
+    other_agent_id = uuid4()
+    other_path = f"{other_agent_id}/1/secret.jpeg"
+    app = create_app(
+        agent_store=_store_with_agent(owner_id, agent_id),
+        auth_verifier=FakeAuthVerifier(owner_id),
+        media_uploader=FakeMediaStorage({other_path: b"SECRET"}),
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        # %2e%2e декодируется в '..' уже на стороне сервера, минуя
+        # клиентскую нормализацию URL.
+        resp = await client.get(
+            f"/api/v1/agents/{agent_id}/media/{agent_id}/%2e%2e/{other_agent_id}/1/secret.jpeg",
+            headers=AUTH_HEADERS,
+        )
+
+    assert resp.status_code == 403
+    assert resp.content != b"SECRET"
+
+
+@pytest.mark.asyncio
 async def test_agent_delete_clears_stored_media() -> None:
     owner_id = uuid4()
     agent_id = uuid4()

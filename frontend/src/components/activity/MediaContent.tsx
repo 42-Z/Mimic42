@@ -9,13 +9,21 @@ import type { MediaItem } from '@/types';
 const IMAGE_KINDS = new Set(['photo', 'sticker']);
 
 function MediaView({ agentId, item }: { agentId: string; item: MediaItem }) {
-  const url = useMediaUrl(agentId, item.storage_path);
+  const { url, status } = useMediaUrl(agentId, item.storage_path);
 
   if (!item.storage_path) {
     return (
       <span className="inline-flex items-center gap-1.5 font-mono text-[10px] text-void-500 border border-void-700 rounded-sm px-2 py-1">
         <ImageOff className="h-3 w-3" />
         {item.name} (файл не сохранён)
+      </span>
+    );
+  }
+  if (status === 'error') {
+    return (
+      <span className="inline-flex items-center gap-1.5 font-mono text-[10px] text-crimson-400 border border-crimson-900 rounded-sm px-2 py-1">
+        <ImageOff className="h-3 w-3" />
+        {item.name} (недоступно)
       </span>
     );
   }
@@ -52,9 +60,8 @@ function MediaView({ agentId, item }: { agentId: string; item: MediaItem }) {
 }
 
 function LightboxImage({ agentId, item }: { agentId: string; item: MediaItem }) {
-  const url = useMediaUrl(agentId, item.storage_path);
-  if (!url) return null;
-  return (
+  const { url } = useMediaUrl(agentId, item.storage_path);
+  if (!url) return null;  return (
     // eslint-disable-next-line @next/next/no-img-element
     <img src={url} alt={item.name} className="max-h-[70vh] w-auto mx-auto" />
   );

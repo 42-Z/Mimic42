@@ -111,6 +111,8 @@ class DatabaseShortTermMemory:
                     user_payload["peer_name"] = peer_name
                 if agent_name:
                     user_payload["agent_name"] = agent_name
+                if turn_id is not None:
+                    user_payload["turn_id"] = turn_id
                 if media:
                     user_payload["media"] = media
                     media_attached = True

@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 from uuid import UUID
 
+MAX_MEDIA_BYTES = 20 * 1024 * 1024
+
 
 @dataclass(slots=True)
 class MediaFile:

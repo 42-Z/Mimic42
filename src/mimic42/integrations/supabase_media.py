@@ -5,12 +5,16 @@ import logging
 from typing import Any
 from uuid import UUID, uuid4
 
-from mimic42.core.media import MediaFile
+from mimic42.core.media import MAX_MEDIA_BYTES, MediaFile
 
 logger = logging.getLogger("mimic42.media")
 
-MAX_MEDIA_BYTES = 20 * 1024 * 1024
+__all__ = ["BUCKET", "MAX_MEDIA_BYTES", "SupabaseMediaStorage"]
+
 BUCKET = "agent-media"
+_LIST_PAGE = 1000
+_REMOVE_CHUNK = 1000
+_MAX_DEPTH = 8
 
 
 class SupabaseMediaStorage:
@@ -69,11 +73,44 @@ class SupabaseMediaStorage:
             return None
         return bytes(blob) if isinstance(blob, (bytes, bytearray)) else None
 
+    async def _list_folder(self, prefix: str) -> list[dict[str, Any]]:
+        entries: list[dict[str, Any]] = []
+        offset = 0
+        while True:
+            page: list[dict[str, Any]] = await asyncio.to_thread(
+                lambda current=offset: self._bucket().list(
+                    prefix, {"limit": _LIST_PAGE, "offset": current}
+                )
+            )
+            batch = list(page or [])
+            entries.extend(batch)
+            if len(batch) < _LIST_PAGE:
+                return entries
+            offset += len(batch)
+
+    async def _collect_files(self, prefix: str, depth: int) -> list[str]:
+        """Walk the folder tree: storage list() returns one level at a time and
+        folders have ``id is None``; remove() deletes exact object paths only."""
+        if depth > _MAX_DEPTH:
+            logger.warning("Media listing depth limit reached at %s", prefix)
+            return []
+        paths: list[str] = []
+        for entry in await self._list_folder(prefix):
+            name = entry.get("name")
+            if not isinstance(name, str) or not name:
+                continue
+            path = f"{prefix}/{name}"
+            if entry.get("id") is None:
+                paths.extend(await self._collect_files(path, depth + 1))
+            else:
+                paths.append(path)
+        return paths
+
     async def remove_prefix(self, agent_id: UUID) -> None:
         try:
-            items = await asyncio.to_thread(lambda: self._bucket().list(str(agent_id)))
-            paths = [f"{agent_id}/{item['name']}" for item in items if item.get("name")]
-            if paths:
-                await asyncio.to_thread(lambda: self._bucket().remove(paths))
+            files = await self._collect_files(str(agent_id), depth=0)
+            for start in range(0, len(files), _REMOVE_CHUNK):
+                chunk = files[start : start + _REMOVE_CHUNK]
+                await asyncio.to_thread(lambda paths=chunk: self._bucket().remove(paths))
         except Exception:
             logger.warning("Failed to clean media for agent %s", agent_id, exc_info=True)

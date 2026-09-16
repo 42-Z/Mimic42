@@ -10,8 +10,12 @@ from mimic42.integrations.supabase_media import MAX_MEDIA_BYTES, SupabaseMediaSt
 
 
 class FakeBucket:
+    """Mimics the real storage API semantics: list() returns one level at a
+    time (folders have id=None), remove() deletes exact object paths only."""
+
     def __init__(self, store: dict[str, bytes]) -> None:
         self._store = store
+        self.removed: list[str] = []
 
     def upload(self, *, file: bytes, path: str, file_options: dict[str, str] | None = None) -> None:
         self._store[path] = bytes(file)
@@ -21,16 +25,32 @@ class FakeBucket:
             raise KeyError(path)
         return self._store[path]
 
-    def list(self, prefix: str) -> builtins.list[dict[str, str]]:
+    def list(
+        self, prefix: str | None = None, options: dict[str, int] | None = None
+    ) -> builtins.list[dict[str, object]]:
+        prefix = (prefix or "").strip("/")
+        children: dict[str, bool] = {}
+        for path in self._store:
+            if prefix:
+                if not path.startswith(prefix + "/"):
+                    continue
+                rest = path[len(prefix) + 1 :]
+            else:
+                rest = path
+            head = rest.split("/", 1)[0]
+            is_file = "/" not in rest
+            children[head] = children.get(head, True) and is_file
         return [
-            {"name": p.removeprefix(prefix + "/")}
-            for p in self._store
-            if p.startswith(prefix + "/")
+            {"name": name, "id": f"obj-{name}" if is_file else None}
+            for name, is_file in children.items()
         ]
 
     def remove(self, paths: builtins.list[str]) -> None:
-        for p in paths:
-            self._store.pop(p, None)
+        for path in paths:
+            if path not in self._store:
+                raise KeyError(f"not an object: {path}")
+            self.removed.append(path)
+            self._store.pop(path)
 
 
 def build_storage(monkeypatch: pytest.MonkeyPatch, store: dict[str, bytes]) -> SupabaseMediaStorage:
@@ -89,3 +109,32 @@ async def test_open_and_remove_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
     assert await storage.open(f"{agent_id}/missing.txt") is None
     await storage.remove_prefix(agent_id)
     assert store == {}
+
+
+async def test_remove_prefix_deletes_nested_files_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """fetch: list() is one-level deep; remove() must target exact file paths."""
+    store: dict[str, bytes] = {}
+    bucket = FakeBucket(store)
+    fake = SimpleNamespace(storage=SimpleNamespace(from_=lambda _name: bucket))
+    monkeypatch.setattr("supabase.create_client", lambda *a, **k: fake)
+    storage = SupabaseMediaStorage(
+        supabase_url="https://example.supabase.co", service_key="service-key"
+    )
+    agent_id = uuid4()
+    other_agent = uuid4()
+    first = await storage.upload(
+        agent_id=agent_id, filename="one.jpeg", data=b"1", mime_type="image/jpeg", kind="photo"
+    )
+    second = await storage.upload(
+        agent_id=agent_id, filename="two.ogg", data=b"2", mime_type="audio/ogg", kind="voice"
+    )
+    foreign = await storage.upload(
+        agent_id=other_agent, filename="keep.txt", data=b"3", mime_type="text/plain", kind="doc"
+    )
+    assert first and second and foreign and first.storage_path and second.storage_path
+    assert foreign.storage_path
+
+    await storage.remove_prefix(agent_id)
+
+    assert set(store) == {foreign.storage_path}
+    assert set(bucket.removed) == {first.storage_path, second.storage_path}

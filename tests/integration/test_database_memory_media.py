@@ -53,6 +53,7 @@ async def test_save_messages_attaches_media_to_incoming_row(
         messages=[{"role": "assistant", "content": "Ответ"}],
         peer_name="Ivan",
         raw_user_text="Привет",
+        turn_id="turn-42",
         media=MEDIA,
     )
 
@@ -67,6 +68,7 @@ async def test_save_messages_attaches_media_to_incoming_row(
         assert row is not None
         assert row.content == "Привет"
         assert row.payload.get("media") == MEDIA
+        assert row.payload.get("turn_id") == "turn-42"
 
 
 async def test_save_messages_attaches_media_when_incoming_row_deduped(

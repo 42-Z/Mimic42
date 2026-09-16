@@ -112,9 +112,9 @@ export function TurnCard({
 
       {/* Media lives outside the toggle button: players inside a <button>
           are invalid HTML and their clicks would toggle the card. */}
-      {(item.incoming?.media?.length ?? 0) > 0 && (
+      {(item.incoming?.media?.length ?? 0) > 0 && item.agentId && (
         <div className="px-3 pb-2.5">
-          <MediaContent agentId={item.agentId ?? ''} items={item.incoming?.media ?? []} />
+          <MediaContent agentId={item.agentId} items={item.incoming?.media ?? []} />
         </div>
       )}
 
@@ -139,7 +139,7 @@ export function TurnCard({
               {[...item.actions].reverse().map((action) => (
                 <div key={`d-${action.id}`}>
                   <ActionRow action={action} />
-                  <ActivityDetails action={action} />
+                  <ActivityDetails action={action} agentId={item.agentId} />
                 </div>
               ))}
             </section>
@@ -153,9 +153,9 @@ export function TurnCard({
               <p className="text-xs text-void-300 whitespace-pre-wrap break-words bg-void-900/50 rounded-[2px] p-2">
                 {sanitizeText(item.incoming.content)}
               </p>
-              {(item.incoming.media?.length ?? 0) > 0 && (
+              {(item.incoming.media?.length ?? 0) > 0 && item.agentId && (
                 <div className="mt-2">
-                  <MediaContent agentId={item.agentId ?? ''} items={item.incoming.media ?? []} />
+                  <MediaContent agentId={item.agentId} items={item.incoming.media ?? []} />
                 </div>
               )}
             </section>

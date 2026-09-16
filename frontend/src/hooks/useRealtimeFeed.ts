@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useCallback, useState } from 'react';
+import { useEffect, useRef, useCallback, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { getSupabaseClient } from '@/lib/supabase/client';
 import { queryKeys } from '@/lib/queryClient';
@@ -196,9 +196,13 @@ export function useRealtimeFeed(agentId: string) {
     };
   }, [agentId, addMessage, addEvent]);
 
-  const items: ActivityItem[] = buildActivityFeed(
-    newMessages as unknown as MessageLike[],
-    newEvents as unknown as EventLike[],
+  const items: ActivityItem[] = useMemo(
+    () =>
+      buildActivityFeed(
+        newMessages as unknown as MessageLike[],
+        newEvents as unknown as EventLike[],
+      ),
+    [newMessages, newEvents],
   );
 
   return {
@@ -300,17 +304,18 @@ export function useMultiAgentRealtimeFeed(agentIds: string[]) {
   }, [agentKey, qc]);
 
   // Merge the seed (recent history) with realtime increments, then normalize.
-  const mergedMessages = dedupeById([...(seed?.messages ?? []), ...newMessages]).slice(
-    -MAX_FEED_ITEMS,
-  );
-  const mergedEvents = dedupeById([...(seed?.events ?? []), ...newEvents]).slice(
-    -MAX_FEED_ITEMS,
-  );
-
-  const items: ActivityItem[] = buildActivityFeed(
-    mergedMessages as unknown as MessageLike[],
-    mergedEvents as unknown as EventLike[],
-  );
+  const items: ActivityItem[] = useMemo(() => {
+    const mergedMessages = dedupeById([...(seed?.messages ?? []), ...newMessages]).slice(
+      -MAX_FEED_ITEMS,
+    );
+    const mergedEvents = dedupeById([...(seed?.events ?? []), ...newEvents]).slice(
+      -MAX_FEED_ITEMS,
+    );
+    return buildActivityFeed(
+      mergedMessages as unknown as MessageLike[],
+      mergedEvents as unknown as EventLike[],
+    );
+  }, [seed, newMessages, newEvents]);
 
   return {
     items,

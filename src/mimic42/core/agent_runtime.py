@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mimic42.core.activity import ActivityRecorder
-from mimic42.core.media import MediaFile, MediaUploader
+from mimic42.core.media import MAX_MEDIA_BYTES, MediaFile, MediaUploader
 from mimic42.core.memory import MemoryServiceLike, RuntimeMemoryService
 from mimic42.core.model_catalog import DEFAULT_LLM_MODEL
 
@@ -1191,14 +1191,27 @@ async def _process_media_and_text(
                 "yaml",
                 "yml",
             )
+            from io import BytesIO
+
+            media_obj = getattr(message, "media", None)
+            doc_obj = getattr(media_obj, "document", None)
+            doc_mime = getattr(doc_obj, "mime_type", None)
+            doc_mime_type = doc_mime if isinstance(doc_mime, str) else "application/octet-stream"
+            doc_size = getattr(doc_obj, "size", None)
+
             if ext not in allowed_exts and ext != "":
+                # The LLM cannot read this type, but the dashboard must still be
+                # able to open the file from the logs — archive it (with the
+                # same size cap as the storage layer) unless it is huge.
+                if not isinstance(doc_size, int) or doc_size <= MAX_MEDIA_BYTES:
+                    buffer = BytesIO()
+                    await event.client.download_media(message, file=buffer)
+                    await _archive("doc", filename, doc_mime_type, buffer.getvalue())
                 return (
                     f"[Файл name={filename} (этот тип документа нельзя открыть)]"
                     + (f" {text}" if text else ""),
                     media_files,
                 )
-
-            from io import BytesIO
 
             buffer = BytesIO()
             await event.client.download_media(message, file=buffer)
@@ -1209,10 +1222,6 @@ async def _process_media_and_text(
                     media_files,
                 )
 
-            media_obj = getattr(message, "media", None)
-            doc_obj = getattr(media_obj, "document", None)
-            doc_mime = getattr(doc_obj, "mime_type", None)
-            doc_mime_type = doc_mime if isinstance(doc_mime, str) else "application/octet-stream"
             await _archive("doc", filename, doc_mime_type, file_bytes)
 
             if ext == "docx":
