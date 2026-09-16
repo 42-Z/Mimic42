@@ -27,7 +27,7 @@ export function useAgentMessages(agentId: string, limit = 50) {
 /**
  * Fetch agent action/event history from FastAPI backend.
  */
-export function useAgentActions(agentId: string, limit = 50) {
+export function useAgentActions(agentId: string, limit = 200) {
   const isValidId = agentIdSchema.safeParse(agentId).success;
 
   return useQuery({

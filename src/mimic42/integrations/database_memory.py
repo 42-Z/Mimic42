@@ -104,6 +104,8 @@ class DatabaseShortTermMemory:
 
             if raw_user_text and raw_user_text.strip() != last_user_content:
                 user_payload: dict[str, Any] = {"peer": peer}
+                if turn_id is not None:
+                    user_payload["turn_id"] = turn_id
                 if peer_name:
                     user_payload["peer_name"] = peer_name
                 if agent_name:

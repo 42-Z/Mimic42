@@ -76,7 +76,7 @@ export function UnifiedActivity({ agentId }: { agentId: string }) {
   const initialFilter = searchParams.get('filter') as ActivityFilter | null;
 
   const { data: messages, isLoading: messagesLoading } = useAgentMessages(agentId, 50);
-  const { data: actions, isLoading: actionsLoading } = useAgentActions(agentId, 50);
+  const { data: actions, isLoading: actionsLoading } = useAgentActions(agentId, 200);
   const { data: threads } = useMessageThreads(agentId);
   const { items: realtimeItems, isConnected } = useRealtimeFeed(agentId);
 
@@ -198,15 +198,17 @@ export function UnifiedActivity({ agentId }: { agentId: string }) {
               <p className="font-mono text-sm">Нет записей</p>
             </div>
           ) : (
-            [...filtered].reverse().map((item) => (
-              <TurnCard
-                key={item.id}
-                item={item}
-                showTools={showTools}
-              />
-            ))
+            <>
+              <div ref={topRef} />
+              {filtered.map((item) => (
+                <TurnCard
+                  key={item.id}
+                  item={item}
+                  showTools={showTools}
+                />
+              ))}
+            </>
           )}
-          <div ref={topRef} />
         </div>
       </Card>
 
