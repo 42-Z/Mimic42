@@ -54,7 +54,7 @@ export function TurnCard({
     >
       <button
         onClick={() => setOpen((v) => !v)}
-        className="w-full text-left px-3 py-2.5 hover:bg-void-800/30 transition-colors"
+        className="w-full text-left px-3 pt-2.5 pb-1.5 hover:bg-void-800/30 transition-colors"
       >
         <div className="flex items-center gap-2 mb-1.5">
           <span className="font-mono text-[10px] text-void-600 w-16 shrink-0 tabular-nums">{time}</span>
@@ -104,16 +104,19 @@ export function TurnCard({
             {sanitizeText(item.trigger.content)}
           </p>
         )}
-        {(item.incoming?.media?.length ?? 0) > 0 && (
-          <div className="mt-1.5" onClick={(event) => event.stopPropagation()} role="presentation">
-            <MediaContent agentId={item.agentId ?? ''} items={item.incoming?.media ?? []} />
-          </div>
-        )}
 
         {!hasBody && item.actions.length === 0 && (
           <p className="text-xs text-void-600 italic">Пустой ход</p>
         )}
       </button>
+
+      {/* Media lives outside the toggle button: players inside a <button>
+          are invalid HTML and their clicks would toggle the card. */}
+      {(item.incoming?.media?.length ?? 0) > 0 && (
+        <div className="px-3 pb-2.5">
+          <MediaContent agentId={item.agentId ?? ''} items={item.incoming?.media ?? []} />
+        </div>
+      )}
 
       {open && (
         <div className="px-3 pb-3 pt-1 space-y-3 border-t border-void-800/50">
