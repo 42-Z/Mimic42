@@ -1,6 +1,7 @@
 import { type NextRequest, NextResponse } from 'next/server';
 import { createServerClient, type CookieOptions } from '@supabase/ssr';
 import type { Database } from '@/types/supabase';
+import { getRequestOrigin } from '@/lib/request-origin';
 
 // Public routes that don't require authentication
 const PUBLIC_PATHS = ['/login', '/register', '/auth/callback', '/reset-password', '/update-password'];
@@ -57,10 +58,12 @@ export async function middleware(request: NextRequest) {
   const isPublicPath = PUBLIC_PATHS.some((p) => pathname.startsWith(p));
   const isAuthOnlyPath = AUTH_ONLY_PATHS.some((p) => pathname.startsWith(p));
 
+  const origin = getRequestOrigin(request);
+
   // ── No session ────────────────────────────────────────────────────────────
   if (!user || error) {
     if (!isPublicPath) {
-      const loginUrl = new URL('/login', request.url);
+      const loginUrl = new URL('/login', origin);
       loginUrl.searchParams.set('redirect', pathname);
       return NextResponse.redirect(loginUrl);
     }
@@ -69,7 +72,7 @@ export async function middleware(request: NextRequest) {
 
   // ── Has session, trying to access auth pages → redirect to dashboard ─────
   if (isAuthOnlyPath) {
-    return NextResponse.redirect(new URL('/dashboard', request.url));
+    return NextResponse.redirect(new URL('/dashboard', origin));
   }
 
   // ── Check if onboarding is complete ───────────────────────────────────────
@@ -83,7 +86,7 @@ export async function middleware(request: NextRequest) {
 
     if (!agentsError && (!agents || agents.length === 0)) {
       // No agents exist yet — redirect to onboarding
-      return NextResponse.redirect(new URL('/onboarding', request.url));
+      return NextResponse.redirect(new URL('/onboarding', origin));
     }
   }
 
