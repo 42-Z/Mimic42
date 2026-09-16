@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     host: str = "127.0.0.1"
     port: int = Field(default=8000, gt=0, le=65535)
     supabase_url: str | None = Field(default=None, validation_alias="SUPABASE_URL")
+    supabase_service_key: str | None = Field(
+        default=None, validation_alias="SUPABASE_SERVICE_ROLE_KEY"
+    )
     database_connection_string: str | None = Field(
         default=None,
         validation_alias="DATABASE_CONNECTION_STRING",
