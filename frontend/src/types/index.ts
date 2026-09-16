@@ -91,6 +91,8 @@ export interface ConversationTurn {
   direction: 'incoming' | 'outgoing' | 'both' | 'tools';
   turn_id: string | null;
   incoming_media: MediaItem[];
+  incoming_reply?: { message_id: number; preview?: string | null } | null;
+  outgoing_reply_id?: number | null;
   tools: ToolCallRecord[];
 }
 

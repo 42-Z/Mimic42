@@ -71,6 +71,8 @@ class ConversationTurn(BaseModel):
     direction: str = ""  # "incoming" | "outgoing" | "both" | "tools"
     turn_id: str | None = None
     incoming_media: list[dict[str, Any]] = Field(default_factory=list)
+    incoming_reply: dict[str, Any] | None = None
+    outgoing_reply_id: int | None = None
     tools: list[ToolCallRecord] = Field(default_factory=list)
 
 
@@ -111,6 +113,18 @@ class AgentStore(Protocol):
         limit: int = 50,
         before: datetime | None = None,
     ) -> ConversationPage: ...
+
+
+def _reply_id_of(payload: dict[str, Any]) -> int | None:
+    """Reply target of an answer row: structured response `reply_to`."""
+    structured = payload.get("structured_response")
+    if isinstance(structured, dict):
+        value = structured.get("reply_to")
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str) and value.isdigit():
+            return int(value)
+    return None
 
 
 class InMemoryAgentStore:
@@ -223,6 +237,11 @@ class InMemoryAgentStore:
                     incoming_media=[
                         item for item in (msg.payload.get("media") or []) if isinstance(item, dict)
                     ],
+                    incoming_reply=(
+                        msg.payload.get("reply")
+                        if isinstance(msg.payload.get("reply"), dict)
+                        else None
+                    ),
                 )
                 # Look ahead for an outgoing response
                 if i + 1 < len(filtered) and filtered[i + 1].direction in (
@@ -230,6 +249,7 @@ class InMemoryAgentStore:
                     "outgoing",
                 ):
                     turn.outgoing = filtered[i + 1].content
+                    turn.outgoing_reply_id = _reply_id_of(filtered[i + 1].payload)
                     turn.direction = "both"
                     i += 1
                 else:
@@ -248,6 +268,7 @@ class InMemoryAgentStore:
                         outgoing=msg.content,
                         direction="outgoing",
                         turn_id=msg.payload.get("turn_id"),
+                        outgoing_reply_id=_reply_id_of(msg.payload),
                     )
                 )
             i += 1

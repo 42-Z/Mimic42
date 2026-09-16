@@ -272,6 +272,37 @@ class DatabaseAgentStore:
                     content = structured.get("text", "")
             return content
 
+        def _reply_id(value: Any) -> int | None:
+            if isinstance(value, int):
+                return value
+            if isinstance(value, str) and value.isdigit():
+                return int(value)
+            return None
+
+        def _incoming_reply_of(msg: AgentMessageModel) -> dict[str, Any] | None:
+            value = msg.payload.get("reply")
+            return value if isinstance(value, dict) else None
+
+        def _outgoing_reply_id_of(msg: AgentMessageModel) -> int | None:
+            """Reply target of the agent's answer: the structured response's
+            `reply_to`, or the AgentResponse tool call args."""
+            structured = msg.payload.get("structured_response")
+            if isinstance(structured, dict):
+                found = _reply_id(structured.get("reply_to"))
+                if found is not None:
+                    return found
+            tool_calls = msg.payload.get("tool_calls")
+            if isinstance(tool_calls, list):
+                for call in tool_calls:
+                    if not isinstance(call, dict):
+                        continue
+                    args = call.get("args")
+                    if isinstance(args, dict):
+                        found = _reply_id(args.get("reply_to"))
+                        if found is not None:
+                            return found
+            return None
+
         # Rows of one turn share payload.turn_id. Tool events are written while
         # the turn runs, i.e. *before* the incoming/response rows are persisted,
         # so time-boundary grouping alone would split a turn apart. Group by
@@ -324,6 +355,7 @@ class DatabaseAgentStore:
                                 direction="incoming",
                                 turn_id=turn_id,
                                 incoming_media=media,
+                                incoming_reply=_incoming_reply_of(msg),
                             )
                             legacy_turns.append(turn)
                             continue
@@ -333,9 +365,11 @@ class DatabaseAgentStore:
                         turn.agent_name = str(payload.get("agent_name", ""))
                         turn.incoming = content
                         turn.incoming_media = media
+                        turn.incoming_reply = _incoming_reply_of(msg)
                         turn.direction = "both" if turn.outgoing else "incoming"
                     elif msg.direction in ("agent_response", "outgoing"):
                         turn.outgoing = content
+                        turn.outgoing_reply_id = _outgoing_reply_id_of(msg)
                         if not turn.peer_id:
                             turn.peer_id = str(payload.get("peer", ""))
                             turn.peer_name = str(payload.get("peer_name", ""))
@@ -356,10 +390,12 @@ class DatabaseAgentStore:
                         incoming=content,
                         direction="incoming",
                         incoming_media=media,
+                        incoming_reply=_incoming_reply_of(msg),
                     )
                 elif msg.direction in ("agent_response", "outgoing"):
                     if legacy_current is not None and legacy_current.direction == "incoming":
                         legacy_current.outgoing = content
+                        legacy_current.outgoing_reply_id = _outgoing_reply_id_of(msg)
                         legacy_current.direction = "both"
                     else:
                         if legacy_current is not None:
@@ -373,6 +409,7 @@ class DatabaseAgentStore:
                             agent_name=str(msg.payload.get("agent_name", "")),
                             outgoing=content,
                             direction="outgoing",
+                            outgoing_reply_id=_outgoing_reply_id_of(msg),
                         )
             else:
                 evt = item
@@ -413,6 +450,19 @@ class DatabaseAgentStore:
             legacy_turns.append(legacy_current)
 
         turns = [*by_turn_id.values(), *legacy_turns]
+        # Fallback: an answer sent through the send_text_message tool carries
+        # the reply target in its args, not in the structured response.
+        for turn in turns:
+            if turn.outgoing_reply_id is not None:
+                continue
+            for tool in turn.tools:
+                if tool.name != "tool.send_text_message" or tool.status != "succeeded":
+                    continue
+                args = tool.payload.get("args") if isinstance(tool.payload, dict) else None
+                found = _reply_id(args.get("reply_to_msg_id")) if isinstance(args, dict) else None
+                if found is not None:
+                    turn.outgoing_reply_id = found
+                    break
         turns.sort(key=lambda turn: turn.timestamp, reverse=True)
         page = turns[:limit]
         next_before = page[-1].timestamp if page else None

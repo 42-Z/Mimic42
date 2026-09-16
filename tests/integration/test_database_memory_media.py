@@ -20,6 +20,8 @@ MEDIA = [
     },
 ]
 
+REPLY = {"message_id": 42, "preview": "предыдущее сообщение"}
+
 
 async def _create_agent(
     db_session_factory: async_sessionmaker[AsyncSession], owner_id: UUID
@@ -55,6 +57,7 @@ async def test_save_messages_attaches_media_to_incoming_row(
         raw_user_text="Привет",
         turn_id="turn-42",
         media=MEDIA,
+        reply=REPLY,
     )
 
     async with db_session_factory() as session:
@@ -68,6 +71,7 @@ async def test_save_messages_attaches_media_to_incoming_row(
         assert row is not None
         assert row.content == "Привет"
         assert row.payload.get("media") == MEDIA
+        assert row.payload.get("reply") == REPLY
         assert row.payload.get("turn_id") == "turn-42"
 
 

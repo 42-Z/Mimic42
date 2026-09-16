@@ -48,6 +48,7 @@ class FakeShortTermMemory:
         turn_id: str | None = None,
         thread_id: UUID | None = None,
         media: list[dict[str, Any]] | None = None,
+        reply: dict[str, Any] | None = None,
     ) -> None:
         self.saved_messages.append(messages)
 

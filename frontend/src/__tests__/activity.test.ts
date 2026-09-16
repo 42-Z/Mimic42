@@ -158,6 +158,52 @@ describe('buildActivityFeed', () => {
     expect(items[0]?.peerTitle).toBe('Miqqil⁴² 5opka - MAGNUM (@miqqil, ID: 6121153070)');
   });
 
+  test('carries reply info for realtime turns', () => {
+    const items = buildActivityFeed(
+      [
+        msg({
+          id: 'in',
+          content: 'лови реплай',
+          payload: {
+            turn_id: 't-reply',
+            peer: '1',
+            reply: { message_id: 5, preview: 'предыдущее сообщение' },
+          },
+        }),
+        msg({
+          id: 'out',
+          role: 'assistant',
+          direction: 'agent_response',
+          content: 'держи',
+          created_at: '2026-09-09T10:00:10Z',
+          payload: {
+            turn_id: 't-reply',
+            peer: '1',
+            structured_response: { text: 'держи', reply_to: 736 },
+          },
+        }),
+      ],
+      [],
+    );
+
+    expect(items[0]?.incoming?.reply?.message_id).toBe(5);
+    expect(items[0]?.incoming?.reply?.preview).toBe('предыдущее сообщение');
+    expect(items[0]?.responseReplyTo).toBe(736);
+  });
+
+  test('reply target falls back to a send_text_message tool call', () => {
+    const items = buildActivityFeed(
+      [msg({ id: 'in', payload: { turn_id: 't-tool-reply' } })],
+      [
+        evt({
+          id: 'sent',
+          payload: { turn_id: 't-tool-reply', args: { message: 'ответ', reply_to_msg_id: 99 } },
+        }),
+      ],
+    );
+    expect(items[0]?.responseReplyTo).toBe(99);
+  });
+
   test('carries incoming media from payload', () => {
     const items = buildActivityFeed(
       [
@@ -186,6 +232,31 @@ describe('buildActivityFeed', () => {
 });
 
 describe('turnToActivityItem', () => {
+  test('maps reply fields from a backend turn', () => {
+    const turn = {
+      id: 'm-reply',
+      agent_id: 'agent-1',
+      timestamp: '2026-01-01T00:00:00Z',
+      turn_id: 't-reply',
+      peer_id: '1',
+      peer_name: 'Аня',
+      agent_name: 'Мими',
+      incoming: 'лови реплай',
+      outgoing: 'держи',
+      direction: 'both',
+      incoming_media: [],
+      incoming_reply: { message_id: 5, preview: 'предыдущее' },
+      outgoing_reply_id: 736,
+      tools: [],
+    } as unknown as ConversationTurn;
+
+    const item = turnToActivityItem(turn);
+
+    expect(item.incoming?.reply?.message_id).toBe(5);
+    expect(item.incoming?.reply?.preview).toBe('предыдущее');
+    expect(item.responseReplyTo).toBe(736);
+  });
+
   test('maps a lifecycle-only turn to a compact lifecycle item', () => {
     const turn = {
       id: 'evt-1',

@@ -7,6 +7,7 @@ import {
   Clock,
   MessageSquarePlus,
   MessagesSquare,
+  Reply,
   UserRound,
   type LucideIcon,
 } from 'lucide-react';
@@ -56,6 +57,8 @@ function MessageRow({
   tone,
   name,
   tag,
+  badgeId,
+  reply,
   text,
   clamp,
 }: {
@@ -63,6 +66,8 @@ function MessageRow({
   tone: MessageTone;
   name: string;
   tag: string;
+  badgeId?: number | null;
+  reply?: { message_id: number; preview?: string | null } | null;
   text: string;
   clamp: boolean;
 }) {
@@ -76,7 +81,21 @@ function MessageRow({
         <div className="flex items-baseline gap-1.5">
           <span className={cn(MESSAGE_META, 'truncate', styles.name)}>{sanitizeText(name)}</span>
           <span className={cn(MESSAGE_META, 'shrink-0 text-[9px]', styles.tag)}>{tag}</span>
+          {badgeId != null && (
+            <span className="shrink-0 rounded-[2px] border border-void-800 px-1 font-mono text-[9px] tabular-nums text-void-500">
+              #{badgeId}
+            </span>
+          )}
         </div>
+        {reply && (
+          <div className="mt-1 flex items-start gap-1.5 border-l-2 border-void-700 pl-2">
+            <Reply className="mt-px h-3 w-3 shrink-0 text-void-600" />
+            <span className="truncate font-mono text-[10px] text-void-500">
+              #{reply.message_id}
+              {reply.preview ? ` · ${sanitizeText(reply.preview)}` : ''}
+            </span>
+          </div>
+        )}
         <p
           className={cn(
             'mt-0.5 text-xs leading-relaxed whitespace-pre-wrap break-words',
@@ -162,9 +181,19 @@ export function TurnCard({
     tag: string,
     part: ActivityMessagePart,
     content: string,
+    badgeId?: number | null,
   ) => (
     <>
-      <MessageRow icon={icon} tone={tone} name={name} tag={tag} text={content} clamp={!openAll} />
+      <MessageRow
+        icon={icon}
+        tone={tone}
+        name={name}
+        tag={tag}
+        badgeId={badgeId}
+        reply={part.reply ?? null}
+        text={content}
+        clamp={!openAll}
+      />
       {part.media && part.media.length > 0 && item.agentId && (
         <div className="mt-1.5 pl-[30px]">
           <MediaContent agentId={item.agentId} items={part.media} />
@@ -253,7 +282,15 @@ export function TurnCard({
         {/* Newest first inside a block: response → tools → incoming. */}
         <div className="mt-2.5 space-y-2">
           {item.response &&
-            renderMessage(Bot, 'agent', agentLabel, 'ответ', item.response, item.response.content)}
+            renderMessage(
+              Bot,
+              'agent',
+              agentLabel,
+              item.responseReplyTo != null ? 'reply-ответ' : 'ответ',
+              item.response,
+              item.response.content,
+              item.responseReplyTo,
+            )}
 
           {!chatOnly && item.actions.length > 0 && (
             <div className="space-y-0.5 pl-[30px]">
@@ -274,7 +311,7 @@ export function TurnCard({
               UserRound,
               'peer',
               senderLabel ?? (item.peer ? `ID ${item.peer}` : 'собеседник'),
-              'входящее',
+              item.incoming.reply ? 'reply-входящее' : 'входящее',
               item.incoming,
               incomingBody(item.incoming.content),
             )}

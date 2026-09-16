@@ -221,6 +221,86 @@ async def test_lifecycle_events_stay_standalone(
     assert {turn.tools[0].name for turn in lifecycle_turns} == {"agent.started", "agent.stopped"}
 
 
+async def test_reply_targets_surface_on_turn(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    owner_id = clean_slot.persona("twofa").user_id
+    base = datetime(2026, 5, 19, 23, 30, tzinfo=UTC)
+    agent_id = uuid4()
+    async with db_session_factory() as session:
+        session.add(
+            AgentModel(
+                id=agent_id,
+                owner_id=owner_id,
+                name="Mimic",
+                status=AgentRuntimeState.STOPPED.value,
+                soul_prompt="Soul",
+            )
+        )
+        await session.commit()
+    async with db_session_factory() as session:
+        session.add(
+            AgentMessageModel(
+                agent_id=agent_id,
+                direction="incoming",
+                role="user",
+                content="лови реплай",
+                payload={
+                    "peer": "chat",
+                    "turn_id": "t-reply",
+                    "reply": {"message_id": 5, "preview": "предыдущее"},
+                },
+                created_at=base,
+            )
+        )
+        session.add(
+            AgentMessageModel(
+                agent_id=agent_id,
+                direction="agent_response",
+                role="assistant",
+                content="держи",
+                payload={
+                    "peer": "chat",
+                    "turn_id": "t-reply",
+                    "structured_response": {"text": "держи", "reply_to": 736},
+                },
+                created_at=base + timedelta(seconds=1),
+            )
+        )
+        # Tool-based answer: reply target lives in the tool args.
+        session.add(
+            AgentMessageModel(
+                agent_id=agent_id,
+                direction="incoming",
+                role="user",
+                content="ответь тулзой",
+                payload={"peer": "chat", "turn_id": "t-tool"},
+                created_at=base + timedelta(minutes=1),
+            )
+        )
+        session.add(
+            AgentEventModel(
+                agent_id=agent_id,
+                event_type="tool.send_text_message",
+                status="succeeded",
+                payload={"turn_id": "t-tool", "args": {"message": "ок", "reply_to_msg_id": 99}},
+                created_at=base + timedelta(minutes=1, seconds=1),
+                started_at=base + timedelta(minutes=1),
+                completed_at=base + timedelta(minutes=1, seconds=1),
+            )
+        )
+        await session.commit()
+
+    store = DatabaseAgentStore(db_session_factory)
+    page = await store.get_conversation(agent_id=agent_id, limit=10)
+    by_turn = {turn.turn_id: turn for turn in page.turns}
+
+    assert by_turn["t-reply"].incoming_reply == {"message_id": 5, "preview": "предыдущее"}
+    assert by_turn["t-reply"].outgoing_reply_id == 736
+    assert by_turn["t-tool"].outgoing_reply_id == 99
+
+
 async def test_real_write_order_keeps_one_merged_turn(
     db_session_factory: async_sessionmaker[AsyncSession],
     clean_slot: Slot,

@@ -71,6 +71,8 @@ class AgentTrigger(BaseModel):
     thread_id: UUID | None = None
     thread_title: str | None = None
     media: list[dict[str, Any]] = Field(default_factory=list)
+    reply_to_message_id: int | None = Field(default=None, gt=0)
+    reply_preview: str | None = None
 
 
 class AgentTriggerResult(BaseModel):
@@ -413,6 +415,14 @@ class MimicAgentRuntime:
             logger.debug(f"Processing message from {trigger.peer}: {trigger.text[:100]}")
             turn_id = str(uuid4())
             turn_context = TurnContext(turn_id=turn_id, peer=trigger.peer)
+            reply_payload = (
+                {
+                    "message_id": trigger.reply_to_message_id,
+                    "preview": trigger.reply_preview,
+                }
+                if trigger.reply_to_message_id is not None
+                else None
+            )
             messages = await self._memory_service.build_messages(
                 agent_id=self.config.agent_id,
                 peer=trigger.peer,
@@ -452,6 +462,7 @@ class MimicAgentRuntime:
                         turn_id=turn_id,
                         thread_id=trigger.thread_id,
                         media=trigger.media or None,
+                        reply=reply_payload,
                     )
                 except Exception:
                     logger.warning(
@@ -557,6 +568,7 @@ class MimicAgentRuntime:
                 turn_id=turn_id,
                 thread_id=trigger.thread_id,
                 media=trigger.media or None,
+                reply=reply_payload,
             )
 
         return AgentTriggerResult(
@@ -870,6 +882,7 @@ class MimicAgentRuntime:
                     reply_to_msg_id = getattr(reply_to, "reply_to_msg_id", None)
 
             reply_str = ""
+            reply_preview = ""
             if reply_to_msg_id:
                 logger.debug(
                     "Reply detected: reply_to_msg_id=%s for chat_id=%s",
@@ -944,6 +957,8 @@ class MimicAgentRuntime:
                     thread_id=thread_id,
                     thread_title=thread_title,
                     media=[m.as_payload() for m in media_files],
+                    reply_to_message_id=reply_to_msg_id,
+                    reply_preview=reply_preview[:200] if reply_preview else None,
                 )
             )
         except Exception as e:

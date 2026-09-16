@@ -45,6 +45,7 @@ export interface ActivityMessagePart {
   content: string;
   createdAt: string;
   media?: MediaItem[];
+  reply?: { message_id: number; preview?: string | null } | null;
 }
 
 export type ActivityItemKind = 'turn' | 'lifecycle';
@@ -63,6 +64,7 @@ export interface ActivityItem {
   response: ActivityMessagePart | null;
   trigger: ActivityMessagePart | null;
   incomingMedia?: MediaItem[];
+  responseReplyTo?: number | null;
   actions: ActivityAction[];
 }
 
@@ -131,6 +133,54 @@ function mediaOf(message: MessageLike | undefined): MediaItem[] {
   return Array.isArray(media) ? (media as MediaItem[]) : [];
 }
 
+function replyOf(
+  message: MessageLike | undefined,
+): { message_id: number; preview?: string | null } | null {
+  const reply = message?.payload?.reply;
+  if (!reply || typeof reply !== 'object') return null;
+  const record = reply as Record<string, unknown>;
+  const id = record.message_id;
+  if (typeof id !== 'number') return null;
+  const preview = typeof record.preview === 'string' ? record.preview : null;
+  return { message_id: id, preview };
+}
+
+function numeric(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && /^\d+$/.test(value)) return Number(value);
+  return null;
+}
+
+/** Reply target of the agent's answer: structured response or AgentResponse args. */
+function responseReplyOf(message: MessageLike | undefined): number | null {
+  const payload = message?.payload;
+  if (!payload) return null;
+  const structured = payload.structured_response;
+  if (structured && typeof structured === 'object') {
+    const found = numeric((structured as Record<string, unknown>).reply_to);
+    if (found !== null) return found;
+  }
+  const toolCalls = payload.tool_calls;
+  if (Array.isArray(toolCalls)) {
+    for (const call of toolCalls) {
+      if (!call || typeof call !== 'object') continue;
+      const args = (call as Record<string, unknown>).args;
+      if (args && typeof args === 'object') {
+        const found = numeric((args as Record<string, unknown>).reply_to);
+        if (found !== null) return found;
+      }
+    }
+  }
+  return null;
+}
+
+/** Reply target carried by a successful send_text_message tool event. */
+function toolReplyOf(event: EventLike | undefined): number | null {
+  const args = event?.payload?.args;
+  if (!args || typeof args !== 'object') return null;
+  return numeric((args as Record<string, unknown>).reply_to_msg_id);
+}
+
 function buildTurn(
   key: string,
   messages: MessageLike[],
@@ -181,6 +231,16 @@ function buildTurn(
 
   const responseId = responseMsg?.id ?? `${key}:response`;
 
+  // The answer's reply target: structured response, AgentResponse args, or the
+  // message a successful send_text_message tool call replied to.
+  let responseReplyTo = responseReplyOf(responseMsg);
+  if (responseReplyTo === null) {
+    const sentTool = sortedEvents.find(
+      (e) => e.event_type === 'tool.send_text_message' && e.status === 'succeeded',
+    );
+    responseReplyTo = toolReplyOf(sentTool);
+  }
+
   return {
     kind,
     id: key,
@@ -197,6 +257,7 @@ function buildTurn(
           content: incomingMsg.content,
           createdAt: incomingMsg.created_at,
           media: mediaOf(incomingMsg),
+          reply: replyOf(incomingMsg),
         }
       : null,
     response: responseContent
@@ -210,6 +271,7 @@ function buildTurn(
       ? { id: triggerMsg.id, content: triggerMsg.content, createdAt: triggerMsg.created_at }
       : null,
     incomingMedia: mediaOf(incomingMsg),
+    responseReplyTo,
     actions: sortedEvents.map(toAction),
   };
 }
@@ -339,6 +401,7 @@ export function turnToActivityItem(turn: ConversationTurn): ActivityItem {
           content: turn.incoming,
           createdAt,
           media: turn.incoming_media ?? [],
+          reply: turn.incoming_reply ?? null,
         }
       : null,
     response: turn.outgoing
@@ -346,6 +409,7 @@ export function turnToActivityItem(turn: ConversationTurn): ActivityItem {
       : null,
     trigger: null,
     incomingMedia: turn.incoming_media ?? [],
+    responseReplyTo: turn.outgoing_reply_id ?? null,
     actions,
   };
 }
