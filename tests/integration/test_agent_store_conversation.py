@@ -147,6 +147,80 @@ async def test_incoming_media_surfaces_on_turn(
     assert page.turns[0].incoming_media == media
 
 
+async def test_lifecycle_events_stay_standalone(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    """Start/stop events carry no turn_id: they must not be glued to the
+    neighbouring message turn (history would duplicate the live feed)."""
+    owner_id = clean_slot.persona("twofa").user_id
+    base = datetime(2026, 5, 19, 23, 30, tzinfo=UTC)
+    agent_id = uuid4()
+    async with db_session_factory() as session:
+        session.add(
+            AgentModel(
+                id=agent_id,
+                owner_id=owner_id,
+                name="Mimic",
+                status=AgentRuntimeState.STOPPED.value,
+                soul_prompt="Soul",
+            )
+        )
+        await session.commit()
+    async with db_session_factory() as session:
+        session.add(
+            AgentEventModel(
+                agent_id=agent_id,
+                event_type="agent.started",
+                status="succeeded",
+                payload={"peer": "chat"},
+                created_at=base,
+            )
+        )
+        session.add(
+            AgentMessageModel(
+                agent_id=agent_id,
+                direction="incoming",
+                role="user",
+                content="Привет",
+                payload={"peer": "chat"},
+                created_at=base + timedelta(seconds=1),
+            )
+        )
+        session.add(
+            AgentMessageModel(
+                agent_id=agent_id,
+                direction="agent_response",
+                role="assistant",
+                content="Здравствуйте!",
+                payload={"peer": "chat"},
+                created_at=base + timedelta(seconds=2),
+            )
+        )
+        session.add(
+            AgentEventModel(
+                agent_id=agent_id,
+                event_type="agent.stopped",
+                status="succeeded",
+                payload={"peer": "chat"},
+                created_at=base + timedelta(seconds=3),
+            )
+        )
+        await session.commit()
+
+    store = DatabaseAgentStore(db_session_factory)
+    page = await store.get_conversation(agent_id=agent_id, limit=10)
+
+    message_turns = [turn for turn in page.turns if turn.incoming]
+    assert len(message_turns) == 1
+    assert message_turns[0].outgoing == "Здравствуйте!"
+    assert message_turns[0].tools == []
+
+    lifecycle_turns = [turn for turn in page.turns if turn.direction == "tools"]
+    assert len(lifecycle_turns) == 2
+    assert {turn.tools[0].name for turn in lifecycle_turns} == {"agent.started", "agent.stopped"}
+
+
 async def test_real_write_order_keeps_one_merged_turn(
     db_session_factory: async_sessionmaker[AsyncSession],
     clean_slot: Slot,

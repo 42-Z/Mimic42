@@ -186,6 +186,41 @@ describe('buildActivityFeed', () => {
 });
 
 describe('turnToActivityItem', () => {
+  test('maps a lifecycle-only turn to a compact lifecycle item', () => {
+    const turn = {
+      id: 'evt-1',
+      agent_id: 'agent-1',
+      timestamp: '2026-01-01T00:00:00Z',
+      turn_id: null,
+      peer_id: '',
+      peer_name: '',
+      agent_name: '',
+      incoming: '',
+      outgoing: '',
+      direction: 'tools',
+      incoming_media: [],
+      tools: [
+        {
+          id: 'e1',
+          name: 'agent.started',
+          status: 'succeeded',
+          payload: {},
+          result: null,
+          error: null,
+          duration_ms: 0,
+          created_at: '2026-01-01T00:00:00Z',
+        },
+      ],
+    } as unknown as ConversationTurn;
+
+    const item = turnToActivityItem(turn);
+
+    expect(item.kind).toBe('lifecycle');
+    expect(item.id).toBe('evt:e1');
+    expect(item.actions).toHaveLength(1);
+    expect(item.actions[0]?.eventType).toBe('agent.started');
+  });
+
   test('maps a backend turn preserving media and turn identity', () => {
     const turn = {
       id: 'm1',

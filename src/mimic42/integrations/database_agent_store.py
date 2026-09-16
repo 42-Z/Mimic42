@@ -395,11 +395,11 @@ class DatabaseAgentStore:
                     if not turn.peer_id:
                         turn.peer_id = str(payload.get("parent_peer") or payload.get("peer") or "")
                     continue
-                if legacy_current is not None:
-                    legacy_current.tools.append(tool)
-                else:
-                    # Orphan event — create a tools-only turn
-                    legacy_current = ConversationTurn(
+                # Lifecycle events (start/stop/timer) belong to no turn: they
+                # always stay their own block so history matches the realtime
+                # feed and nothing is duplicated inside a neighbouring turn.
+                legacy_turns.append(
+                    ConversationTurn(
                         id=evt.id,
                         agent_id=agent_id,
                         timestamp=evt.created_at,
@@ -407,6 +407,7 @@ class DatabaseAgentStore:
                         direction="tools",
                         tools=[tool],
                     )
+                )
 
         if legacy_current is not None:
             legacy_turns.append(legacy_current)

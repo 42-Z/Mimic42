@@ -292,6 +292,37 @@ export function turnToActivityItem(turn: ConversationTurn): ActivityItem {
       completed_at: tool.created_at,
     } as unknown as EventLike);
 
+  const actions = turn.tools.map(toActionRow);
+  const firstAction = actions[0];
+
+  // A turn made of a single lifecycle event (agent.started, timer.fired, …)
+  // renders as one compact line — same shape and id as the realtime feed, so
+  // the two sources deduplicate instead of showing the event twice.
+  if (
+    !turn.incoming &&
+    !turn.outgoing &&
+    actions.length === 1 &&
+    firstAction !== undefined &&
+    !firstAction.eventType.startsWith('tool.')
+  ) {
+    return {
+      kind: 'lifecycle',
+      id: `evt:${firstAction.id}`,
+      agentId: turn.agent_id,
+      turnId: turn.turn_id ?? null,
+      peer: turn.peer_id,
+      peerTitle: turn.peer_name || null,
+      createdAt,
+      endedAt: null,
+      failed: firstAction.status === 'failed',
+      incoming: null,
+      response: null,
+      trigger: null,
+      incomingMedia: [],
+      actions,
+    };
+  }
+
   return {
     kind: 'turn',
     id: turn.turn_id ? `turn:${turn.turn_id}` : `msg:${turn.id}`,
@@ -301,7 +332,7 @@ export function turnToActivityItem(turn: ConversationTurn): ActivityItem {
     peerTitle: turn.peer_name || null,
     createdAt,
     endedAt: null,
-    failed: turn.tools.some((t) => t.status === 'failed'),
+    failed: actions.some((a) => a.status === 'failed'),
     incoming: turn.incoming
       ? {
           id: turn.id,
@@ -315,7 +346,7 @@ export function turnToActivityItem(turn: ConversationTurn): ActivityItem {
       : null,
     trigger: null,
     incomingMedia: turn.incoming_media ?? [],
-    actions: turn.tools.map(toActionRow),
+    actions,
   };
 }
 
