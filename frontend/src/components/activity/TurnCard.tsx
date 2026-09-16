@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { ChevronDown, CornerDownRight, MessageSquarePlus } from 'lucide-react';
+import { ChevronDown, MessageSquarePlus } from 'lucide-react';
 import type { ActivityItem } from '@/lib/activity/normalize';
 import { incomingBody } from '@/lib/activity/normalize';
 import { ActionRow } from './ActionRow';
@@ -25,7 +25,11 @@ export function TurnCard({
 }) {
   const [open, setOpen] = useState(defaultOpen);
   const time = new Date(item.createdAt).toLocaleTimeString('ru-RU', { hour12: false });
-  const peerLabel = item.peerTitle ?? (item.peer ? `ID ${item.peer}` : null);
+  // The header carries the chat context; every message carries its author.
+  const chatLabel = item.peerTitle ?? (item.peer ? `ID ${item.peer}` : null);
+  const chatHasName = chatLabel !== null && !chatLabel.startsWith('ID ') && chatLabel !== item.peer;
+  const senderLabel = (item.peerTitle?.split(' (')[0]?.trim() || chatLabel || 'собеседник');
+  const agentLabel = agentName?.trim() || 'агент';
 
   // Lifecycle rows (start/stop/timer events) render as a single compact line.
   if (item.kind === 'lifecycle') {
@@ -60,14 +64,13 @@ export function TurnCard({
       >
         <div className="flex items-center gap-2 mb-1.5">
           <span className="font-mono text-[10px] text-void-600 w-16 shrink-0 tabular-nums">{time}</span>
-          {peerLabel && (
-            <span className="font-mono text-[10px] text-plasma-400 truncate max-w-[200px]">
-              {sanitizeText(peerLabel)}
-            </span>
-          )}
-          {item.peer && peerLabel !== `ID ${item.peer}` && (
-            <span className="font-mono text-[10px] text-void-700 shrink-0">
-              чат {sanitizeText(item.peer)}
+          {chatLabel && (
+            <span className="font-mono text-[10px] truncate max-w-[240px]">
+              <span className="text-void-600">чат: </span>
+              <span className="text-plasma-400">{sanitizeText(chatLabel)}</span>
+              {chatHasName && item.peer && (
+                <span className="text-void-700"> · {sanitizeText(item.peer)}</span>
+              )}
             </span>
           )}
           {item.actions.some((a) => a.status === 'failed') && (
@@ -80,14 +83,13 @@ export function TurnCard({
           />
         </div>
 
-        {/* Newest first inside a block: response → tools → incoming. */}
+        {/* Newest first inside a block: response → tools → incoming.
+            Each message line names its author. */}
         {item.response && (
           <p className="text-xs text-neon-300/90 leading-relaxed line-clamp-2">
-            {agentName && (
-              <span className="font-mono text-[10px] uppercase tracking-wider text-neon-500 mr-1.5">
-                {sanitizeText(agentName)}
-              </span>
-            )}
+            <span className="font-mono text-[10px] uppercase tracking-wider text-neon-500 mr-1.5">
+              {sanitizeText(agentLabel)}
+            </span>
             {sanitizeText(item.response.content)}
           </p>
         )}
@@ -102,12 +104,17 @@ export function TurnCard({
 
         {item.incoming && (
           <p className="mt-1.5 text-xs text-void-100 leading-relaxed line-clamp-2">
-            <CornerDownRight className="h-3 w-3 inline mr-1.5 text-plasma-500 -mt-0.5" />
+            <span className="font-mono text-[10px] uppercase tracking-wider text-plasma-400 mr-1.5 inline-block max-w-[12rem] truncate align-bottom">
+              {sanitizeText(senderLabel)}
+            </span>
             {sanitizeText(incomingBody(item.incoming.content))}
           </p>
         )}
         {!item.incoming && item.trigger && (
           <p className="mt-1.5 text-xs text-void-400 leading-relaxed line-clamp-2 italic">
+            <span className="font-mono text-[10px] uppercase tracking-wider text-void-500 not-italic mr-1.5">
+              дашборд
+            </span>
             {sanitizeText(item.trigger.content)}
           </p>
         )}
@@ -130,7 +137,7 @@ export function TurnCard({
           {item.response && (
             <section>
               <h4 className="font-mono text-[10px] text-void-600 uppercase tracking-wider mb-1">
-                Ответ
+                Ответ <span className="text-neon-500">· {sanitizeText(agentLabel)}</span>
               </h4>
               <p className="text-xs text-void-200 whitespace-pre-wrap break-words bg-void-900/50 rounded-[2px] p-2">
                 {sanitizeText(item.response.content)}
@@ -156,6 +163,7 @@ export function TurnCard({
             <section>
               <h4 className="font-mono text-[10px] text-void-600 uppercase tracking-wider mb-1 flex items-center gap-1.5">
                 <MessageSquarePlus className="h-3 w-3" /> Входящее
+                <span className="text-plasma-400">· {sanitizeText(senderLabel)}</span>
               </h4>
               <p className="text-xs text-void-300 whitespace-pre-wrap break-words bg-void-900/50 rounded-[2px] p-2">
                 {sanitizeText(item.incoming.content)}
