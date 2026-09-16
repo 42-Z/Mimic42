@@ -522,6 +522,39 @@ def create_app(
         await _ensure_agent_owner(store, agent_id=agent_id, user_id=current_user.user_id)
         return await store.get_conversation(agent_id=agent_id, limit=limit, before=before)
 
+    @app.get("/api/v1/agents/{agent_id}/media/{media_path:path}")
+    async def get_agent_media(
+        agent_id: UUID,
+        media_path: str,
+        current_user: CurrentUserDep,
+    ) -> Response:
+        store = _get_agent_store(app)
+        media_storage: MediaUploader | None = getattr(app.state, "media_uploader", None)
+        if store is None or media_storage is None:
+            raise HTTPException(status_code=404, detail="Медиа недоступно")
+        await _ensure_agent_owner(store, agent_id=agent_id, user_id=current_user.user_id)
+        # Объект обязан лежать внутри папки агента — иначе доступ к чужому файлу.
+        if not media_path.startswith(f"{agent_id}/"):
+            raise HTTPException(status_code=403, detail="Нет доступа к этому файлу")
+        data = await media_storage.open(media_path)
+        if data is None:
+            raise HTTPException(status_code=404, detail="Файл не найден")
+        extension = media_path.rsplit(".", 1)[-1].lower()
+        content_types = {
+            "jpeg": "image/jpeg",
+            "jpg": "image/jpeg",
+            "png": "image/png",
+            "webp": "image/webp",
+            "gif": "image/gif",
+            "ogg": "audio/ogg",
+            "mp4": "video/mp4",
+            "pdf": "application/pdf",
+        }
+        return Response(
+            content=data,
+            media_type=content_types.get(extension, "application/octet-stream"),
+        )
+
     @app.post(
         "/api/v1/agents",
         response_model=AgentStatus,
