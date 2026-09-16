@@ -1,6 +1,7 @@
 import { getToolMeta } from './toolCatalog';
 import { getEventMeta } from './eventCatalog';
 import { describeError } from './errorCatalog';
+import type { ConversationTurn, MediaItem, ToolCallRecord } from '@/types';
 
 /** Loose row shapes accepted from both the REST API and the realtime channel. */
 export interface MessageLike {
@@ -43,6 +44,7 @@ export interface ActivityMessagePart {
   id: string;
   content: string;
   createdAt: string;
+  media?: MediaItem[];
 }
 
 export type ActivityItemKind = 'turn' | 'lifecycle';
@@ -60,6 +62,7 @@ export interface ActivityItem {
   incoming: ActivityMessagePart | null;
   response: ActivityMessagePart | null;
   trigger: ActivityMessagePart | null;
+  incomingMedia?: MediaItem[];
   actions: ActivityAction[];
 }
 
@@ -109,6 +112,20 @@ function toAction(event: EventLike): ActivityAction {
   };
 }
 
+function structuredTextOf(message: MessageLike | undefined): string {
+  const structured = message?.payload?.structured_response;
+  if (structured && typeof structured === 'object') {
+    const text = (structured as { text?: unknown }).text;
+    if (typeof text === 'string') return text;
+  }
+  return '';
+}
+
+function mediaOf(message: MessageLike | undefined): MediaItem[] {
+  const media = message?.payload?.media;
+  return Array.isArray(media) ? (media as MediaItem[]) : [];
+}
+
 function buildTurn(
   key: string,
   messages: MessageLike[],
@@ -127,18 +144,37 @@ function buildTurn(
     (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
   );
 
+  // The visible reply: a stored response row, the structured text of a realtime
+  // row with empty content, or the message a successful send_text_message
+  // tool call actually delivered (tool-only turns have no response row).
+  let responseContent = responseMsg ? responseMsg.content : '';
+  if (!responseContent && responseMsg) responseContent = structuredTextOf(responseMsg);
+  let responseCreatedAt = responseMsg?.created_at ?? null;
+  if (!responseContent) {
+    const sentTool = sortedEvents.find(
+      (e) => e.event_type === 'tool.send_text_message' && e.status === 'succeeded',
+    );
+    const args = sentTool?.payload?.args as Record<string, unknown> | undefined;
+    if (args && typeof args.message === 'string') {
+      responseContent = args.message;
+      responseCreatedAt = sentTool?.completed_at ?? sentTool?.created_at ?? null;
+    }
+  }
+
   const timestamps = [
     ...messages.map((m) => new Date(m.created_at).getTime()),
     ...events.map((e) => new Date(e.created_at).getTime()),
   ].filter((t) => Number.isFinite(t));
   const createdAt = timestamps.length ? new Date(Math.min(...timestamps)).toISOString() : key;
-  const endedAt = sortedEvents.at(-1)?.completed_at ?? responseMsg?.created_at ?? null;
+  const endedAt = sortedEvents.at(-1)?.completed_at ?? responseCreatedAt ?? null;
 
   const peer =
     (incomingMsg ? peerOf(incomingMsg) : '') ||
     (triggerMsg ? peerOf(triggerMsg) : '') ||
     (sortedEvents[0]?.payload?.peer as string | undefined) ||
     '';
+
+  const responseId = responseMsg?.id ?? `${key}:response`;
 
   return {
     kind,
@@ -151,14 +187,24 @@ function buildTurn(
     endedAt,
     failed: sortedEvents.some((e) => e.status === 'failed'),
     incoming: incomingMsg
-      ? { id: incomingMsg.id, content: incomingMsg.content, createdAt: incomingMsg.created_at }
+      ? {
+          id: incomingMsg.id,
+          content: incomingMsg.content,
+          createdAt: incomingMsg.created_at,
+          media: mediaOf(incomingMsg),
+        }
       : null,
-    response: responseMsg
-      ? { id: responseMsg.id, content: responseMsg.content, createdAt: responseMsg.created_at }
+    response: responseContent
+      ? {
+          id: responseId,
+          content: responseContent,
+          createdAt: responseCreatedAt ?? createdAt,
+        }
       : null,
     trigger: triggerMsg
       ? { id: triggerMsg.id, content: triggerMsg.content, createdAt: triggerMsg.created_at }
       : null,
+    incomingMedia: mediaOf(incomingMsg),
     actions: sortedEvents.map(toAction),
   };
 }
@@ -220,6 +266,52 @@ export function buildActivityFeed(
 /** Total count of tool actions inside an item. */
 export function countActions(item: ActivityItem): number {
   return item.actions.filter((a) => a.eventType.startsWith('tool.')).length;
+}
+
+/**
+ * Maps a backend conversation turn (cursor page) into the feed item shape.
+ * Tool records reuse `toAction`, so labels/statuses match the realtime path.
+ */
+export function turnToActivityItem(turn: ConversationTurn): ActivityItem {
+  const createdAt = new Date(turn.timestamp).toISOString();
+  const toActionRow = (tool: ToolCallRecord) =>
+    toAction({
+      id: tool.id,
+      event_type: tool.name,
+      status: tool.status,
+      created_at: tool.created_at,
+      error: tool.error,
+      payload: (tool.payload ?? null) as Record<string, unknown> | null,
+      result: (tool.result ?? null) as Record<string, unknown> | null,
+      started_at: tool.created_at,
+      completed_at: tool.created_at,
+    } as unknown as EventLike);
+
+  return {
+    kind: 'turn',
+    id: turn.turn_id ? `turn:${turn.turn_id}` : `msg:${turn.id}`,
+    agentId: turn.agent_id,
+    turnId: turn.turn_id ?? null,
+    peer: turn.peer_id,
+    peerTitle: turn.peer_name || null,
+    createdAt,
+    endedAt: null,
+    failed: turn.tools.some((t) => t.status === 'failed'),
+    incoming: turn.incoming
+      ? {
+          id: turn.id,
+          content: turn.incoming,
+          createdAt,
+          media: turn.incoming_media ?? [],
+        }
+      : null,
+    response: turn.outgoing
+      ? { id: `${turn.id}-out`, content: turn.outgoing, createdAt }
+      : null,
+    trigger: null,
+    incomingMedia: turn.incoming_media ?? [],
+    actions: turn.tools.map(toActionRow),
+  };
 }
 
 /** Extract the human-readable part of the wrapped incoming message prompt. */

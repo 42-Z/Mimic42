@@ -1,32 +1,22 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useSearchParams } from 'next/navigation';
-import { ScrollText, Wifi, WifiOff } from 'lucide-react';
-import { useAgentMessages, useAgentActions } from '@/hooks/useAgentMessages';
+import { Activity, Wifi, WifiOff } from 'lucide-react';
+import { useActivityFeed } from '@/hooks/useActivityFeed';
 import { useRealtimeFeed } from '@/hooks/useRealtimeFeed';
 import { useMessageThreads } from '@/hooks/useTelegramSession';
 import { Card, Spinner } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
-import { TurnCard } from '@/components/activity/TurnCard';
-import { buildActivityFeed, type ActivityItem, type EventLike, type MessageLike } from '@/lib/activity/normalize';
+import { TurnCard } from './TurnCard';
+import { turnToActivityItem, type ActivityItem } from '@/lib/activity/normalize';
 import { cn } from '@/lib/utils';
 
-type LogFilter = 'all' | 'messages' | 'actions' | 'errors';
+type FeedFilter = 'full' | 'chat';
 
-const FILTER_LABELS: Record<LogFilter, string> = {
-  all: 'Все',
-  messages: 'Сообщения',
-  actions: 'Действия',
-  errors: 'Ошибки',
-};
+const FILTER_LABELS: Record<FeedFilter, string> = { full: 'Полный', chat: 'Только чат' };
 
-function isMessageish(item: ActivityItem): boolean {
-  return Boolean(item.incoming || item.trigger);
-}
-
-function hasActions(item: ActivityItem): boolean {
-  return item.actions.length > 0;
+function isDialog(item: ActivityItem): boolean {
+  return Boolean(item.incoming || item.trigger || item.response);
 }
 
 function matchesSearch(item: ActivityItem, q: string): boolean {
@@ -39,17 +29,13 @@ function matchesSearch(item: ActivityItem, q: string): boolean {
   );
 }
 
-export function TabLogs({ agentId }: { agentId: string }) {
-  const searchParams = useSearchParams();
-  const initialFilter = searchParams.get('filter') as LogFilter | null;
-  const { data: messages, isLoading: messagesLoading } = useAgentMessages(agentId, 50);
-  const { data: actions, isLoading: actionsLoading } = useAgentActions(agentId, 50);
-  const { data: threads } = useMessageThreads(agentId);
+export function TabActivity({ agentId }: { agentId: string }) {
+  const { data, isLoading, fetchNextPage, hasNextPage, isFetchingNextPage } =
+    useActivityFeed(agentId);
   const { items: realtimeItems, isConnected } = useRealtimeFeed(agentId);
+  const { data: threads } = useMessageThreads(agentId);
 
-  const [filter, setFilter] = useState<LogFilter>(
-    initialFilter && initialFilter in FILTER_LABELS ? initialFilter : 'all',
-  );
+  const [filter, setFilter] = useState<FeedFilter>('full');
   const [search, setSearch] = useState('');
   const [autoScroll, setAutoScroll] = useState(true);
   const topRef = useRef<HTMLDivElement>(null);
@@ -65,27 +51,24 @@ export function TabLogs({ agentId }: { agentId: string }) {
   );
 
   const items = useMemo(() => {
-    const initial = buildActivityFeed(
-      (messages ?? []) as unknown as MessageLike[],
-      (actions ?? []) as unknown as EventLike[],
-      peerNames,
+    const historical = (data?.pages ?? []).flatMap((page) =>
+      page.turns.map((turn) => {
+        const item = turnToActivityItem(turn);
+        item.peerTitle = item.peerTitle ?? peerNames.get(item.peer) ?? null;
+        return item;
+      }),
     );
-    const realtime = realtimeItems.map((item) => ({
-      ...item,
-      peerTitle: item.peerTitle ?? peerNames.get(item.peer) ?? null,
-    }));
-    const seen = new Set(initial.map((i) => i.id));
-    const merged = [...realtime.filter((i) => !seen.has(i.id)), ...initial];
+    const seen = new Set(historical.map((i) => i.id));
+    const realtime = realtimeItems.filter((i) => !seen.has(i.id));
+    const merged = [...realtime, ...historical];
     merged.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
     return merged;
-  }, [messages, actions, realtimeItems, peerNames]);
+  }, [data?.pages, realtimeItems, peerNames]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return items.filter((item) => {
-      if (filter === 'messages' && !isMessageish(item)) return false;
-      if (filter === 'actions' && !hasActions(item)) return false;
-      if (filter === 'errors' && !item.failed) return false;
+      if (filter === 'chat' && !isDialog(item)) return false;
       if (q && !matchesSearch(item, q)) return false;
       return true;
     });
@@ -106,7 +89,7 @@ export function TabLogs({ agentId }: { agentId: string }) {
           className="sm:max-w-xs"
         />
         <div className="flex items-center gap-1">
-          {(Object.keys(FILTER_LABELS) as LogFilter[]).map((f) => (
+          {(Object.keys(FILTER_LABELS) as FeedFilter[]).map((f) => (
             <button
               key={f}
               data-testid={`log-filter-${f}`}
@@ -138,7 +121,12 @@ export function TabLogs({ agentId }: { agentId: string }) {
             ) : (
               <WifiOff className="h-3.5 w-3.5 text-void-600" />
             )}
-            <span className={cn('font-mono text-[10px]', isConnected ? 'text-neon-500' : 'text-void-600')}>
+            <span
+              className={cn(
+                'font-mono text-[10px]',
+                isConnected ? 'text-neon-500' : 'text-void-600',
+              )}
+            >
               {isConnected ? 'LIVE' : 'OFFLINE'}
             </span>
           </div>
@@ -146,26 +134,40 @@ export function TabLogs({ agentId }: { agentId: string }) {
       </div>
 
       <Card variant="glass" padding="none">
-        <div className="h-[600px] overflow-y-auto">
+        <div className="h-[640px] overflow-y-auto" data-testid="activity-feed">
           <div ref={topRef} />
-          {messagesLoading || actionsLoading ? (
+          {isLoading ? (
             <div className="flex items-center justify-center h-full">
               <Spinner />
             </div>
           ) : filtered.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full text-void-600 gap-2">
-              <ScrollText className="h-8 w-8 opacity-30" />
+              <Activity className="h-8 w-8 opacity-30" />
               <p>Нет записей</p>
             </div>
           ) : (
-            filtered.map((item) => <TurnCard key={item.id} item={item} />)
+            <>
+              {filtered.map((item) => (
+                <TurnCard key={item.id} item={item} chatOnly={filter === 'chat'} />
+              ))}
+              <div className="py-3 text-center">
+                {isFetchingNextPage ? (
+                  <Spinner className="inline-block" />
+                ) : hasNextPage ? (
+                  <button
+                    onClick={() => fetchNextPage()}
+                    className="font-mono text-xs text-void-500 hover:text-void-300 transition-colors"
+                  >
+                    Загрузить ещё
+                  </button>
+                ) : null}
+              </div>
+            </>
           )}
         </div>
       </Card>
 
-      <p className="font-mono text-xs text-void-600 text-right">
-        {filtered.length} записей
-      </p>
+      <p className="font-mono text-xs text-void-600 text-right">{filtered.length} записей</p>
     </div>
   );
 }

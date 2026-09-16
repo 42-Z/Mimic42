@@ -5,8 +5,7 @@ import { useParams, useSearchParams, useRouter } from 'next/navigation';
 import { agentIdSchema } from '@/lib/validators';
 import { useAgentStatus, useAgentDetails, useUpdateAgentSettings } from '@/hooks/useAgent';
 import { useAgentStatusRealtime } from '@/hooks/useRealtimeFeed';
-import { TabLogsChat } from '@/components/chat/TabLogsChat';
-import { TabLogs } from '@/components/agent/TabLogs';
+import { TabActivity } from '@/components/activity/TabActivity';
 import { TabAnalytics } from '@/components/agent/TabAnalytics';
 import { useTelegramSession } from '@/hooks/useTelegramSession';
 import { useStartAgent, useStopAgent, useTriggerMessage, useDeleteAgent } from '@/hooks/useAgents';
@@ -31,7 +30,7 @@ import {
   reasoningOptionValues,
 } from '@/lib/reasoning';
 import {
-  Settings, ScrollText, Zap, MessageSquare, BarChart2, Brain,
+  Settings, Activity, Zap, MessageSquare, BarChart2, Brain,
   Play, Square, Send, AlertTriangle, RefreshCw,
   Bot, Clock, Search, Trash2,
 } from 'lucide-react';
@@ -42,7 +41,7 @@ import type { AgentTab, ApiError } from '@/types';
 
 const TABS: { id: AgentTab; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
   { id: 'settings',  label: 'Настройки',  icon: Settings },
-  { id: 'logs',      label: 'Логи',        icon: ScrollText },
+  { id: 'logs',      label: 'Активность', icon: Activity },
   { id: 'actions',   label: 'Управление',  icon: Zap },
   { id: 'telegram',  label: 'Telegram',    icon: MessageSquare },
   { id: 'analytics', label: 'Аналитика',   icon: BarChart2 },
@@ -74,7 +73,6 @@ function AgentPageContent({
   const [activeTab, setActiveTab] = useState<AgentTab>(
     TABS.some(t => t.id === initialTab) ? initialTab : 'settings'
   );
-  const [logsView, setLogsView] = useState<'activity' | 'chat'>('activity');
 
   const handleTabChange = (tab: AgentTab) => {
     setActiveTab(tab);
@@ -133,29 +131,7 @@ function AgentPageContent({
       {/* Tab content */}
       <div>
         {activeTab === 'settings'  && <TabSettings  agentId={agentId} />}
-        {activeTab === 'logs'      && (
-          <div className="space-y-4">
-            <div className="flex items-center gap-2">
-              {(['activity', 'chat'] as const).map((v) => (
-                <button
-                  key={v}
-                  onClick={() => setLogsView(v)}
-                  className={cn(
-                    'px-4 py-1.5 rounded-sm font-mono text-xs border transition-colors',
-                    logsView === v
-                      ? 'bg-plasma-950 border-plasma-800 text-plasma-400'
-                      : 'border-void-700 text-void-500 hover:text-void-300'
-                  )}
-                >
-                  {v === 'activity' ? 'Активность' : 'Чат'}
-                </button>
-              ))}
-            </div>
-            {logsView === 'activity'
-              ? <TabLogs agentId={agentId} />
-              : <TabLogsChat agentId={agentId} />}
-          </div>
-        )}
+        {activeTab === 'logs'      && <TabActivity  agentId={agentId} />}
         {activeTab === 'actions'   && <TabActions    agentId={agentId} />}
         {activeTab === 'telegram'  && <TabTelegram   agentId={agentId} />}
         {activeTab === 'analytics' && <TabAnalytics  agentId={agentId} />}

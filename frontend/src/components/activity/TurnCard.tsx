@@ -6,12 +6,21 @@ import type { ActivityItem } from '@/lib/activity/normalize';
 import { incomingBody } from '@/lib/activity/normalize';
 import { ActionRow } from './ActionRow';
 import { ActivityDetails } from './ActivityDetails';
+import { MediaContent } from './MediaContent';
 import { sanitizeText } from '@/lib/sanitize';
 import { cn } from '@/lib/utils';
 import { Bot } from 'lucide-react';
 import { getEventMeta } from '@/lib/activity/eventCatalog';
 
-export function TurnCard({ item, defaultOpen = false }: { item: ActivityItem; defaultOpen?: boolean }) {
+export function TurnCard({
+  item,
+  defaultOpen = false,
+  chatOnly = false,
+}: {
+  item: ActivityItem;
+  defaultOpen?: boolean;
+  chatOnly?: boolean;
+}) {
   const [open, setOpen] = useState(defaultOpen);
   const time = new Date(item.createdAt).toLocaleTimeString('ru-RU', { hour12: false });
   const peerLabel = item.peerTitle ?? (item.peer ? `ID ${item.peer}` : null);
@@ -54,6 +63,11 @@ export function TurnCard({ item, defaultOpen = false }: { item: ActivityItem; de
               {sanitizeText(peerLabel)}
             </span>
           )}
+          {item.agentId && (
+            <span className="font-mono text-[10px] text-void-600 truncate max-w-[140px]">
+              {sanitizeText(item.peer ? `чат ${item.peer}` : '')}
+            </span>
+          )}
           {item.actions.some((a) => a.status === 'failed') && (
             <span className="font-mono text-[9px] uppercase text-crimson-500 border border-crimson-900 px-1 rounded-[2px]">
               ошибка
@@ -64,30 +78,36 @@ export function TurnCard({ item, defaultOpen = false }: { item: ActivityItem; de
           />
         </div>
 
-        {item.incoming && (
-          <p className="text-xs text-void-100 leading-relaxed line-clamp-2">
-            <CornerDownRight className="h-3 w-3 inline mr-1.5 text-plasma-500 -mt-0.5" />
-            {sanitizeText(incomingBody(item.incoming.content))}
-          </p>
-        )}
-        {!item.incoming && item.trigger && (
-          <p className="text-xs text-void-400 leading-relaxed line-clamp-2 italic">
-            {sanitizeText(item.trigger.content)}
+        {/* Newest first inside a block: response → tools → incoming. */}
+        {item.response && (
+          <p className="text-xs text-neon-300/90 leading-relaxed line-clamp-2">
+            {sanitizeText(item.response.content)}
           </p>
         )}
 
-        {item.actions.length > 0 && (
+        {!chatOnly && item.actions.length > 0 && (
           <div className="mt-1.5 space-y-0.5">
-            {item.actions.map((action) => (
+            {[...item.actions].reverse().map((action) => (
               <ActionRow key={action.id} action={action} />
             ))}
           </div>
         )}
 
-        {item.response && (
-          <p className="mt-1.5 text-xs text-neon-300/90 leading-relaxed line-clamp-2">
-            {sanitizeText(item.response.content)}
+        {item.incoming && (
+          <p className="mt-1.5 text-xs text-void-100 leading-relaxed line-clamp-2">
+            <CornerDownRight className="h-3 w-3 inline mr-1.5 text-plasma-500 -mt-0.5" />
+            {sanitizeText(incomingBody(item.incoming.content))}
           </p>
+        )}
+        {!item.incoming && item.trigger && (
+          <p className="mt-1.5 text-xs text-void-400 leading-relaxed line-clamp-2 italic">
+            {sanitizeText(item.trigger.content)}
+          </p>
+        )}
+        {(item.incoming?.media?.length ?? 0) > 0 && (
+          <div className="mt-1.5" onClick={(event) => event.stopPropagation()} role="presentation">
+            <MediaContent agentId={item.agentId ?? ''} items={item.incoming?.media ?? []} />
+          </div>
         )}
 
         {!hasBody && item.actions.length === 0 && (
@@ -97,23 +117,23 @@ export function TurnCard({ item, defaultOpen = false }: { item: ActivityItem; de
 
       {open && (
         <div className="px-3 pb-3 pt-1 space-y-3 border-t border-void-800/50">
-          {item.incoming && (
+          {item.response && (
             <section>
-              <h4 className="font-mono text-[10px] text-void-600 uppercase tracking-wider mb-1 flex items-center gap-1.5">
-                <MessageSquarePlus className="h-3 w-3" /> Входящее
+              <h4 className="font-mono text-[10px] text-void-600 uppercase tracking-wider mb-1">
+                Ответ
               </h4>
-              <p className="text-xs text-void-300 whitespace-pre-wrap break-words bg-void-900/50 rounded-[2px] p-2">
-                {sanitizeText(item.incoming.content)}
+              <p className="text-xs text-void-200 whitespace-pre-wrap break-words bg-void-900/50 rounded-[2px] p-2">
+                {sanitizeText(item.response.content)}
               </p>
             </section>
           )}
 
-          {item.actions.length > 0 && (
+          {!chatOnly && item.actions.length > 0 && (
             <section>
               <h4 className="font-mono text-[10px] text-void-600 uppercase tracking-wider mb-1.5">
                 Действия
               </h4>
-              {item.actions.map((action) => (
+              {[...item.actions].reverse().map((action) => (
                 <div key={`d-${action.id}`}>
                   <ActionRow action={action} />
                   <ActivityDetails action={action} />
@@ -122,13 +142,29 @@ export function TurnCard({ item, defaultOpen = false }: { item: ActivityItem; de
             </section>
           )}
 
-          {item.response && (
+          {item.incoming && (
+            <section>
+              <h4 className="font-mono text-[10px] text-void-600 uppercase tracking-wider mb-1 flex items-center gap-1.5">
+                <MessageSquarePlus className="h-3 w-3" /> Входящее
+              </h4>
+              <p className="text-xs text-void-300 whitespace-pre-wrap break-words bg-void-900/50 rounded-[2px] p-2">
+                {sanitizeText(item.incoming.content)}
+              </p>
+              {(item.incoming.media?.length ?? 0) > 0 && (
+                <div className="mt-2">
+                  <MediaContent agentId={item.agentId ?? ''} items={item.incoming.media ?? []} />
+                </div>
+              )}
+            </section>
+          )}
+
+          {!item.incoming && item.trigger && (
             <section>
               <h4 className="font-mono text-[10px] text-void-600 uppercase tracking-wider mb-1">
-                Ответ
+                Триггер дашборда
               </h4>
-              <p className="text-xs text-void-200 whitespace-pre-wrap break-words bg-void-900/50 rounded-[2px] p-2">
-                {sanitizeText(item.response.content)}
+              <p className="text-xs text-void-300 whitespace-pre-wrap break-words bg-void-900/50 rounded-[2px] p-2">
+                {sanitizeText(item.trigger.content)}
               </p>
             </section>
           )}
