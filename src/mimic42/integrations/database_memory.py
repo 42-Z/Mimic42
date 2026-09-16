@@ -71,16 +71,19 @@ class DatabaseShortTermMemory:
         raw_user_text: str = "",
         turn_id: str | None = None,
         thread_id: UUID | None = None,
+        media: list[dict[str, Any]] | None = None,
     ) -> None:
         """Save a list of LangChain message dicts to the database.
 
         Normalizes roles, filters tool-result dumps, and stores UI metadata.
         Also persists the incoming user message so the UI can display the full
-        conversation thread (incoming + outgoing).
+        conversation thread (incoming + outgoing). ``media`` carries archived
+        attachment metadata (Storage paths) for the incoming message.
         """
         from datetime import datetime, timedelta
 
         now = datetime.now(UTC)
+        media_attached = False
         async with self._session_factory() as db_session:
             # ── Persist incoming user message first ──────────────────────────
             # Avoid duplicate if raw_user_text matches the last user message
@@ -108,6 +111,9 @@ class DatabaseShortTermMemory:
                     user_payload["peer_name"] = peer_name
                 if agent_name:
                     user_payload["agent_name"] = agent_name
+                if media:
+                    user_payload["media"] = media
+                    media_attached = True
                 db_session.add(
                     AgentMessageModel(
                         agent_id=agent_id,
@@ -148,6 +154,13 @@ class DatabaseShortTermMemory:
                     # Skip tool-result messages entirely — they clutter the UI.
                     # Tool usage will be surfaced via agent_events in a later phase.
                     continue
+
+                # Media metadata belongs to the incoming message row. When the
+                # dedup above skipped creating that row, attach it to the first
+                # stored user message of this batch instead.
+                if media and not media_attached and role == "user":
+                    payload["media"] = media
+                    media_attached = True
 
                 # ── Clean assistant content ──────────────────────────────────────
                 if role == "assistant":
