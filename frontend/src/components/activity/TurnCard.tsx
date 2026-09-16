@@ -10,7 +10,7 @@ import {
   UserRound,
   type LucideIcon,
 } from 'lucide-react';
-import type { ActivityItem, ActivityMessagePart } from '@/lib/activity/normalize';
+import type { ActivityItem, ActivityAction, ActivityMessagePart } from '@/lib/activity/normalize';
 import { incomingBody } from '@/lib/activity/normalize';
 import { ActionRow } from './ActionRow';
 import { ActivityDetails } from './ActivityDetails';
@@ -91,6 +91,50 @@ function MessageRow({
   );
 }
 
+/** One tool call: click expands this tool's details only. */
+function ToolEntry({
+  action,
+  item,
+  chatOnly,
+  forceOpen,
+}: {
+  action: ActivityAction;
+  item: ActivityItem;
+  chatOnly: boolean;
+  forceOpen: boolean;
+}) {
+  const [selfOpen, setSelfOpen] = useState(false);
+  const expanded = !chatOnly && (forceOpen || selfOpen);
+
+  if (chatOnly) return null;
+
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => setSelfOpen((v) => !v)}
+        aria-expanded={expanded}
+        className="flex w-full items-center gap-1 text-left"
+      >
+        <span className="min-w-0 flex-1">
+          <ActionRow action={action} />
+        </span>
+        <ChevronDown
+          className={cn(
+            'h-3 w-3 shrink-0 text-void-600 transition-transform',
+            expanded && 'rotate-180',
+          )}
+        />
+      </button>
+      {expanded && (
+        <div className="pl-1.5">
+          <ActivityDetails action={action} agentId={item.agentId} />
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function TurnCard({
   item,
   defaultOpen = false,
@@ -102,7 +146,9 @@ export function TurnCard({
   chatOnly?: boolean;
   agentName?: string;
 }) {
-  const [open, setOpen] = useState(defaultOpen);
+  // The header chevron expands the whole turn (full texts + every tool);
+  // individual tools expand on their own.
+  const [openAll, setOpenAll] = useState(defaultOpen);
   const time = new Date(item.createdAt).toLocaleTimeString('ru-RU', { hour12: false });
   const chatLabel = item.peerTitle ?? null;
   const senderLabel = item.peerTitle?.split(' (')[0]?.trim() || null;
@@ -116,10 +162,9 @@ export function TurnCard({
     tag: string,
     part: ActivityMessagePart,
     content: string,
-    clamp: boolean,
   ) => (
     <>
-      <MessageRow icon={icon} tone={tone} name={name} tag={tag} text={content} clamp={clamp} />
+      <MessageRow icon={icon} tone={tone} name={name} tag={tag} text={content} clamp={!openAll} />
       {part.media && part.media.length > 0 && item.agentId && (
         <div className="mt-1.5 pl-[30px]">
           <MediaContent agentId={item.agentId} items={part.media} />
@@ -165,12 +210,14 @@ export function TurnCard({
         item.failed && 'bg-crimson-950/15',
       )}
     >
-      <button
-        onClick={() => setOpen((v) => !v)}
-        className="w-full text-left px-3.5 py-2.5 hover:bg-void-800/25 transition-colors"
-      >
+      <div className="px-3.5 py-2.5">
         {/* Meta: time · chat — with the raw peer id pinned, never truncated. */}
-        <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => setOpenAll((v) => !v)}
+          aria-expanded={openAll}
+          className="flex w-full items-center gap-2 text-left"
+        >
           <Clock className="h-3 w-3 shrink-0 text-void-700" />
           <span className="w-14 shrink-0 font-mono text-[10px] tabular-nums text-void-500">
             {time}
@@ -178,7 +225,11 @@ export function TurnCard({
           <span className="flex min-w-0 flex-1 items-center gap-1.5">
             <MessagesSquare className="h-3 w-3 shrink-0 text-plasma-600" />
             <span className="truncate font-mono text-[10px] text-plasma-400">
-              {chatLabel ? sanitizeText(chatLabel) : item.peer ? `ID ${item.peer}` : 'неизвестный чат'}
+              {chatLabel
+                ? sanitizeText(chatLabel)
+                : item.peer
+                  ? `ID ${item.peer}`
+                  : 'неизвестный чат'}
             </span>
           </span>
           {item.peer && (
@@ -194,20 +245,26 @@ export function TurnCard({
           <ChevronDown
             className={cn(
               'h-3.5 w-3.5 shrink-0 text-void-600 transition-transform',
-              open && 'rotate-180',
+              openAll && 'rotate-180',
             )}
           />
-        </div>
+        </button>
 
         {/* Newest first inside a block: response → tools → incoming. */}
         <div className="mt-2.5 space-y-2">
           {item.response &&
-            renderMessage(Bot, 'agent', agentLabel, 'ответ', item.response, item.response.content, true)}
+            renderMessage(Bot, 'agent', agentLabel, 'ответ', item.response, item.response.content)}
 
           {!chatOnly && item.actions.length > 0 && (
             <div className="space-y-0.5 pl-[30px]">
               {[...item.actions].reverse().map((action) => (
-                <ActionRow key={action.id} action={action} />
+                <ToolEntry
+                  key={action.id}
+                  action={action}
+                  item={item}
+                  chatOnly={chatOnly}
+                  forceOpen={openAll}
+                />
               ))}
             </div>
           )}
@@ -220,7 +277,6 @@ export function TurnCard({
               'входящее',
               item.incoming,
               incomingBody(item.incoming.content),
-              true,
             )}
 
           {!item.incoming &&
@@ -232,7 +288,6 @@ export function TurnCard({
               'триггер',
               item.trigger,
               item.trigger.content,
-              true,
             )}
 
           {!hasBody && item.actions.length === 0 && (
@@ -241,48 +296,7 @@ export function TurnCard({
             </p>
           )}
         </div>
-      </button>
-
-      {open && (
-        <div className="border-t border-void-800/50 px-3.5 py-2.5 space-y-2.5">
-          {item.response &&
-            renderMessage(Bot, 'agent', agentLabel, 'ответ', item.response, item.response.content, false)}
-
-          {!chatOnly && item.actions.length > 0 && (
-            <div className="space-y-0.5 pl-[30px]">
-              {[...item.actions].reverse().map((action) => (
-                <div key={`d-${action.id}`}>
-                  <ActionRow action={action} />
-                  <ActivityDetails action={action} agentId={item.agentId} />
-                </div>
-              ))}
-            </div>
-          )}
-
-          {item.incoming &&
-            renderMessage(
-              UserRound,
-              'peer',
-              senderLabel ?? (item.peer ? `ID ${item.peer}` : 'собеседник'),
-              'входящее',
-              item.incoming,
-              item.incoming.content,
-              false,
-            )}
-
-          {!item.incoming &&
-            item.trigger &&
-            renderMessage(
-              MessageSquarePlus,
-              'trigger',
-              'дашборд',
-              'триггер',
-              item.trigger,
-              item.trigger.content,
-              false,
-            )}
-        </div>
-      )}
+      </div>
     </div>
   );
 }
