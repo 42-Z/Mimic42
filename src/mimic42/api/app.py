@@ -34,6 +34,7 @@ from mimic42.core.manager import (
     LangChainAgentFactory,
     TelegramClientFactory,
 )
+from mimic42.core.media import MediaUploader
 from mimic42.core.memory import LongTermMemoryLike, RuntimeMemoryService
 from mimic42.core.onboarding import (
     AgentOnboardingService,
@@ -55,6 +56,7 @@ from mimic42.integrations.database_onboarding import (
 )
 from mimic42.integrations.database_session import create_engine, create_session_factory
 from mimic42.integrations.mem0_memory import build_mem0_memory
+from mimic42.integrations.supabase_media import SupabaseMediaStorage
 from mimic42.integrations.telegram_auth import TelethonAuthClientFactory
 
 logger = logging.getLogger("mimic42.api.app")
@@ -164,12 +166,24 @@ def create_app(
     telegram_client_factory: TelegramClientFactory | None = None,
     langchain_agent_factory: LangChainAgentFactory | None = None,
     long_term_memory: LongTermMemoryLike | None = None,
+    media_uploader: MediaUploader | None = None,
 ) -> FastAPI:
     app_settings = settings or Settings()
     app_telegram_factory = telegram_factory or TelethonAuthClientFactory()
+    app_media_storage: MediaUploader | None = media_uploader
+    if (
+        app_media_storage is None
+        and app_settings.supabase_url
+        and app_settings.supabase_service_key
+    ):
+        app_media_storage = SupabaseMediaStorage(
+            supabase_url=app_settings.supabase_url,
+            service_key=app_settings.supabase_service_key,
+        )
     app_manager = manager or AgentManager(
         telegram_client_factory=telegram_client_factory,
         langchain_agent_factory=langchain_agent_factory,
+        media_uploader=app_media_storage,
     )
     app_onboarding_service = onboarding_service or AgentOnboardingService(
         telegram_factory=app_telegram_factory,
@@ -215,6 +229,7 @@ def create_app(
                     session_factory=session_factory,
                     telegram_client_factory=telegram_client_factory,
                     langchain_agent_factory=langchain_agent_factory,
+                    media_uploader=app_media_storage,
                 )
         try:
             # Restore running agents from database after restart
@@ -263,6 +278,7 @@ def create_app(
     app.state.agent_manager = app_manager
     app.state.onboarding_service = app_onboarding_service
     app.state.agent_store = agent_store
+    app.state.media_uploader = app_media_storage
     app.state.long_term_memory = None
     app.state.auth_verifier = auth_verifier or (
         SupabaseJWTVerifier(supabase_url=app_settings.supabase_url)
