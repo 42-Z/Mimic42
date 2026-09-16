@@ -560,6 +560,56 @@ async def test_view_image() -> None:
     assert "data:image/jpeg;base64," in result[0]["image_url"]["url"]
 
 
+class FakeMediaUploader:
+    def __init__(self) -> None:
+        self.uploads: list[tuple[str, bytes, str, str]] = []
+
+    async def upload(
+        self,
+        *,
+        agent_id: Any,
+        filename: str,
+        data: bytes,
+        mime_type: str,
+        kind: str = "doc",
+    ) -> Any:
+        from mimic42.core.media import MediaFile
+
+        self.uploads.append((filename, data, mime_type, kind))
+        return MediaFile(
+            kind=kind,
+            name=filename,
+            mime_type=mime_type,
+            size=len(data),
+            storage_path=f"{agent_id}/u1/{filename}",
+        )
+
+    async def open(self, path: str) -> bytes | None:
+        return None
+
+    async def remove_prefix(self, agent_id: Any) -> None:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_view_image_archives_media_when_uploader_configured() -> None:
+    from uuid import uuid4
+
+    client = FakeTelethonClient()
+    agent_id = uuid4()
+    uploader = FakeMediaUploader()
+    toolbox = TelegramToolbox(client, agent_id=agent_id, media_uploader=uploader)
+
+    result = await toolbox.view_image("photo:123:456:0102:2")
+
+    assert len(result) == 2
+    assert result[0]["type"] == "media_ref"
+    assert result[0]["storage_path"] == f"{agent_id}/u1/view_photo_123.jpeg"
+    assert result[0]["mime_type"] == "image/jpeg"
+    assert result[1]["type"] == "image_url"
+    assert uploader.uploads == [("view_photo_123.jpeg", b"fake_image_data", "image/jpeg", "photo")]
+
+
 @pytest.mark.asyncio
 async def test_send_file() -> None:
     client = FakeTelethonClient()
