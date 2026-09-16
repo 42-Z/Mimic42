@@ -92,6 +92,7 @@ class FakeRuntimeMemoryService:
         raw_user_text: str = "",
         turn_id: str | None = None,
         thread_id: UUID | None = None,
+        media: list[dict[str, Any]] | None = None,
     ) -> None:
         self.saved_messages.append(
             (agent_id, peer, input_messages, output_messages, structured_response)

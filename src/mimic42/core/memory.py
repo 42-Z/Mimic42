@@ -48,6 +48,7 @@ class ShortTermMemoryStore(Protocol):
         raw_user_text: str = "",
         turn_id: str | None = None,
         thread_id: UUID | None = None,
+        media: list[dict[str, Any]] | None = None,
     ) -> None: ...
 
 
@@ -99,6 +100,7 @@ class MemoryServiceLike(Protocol):
         raw_user_text: str = "",
         turn_id: str | None = None,
         thread_id: UUID | None = None,
+        media: list[dict[str, Any]] | None = None,
     ) -> None: ...
 
 
@@ -175,6 +177,7 @@ class RuntimeMemoryService:
         raw_user_text: str = "",
         turn_id: str | None = None,
         thread_id: UUID | None = None,
+        media: list[dict[str, Any]] | None = None,
     ) -> None:
         new_messages = _extract_new_messages(input_messages, output_messages)
 
@@ -199,6 +202,7 @@ class RuntimeMemoryService:
                     raw_user_text=raw_user_text,
                     turn_id=turn_id,
                     thread_id=thread_id,
+                    media=media,
                 )
             except Exception:
                 # Fail-open like long-term memory: auxiliary persistence must

@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mimic42.core.activity import ActivityRecorder
+from mimic42.core.media import MediaFile, MediaUploader
 from mimic42.core.memory import MemoryServiceLike, RuntimeMemoryService
 from mimic42.core.model_catalog import DEFAULT_LLM_MODEL
 
@@ -69,6 +70,7 @@ class AgentTrigger(BaseModel):
     message_id: int | None = Field(default=None, gt=0)
     thread_id: UUID | None = None
     thread_title: str | None = None
+    media: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class AgentTriggerResult(BaseModel):
@@ -146,12 +148,14 @@ class MimicAgentRuntime:
         langchain_agent: LangChainAgentLike,
         memory_service: MemoryServiceLike | None = None,
         session_factory: async_sessionmaker[AsyncSession] | None = None,
+        media_uploader: MediaUploader | None = None,
     ) -> None:
         self.config = config
         self._telegram_client = telegram_client
         self._langchain_agent = langchain_agent
         self._memory_service = memory_service or RuntimeMemoryService()
         self._session_factory = session_factory
+        self._media_uploader = media_uploader
         self._state = AgentRuntimeState.STOPPED
         self._lifecycle_lock = asyncio.Lock()
         self._trigger_lock = asyncio.Lock()
@@ -444,8 +448,10 @@ class MimicAgentRuntime:
                         peer=trigger.peer,
                         input_messages=messages,
                         output_messages=[],
+                        raw_user_text=trigger.raw_text,
                         turn_id=turn_id,
                         thread_id=trigger.thread_id,
+                        media=trigger.media or None,
                     )
                 except Exception:
                     logger.warning(
@@ -550,6 +556,7 @@ class MimicAgentRuntime:
                 raw_user_text=trigger.raw_text,
                 turn_id=turn_id,
                 thread_id=trigger.thread_id,
+                media=trigger.media or None,
             )
 
         return AgentTriggerResult(
@@ -698,7 +705,13 @@ class MimicAgentRuntime:
                 raw_text = ""
 
             # Process attachments in memory and transcribers
-            text = await _process_media_and_text(event, raw_text, http_client=self._http_client)
+            text, media_files = await _process_media_and_text(
+                event,
+                raw_text,
+                http_client=self._http_client,
+                media_uploader=self._media_uploader,
+                agent_id=self.config.agent_id,
+            )
             if not text:
                 logger.info(
                     "Empty text after _process_media_and_text for chat %s, skipping",
@@ -930,6 +943,7 @@ class MimicAgentRuntime:
                     message_id=_extract_incoming_message_id(event),
                     thread_id=thread_id,
                     thread_title=thread_title,
+                    media=[m.as_payload() for m in media_files],
                 )
             )
         except Exception as e:
@@ -1042,27 +1056,56 @@ async def _process_media_and_text(
     text: str,
     *,
     http_client: Any | None = None,
-) -> str:
+    media_uploader: MediaUploader | None = None,
+    agent_id: UUID | None = None,
+) -> tuple[str, list[MediaFile]]:
     message = getattr(event, "message", None)
     if not message or not getattr(message, "media", None):
-        return text
+        return text, []
+
+    media_files: list[MediaFile] = []
+
+    async def _archive(kind: str, filename: str, mime_type: str, data: bytes) -> None:
+        """Archive one attachment to Storage; never break the turn on failure."""
+        if media_uploader is None or agent_id is None or not data:
+            return
+        try:
+            archived = await media_uploader.upload(
+                agent_id=agent_id,
+                filename=filename,
+                data=data,
+                mime_type=mime_type,
+                kind=kind,
+            )
+        except Exception:
+            logger.warning("Media archiving failed for %s", filename, exc_info=True)
+            return
+        if archived is not None:
+            media_files.append(archived)
 
     try:
         from mimic42.integrations.telegram_tools import format_media_object
 
         media_id = format_media_object(message)
         if not media_id:
-            return text
+            return text, media_files
 
         if media_id.startswith("photo:"):
-            return f"[Фото id={media_id}]" + (f" {text}" if text else "")
+            data = await event.client.download_media(message, file=bytes)
+            await _archive("photo", "photo.jpeg", "image/jpeg", data or b"")
+            return f"[Фото id={media_id}]" + (f" {text}" if text else ""), media_files
 
         elif media_id.startswith("sticker:"):
             parts = media_id.split(":")
             emoji = parts[5] if len(parts) > 5 else ""
             pack_name = parts[6] if len(parts) > 6 else ""
             pack_str = f" пак={pack_name}" if pack_name else ""
-            return f"[Стикер {emoji} id={media_id}{pack_str}]" + (f" {text}" if text else "")
+            data = await event.client.download_media(message, file=bytes)
+            await _archive("sticker", "sticker.webp", "image/webp", data or b"")
+            return (
+                f"[Стикер {emoji} id={media_id}{pack_str}]" + (f" {text}" if text else ""),
+                media_files,
+            )
 
         elif media_id.startswith(("voice:", "round:")):
             from io import BytesIO
@@ -1075,16 +1118,23 @@ async def _process_media_and_text(
             api_key = settings.openrouter_api_key
             if not api_key:
                 err_msg = "[Голосовое сообщение (ошибка: OPENROUTER_API_KEY не установлен)]"
-                return err_msg + (f" {text}" if text else "")
+                return err_msg + (f" {text}" if text else ""), media_files
 
             buffer = BytesIO()
             await event.client.download_media(message, file=buffer)
             file_bytes = buffer.getvalue()
             if not file_bytes:
                 err_msg = "[Голосовое сообщение (ошибка: файл пустой)]"
-                return err_msg + (f" {text}" if text else "")
+                return err_msg + (f" {text}" if text else ""), media_files
 
             filename = "voice.ogg" if media_id.startswith("voice:") else "video.mp4"
+            is_voice = media_id.startswith("voice:")
+            await _archive(
+                "voice" if is_voice else "round",
+                filename,
+                "audio/ogg" if is_voice else "video/mp4",
+                file_bytes,
+            )
 
             try:
                 client = http_client
@@ -1114,10 +1164,13 @@ async def _process_media_and_text(
                 transcription = res_json.get("text", "")
                 mtype = "Голосовое сообщение" if media_id.startswith("voice:") else "Видеосообщение"
                 trans_text = f'[{mtype} (расшифровка: "{transcription}")]'
-                return trans_text + (f" {text}" if text else "")
+                return trans_text + (f" {text}" if text else ""), media_files
             except Exception as e:
                 mtype = "Голосовое сообщение" if media_id.startswith("voice:") else "Видеосообщение"
-                return f"[{mtype} (ошибка транскрипции: {e})]" + (f" {text}" if text else "")
+                return (
+                    f"[{mtype} (ошибка транскрипции: {e})]" + (f" {text}" if text else ""),
+                    media_files,
+                )
 
         elif media_id.startswith("doc:"):
             parts = media_id.split(":")
@@ -1139,8 +1192,10 @@ async def _process_media_and_text(
                 "yml",
             )
             if ext not in allowed_exts and ext != "":
-                return f"[Файл name={filename} (этот тип документа нельзя открыть)]" + (
-                    f" {text}" if text else ""
+                return (
+                    f"[Файл name={filename} (этот тип документа нельзя открыть)]"
+                    + (f" {text}" if text else ""),
+                    media_files,
                 )
 
             from io import BytesIO
@@ -1149,7 +1204,16 @@ async def _process_media_and_text(
             await event.client.download_media(message, file=buffer)
             file_bytes = buffer.getvalue()
             if not file_bytes:
-                return f"[Файл name={filename} (пустой)]" + (f" {text}" if text else "")
+                return (
+                    f"[Файл name={filename} (пустой)]" + (f" {text}" if text else ""),
+                    media_files,
+                )
+
+            media_obj = getattr(message, "media", None)
+            doc_obj = getattr(media_obj, "document", None)
+            doc_mime = getattr(doc_obj, "mime_type", None)
+            doc_mime_type = doc_mime if isinstance(doc_mime, str) else "application/octet-stream"
+            await _archive("doc", filename, doc_mime_type, file_bytes)
 
             if ext == "docx":
                 try:
@@ -1163,10 +1227,10 @@ async def _process_media_and_text(
                             paragraphs.append(" | ".join(row_text))
                     doc_content = "\n".join(paragraphs)
                     doc_text = f'[Файл name={filename} (содержимое: "{doc_content}")]'
-                    return doc_text + (f" {text}" if text else "")
+                    return doc_text + (f" {text}" if text else ""), media_files
                 except Exception as e:
                     err_msg = f"[Файл name={filename} (ошибка чтения: {e})]"
-                    return err_msg + (f" {text}" if text else "")
+                    return err_msg + (f" {text}" if text else ""), media_files
 
             elif ext == "xlsx":
                 try:
@@ -1182,10 +1246,10 @@ async def _process_media_and_text(
                                 sheet_texts.append(row_str)
                     xlsx_content = "\n".join(sheet_texts)
                     xlsx_text = f'[Файл name={filename} (содержимое: "{xlsx_content}")]'
-                    return xlsx_text + (f" {text}" if text else "")
+                    return xlsx_text + (f" {text}" if text else ""), media_files
                 except Exception as e:
                     err_msg = f"[Файл name={filename} (ошибка чтения: {e})]"
-                    return err_msg + (f" {text}" if text else "")
+                    return err_msg + (f" {text}" if text else ""), media_files
 
             else:
                 try:
@@ -1197,12 +1261,12 @@ async def _process_media_and_text(
                         txt_content = f"<Ошибка декодирования: {e}>"
 
                 txt_text = f'[Файл name={filename} (содержимое: "{txt_content}")]'
-                return txt_text + (f" {text}" if text else "")
+                return txt_text + (f" {text}" if text else ""), media_files
 
     except Exception:
         pass
 
-    return text
+    return text, media_files
 
 
 def _messages_to_dicts(response: object) -> list[dict[str, Any]]:
