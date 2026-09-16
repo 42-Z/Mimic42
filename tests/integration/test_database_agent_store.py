@@ -220,7 +220,8 @@ async def test_database_conversation_groups_messages_and_tool_events(
         await session.commit()
 
     store = DatabaseAgentStore(db_session_factory)
-    turns = await store.get_conversation(agent_id=agent_id)
+    page = await store.get_conversation(agent_id=agent_id)
+    turns = page.turns
 
     # Newest first: proactive outgoing, then the grouped both-turn.
     assert len(turns) == 2
@@ -235,5 +236,5 @@ async def test_database_conversation_groups_messages_and_tool_events(
     assert grouped.tools[0].duration_ms == 1000.0
 
     limited = await store.get_conversation(agent_id=agent_id, limit=1)
-    assert len(limited) == 1
-    assert limited[0].outgoing == "proactive"
+    assert len(limited.turns) == 1
+    assert limited.turns[0].outgoing == "proactive"

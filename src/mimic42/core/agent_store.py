@@ -69,7 +69,16 @@ class ConversationTurn(BaseModel):
     incoming: str = ""  # user message
     outgoing: str = ""  # agent response
     direction: str = ""  # "incoming" | "outgoing" | "both" | "tools"
+    turn_id: str | None = None
+    incoming_media: list[dict[str, Any]] = Field(default_factory=list)
     tools: list[ToolCallRecord] = Field(default_factory=list)
+
+
+class ConversationPage(BaseModel):
+    """A cursor page of conversation turns, newest first."""
+
+    turns: list[ConversationTurn] = Field(default_factory=list)
+    next_before: datetime | None = None
 
 
 class AgentStore(Protocol):
@@ -100,8 +109,8 @@ class AgentStore(Protocol):
         *,
         agent_id: UUID,
         limit: int = 50,
-        offset: int = 0,
-    ) -> list[ConversationTurn]: ...
+        before: datetime | None = None,
+    ) -> ConversationPage: ...
 
 
 class InMemoryAgentStore:
@@ -191,10 +200,12 @@ class InMemoryAgentStore:
         *,
         agent_id: UUID,
         limit: int = 50,
-        offset: int = 0,
-    ) -> list[ConversationTurn]:
+        before: datetime | None = None,
+    ) -> ConversationPage:
         # Simplistic grouping for in-memory store: pair incoming + outgoing
         filtered = [msg for msg in self._messages if msg.agent_id == agent_id]
+        if before is not None:
+            filtered = [msg for msg in filtered if msg.created_at < before]
         turns: list[ConversationTurn] = []
         i = 0
         while i < len(filtered):
@@ -208,6 +219,10 @@ class InMemoryAgentStore:
                     peer_name=msg.peer_name,
                     agent_name=msg.agent_name,
                     incoming=msg.content,
+                    turn_id=msg.payload.get("turn_id"),
+                    incoming_media=[
+                        item for item in (msg.payload.get("media") or []) if isinstance(item, dict)
+                    ],
                 )
                 # Look ahead for an outgoing response
                 if i + 1 < len(filtered) and filtered[i + 1].direction in (
@@ -232,10 +247,11 @@ class InMemoryAgentStore:
                         agent_name=msg.agent_name,
                         outgoing=msg.content,
                         direction="outgoing",
+                        turn_id=msg.payload.get("turn_id"),
                     )
                 )
             i += 1
-        # Apply offset/limit
-        start = max(0, len(turns) - offset - limit)
-        end = max(0, len(turns) - offset)
-        return turns[start:end]
+        turns.sort(key=lambda t: t.timestamp, reverse=True)
+        page = turns[:limit]
+        next_before = page[-1].timestamp if page else None
+        return ConversationPage(turns=page, next_before=next_before)

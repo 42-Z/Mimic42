@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import datetime
 from typing import Annotated, Any, Protocol
 from uuid import UUID, uuid4
 
@@ -25,7 +26,7 @@ from mimic42.core.agent_store import (
     AgentMessageRecord,
     AgentRecord,
     AgentStore,
-    ConversationTurn,
+    ConversationPage,
 )
 from mimic42.core.crypto import FernetSecretCipher
 from mimic42.core.manager import (
@@ -508,18 +509,18 @@ def create_app(
         await _ensure_agent_owner(store, agent_id=agent_id, user_id=current_user.user_id)
         return await store.list_activities(agent_id=agent_id, limit=limit, offset=offset)
 
-    @app.get("/api/v1/agents/{agent_id}/conversation", response_model=list[ConversationTurn])
+    @app.get("/api/v1/agents/{agent_id}/conversation", response_model=ConversationPage)
     async def get_agent_conversation(
         agent_id: UUID,
         current_user: CurrentUserDep,
-        limit: Annotated[int, Query(ge=1, le=1000)] = 50,
-        offset: Annotated[int, Query(ge=0)] = 0,
-    ) -> list[ConversationTurn]:
+        limit: Annotated[int, Query(ge=1, le=200)] = 50,
+        before: Annotated[datetime | None, Query()] = None,
+    ) -> ConversationPage:
         store = _get_agent_store(app)
         if store is None:
-            return []
+            return ConversationPage()
         await _ensure_agent_owner(store, agent_id=agent_id, user_id=current_user.user_id)
-        return await store.get_conversation(agent_id=agent_id, limit=limit, offset=offset)
+        return await store.get_conversation(agent_id=agent_id, limit=limit, before=before)
 
     @app.post(
         "/api/v1/agents",
