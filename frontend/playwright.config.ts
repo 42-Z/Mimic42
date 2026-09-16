@@ -1,4 +1,14 @@
+import { config as loadDotenv } from 'dotenv';
 import { defineConfig, devices } from '@playwright/test';
+
+// Те же два файла, что грузят backend-тесты: .env — база, .env.test —
+// переопределения (заглушки телеги, пароль тестовых учёток). `dotenv`
+// не перетирает уже заданные переменные, поэтому CI-секреты старше файлов.
+loadDotenv({ path: '../.env', quiet: true });
+loadDotenv({ path: '../.env.test', override: true, quiet: true });
+// Локальный публичный конфиг фронта: отсюда берётся anon-ключ, которого нет
+// в корневых файлах. В CI этого файла нет, значение приходит секретом.
+loadDotenv({ path: '.env.local', quiet: true });
 
 // Port 3000 is the default (backend CORS is hardcoded to it); override when
 // the port is taken by another project on the dev machine.
@@ -10,7 +20,7 @@ const API_URL = `http://127.0.0.1:${API_PORT}`;
 function requiredEnv(name: string): string {
   const value = process.env[name];
   if (!value) {
-    throw new Error(`${name} не задан — источник .env.test перед запуском e2e`);
+    throw new Error(`${name} не задан — источник .env/.env.test перед запуском e2e`);
   }
   return value;
 }
@@ -21,9 +31,9 @@ function requiredEnv(name: string): string {
 const DEV_PROJECT_REF = 'ipqylrdmmjitemjrygej';
 
 function requiredDevSupabaseUrl(): string {
-  const url = requiredEnv('TEST_SUPABASE_URL');
+  const url = requiredEnv('SUPABASE_URL');
   if (!url.includes(DEV_PROJECT_REF)) {
-    throw new Error(`TEST_SUPABASE_URL не указывает на Dev-проект (${DEV_PROJECT_REF})`);
+    throw new Error(`SUPABASE_URL не указывает на Dev-проект (${DEV_PROJECT_REF})`);
   }
   return url;
 }
@@ -32,7 +42,8 @@ function requiredDevSupabaseUrl(): string {
 // API — в mimic42.testing.server:app, поднятый ниже поверх настоящей базы.
 const testEnv = {
   NEXT_PUBLIC_SUPABASE_URL: requiredDevSupabaseUrl(),
-  NEXT_PUBLIC_SUPABASE_ANON_KEY: requiredEnv('TEST_SUPABASE_ANON_KEY'),
+  NEXT_PUBLIC_SUPABASE_ANON_KEY:
+    process.env.SUPABASE_ANON_KEY ?? requiredEnv('NEXT_PUBLIC_SUPABASE_ANON_KEY'),
   NEXT_PUBLIC_API_BASE_URL: API_URL,
 };
 
