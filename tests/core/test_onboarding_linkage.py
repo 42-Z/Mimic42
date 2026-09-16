@@ -9,49 +9,14 @@ from mimic42.core.onboarding import (
     InMemoryOnboardingRepository,
     OnboardingOwnershipError,
     OnboardingSession,
-    TelegramAuthClient,
     TelegramCredentials,
     TelegramLoginStatus,
 )
+from mimic42.testing.telegram import FakeTelegramAccount, FakeTelegramAuthClientFactory
 
 
-class FakeTelegramAuthClient:
-    def __init__(self) -> None:
-        self.session_string = "temporary-session"
-
-    async def connect(self) -> None:
-        return None
-
-    async def disconnect(self) -> None:
-        return None
-
-    async def send_code_request(self, phone: str) -> dict[str, str]:
-        assert phone
-        return {"phone_code_hash": "hash-123"}
-
-    async def sign_in(
-        self,
-        *,
-        phone: str | None = None,
-        code: str | None = None,
-        phone_code_hash: str | None = None,
-        password: str | None = None,
-    ) -> object:
-        return {}
-
-    def save_session(self) -> str:
-        return self.session_string
-
-
-class FakeTelegramFactory:
-    def build(
-        self,
-        *,
-        api_id: int,
-        api_hash: str,
-        session_string: str | None = None,
-    ) -> TelegramAuthClient:
-        return FakeTelegramAuthClient()  # type: ignore[return-value]
+def _fake_telegram_factory() -> FakeTelegramAuthClientFactory:
+    return FakeTelegramAuthClientFactory(FakeTelegramAccount())
 
 
 @pytest.mark.asyncio
@@ -70,7 +35,7 @@ async def test_request_code_reuses_onboarding_id_and_preserves_profile() -> None
     )
     service = AgentOnboardingService(
         repository=repository,
-        telegram_factory=FakeTelegramFactory(),  # type: ignore[arg-type]
+        telegram_factory=_fake_telegram_factory(),
     )
 
     status = await service.request_telegram_code(
@@ -105,7 +70,7 @@ async def test_request_code_rejects_cross_owner_onboarding_id() -> None:
     )
     service = AgentOnboardingService(
         repository=repository,
-        telegram_factory=FakeTelegramFactory(),  # type: ignore[arg-type]
+        telegram_factory=_fake_telegram_factory(),
     )
 
     with pytest.raises(OnboardingOwnershipError):

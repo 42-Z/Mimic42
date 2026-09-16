@@ -1,28 +1,29 @@
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator
 from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
 from langchain_core.messages import ToolMessage
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mimic42.core.activity import ActivityRecorder
 from mimic42.core.agent_runtime import AgentRuntimeConfig, AgentRuntimeState, MimicAgentRuntime
 from mimic42.core.manager import AgentManager
 from mimic42.integrations.activity_middleware import ActivityMiddleware
-from mimic42.integrations.database_models import AgentEventModel, Base
+from mimic42.integrations.database_models import AgentEventModel, AgentModel
+from mimic42.testing.slots import Slot
+from mimic42.testing.telegram import IncomingMessage
 
-from .test_agent_runtime import FakeIncomingEvent, FakeLangChainAgent, FakeTelegramClient
+from ..core.test_agent_runtime import FakeIncomingEvent, FakeLangChainAgent, FakeTelegramClient
 
 
-def make_config(agent_id: UUID | None = None) -> AgentRuntimeConfig:
+def make_config(agent_id: UUID, owner_id: UUID) -> AgentRuntimeConfig:
     return AgentRuntimeConfig(
-        agent_id=agent_id or uuid4(),
-        owner_id=uuid4(),
+        agent_id=agent_id,
+        owner_id=owner_id,
         telegram_session_name="test-session",
         telegram_api_id=12345,
         telegram_api_hash="hash",
@@ -32,24 +33,33 @@ def make_config(agent_id: UUID | None = None) -> AgentRuntimeConfig:
     )
 
 
-@pytest.fixture
-async def session_factory() -> AsyncIterator[async_sessionmaker[Any]]:
-    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
-    factory = async_sessionmaker(engine, expire_on_commit=False)
-    async with engine.begin() as connection:
-        await connection.run_sync(Base.metadata.create_all)
-    try:
-        yield factory
-    finally:
-        await engine.dispose()
-
-
-@pytest.mark.asyncio
-async def test_activity_recorder_writes_event_row(
-    session_factory: async_sessionmaker[Any],
+async def _seed_agent(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    *,
+    agent_id: UUID,
+    owner_id: UUID,
 ) -> None:
+    async with db_session_factory() as session:
+        session.add(
+            AgentModel(
+                id=agent_id,
+                owner_id=owner_id,
+                name="Mimic",
+                soul_prompt="soul",
+            )
+        )
+        await session.commit()
+
+
+async def test_activity_recorder_writes_event_row(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    owner_id = clean_slot.persona("full").user_id
     agent_id = uuid4()
-    recorder = ActivityRecorder(session_factory)
+    await _seed_agent(db_session_factory, agent_id=agent_id, owner_id=owner_id)
+
+    recorder = ActivityRecorder(db_session_factory)
     await recorder.record(
         agent_id=agent_id,
         event_type="tool.send_text_message",
@@ -60,8 +70,12 @@ async def test_activity_recorder_writes_event_row(
         completed_at=None,
     )
 
-    async with session_factory() as session:
-        rows = list(await session.scalars(select(AgentEventModel)))
+    async with db_session_factory() as session:
+        rows = list(
+            await session.scalars(
+                select(AgentEventModel).where(AgentEventModel.agent_id == agent_id)
+            )
+        )
     assert len(rows) == 1
     row = rows[0]
     assert row.agent_id == agent_id
@@ -71,7 +85,6 @@ async def test_activity_recorder_writes_event_row(
     assert row.result == {"success": True, "message_id": 5}
 
 
-@pytest.mark.asyncio
 async def test_activity_recorder_swallows_write_failure() -> None:
     class BrokenFactory:
         def __call__(self) -> Any:
@@ -123,7 +136,6 @@ def _make_middleware() -> tuple[ActivityMiddleware, _RecordingRecorder]:
     return middleware, recorder
 
 
-@pytest.mark.asyncio
 async def test_middleware_classifies_failed_tool_output() -> None:
     middleware, recorder = _make_middleware()
 
@@ -150,7 +162,6 @@ async def test_middleware_classifies_failed_tool_output() -> None:
     assert event["payload"]["args"] == {"message_id": 1}
 
 
-@pytest.mark.asyncio
 async def test_middleware_classifies_successful_tool_output() -> None:
     middleware, recorder = _make_middleware()
 
@@ -168,7 +179,6 @@ async def test_middleware_classifies_successful_tool_output() -> None:
     assert event["result"] == {"success": True, "message_id": 42}
 
 
-@pytest.mark.asyncio
 async def test_middleware_classifies_failed_list_tool_output() -> None:
     """List-shaped tools report failures as [{"success": false, ...}]."""
     middleware, recorder = _make_middleware()
@@ -189,7 +199,6 @@ async def test_middleware_classifies_failed_list_tool_output() -> None:
     assert event["result"]["items"][0]["error_code"] == "PeerIdInvalidError"
 
 
-@pytest.mark.asyncio
 async def test_middleware_records_model_failure_and_success_is_silent() -> None:
     middleware, recorder = _make_middleware()
 
@@ -222,21 +231,24 @@ def _fake_request() -> Any:
     return FakeRequest()
 
 
-@pytest.mark.asyncio
 async def test_runtime_start_records_lifecycle_event(
-    session_factory: async_sessionmaker[Any],
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
 ) -> None:
+    owner_id = clean_slot.persona("empty").user_id
     agent_id = uuid4()
+    await _seed_agent(db_session_factory, agent_id=agent_id, owner_id=owner_id)
+
     runtime = MimicAgentRuntime(
-        config=make_config(agent_id),
+        config=make_config(agent_id, owner_id),
         telegram_client=FakeTelegramClient(),
         langchain_agent=FakeLangChainAgent(),
-        session_factory=session_factory,
+        session_factory=db_session_factory,
     )
     await runtime.start()
     await runtime.stop()
 
-    async with session_factory() as session:
+    async with db_session_factory() as session:
         rows = list(
             await session.scalars(
                 select(AgentEventModel).where(AgentEventModel.agent_id == agent_id)
@@ -247,7 +259,6 @@ async def test_runtime_start_records_lifecycle_event(
     assert "agent.stopped" in types
 
 
-@pytest.mark.asyncio
 async def test_manager_start_agent_persists_error_status() -> None:
     class FailingStartClient(FakeTelegramClient):
         async def connect(self) -> None:
@@ -258,7 +269,7 @@ async def test_manager_start_agent_persists_error_status() -> None:
     async def save_status(agent_id: UUID, state: AgentRuntimeState) -> None:
         updates.append((agent_id, state))
 
-    config = make_config()
+    config = make_config(uuid4(), uuid4())
     manager = AgentManager(
         runtime_factory=lambda runtime_config: MimicAgentRuntime(
             config=runtime_config,
@@ -275,10 +286,10 @@ async def test_manager_start_agent_persists_error_status() -> None:
     assert updates == [(config.agent_id, AgentRuntimeState.ERROR)]
 
 
-@pytest.mark.asyncio
 async def test_failed_turn_records_turn_failed_once(
     monkeypatch: pytest.MonkeyPatch,
-    session_factory: async_sessionmaker[Any],
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
 ) -> None:
     """A crashing LLM call must yield exactly one turn.failed event.
 
@@ -289,7 +300,9 @@ async def test_failed_turn_records_turn_failed_once(
 
     from telethon.tl import functions
 
+    owner_id = clean_slot.persona("flow").user_id
     agent_id = uuid4()
+    await _seed_agent(db_session_factory, agent_id=agent_id, owner_id=owner_id)
     telegram = FakeTelegramClient()
 
     async def mock_get_input_entity(peer: Any) -> Any:
@@ -315,10 +328,10 @@ async def test_failed_turn_records_turn_failed_once(
             raise RuntimeError("LLM down")
 
     runtime = MimicAgentRuntime(
-        config=make_config(agent_id),
+        config=make_config(agent_id, owner_id),
         telegram_client=telegram,
         langchain_agent=BrokenAgent(),  # type: ignore[arg-type]
-        session_factory=session_factory,
+        session_factory=db_session_factory,
     )
     await runtime.start()
 
@@ -328,12 +341,15 @@ async def test_failed_turn_records_turn_failed_once(
     monkeypatch.setattr("mimic42.core.agent_runtime._extract_incoming_peer", mock_peer)
     monkeypatch.setattr("mimic42.core.agent_runtime._extract_incoming_message_id", lambda ev: 708)
 
-    event = FakeIncomingEvent(chat_id=6121153070, message_id=708, text="ты любишь 42?")
+    message = IncomingMessage(
+        chat_id=6121153070, message_id=708, text="ты любишь 42?", sender_id=999
+    )
+    event = FakeIncomingEvent(message, client=telegram)
     await telegram.emit_message(event)  # must not raise
 
     await runtime.stop()
 
-    async with session_factory() as session:
+    async with db_session_factory() as session:
         rows = list(
             await session.scalars(
                 select(AgentEventModel).where(

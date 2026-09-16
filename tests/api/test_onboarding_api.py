@@ -7,70 +7,16 @@ from httpx import ASGITransport, AsyncClient
 
 from mimic42.api.app import create_app
 from mimic42.config import Settings
-from mimic42.core.onboarding import (
-    AgentOnboardingService,
-    InMemoryOnboardingRepository,
-    TelegramAuthClientFactory,
-)
+from mimic42.core.onboarding import AgentOnboardingService, InMemoryOnboardingRepository
+from mimic42.testing.telegram import FakeTelegramAccount, FakeTelegramAuthClientFactory
 from tests.api.auth_helpers import AUTH_HEADERS, FakeAuthVerifier
-
-
-class FakeTelegramAuthClient:
-    def __init__(self, *, requires_password: bool = False) -> None:
-        self.requires_password = requires_password
-        self.connected = False
-        self.session_string = "temporary-session"
-        self.sent_phone: str | None = None
-
-    async def connect(self) -> None:
-        self.connected = True
-
-    async def disconnect(self) -> None:
-        self.connected = False
-
-    async def send_code_request(self, phone: str) -> dict[str, str]:
-        self.sent_phone = phone
-        return {"phone_code_hash": "hash-123", "type": "app"}
-
-    async def sign_in(
-        self,
-        *,
-        phone: str | None = None,
-        code: str | None = None,
-        phone_code_hash: str | None = None,
-        password: str | None = None,
-    ) -> object:
-        if self.requires_password and password is None:
-            raise RuntimeError("2FA password required")
-        self.session_string = "authorized-session"
-        return {"phone": phone, "code": code, "phone_code_hash": phone_code_hash}
-
-    def save_session(self) -> str:
-        return self.session_string
-
-
-class FakeTelegramAuthClientFactory(TelegramAuthClientFactory):
-    def __init__(self, client: FakeTelegramAuthClient) -> None:
-        self.client = client
-        self.built_with: tuple[int, str] | None = None
-
-    def build(
-        self,
-        *,
-        api_id: int,
-        api_hash: str,
-        session_string: str | None = None,
-    ) -> FakeTelegramAuthClient:
-        self.built_with = (api_id, api_hash)
-        self.client.session_string = session_string or self.client.session_string
-        return self.client
 
 
 @pytest.mark.asyncio
 async def test_onboarding_creates_login_flow_verifies_code_and_finalizes_agent() -> None:
     service = AgentOnboardingService(
         repository=InMemoryOnboardingRepository(),
-        telegram_factory=FakeTelegramAuthClientFactory(FakeTelegramAuthClient()),
+        telegram_factory=FakeTelegramAuthClientFactory(FakeTelegramAccount()),
     )
     owner_id = uuid4()
     app = create_app(onboarding_service=service, auth_verifier=FakeAuthVerifier(owner_id))
@@ -123,7 +69,7 @@ async def test_onboarding_creates_login_flow_verifies_code_and_finalizes_agent()
 
 @pytest.mark.asyncio
 async def test_onboarding_uses_deployment_telegram_app_when_none_supplied() -> None:
-    factory = FakeTelegramAuthClientFactory(FakeTelegramAuthClient())
+    factory = FakeTelegramAuthClientFactory(FakeTelegramAccount())
     service = AgentOnboardingService(
         repository=InMemoryOnboardingRepository(),
         telegram_factory=factory,
@@ -154,7 +100,7 @@ async def test_onboarding_uses_deployment_telegram_app_when_none_supplied() -> N
 async def test_onboarding_fails_when_no_telegram_app_configured() -> None:
     service = AgentOnboardingService(
         repository=InMemoryOnboardingRepository(),
-        telegram_factory=FakeTelegramAuthClientFactory(FakeTelegramAuthClient()),
+        telegram_factory=FakeTelegramAuthClientFactory(FakeTelegramAccount()),
     )
     app = create_app(
         onboarding_service=service,
@@ -180,13 +126,26 @@ async def test_onboarding_fails_when_no_telegram_app_configured() -> None:
 async def test_verify_code_reports_phone_without_telegram_account() -> None:
     from telethon.errors import PhoneNumberUnoccupiedError
 
-    class UnoccupiedPhoneClient(FakeTelegramAuthClient):
+    from mimic42.testing.telegram.auth_client import FakeTelegramAuthClient
+
+    class UnoccupiedPhoneAuthClient(FakeTelegramAuthClient):
         async def sign_in(self, **kwargs: object) -> object:
             raise PhoneNumberUnoccupiedError(request=None)
 
+    class UnoccupiedPhoneAuthClientFactory(FakeTelegramAuthClientFactory):
+        def build(
+            self,
+            *,
+            api_id: int,
+            api_hash: str,
+            session_string: str | None = None,
+        ) -> UnoccupiedPhoneAuthClient:
+            self.built_with = (api_id, api_hash)
+            return UnoccupiedPhoneAuthClient(self._account)
+
     service = AgentOnboardingService(
         repository=InMemoryOnboardingRepository(),
-        telegram_factory=FakeTelegramAuthClientFactory(UnoccupiedPhoneClient()),
+        telegram_factory=UnoccupiedPhoneAuthClientFactory(FakeTelegramAccount()),
     )
     app = create_app(
         onboarding_service=service,
