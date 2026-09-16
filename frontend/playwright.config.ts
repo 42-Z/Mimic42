@@ -1,21 +1,27 @@
 import { config as loadDotenv } from 'dotenv';
 import { defineConfig, devices } from '@playwright/test';
 
-// Те же два файла, что грузят backend-тесты: .env — база, .env.test —
-// переопределения (заглушки телеги, пароль тестовых учёток). `dotenv`
-// не перетирает уже заданные переменные, поэтому CI-секреты старше файлов.
-loadDotenv({ path: '../.env', quiet: true });
-loadDotenv({ path: '../.env.test', override: true, quiet: true });
-// Локальный публичный конфиг фронта: отсюда берётся anon-ключ, которого нет
-// в корневых файлах. В CI этого файла нет, значение приходит секретом.
-loadDotenv({ path: '.env.local', quiet: true });
-
 // Port 3000 is the default (backend CORS is hardcoded to it); override when
 // the port is taken by another project on the dev machine.
 const APP_PORT = Number(process.env.E2E_APP_PORT ?? 3000);
 const APP_URL = `http://127.0.0.1:${APP_PORT}`;
 const API_PORT = Number(process.env.E2E_API_PORT ?? 8000);
 const API_URL = `http://127.0.0.1:${API_PORT}`;
+
+// Те же два файла, что грузят backend-тесты: .env — база, .env.test —
+// переопределения (заглушки телеги, пароль тестовых учёток). .env и .env.local
+// не перетирают уже заданные переменные, .env.test перетирает всё: он и есть
+// тестовые переопределения.
+loadDotenv({ path: '../.env', quiet: true });
+loadDotenv({ path: '../.env.test', override: true, quiet: true });
+// Локальный публичный конфиг фронта: отсюда берётся anon-ключ, которого нет
+// в корневых файлах. В CI этого файла нет, значение приходит секретом.
+loadDotenv({ path: '.env.local', quiet: true });
+
+// Тестовый процесс обязан ходить на тот же API, что поднимается ниже
+// (webServer), поэтому адрес задаётся здесь, а не берётся из .env.local:
+// иначе при E2E_API_PORT=8010 хелперы ушли бы в 8000 из файла.
+process.env.NEXT_PUBLIC_API_BASE_URL = API_URL;
 
 function requiredEnv(name: string): string {
   const value = process.env[name];
