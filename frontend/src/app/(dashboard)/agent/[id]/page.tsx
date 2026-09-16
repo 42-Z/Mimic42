@@ -131,7 +131,7 @@ function AgentPageContent({
       {/* Tab content */}
       <div>
         {activeTab === 'settings'  && <TabSettings  agentId={agentId} />}
-        {activeTab === 'logs'      && <TabActivity  agentId={agentId} />}
+        {activeTab === 'logs'      && <TabActivity  agentId={agentId} agentName={details?.name} />}
         {activeTab === 'actions'   && <TabActions    agentId={agentId} />}
         {activeTab === 'telegram'  && <TabTelegram   agentId={agentId} />}
         {activeTab === 'analytics' && <TabAnalytics  agentId={agentId} />}

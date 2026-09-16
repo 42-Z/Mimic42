@@ -16,10 +16,12 @@ export function TurnCard({
   item,
   defaultOpen = false,
   chatOnly = false,
+  agentName,
 }: {
   item: ActivityItem;
   defaultOpen?: boolean;
   chatOnly?: boolean;
+  agentName?: string;
 }) {
   const [open, setOpen] = useState(defaultOpen);
   const time = new Date(item.createdAt).toLocaleTimeString('ru-RU', { hour12: false });
@@ -59,13 +61,13 @@ export function TurnCard({
         <div className="flex items-center gap-2 mb-1.5">
           <span className="font-mono text-[10px] text-void-600 w-16 shrink-0 tabular-nums">{time}</span>
           {peerLabel && (
-            <span className="font-mono text-[10px] text-plasma-400 truncate max-w-[180px]">
+            <span className="font-mono text-[10px] text-plasma-400 truncate max-w-[200px]">
               {sanitizeText(peerLabel)}
             </span>
           )}
-          {item.agentId && (
-            <span className="font-mono text-[10px] text-void-600 truncate max-w-[140px]">
-              {sanitizeText(item.peer ? `чат ${item.peer}` : '')}
+          {item.peer && peerLabel !== `ID ${item.peer}` && (
+            <span className="font-mono text-[10px] text-void-700 shrink-0">
+              чат {sanitizeText(item.peer)}
             </span>
           )}
           {item.actions.some((a) => a.status === 'failed') && (
@@ -81,6 +83,11 @@ export function TurnCard({
         {/* Newest first inside a block: response → tools → incoming. */}
         {item.response && (
           <p className="text-xs text-neon-300/90 leading-relaxed line-clamp-2">
+            {agentName && (
+              <span className="font-mono text-[10px] uppercase tracking-wider text-neon-500 mr-1.5">
+                {sanitizeText(agentName)}
+              </span>
+            )}
             {sanitizeText(item.response.content)}
           </p>
         )}

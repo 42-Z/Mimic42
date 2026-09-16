@@ -120,6 +120,9 @@ export function useRealtimeFeed(agentId: string) {
       });
       scheduleInvalidate('messages');
       scheduleInvalidate('threads');
+      // Reconcile the live block with the canonical history turn (server-side
+      // grouping, peer names, media metadata).
+      scheduleInvalidate('conversation');
     }
   }, [scheduleInvalidate]);
 
@@ -131,6 +134,7 @@ export function useRealtimeFeed(agentId: string) {
         : updated;
     });
     scheduleInvalidate('actions');
+    scheduleInvalidate('conversation');
   }, [scheduleInvalidate]);
 
   useEffect(() => {

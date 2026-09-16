@@ -80,6 +80,11 @@ function peerOf(message: MessageLike): string {
   return typeof value === 'string' ? value : '';
 }
 
+function peerNameOf(message: MessageLike | undefined): string {
+  const value = message?.payload?.peer_name;
+  return typeof value === 'string' ? value : '';
+}
+
 function toAction(event: EventLike): ActivityAction {
   const isTool = event.event_type.startsWith('tool.');
   const payload = event.payload ?? null;
@@ -182,7 +187,7 @@ function buildTurn(
     agentId: messages[0]?.agent_id ?? events[0]?.agent_id,
     turnId: turnIdOf(messages[0]?.payload ?? events[0]?.payload ?? null),
     peer,
-    peerTitle: null,
+    peerTitle: peerNameOf(incomingMsg) || peerNameOf(triggerMsg) || null,
     createdAt,
     endedAt,
     failed: sortedEvents.some((e) => e.status === 'failed'),

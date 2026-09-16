@@ -140,6 +140,24 @@ describe('buildActivityFeed', () => {
     expect(items[0]?.response?.content).toBe('Ответ тулзой');
   });
 
+  test('realtime turns carry the interlocutor name from payload', () => {
+    const items = buildActivityFeed(
+      [
+        msg({
+          id: 'in',
+          payload: {
+            turn_id: 't-name',
+            peer: '6121153070',
+            peer_name: 'Miqqil⁴² 5opka - MAGNUM (@miqqil, ID: 6121153070)',
+          },
+        }),
+      ],
+      [],
+    );
+    expect(items[0]?.peer).toBe('6121153070');
+    expect(items[0]?.peerTitle).toBe('Miqqil⁴² 5opka - MAGNUM (@miqqil, ID: 6121153070)');
+  });
+
   test('carries incoming media from payload', () => {
     const items = buildActivityFeed(
       [

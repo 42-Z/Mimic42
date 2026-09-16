@@ -29,7 +29,7 @@ function matchesSearch(item: ActivityItem, q: string): boolean {
   );
 }
 
-export function TabActivity({ agentId }: { agentId: string }) {
+export function TabActivity({ agentId, agentName }: { agentId: string; agentName?: string }) {
   const { data, isLoading, fetchNextPage, hasNextPage, isFetchingNextPage } =
     useActivityFeed(agentId);
   const { items: realtimeItems, isConnected } = useRealtimeFeed(agentId);
@@ -54,12 +54,15 @@ export function TabActivity({ agentId }: { agentId: string }) {
     const historical = (data?.pages ?? []).flatMap((page) =>
       page.turns.map((turn) => {
         const item = turnToActivityItem(turn);
-        item.peerTitle = item.peerTitle ?? peerNames.get(item.peer) ?? null;
+        // The short thread title beats the long "Name (@user, ID: ...)" string.
+        item.peerTitle = peerNames.get(item.peer) ?? item.peerTitle ?? null;
         return item;
       }),
     );
     const seen = new Set(historical.map((i) => i.id));
-    const realtime = realtimeItems.filter((i) => !seen.has(i.id));
+    const realtime = realtimeItems
+      .filter((i) => !seen.has(i.id))
+      .map((i) => ({ ...i, peerTitle: peerNames.get(i.peer) ?? i.peerTitle ?? null }));
     const merged = [...realtime, ...historical];
     merged.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
     return merged;
@@ -148,7 +151,12 @@ export function TabActivity({ agentId }: { agentId: string }) {
           ) : (
             <>
               {filtered.map((item) => (
-                <TurnCard key={item.id} item={item} chatOnly={filter === 'chat'} />
+                <TurnCard
+                  key={item.id}
+                  item={item}
+                  chatOnly={filter === 'chat'}
+                  agentName={agentName}
+                />
               ))}
               <div className="py-3 text-center">
                 {isFetchingNextPage ? (
