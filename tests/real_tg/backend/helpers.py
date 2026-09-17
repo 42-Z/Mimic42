@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from uuid import UUID
 
 import asyncpg
@@ -10,13 +11,28 @@ import httpx
 
 from mimic42.testing.slots import plain_dsn
 
+ROOT = Path(__file__).resolve().parents[3]
+
+
+def anon_key() -> str:
+    """Публичный anon-ключ: из окружения (CI) или frontend/.env.local (локально)."""
+    value = os.environ.get("SUPABASE_ANON_KEY") or os.environ.get("NEXT_PUBLIC_SUPABASE_ANON_KEY")
+    if value:
+        return value
+    env_local = ROOT / "frontend" / ".env.local"
+    if env_local.exists():
+        for line in env_local.read_text().splitlines():
+            if line.startswith("NEXT_PUBLIC_SUPABASE_ANON_KEY="):
+                return line.split("=", 1)[1].strip()
+    raise RuntimeError("SUPABASE_ANON_KEY / NEXT_PUBLIC_SUPABASE_ANON_KEY не найден")
+
 
 async def jwt() -> str:
     """Supabase JWT для API-вызовов от имени реального сайт-аккаунта."""
     async with httpx.AsyncClient(base_url=os.environ["SUPABASE_URL"].rstrip("/")) as client:
         response = await client.post(
             "/auth/v1/token?grant_type=password",
-            headers={"apikey": os.environ["SUPABASE_ANON_KEY"]},
+            headers={"apikey": anon_key()},
             json={
                 "email": os.environ["REAL_TG_EMAIL"],
                 "password": os.environ["REAL_TG_PASSWORD"],
