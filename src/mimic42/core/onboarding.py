@@ -298,7 +298,6 @@ class AgentOnboardingService:
         return AgentRuntimeConfig(
             agent_id=session.onboarding_id,
             owner_id=session.owner_id,
-            telegram_session_name=session.onboarding_id.hex,
             telegram_api_id=session.api_id,
             telegram_api_hash=self._cipher.decrypt(session.api_hash_secret),
             telegram_session_string=_decrypt_optional(self._cipher, session.session_secret),

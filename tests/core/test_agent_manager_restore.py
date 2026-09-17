@@ -16,7 +16,6 @@ async def test_start_agent_loads_missing_runtime_from_persistent_config() -> Non
     config = AgentRuntimeConfig(
         agent_id=agent_id,
         owner_id=uuid4(),
-        telegram_session_name=agent_id.hex,
         telegram_api_id=12345,
         telegram_api_hash="hash",
         telegram_session_string="session",

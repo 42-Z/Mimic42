@@ -799,7 +799,7 @@ async def test_member_tags_caching() -> None:
     config = AgentRuntimeConfig(
         agent_id=uuid4(),
         owner_id=uuid4(),
-        telegram_session_name="test_session",
+        telegram_session_string="test_session",
         telegram_api_id=123,
         telegram_api_hash="abc",
         system_prompt="You are an agent",

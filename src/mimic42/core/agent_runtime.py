@@ -38,7 +38,6 @@ class AgentRuntimeState(StrEnum):
 class AgentRuntimeConfig(BaseModel):
     agent_id: UUID
     owner_id: UUID
-    telegram_session_name: str = Field(min_length=1)
     telegram_api_id: int = Field(gt=0)
     telegram_api_hash: str = Field(min_length=1)
     telegram_session_string: str | None = Field(default=None, min_length=1)

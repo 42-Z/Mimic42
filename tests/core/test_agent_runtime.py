@@ -107,7 +107,7 @@ def make_config(agent_id: UUID | None = None, owner_id: UUID | None = None) -> A
     return AgentRuntimeConfig(
         agent_id=agent_id or uuid4(),
         owner_id=owner_id or uuid4(),
-        telegram_session_name="sessions/test-agent",
+        telegram_session_string="sessions/test-agent",
         telegram_api_id=12345,
         telegram_api_hash="hash",
         llm_model="openrouter/free",
@@ -929,7 +929,6 @@ def test_combined_prompt() -> None:
     config = AgentRuntimeConfig(
         agent_id=UUID("00000000-0000-0000-0000-000000000000"),
         owner_id=UUID("00000000-0000-0000-0000-000000000000"),
-        telegram_session_name="test",
         telegram_api_id=1,
         telegram_api_hash="hash",
         system_prompt="Hello {{name}}, you are {{soul}}",

@@ -113,7 +113,6 @@ class DatabaseAgentStore:
             return AgentRuntimeConfig(
                 agent_id=agent.id,
                 owner_id=agent.owner_id,
-                telegram_session_name=telegram_session.session_name,
                 telegram_api_id=telegram_session.api_id or 0,
                 telegram_api_hash=(
                     self._cipher.decrypt(telegram_session.api_hash_ciphertext)

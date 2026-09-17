@@ -167,7 +167,6 @@ class InMemoryAgentStore:
         self._configs[record.agent_id] = AgentRuntimeConfig(
             agent_id=session.onboarding_id,
             owner_id=session.owner_id,
-            telegram_session_name=session.onboarding_id.hex,
             telegram_api_id=session.api_id,
             telegram_api_hash=session.api_hash_secret,
             telegram_session_string=session.session_secret,

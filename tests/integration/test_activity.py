@@ -24,7 +24,6 @@ def make_config(agent_id: UUID, owner_id: UUID) -> AgentRuntimeConfig:
     return AgentRuntimeConfig(
         agent_id=agent_id,
         owner_id=owner_id,
-        telegram_session_name="test-session",
         telegram_api_id=12345,
         telegram_api_hash="hash",
         telegram_session_string="session",
