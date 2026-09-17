@@ -50,6 +50,7 @@ class AlbumGrouper:
         self._deadlines: dict[AlbumKey, float] = {}
         self._cap_deadlines: dict[AlbumKey, float] = {}
         self._tasks: dict[AlbumKey, asyncio.Task[None]] = {}
+        self._flushing: set[asyncio.Task[None]] = set()
 
     @staticmethod
     def _loop_time() -> float:
@@ -70,7 +71,8 @@ class AlbumGrouper:
         self._tasks[key] = asyncio.create_task(self._flush_after(key))
 
     async def close(self) -> None:
-        """Отменить незавершённые буферы (при остановке агента)."""
+        """Отменить ждущие буферы. Уже начавшийся flush не обрывается: ответ
+        мог уйти в Telegram, а отмена посреди хода теряет его запись."""
         tasks = list(self._tasks.values())
         self._tasks.clear()
         for task in tasks:
@@ -84,25 +86,29 @@ class AlbumGrouper:
         self._cap_deadlines.clear()
         if dropped:
             logger.warning("Dropped %d buffered album item(s) on close", dropped)
+        if self._flushing:
+            logger.info("Left %d in-flight album flush(es) to finish", len(self._flushing))
 
     async def _flush_after(self, key: AlbumKey) -> None:
-        try:
-            while True:
-                delay = self._deadlines.get(key, 0.0) - self._now()
-                if delay <= 0:
-                    break
-                await self._sleep(delay)
-        except asyncio.CancelledError:
-            raise
-        except KeyError:  # буфер уже забран/закрыт
-            return
+        while True:
+            delay = self._deadlines.get(key, 0.0) - self._now()
+            if delay <= 0:
+                break
+            await self._sleep(delay)
         events = self._events.pop(key, [])
         self._deadlines.pop(key, None)
         self._cap_deadlines.pop(key, None)
         self._tasks.pop(key, None)
         if not events:
             return
+        # The flush is now in flight: a concurrent close() must not cancel it.
+        task = asyncio.current_task()
+        if task is not None:
+            self._flushing.add(task)
         try:
             await self._flush(events)
         except Exception:
             logger.exception("Album flush failed for key %s", key)
+        finally:
+            if task is not None:
+                self._flushing.discard(task)

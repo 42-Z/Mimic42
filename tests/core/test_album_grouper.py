@@ -74,6 +74,29 @@ async def test_close_cancels_pending_buffers_without_flushing() -> None:
 
 
 @pytest.mark.asyncio
+async def test_close_does_not_cancel_an_in_flight_flush() -> None:
+    """Остановка агента не должна обрывать уже начавшийся ход: ответ мог уйти
+    в Telegram, и отмена посреди flush теряет запись хода."""
+    started = asyncio.Event()
+    finished: list[int] = []
+
+    async def slow_flush(events: list[Any]) -> None:
+        started.set()
+        await asyncio.sleep(0.1)
+        finished.append(len(events))
+
+    grouper = AlbumGrouper(slow_flush, quiet_window=0.01, max_window=0.1)
+    grouper.add(("chat", "1"), "x")
+    await started.wait()
+
+    await grouper.close()  # не ждёт LLM-ход и не отменяет его
+
+    assert finished == []
+    await asyncio.sleep(0.2)
+    assert finished == [1]
+
+
+@pytest.mark.asyncio
 async def test_max_window_caps_extensions() -> None:
     recorder = Recorder()
     grouper = AlbumGrouper(recorder.flush, quiet_window=0.15, max_window=0.3)

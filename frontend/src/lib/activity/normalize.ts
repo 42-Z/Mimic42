@@ -341,8 +341,16 @@ export function countActions(item: ActivityItem): number {
  */
 export function turnToActivityItem(turn: ConversationTurn): ActivityItem {
   const createdAt = new Date(turn.timestamp).toISOString();
-  const toActionRow = (tool: ToolCallRecord) =>
-    toAction({
+  const toActionRow = (tool: ToolCallRecord) => {
+    // History stores the duration, not the start/end pair: restore the start so
+    // ActionRow can show the real duration instead of "0 мс".
+    const completedAt = tool.created_at;
+    const durationMs = typeof tool.duration_ms === 'number' ? tool.duration_ms : 0;
+    const startedAt =
+      durationMs > 0
+        ? new Date(new Date(completedAt).getTime() - durationMs).toISOString()
+        : completedAt;
+    return toAction({
       id: tool.id,
       event_type: tool.name,
       status: tool.status,
@@ -350,9 +358,10 @@ export function turnToActivityItem(turn: ConversationTurn): ActivityItem {
       error: tool.error,
       payload: (tool.payload ?? null) as Record<string, unknown> | null,
       result: (tool.result ?? null) as Record<string, unknown> | null,
-      started_at: tool.created_at,
-      completed_at: tool.created_at,
+      started_at: startedAt,
+      completed_at: completedAt,
     } as unknown as EventLike);
+  };
 
   const actions = turn.tools.map(toActionRow);
   const firstAction = actions[0];

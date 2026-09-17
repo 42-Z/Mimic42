@@ -1115,6 +1115,18 @@ class MimicAgentRuntime:
                     await update_session.commit()
 
 
+def _sticker_file_of(message: Any) -> tuple[str, str]:
+    """Имя и mime файла стикера: статичный — webp, анимированные — tgs/webm.
+    Иначе анимированный стикер получает битый mime и не открывается в ленте."""
+    doc = getattr(getattr(message, "media", None), "document", None)
+    mime = getattr(doc, "mime_type", None)
+    if mime == "application/x-tgsticker":
+        return "sticker.tgs", "application/x-tgsticker"
+    if isinstance(mime, str) and "webm" in mime:
+        return "sticker.webm", "video/webm"
+    return "sticker.webp", "image/webp"
+
+
 async def _process_media_and_text(
     event: TelegramEventLike,
     text: str,
@@ -1165,7 +1177,8 @@ async def _process_media_and_text(
             pack_name = parts[6] if len(parts) > 6 else ""
             pack_str = f" пак={pack_name}" if pack_name else ""
             data = await event.client.download_media(message, file=bytes)
-            await _archive("sticker", "sticker.webp", "image/webp", data or b"")
+            sticker_name, sticker_mime = _sticker_file_of(message)
+            await _archive("sticker", sticker_name, sticker_mime, data or b"")
             return (
                 f"[Стикер {emoji} id={media_id}{pack_str}]" + (f" {text}" if text else ""),
                 media_files,
@@ -1273,6 +1286,15 @@ async def _process_media_and_text(
                     await _archive("doc", filename, doc_mime_type, buffer.getvalue())
                 return (
                     f"[Файл name={filename} (этот тип документа нельзя открыть)]"
+                    + (f" {text}" if text else ""),
+                    media_files,
+                )
+
+            # Size cap applies to readable types too: the file is pulled into
+            # memory and fed to the LLM, so a huge one must not be downloaded.
+            if isinstance(doc_size, int) and doc_size > MAX_MEDIA_BYTES:
+                return (
+                    f"[Файл name={filename} (слишком большой: {doc_size} байт)]"
                     + (f" {text}" if text else ""),
                     media_files,
                 )

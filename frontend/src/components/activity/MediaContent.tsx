@@ -1,7 +1,7 @@
 'use client';
 
-import { useState } from 'react';
-import { File, ImageOff } from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
+import { File, ImageOff, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useMediaUrl } from '@/hooks/useMediaUrl';
 import { Modal } from '@/components/ui/modal';
 import type { MediaItem } from '@/types';
@@ -45,6 +45,8 @@ function MediaView({
       <img
         src={url}
         alt={item.name}
+        loading="lazy"
+        decoding="async"
         className={
           compact
             ? 'h-16 w-16 flex-none rounded-sm border border-void-800 object-cover'
@@ -73,7 +75,8 @@ function MediaView({
 
 function LightboxImage({ agentId, item }: { agentId: string; item: MediaItem }) {
   const { url } = useMediaUrl(agentId, item.storage_path);
-  if (!url) return null;  return (
+  if (!url) return null;
+  return (
     // eslint-disable-next-line @next/next/no-img-element
     <img src={url} alt={item.name} className="max-h-[70vh] w-auto mx-auto" />
   );
@@ -82,9 +85,30 @@ function LightboxImage({ agentId, item }: { agentId: string; item: MediaItem }) 
 export function MediaContent({ agentId, items }: { agentId: string; items: MediaItem[] }) {
   const [preview, setPreview] = useState<MediaItem | null>(null);
 
+  const images = items?.filter((item) => IMAGE_KINDS.has(item.kind)) ?? [];
+
+  // Стрелки листают галерею; порядок — как в ряду превью.
+  const previewIndex = preview ? images.indexOf(preview) : -1;
+  const step = useCallback(
+    (delta: number) => {
+      if (previewIndex < 0 || images.length < 2) return;
+      setPreview(images[(previewIndex + delta + images.length) % images.length] ?? null);
+    },
+    [previewIndex, images],
+  );
+
+  useEffect(() => {
+    if (!preview) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'ArrowLeft') step(1);
+      if (event.key === 'ArrowRight') step(-1);
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [preview, step]);
+
   if (!items?.length) return null;
 
-  const images = items.filter((item) => IMAGE_KINDS.has(item.kind));
   const others = items.filter((item) => !IMAGE_KINDS.has(item.kind));
   const gallery = images.length > 1;
 
@@ -133,7 +157,37 @@ export function MediaContent({ agentId, items }: { agentId: string; items: Media
         title={preview?.name ?? ''}
         size="lg"
       >
-        {preview && <LightboxImage agentId={agentId} item={preview} />}
+        {preview && (
+          <div className="relative">
+            <LightboxImage agentId={agentId} item={preview} />
+            {images.length > 1 && (
+              <>
+                <button
+                  type="button"
+                  aria-label="Предыдущее изображение"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    step(-1);
+                  }}
+                  className="absolute left-0 top-1/2 -translate-y-1/2 p-2 text-void-400 hover:text-void-100"
+                >
+                  <ChevronLeft className="h-6 w-6" />
+                </button>
+                <button
+                  type="button"
+                  aria-label="Следующее изображение"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    step(1);
+                  }}
+                  className="absolute right-0 top-1/2 -translate-y-1/2 p-2 text-void-400 hover:text-void-100"
+                >
+                  <ChevronRight className="h-6 w-6" />
+                </button>
+              </>
+            )}
+          </div>
+        )}
       </Modal>
     </div>
   );

@@ -359,4 +359,37 @@ describe('turnToActivityItem', () => {
     expect(item.actions[0]?.status).toBe('succeeded');
     expect(item.actions[0]?.label).not.toContain('<');
   });
+
+  test('historical tool keeps its duration instead of zero', () => {
+    const turn = {
+      id: 'm3',
+      agent_id: 'agent-1',
+      timestamp: '2026-01-01T00:00:00Z',
+      turn_id: 't11',
+      peer_id: '1',
+      peer_name: '',
+      agent_name: '',
+      incoming: 'Привет',
+      outgoing: '',
+      direction: 'incoming',
+      incoming_media: [],
+      tools: [
+        {
+          id: 'ev2',
+          name: 'tool.get_dialogs',
+          status: 'succeeded',
+          payload: {},
+          result: null,
+          error: null,
+          duration_ms: 1500,
+          created_at: '2026-01-01T00:00:05Z',
+        },
+      ],
+    } as unknown as ConversationTurn;
+
+    const [action] = turnToActivityItem(turn).actions;
+
+    expect(action?.completedAt).toBe('2026-01-01T00:00:05Z');
+    expect(action?.startedAt).toBe('2026-01-01T00:00:03.500Z');
+  });
 });

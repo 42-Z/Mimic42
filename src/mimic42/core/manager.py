@@ -65,6 +65,15 @@ class RuntimeFactoryWithMedia(Protocol):
     ) -> MimicAgentRuntime: ...
 
 
+class RuntimeFactoryWithMediaOnly(Protocol):
+    def __call__(
+        self,
+        config: AgentRuntimeConfig,
+        *,
+        media_uploader: MediaUploader | None = None,
+    ) -> MimicAgentRuntime: ...
+
+
 class AgentManager:
     """In-process async registry for multiple users and their agent runtimes."""
 
@@ -122,16 +131,19 @@ class AgentManager:
         if self._memory_service_factory is not None:
             return self._build_runtime_with_memory(config)
         sig = inspect.signature(self._runtime_factory)
-        if "media_uploader" in sig.parameters:
-            factory_with_media = cast(RuntimeFactoryWithMedia, self._runtime_factory)
-            return factory_with_media(
-                config,
-                session_factory=(
-                    self.session_factory if "session_factory" in sig.parameters else None
-                ),
-                media_uploader=self.media_uploader,
-            )
-        if "session_factory" in sig.parameters:
+        accepts_session = "session_factory" in sig.parameters
+        accepts_media = "media_uploader" in sig.parameters
+        if accepts_media:
+            if accepts_session:
+                factory_with_media = cast(RuntimeFactoryWithMedia, self._runtime_factory)
+                return factory_with_media(
+                    config,
+                    session_factory=self.session_factory,
+                    media_uploader=self.media_uploader,
+                )
+            factory_with_media_only = cast(RuntimeFactoryWithMediaOnly, self._runtime_factory)
+            return factory_with_media_only(config, media_uploader=self.media_uploader)
+        if accepts_session:
             factory_with_session = cast(RuntimeFactoryWithSession, self._runtime_factory)
             return factory_with_session(
                 config,

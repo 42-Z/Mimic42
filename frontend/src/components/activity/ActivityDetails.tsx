@@ -39,10 +39,15 @@ function mediaRefsOf(result: Record<string, unknown> | null): MediaItem[] {
   return refs;
 }
 
-function valueToString(value: unknown): string {
+export function valueToString(value: unknown): string {
   if (value === null || value === undefined) return '—';
   if (typeof value === 'string') return value;
   if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  // The backend replaces huge base64 payloads with a marker dict — show its
+  // human-readable note instead of raw JSON.
+  if (typeof value === 'object' && typeof (value as { _omitted?: unknown })._omitted === 'string') {
+    return (value as { _omitted: string })._omitted;
+  }
   return JSON.stringify(value, null, 2);
 }
 
