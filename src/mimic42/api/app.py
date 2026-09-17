@@ -96,7 +96,7 @@ class AgentManagerLike(Protocol):
 
 class CreateAgentRequest(BaseModel):
     agent_id: UUID = Field(default_factory=uuid4)
-    telegram_session_name: str = Field(min_length=1)
+    telegram_session_string: str | None = Field(default=None, min_length=1)
     telegram_api_id: int | None = Field(default=None, gt=0)
     telegram_api_hash: str | None = Field(default=None, min_length=1)
     soul_prompt: str = Field(default="", max_length=20_000)
@@ -114,9 +114,9 @@ class CreateAgentRequest(BaseModel):
         return AgentRuntimeConfig(
             agent_id=self.agent_id,
             owner_id=owner_id,
-            telegram_session_name=self.telegram_session_name,
             telegram_api_id=api_id,
             telegram_api_hash=api_hash,
+            telegram_session_string=self.telegram_session_string,
             system_prompt=load_default_system_prompt(),
             soul_prompt=self.soul_prompt,
         )
