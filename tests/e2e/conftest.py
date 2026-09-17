@@ -43,6 +43,9 @@ expect.set_options(timeout=15_000)
 
 API_PORT = int(os.environ.get("E2E_API_PORT", "8000"))
 ACTION_TIMEOUT_MS = 15_000
+# Как у Playwright APIRequestContext: первый старт агента может тянуть
+# холодные импорты LangChain, поэтому дефолтных 5 секунд httpx мало.
+HTTP_TIMEOUT_SECONDS = 30.0
 
 
 def _new_context(browser: Browser, *, storage_state: str | None = None) -> BrowserContext:
@@ -59,6 +62,9 @@ def _slot_cli(args: list[str]) -> dict[str, object]:
         text=True,
         check=True,
     )
+    # release не печатает ничего — это не повод падать.
+    if not result.stdout.strip():
+        return {}
     parsed = json.loads(result.stdout)
     assert isinstance(parsed, dict)
     return parsed
@@ -155,7 +161,7 @@ def auth_states(
 ) -> dict[str, str]:
     """Reset бэкенда, базовый агент для full, логин каждой персоны через UI."""
     slot, _, users_map = slot_info
-    with httpx.Client(base_url=API_URL) as api:
+    with httpx.Client(base_url=API_URL, timeout=HTTP_TIMEOUT_SECONDS) as api:
         reset_backend(api, slot)
         full = users_map["full"]
         create_test_agent(api, full.id, "Бегущий", "running")
@@ -202,7 +208,7 @@ def persona_page(browser: Browser, auth_states: dict[str, str]) -> Iterator[Call
 
 @pytest.fixture
 def api() -> Iterator[httpx.Client]:
-    with httpx.Client(base_url=API_URL) as client:
+    with httpx.Client(base_url=API_URL, timeout=HTTP_TIMEOUT_SECONDS) as client:
         yield client
 
 
