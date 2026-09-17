@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 from typing import Any, cast
 from uuid import UUID, uuid4
@@ -936,3 +937,66 @@ def test_combined_prompt() -> None:
         soul_prompt="kind",
     )
     assert config.combined_prompt == "Hello Bob, you are kind"
+
+
+@pytest.mark.asyncio
+async def test_incoming_album_becomes_single_turn(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Альбом из трёх сообщений = один ход и один ответ агента."""
+    monkeypatch.setattr("mimic42.core.album_grouper.QUIET_WINDOW", 0.05)
+    monkeypatch.setattr("mimic42.core.album_grouper.MAX_WINDOW", 0.5)
+
+    telegram = FakeTelegramClient()
+    runtime = MimicAgentRuntime(
+        config=make_config(),
+        telegram_client=telegram,
+        langchain_agent=FakeLangChainAgent(response="один ответ"),
+    )
+    await runtime.start()
+
+    async def mock_peer(ev: Any) -> str:
+        return "12345"
+
+    monkeypatch.setattr("mimic42.core.agent_runtime._extract_incoming_peer", mock_peer)
+    monkeypatch.setattr("mimic42.core.agent_runtime._extract_incoming_message_id", lambda ev: ev.id)
+
+    for i in range(3):
+        message = IncomingMessage(
+            chat_id=12345,
+            message_id=700 + i,
+            text=f"caption {i}" if i == 0 else "",
+            sender_id=999,
+            grouped_id=555,
+        )
+        await telegram.emit_message(FakeIncomingEvent(message, client=telegram))
+
+    await asyncio.sleep(0.3)
+    await runtime.stop()
+
+    assert len(runtime._langchain_agent.inputs) == 1  # type: ignore
+    prompt_text = runtime._langchain_agent.inputs[0]["messages"][-1]["content"]  # type: ignore
+    assert "Альбом из 3 файлов" in prompt_text
+    assert "Содержимое: caption 0" in prompt_text
+
+
+@pytest.mark.asyncio
+async def test_incoming_single_message_is_not_buffered(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Обычное сообщение (без grouped_id) обрабатывается сразу, как раньше."""
+    telegram = FakeTelegramClient()
+    runtime = MimicAgentRuntime(
+        config=make_config(),
+        telegram_client=telegram,
+        langchain_agent=FakeLangChainAgent(response="ok"),
+    )
+    await runtime.start()
+
+    async def mock_peer(ev: Any) -> str:
+        return "12345"
+
+    monkeypatch.setattr("mimic42.core.agent_runtime._extract_incoming_peer", mock_peer)
+    monkeypatch.setattr("mimic42.core.agent_runtime._extract_incoming_message_id", lambda ev: ev.id)
+
+    message = IncomingMessage(chat_id=12345, message_id=800, text="просто текст", sender_id=999)
+    await telegram.emit_message(FakeIncomingEvent(message, client=telegram))
+
+    assert len(runtime._langchain_agent.inputs) == 1  # type: ignore
+    await runtime.stop()

@@ -25,6 +25,7 @@ class IncomingMessage:
     text: str
     sender_id: int
     reply_to_msg_id: int | None = None
+    grouped_id: int | None = None
     order: int = 0
 
 
@@ -55,6 +56,7 @@ class FakeIncomingEvent:
         self.message = _FakeMessage(message.reply_to_msg_id)
         self.is_private = True
         self.client = client
+        self.grouped_id = message.grouped_id
         self._reply_to_msg_id = message.reply_to_msg_id
 
     async def get_chat(self) -> object:

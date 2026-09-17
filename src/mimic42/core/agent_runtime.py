@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mimic42.core.activity import ActivityRecorder
+from mimic42.core.album_grouper import AlbumGrouper
 from mimic42.core.media import MAX_MEDIA_BYTES, MediaFile, MediaUploader
 from mimic42.core.memory import MemoryServiceLike, RuntimeMemoryService
 from mimic42.core.model_catalog import DEFAULT_LLM_MODEL
@@ -166,6 +167,7 @@ class MimicAgentRuntime:
         self._chat_mute_cache: dict[str, tuple[bool, float]] = {}
         self._scheduler_task: asyncio.Task[None] | None = None
         self._http_client: Any | None = None
+        self._album_grouper = AlbumGrouper(self._flush_album)
         self._activity = ActivityRecorder(session_factory) if session_factory is not None else None
 
     async def _record_event(
@@ -266,6 +268,8 @@ class MimicAgentRuntime:
                     except asyncio.CancelledError:
                         pass
                     self._scheduler_task = None
+
+                await self._album_grouper.close()
 
                 if self._http_client is not None:
                     try:
@@ -641,6 +645,28 @@ class MimicAgentRuntime:
         self._message_handler_registered = True
 
     async def _handle_incoming_message(self, event: TelegramEventLike) -> None:
+        """Альбомы буферизуются, одиночные сообщения обрабатываются сразу."""
+        grouped_id = getattr(event, "grouped_id", None)
+        if grouped_id is None:
+            await self._process_incoming([event])
+            return
+        chat_id = getattr(event, "chat_id", None)
+        self._album_grouper.add((str(chat_id), str(grouped_id)), event)
+
+    async def _flush_album(self, events: list[TelegramEventLike]) -> None:
+        """Буфер альбома доставлен — обработать элементы одним ходом."""
+        logger.info(
+            "Grouped album with %d item(s) from chat %s",
+            len(events),
+            getattr(events[0], "chat_id", None),
+        )
+        try:
+            await self._process_incoming(events)
+        except Exception:
+            logger.exception("Failed to process grouped album")
+
+    async def _process_incoming(self, events: list[TelegramEventLike]) -> None:
+        event = events[0]
         logger.info("Incoming message event received")
         logger.info(
             "Incoming message event: chat_id=%s, text=%s",
@@ -712,18 +738,30 @@ class MimicAgentRuntime:
 
         # Protect the rest of the message handling pipeline from crashes
         try:
-            raw_text = getattr(event, "raw_text", None) or getattr(event, "text", None)
-            if not isinstance(raw_text, str):
-                raw_text = ""
+            # Элементы альбома обрабатываются по отдельности (у каждого свой
+            # маркер и своя подпись), но ход, ответ и запись — общие.
+            merged_content: list[str] = []
+            merged_raw: list[str] = []
+            media_files: list[MediaFile] = []
+            for item in events:
+                item_raw = getattr(item, "raw_text", None) or getattr(item, "text", None)
+                if not isinstance(item_raw, str):
+                    item_raw = ""
+                if item_raw:
+                    merged_raw.append(item_raw)
+                item_text, item_media = await _process_media_and_text(
+                    item,
+                    item_raw,
+                    http_client=self._http_client,
+                    media_uploader=self._media_uploader,
+                    agent_id=self.config.agent_id,
+                )
+                if item_text:
+                    merged_content.append(item_text)
+                media_files.extend(item_media)
 
-            # Process attachments in memory and transcribers
-            text, media_files = await _process_media_and_text(
-                event,
-                raw_text,
-                http_client=self._http_client,
-                media_uploader=self._media_uploader,
-                agent_id=self.config.agent_id,
-            )
+            raw_text = "\n".join(merged_raw)
+            text = "\n".join(merged_content)
             if not text:
                 logger.info(
                     "Empty text after _process_media_and_text for chat %s, skipping",
@@ -930,12 +968,21 @@ class MimicAgentRuntime:
 
             # Format output message text
             incoming_msg_id = _extract_incoming_message_id(event)
+            album_note = ""
+            if len(events) > 1:
+                item_ids = [
+                    str(item_id)
+                    for item in events
+                    if (item_id := _extract_incoming_message_id(item)) is not None
+                ]
+                album_note = f"Альбом из {len(events)} файлов (ID: {', '.join(item_ids)})\n"
             text = (
                 f"[Входящее сообщение]\n"
                 f"Время: {time_str}\n"
                 f"Чат: {chat_type_str}\n"
                 f"Отправитель: {sender_str}\n"
                 f"ID сообщения: {incoming_msg_id}\n"
+                f"{album_note}"
                 f"{reply_str}"
                 f"Содержимое: {text}"
             )
