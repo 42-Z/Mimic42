@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import delete, or_, select
+from sqlalchemy import and_, delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mimic42.core.agent_runtime import DEFAULT_LLM_MODEL, AgentRuntimeConfig, AgentRuntimeState
@@ -27,6 +27,24 @@ from mimic42.integrations.database_models import (
 )
 
 logger = logging.getLogger("mimic42.agent_store")
+
+
+def _cursor_condition(model: Any, before: datetime, before_id: UUID | None) -> Any:
+    """Keyset cursor: strictly older than ``before``; when several rows share
+    the boundary timestamp, the id breaks the tie so nothing is skipped."""
+    condition = model.created_at < before
+    if before_id is not None:
+        condition = or_(
+            condition,
+            and_(model.created_at == before, model.id < before_id),
+        )
+    return condition
+
+
+def _payload_turn_id(row: Any) -> str | None:
+    payload = row.payload or {}
+    value = payload.get("turn_id")
+    return str(value) if value else None
 
 
 class DatabaseAgentStore:
@@ -227,45 +245,82 @@ class DatabaseAgentStore:
         agent_id: UUID,
         limit: int = 50,
         before: datetime | None = None,
+        before_id: UUID | None = None,
     ) -> ConversationPage:
-        # Bounded read: fetch only the window needed for the requested page
-        # instead of the full history. Each turn consumes at most ~2 messages
-        # but can hold many tool events, so over-fetch both sides. Pagination
-        # is cursor-based (strictly older than ``before``): a turn's items all
-        # share timestamps >= the turn's start, so no turn is ever cut in half
-        # by a page boundary.
+        # Turn-aligned pagination. A turn may hold dozens of tool events, so a
+        # fixed event window would cut its history; instead the message window
+        # is fetched first and then *all* events of the turns in it. The oldest
+        # fetched turn is dropped when the message read was saturated: it may
+        # continue below the window and a partial turn must never reach a page.
+        # The cursor is a keyset pair (created_at, id): equal timestamps cannot
+        # lose or duplicate a turn the way a plain ``<`` on the timestamp does.
         msg_fetch = limit * 4 + 60
-        evt_fetch = limit * 8 + 120
+        evt_fetch = limit * 4 + 60
         async with self._session_factory() as db_session:
             msg_query = (
                 select(AgentMessageModel)
                 .where(AgentMessageModel.agent_id == agent_id)
-                .order_by(AgentMessageModel.created_at.desc())
+                .order_by(AgentMessageModel.created_at.desc(), AgentMessageModel.id.desc())
                 .limit(msg_fetch)
             )
-            evt_query = (
+            if before is not None:
+                msg_query = msg_query.where(_cursor_condition(AgentMessageModel, before, before_id))
+            messages = list(reversed(list(await db_session.scalars(msg_query))))
+
+            boundary_turn_id: str | None = None
+            if len(messages) >= msg_fetch:
+                boundary_turn_id = _payload_turn_id(messages[0])
+            turn_ids = {turn for turn in map(_payload_turn_id, messages) if turn}
+            if boundary_turn_id is not None:
+                turn_ids.discard(boundary_turn_id)
+
+            turn_events = (
+                list(
+                    await db_session.scalars(
+                        select(AgentEventModel)
+                        .where(AgentEventModel.agent_id == agent_id)
+                        .where(AgentEventModel.payload["turn_id"].as_string().in_(sorted(turn_ids)))
+                        .order_by(AgentEventModel.created_at.asc(), AgentEventModel.id.asc())
+                    )
+                )
+                if turn_ids
+                else []
+            )
+
+            # Everything else: lifecycle events, legacy rows and events of turns
+            # whose messages are outside this window (orphan/failed turns). Each
+            # is a whole block on its own, so a bounded window is safe here.
+            if turn_ids:
+                residual_condition = or_(
+                    AgentEventModel.payload["turn_id"].as_string().is_(None),
+                    AgentEventModel.payload["turn_id"].as_string().not_in(sorted(turn_ids)),
+                )
+            else:
+                residual_condition = AgentEventModel.payload["turn_id"].as_string().is_(None)
+            standalone_query = (
                 select(AgentEventModel)
                 .where(AgentEventModel.agent_id == agent_id)
-                .where(AgentEventModel.event_type.not_in(["start_agent", "stop_agent"]))
-                .order_by(AgentEventModel.created_at.desc())
+                .where(residual_condition)
+                .order_by(AgentEventModel.created_at.desc(), AgentEventModel.id.desc())
                 .limit(evt_fetch)
             )
             if before is not None:
-                msg_query = msg_query.where(AgentMessageModel.created_at < before)
-                evt_query = evt_query.where(AgentEventModel.created_at < before)
-            messages = await db_session.scalars(msg_query)
-            recent_messages = list(reversed(list(messages)))
+                standalone_query = standalone_query.where(
+                    _cursor_condition(AgentEventModel, before, before_id)
+                )
+            standalone_events = list(reversed(list(await db_session.scalars(standalone_query))))
+            fetched_event_ids = {evt.id for evt in turn_events}
+            residual_events = [evt for evt in standalone_events if evt.id not in fetched_event_ids]
 
-            events = await db_session.scalars(evt_query)
-            recent_events = list(reversed(list(events)))
-
-        # Build unified timeline
+        # Build unified timeline, oldest first.
         timeline: list[tuple[str, datetime, Any]] = []
-        for msg in recent_messages:
+        for msg in messages:
+            if boundary_turn_id is not None and _payload_turn_id(msg) == boundary_turn_id:
+                continue
             timeline.append(("msg", msg.created_at, msg))
-        for evt in recent_events:
+        for evt in [*turn_events, *residual_events]:
             timeline.append(("evt", evt.created_at, evt))
-        timeline.sort(key=lambda x: x[1])
+        timeline.sort(key=lambda x: (x[1], x[2].id))
 
         def _message_content(msg: AgentMessageModel) -> str:
             content = msg.content
@@ -331,9 +386,20 @@ class DatabaseAgentStore:
                 turn.timestamp = timestamp
             return turn
 
+        oldest_keys: dict[int, tuple[datetime, UUID]] = {}
+
+        def _touch(turn: ConversationTurn, timestamp: datetime, item_id: UUID) -> None:
+            """Track the oldest (created_at, id) of a turn for the keyset cursor."""
+            key = (timestamp, item_id)
+            current = oldest_keys.get(id(turn))
+            if current is None or key < current:
+                oldest_keys[id(turn)] = key
+
         for item_type, timestamp, item in timeline:
             payload: dict[str, Any] = item.payload or {}
             turn_id = str(payload.get("turn_id") or "") or None
+            if boundary_turn_id is not None and turn_id == boundary_turn_id:
+                continue
 
             if item_type == "msg":
                 msg = item
@@ -343,6 +409,7 @@ class DatabaseAgentStore:
                 ]
                 if turn_id is not None:
                     turn = _turn_for(turn_id, msg.id, timestamp)
+                    _touch(turn, timestamp, msg.id)
                     if msg.direction in ("incoming", "dashboard_trigger"):
                         if turn.incoming:
                             # Second incoming row in one turn (duplicate save in
@@ -364,6 +431,7 @@ class DatabaseAgentStore:
                                 incoming_media=media,
                                 incoming_reply=_incoming_reply_of(msg),
                             )
+                            _touch(turn, timestamp, msg.id)
                             legacy_turns.append(turn)
                             continue
                         turn.id = msg.id
@@ -399,11 +467,13 @@ class DatabaseAgentStore:
                         incoming_media=media,
                         incoming_reply=_incoming_reply_of(msg),
                     )
+                    _touch(legacy_current, msg.created_at, msg.id)
                 elif msg.direction in ("agent_response", "outgoing"):
                     if legacy_current is not None and legacy_current.direction == "incoming":
                         legacy_current.outgoing = content
                         legacy_current.outgoing_reply_id = _outgoing_reply_id_of(msg)
                         legacy_current.direction = "both"
+                        _touch(legacy_current, msg.created_at, msg.id)
                     else:
                         if legacy_current is not None:
                             legacy_turns.append(legacy_current)
@@ -418,6 +488,7 @@ class DatabaseAgentStore:
                             direction="outgoing",
                             outgoing_reply_id=_outgoing_reply_id_of(msg),
                         )
+                        _touch(legacy_current, msg.created_at, msg.id)
             else:
                 evt = item
                 duration_ms = 0.0
@@ -436,6 +507,7 @@ class DatabaseAgentStore:
                 if turn_id is not None:
                     turn = _turn_for(turn_id, evt.id, timestamp)
                     turn.tools.append(tool)
+                    _touch(turn, timestamp, evt.id)
                     if not turn.peer_id:
                         turn.peer_id = str(payload.get("parent_peer") or payload.get("peer") or "")
                     continue
@@ -446,18 +518,19 @@ class DatabaseAgentStore:
                 # attach to the turn they ran in.
                 is_lifecycle = item.event_type.startswith(("agent.", "timer.", "turn.", "message."))
                 if is_lifecycle or legacy_current is None:
-                    legacy_turns.append(
-                        ConversationTurn(
-                            id=evt.id,
-                            agent_id=agent_id,
-                            timestamp=evt.created_at,
-                            peer_id=str((evt.payload or {}).get("parent_peer", "")),
-                            direction="tools",
-                            tools=[tool],
-                        )
+                    block = ConversationTurn(
+                        id=evt.id,
+                        agent_id=agent_id,
+                        timestamp=evt.created_at,
+                        peer_id=str((evt.payload or {}).get("parent_peer", "")),
+                        direction="tools",
+                        tools=[tool],
                     )
+                    _touch(block, timestamp, evt.id)
+                    legacy_turns.append(block)
                 else:
                     legacy_current.tools.append(tool)
+                    _touch(legacy_current, timestamp, evt.id)
 
         if legacy_current is not None:
             legacy_turns.append(legacy_current)
@@ -476,10 +549,15 @@ class DatabaseAgentStore:
                 if found is not None:
                     turn.outgoing_reply_id = found
                     break
-        turns.sort(key=lambda turn: turn.timestamp, reverse=True)
+        turns.sort(key=lambda turn: (turn.timestamp, turn.id), reverse=True)
         page = turns[:limit]
-        next_before = page[-1].timestamp if page else None
-        return ConversationPage(turns=page, next_before=next_before)
+        next_before: datetime | None = None
+        next_before_id: UUID | None = None
+        if len(page) == limit:
+            cursor_keys = [oldest_keys[id(turn)] for turn in page if id(turn) in oldest_keys]
+            if cursor_keys:
+                next_before, next_before_id = min(cursor_keys)
+        return ConversationPage(turns=page, next_before=next_before, next_before_id=next_before_id)
 
 
 def _agent_record(agent: AgentModel) -> AgentRecord:

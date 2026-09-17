@@ -524,12 +524,15 @@ def create_app(
         current_user: CurrentUserDep,
         limit: Annotated[int, Query(ge=1, le=200)] = 50,
         before: Annotated[datetime | None, Query()] = None,
+        before_id: Annotated[UUID | None, Query()] = None,
     ) -> ConversationPage:
         store = _get_agent_store(app)
         if store is None:
             return ConversationPage()
         await _ensure_agent_owner(store, agent_id=agent_id, user_id=current_user.user_id)
-        return await store.get_conversation(agent_id=agent_id, limit=limit, before=before)
+        return await store.get_conversation(
+            agent_id=agent_id, limit=limit, before=before, before_id=before_id
+        )
 
     @app.get("/api/v1/agents/{agent_id}/media/{media_path:path}")
     async def get_agent_media(

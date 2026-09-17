@@ -126,8 +126,8 @@ export function useTriggerMessage(agentId: string) {
     mutationFn: (body: { peer: string; text: string }) =>
       agentsApi.triggerMessage(agentId, body),
     onSuccess: () => {
-      // Invalidate messages so they refresh
-      qc.invalidateQueries({ queryKey: queryKeys.messages.byAgent(agentId) });
+      // Refresh the activity feed so the dashboard trigger shows up
+      qc.invalidateQueries({ queryKey: queryKeys.conversation.byAgent(agentId) });
     },
   });
 }

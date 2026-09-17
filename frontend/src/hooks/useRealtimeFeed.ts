@@ -92,12 +92,8 @@ export function useRealtimeFeed(agentId: string) {
     for (const key of keys) {
       if (key === 'conversation') {
         qc.invalidateQueries({ queryKey: queryKeys.conversation.byAgent(agentId) });
-      } else if (key === 'messages') {
-        qc.invalidateQueries({ queryKey: queryKeys.messages.byAgent(agentId) });
       } else if (key === 'threads') {
         qc.invalidateQueries({ queryKey: queryKeys.threads.byAgent(agentId) });
-      } else if (key === 'actions') {
-        qc.invalidateQueries({ queryKey: queryKeys.actions.byAgent(agentId) });
       }
     }
     invalidateTimer.current = null;
@@ -118,7 +114,6 @@ export function useRealtimeFeed(agentId: string) {
           ? updated.slice(updated.length - MAX_FEED_ITEMS)
           : updated;
       });
-      scheduleInvalidate('messages');
       scheduleInvalidate('threads');
       // Reconcile the live block with the canonical history turn (server-side
       // grouping, peer names, media metadata).
@@ -133,7 +128,6 @@ export function useRealtimeFeed(agentId: string) {
         ? updated.slice(updated.length - MAX_FEED_ITEMS)
         : updated;
     });
-    scheduleInvalidate('actions');
     scheduleInvalidate('conversation');
   }, [scheduleInvalidate]);
 
@@ -275,7 +269,6 @@ export function useMultiAgentRealtimeFeed(agentIds: string[]) {
               ? updated.slice(updated.length - MAX_FEED_ITEMS)
               : updated;
           });
-          qc.invalidateQueries({ queryKey: queryKeys.messages.byAgent(msg.agent_id) });
         }
       )
       .on<AgentEventRow>(
@@ -294,7 +287,6 @@ export function useMultiAgentRealtimeFeed(agentIds: string[]) {
               ? updated.slice(updated.length - MAX_FEED_ITEMS)
               : updated;
           });
-          qc.invalidateQueries({ queryKey: queryKeys.actions.byAgent(event.agent_id) });
         }
       )
       .subscribe((status) => {

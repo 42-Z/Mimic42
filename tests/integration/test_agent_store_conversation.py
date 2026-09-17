@@ -108,7 +108,8 @@ async def test_turns_are_newest_first_with_turn_identity(
     assert all(turn.turn_id for turn in page.turns)
     assert all(len(turn.tools) == 1 for turn in page.turns)
     assert all(turn.outgoing for turn in page.turns)
-    assert page.next_before == page.turns[-1].timestamp
+    # Страница неполная — продолжения нет.
+    assert page.next_before is None
 
 
 async def test_incoming_media_surfaces_on_turn(
@@ -370,3 +371,158 @@ async def test_real_write_order_keeps_one_merged_turn(
     assert turn.direction == "both"
     assert [tool.name for tool in turn.tools] == ["tool.get_dialogs"]
     assert turn.timestamp == base  # oldest item of the turn
+
+
+async def _add_agent(db_session_factory: async_sessionmaker[AsyncSession], owner_id: UUID) -> UUID:
+    agent_id = uuid4()
+    async with db_session_factory() as session:
+        session.add(
+            AgentModel(
+                id=agent_id,
+                owner_id=owner_id,
+                name="Mimic",
+                status=AgentRuntimeState.STOPPED.value,
+                soul_prompt="Soul",
+            )
+        )
+        await session.commit()
+    return agent_id
+
+
+async def test_turn_with_many_events_is_never_cut_by_a_page(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    """Ход с сотнями tool-событий не должен терять события из-за лимита окна:
+    события выбираются по turn_id ходов, попавших в страницу."""
+    owner_id = clean_slot.persona("twofa").user_id
+    base = datetime(2026, 5, 19, 23, 30, tzinfo=UTC)
+    agent_id = await _add_agent(db_session_factory, owner_id)
+
+    async with db_session_factory() as session:
+        session.add(
+            AgentMessageModel(
+                agent_id=agent_id,
+                direction="incoming",
+                role="user",
+                content="обычный ход",
+                payload={"peer": "chat", "turn_id": "t-new"},
+                created_at=base + timedelta(hours=1),
+            )
+        )
+        session.add(
+            AgentMessageModel(
+                agent_id=agent_id,
+                direction="incoming",
+                role="user",
+                content="ход с ворохом инструментов",
+                payload={"peer": "chat", "turn_id": "t-fat"},
+                created_at=base,
+            )
+        )
+        for i in range(200):
+            session.add(
+                AgentEventModel(
+                    agent_id=agent_id,
+                    event_type="tool.get_dialogs",
+                    status="succeeded",
+                    payload={"turn_id": "t-fat", "step": i},
+                    created_at=base + timedelta(milliseconds=i),
+                    started_at=base,
+                    completed_at=base + timedelta(milliseconds=i),
+                )
+            )
+        await session.commit()
+
+    store = DatabaseAgentStore(db_session_factory)
+    page1 = await store.get_conversation(agent_id=agent_id, limit=1)
+    assert [turn.turn_id for turn in page1.turns] == ["t-new"]
+    assert page1.next_before is not None
+
+    page2 = await store.get_conversation(
+        agent_id=agent_id,
+        limit=1,
+        before=page1.next_before,
+        before_id=page1.next_before_id,
+    )
+    assert [turn.turn_id for turn in page2.turns] == ["t-fat"]
+    assert len(page2.turns[0].tools) == 200
+
+
+async def test_equal_timestamps_do_not_lose_or_duplicate_turns(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    """Keyset-курсор (created_at, id): ходы с одинаковым временем не теряются."""
+    owner_id = clean_slot.persona("twofa").user_id
+    base = datetime(2026, 5, 19, 23, 30, tzinfo=UTC)
+    agent_id = await _add_agent(db_session_factory, owner_id)
+
+    async with db_session_factory() as session:
+        for name in ("t-a", "t-b"):
+            session.add(
+                AgentMessageModel(
+                    agent_id=agent_id,
+                    direction="incoming",
+                    role="user",
+                    content=name,
+                    payload={"peer": "chat", "turn_id": name},
+                    created_at=base,
+                )
+            )
+        await session.commit()
+
+    store = DatabaseAgentStore(db_session_factory)
+    page1 = await store.get_conversation(agent_id=agent_id, limit=1)
+    page2 = await store.get_conversation(
+        agent_id=agent_id,
+        limit=1,
+        before=page1.next_before,
+        before_id=page1.next_before_id,
+    )
+
+    ids = [turn.turn_id for turn in [*page1.turns, *page2.turns]]
+    assert sorted(ids) == ["t-a", "t-b"]
+
+
+async def test_second_incoming_in_a_turn_gets_a_unique_block(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    """Дубликат incoming из старых данных рендерится отдельным блоком с
+    уникальным id (turn_id не переиспользуется)."""
+    owner_id = clean_slot.persona("twofa").user_id
+    base = datetime(2026, 5, 19, 23, 30, tzinfo=UTC)
+    agent_id = await _add_agent(db_session_factory, owner_id)
+
+    async with db_session_factory() as session:
+        session.add(
+            AgentMessageModel(
+                agent_id=agent_id,
+                direction="incoming",
+                role="user",
+                content="Привет",
+                payload={"peer": "chat", "turn_id": "t-dup"},
+                created_at=base,
+            )
+        )
+        session.add(
+            AgentMessageModel(
+                agent_id=agent_id,
+                direction="incoming",
+                role="user",
+                content="[Входящее сообщение] Содержимое: Привет",
+                payload={"peer": "chat", "turn_id": "t-dup"},
+                created_at=base + timedelta(microseconds=1000),
+            )
+        )
+        await session.commit()
+
+    store = DatabaseAgentStore(db_session_factory)
+    page = await store.get_conversation(agent_id=agent_id, limit=10)
+
+    assert len(page.turns) == 2
+    turn_ids = [turn.turn_id for turn in page.turns]
+    assert turn_ids.count("t-dup") == 1
+    assert turn_ids.count(None) == 1
+    assert len({turn.id for turn in page.turns}) == 2

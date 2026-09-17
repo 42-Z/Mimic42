@@ -81,6 +81,7 @@ class ConversationPage(BaseModel):
 
     turns: list[ConversationTurn] = Field(default_factory=list)
     next_before: datetime | None = None
+    next_before_id: UUID | None = None
 
 
 class AgentStore(Protocol):
@@ -112,6 +113,7 @@ class AgentStore(Protocol):
         agent_id: UUID,
         limit: int = 50,
         before: datetime | None = None,
+        before_id: UUID | None = None,
     ) -> ConversationPage: ...
 
 
@@ -215,11 +217,19 @@ class InMemoryAgentStore:
         agent_id: UUID,
         limit: int = 50,
         before: datetime | None = None,
+        before_id: UUID | None = None,
     ) -> ConversationPage:
         # Simplistic grouping for in-memory store: pair incoming + outgoing
         filtered = [msg for msg in self._messages if msg.agent_id == agent_id]
         if before is not None:
-            filtered = [msg for msg in filtered if msg.created_at < before]
+            if before_id is not None:
+                filtered = [
+                    msg
+                    for msg in filtered
+                    if msg.created_at < before or (msg.created_at == before and msg.id < before_id)
+                ]
+            else:
+                filtered = [msg for msg in filtered if msg.created_at < before]
         turns: list[ConversationTurn] = []
         i = 0
         while i < len(filtered):
@@ -272,7 +282,13 @@ class InMemoryAgentStore:
                     )
                 )
             i += 1
-        turns.sort(key=lambda t: t.timestamp, reverse=True)
+        turns.sort(key=lambda t: (t.timestamp, t.id), reverse=True)
         page = turns[:limit]
-        next_before = page[-1].timestamp if page else None
-        return ConversationPage(turns=page, next_before=next_before)
+        next_before: datetime | None = None
+        next_before_id: UUID | None = None
+        if len(page) == limit:
+            next_before = min(turn.timestamp for turn in page)
+            next_before_id = min(
+                (turn for turn in page if turn.timestamp == next_before), key=lambda t: t.id
+            ).id
+        return ConversationPage(turns=page, next_before=next_before, next_before_id=next_before_id)

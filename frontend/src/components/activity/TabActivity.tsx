@@ -39,6 +39,7 @@ export function TabActivity({ agentId, agentName }: { agentId: string; agentName
   const [search, setSearch] = useState('');
   const [autoScroll, setAutoScroll] = useState(true);
   const topRef = useRef<HTMLDivElement>(null);
+  const prevTopId = useRef<string | null>(null);
 
   const peerNames = useMemo(
     () =>
@@ -77,10 +78,21 @@ export function TabActivity({ agentId, agentName }: { agentId: string; agentName
     });
   }, [items, filter, search]);
 
+  const topId = filtered[0]?.id ?? null;
+
   useEffect(() => {
-    // The list is newest-first, so "follow the latest" means the top.
-    if (autoScroll) topRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [filtered.length, autoScroll]);
+    // The list is newest-first: follow the top only when a *new* top item
+    // appears. Loading older pages (or a running fetchNextPage) must not
+    // yank the reader back to the top.
+    if (!autoScroll || isFetchingNextPage) {
+      prevTopId.current = topId;
+      return;
+    }
+    if (topId !== null && topId !== prevTopId.current) {
+      topRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+    prevTopId.current = topId;
+  }, [topId, autoScroll, isFetchingNextPage]);
 
   return (
     <div className="space-y-4">

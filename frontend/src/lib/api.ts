@@ -5,6 +5,13 @@ import type { ApiError, ConversationTurn } from '@/types';
 export interface ConversationPage {
   turns: ConversationTurn[];
   next_before: string | null;
+  next_before_id: string | null;
+}
+
+/** Keyset-курсор ленты: (before, id) — равные timestamp не теряют ходы. */
+export interface ConversationCursor {
+  before: string;
+  id: string;
 }
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000';
@@ -165,10 +172,12 @@ export const agentsApi = {
       .then((r) => r.data),
 
   /** GET /api/v1/agents/:id/conversation — cursor page, newest first */
-  getConversation: (id: string, limit = 50, before?: string | null) =>
+  getConversation: (id: string, limit = 50, before?: string | null, beforeId?: string | null) =>
     apiClient
       .get<ConversationPage>(`/agents/${id}/conversation`, {
-        params: before ? { limit, before } : { limit },
+        params: before
+          ? { limit, before, ...(beforeId ? { before_id: beforeId } : {}) }
+          : { limit },
       })
       .then((r) => r.data),
 

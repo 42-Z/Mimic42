@@ -13,22 +13,6 @@ export const queryKeys = {
       [...queryKeys.agents.all, 'details-all', [...agentIds].sort()] as const,
   },
 
-  // Agent messages
-  messages: {
-    all: ['messages'] as const,
-    byAgent: (agentId: string) => [...queryKeys.messages.all, agentId] as const,
-    byAgentPaged: (agentId: string, limit: number) =>
-      [...queryKeys.messages.byAgent(agentId), { limit }] as const,
-  },
-
-  // Agent events/actions
-  actions: {
-    all: ['actions'] as const,
-    byAgent: (agentId: string) => [...queryKeys.actions.all, agentId] as const,
-    byAgentPaged: (agentId: string, limit: number) =>
-      [...queryKeys.actions.byAgent(agentId), { limit }] as const,
-  },
-
   // Conversation turns (grouped messages)
   conversation: {
     all: ['conversation'] as const,
