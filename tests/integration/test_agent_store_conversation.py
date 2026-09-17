@@ -526,3 +526,48 @@ async def test_second_incoming_in_a_turn_gets_a_unique_block(
     assert turn_ids.count("t-dup") == 1
     assert turn_ids.count(None) == 1
     assert len({turn.id for turn in page.turns}) == 2
+
+
+async def test_saturated_window_drops_the_boundary_turn_without_gaps(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    """Граничная ветка: когда окно сообщений заполнено целиком, самый старый
+    (возможно, обрезанный снизу) ход уходит на следующую страницу, а не
+    отдаётся неполным. Полный обход страниц обязан вернуть все ходы ровно раз."""
+    owner_id = clean_slot.persona("twofa").user_id
+    base = datetime(2026, 5, 19, 23, 30, tzinfo=UTC)
+    agent_id = await _add_agent(db_session_factory, owner_id)
+    turn_count = 35  # 70 сообщений: больше msg_fetch = limit*4+60 при limit=1
+
+    async with db_session_factory() as session:
+        for i in range(turn_count):
+            moment = base + timedelta(minutes=i)
+            for offset, direction in ((0, "incoming"), (1, "agent_response")):
+                session.add(
+                    AgentMessageModel(
+                        agent_id=agent_id,
+                        direction=direction,
+                        role="user" if direction == "incoming" else "assistant",
+                        content=f"turn-{i}",
+                        payload={"peer": "chat", "turn_id": f"t{i}"},
+                        created_at=moment + timedelta(seconds=offset),
+                    )
+                )
+        await session.commit()
+
+    store = DatabaseAgentStore(db_session_factory)
+    collected: list[str] = []
+    before: datetime | None = None
+    before_id: UUID | None = None
+    for _ in range(turn_count + 2):
+        page = await store.get_conversation(
+            agent_id=agent_id, limit=1, before=before, before_id=before_id
+        )
+        collected.extend(turn.turn_id or "" for turn in page.turns)
+        if page.next_before is None:
+            break
+        before, before_id = page.next_before, page.next_before_id
+
+    expected = [f"t{i}" for i in range(turn_count - 1, -1, -1)]
+    assert collected == expected  # все ходы, новейшие первыми, без дыр и дублей

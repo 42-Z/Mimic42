@@ -31,17 +31,23 @@ export function Modal({
   size = 'md',
 }: ModalProps) {
   const panelRef = React.useRef<HTMLDivElement>(null);
+  const onCloseRef = React.useRef(onClose);
+  React.useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
 
   // Close on Escape key
   React.useEffect(() => {
     if (!isOpen) return;
 
     const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') onCloseRef.current();
     };
     document.addEventListener('keydown', handleKey);
 
-    // Keep Tab inside the dialog while it is open.
+    // Keep Tab inside the dialog while it is open. Focus is set once per open:
+    // depending on `onClose` would re-focus on every parent render and reset
+    // the user's Tab position.
     const panel = panelRef.current;
     panel?.focus();
     const handleTab = (e: KeyboardEvent) => {
@@ -71,7 +77,7 @@ export function Modal({
       document.removeEventListener('keydown', handleTab);
       document.body.style.overflow = '';
     };
-  }, [isOpen, onClose]);
+  }, [isOpen]);
 
   if (!isOpen) return null;
 

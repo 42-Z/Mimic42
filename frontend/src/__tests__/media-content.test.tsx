@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { MediaContent } from '@/components/activity/MediaContent';
 import type { MediaItem } from '@/types';
 
@@ -41,5 +41,27 @@ describe('MediaContent', () => {
     const gallery = screen.getByTestId('media-gallery');
     expect(within(gallery).getAllByRole('button')).toHaveLength(2);
     expect(screen.getByText(/report\.pdf/)).toBeTruthy();
+  });
+
+  test('стрелки клавиатуры листают галерею в ту же сторону, что и кнопки', () => {
+    render(
+      <MediaContent
+        agentId="a1"
+        items={[item('photo', '1.jpeg'), item('photo', '2.jpeg'), item('photo', '3.jpeg')]}
+      />,
+    );
+    const gallery = screen.getByTestId('media-gallery');
+    fireEvent.click(within(gallery).getAllByRole('button')[0]!);
+    expect(screen.getByRole('heading', { name: '1.jpeg' })).toBeTruthy();
+
+    fireEvent.keyDown(document, { key: 'ArrowRight' });
+    expect(screen.getByRole('heading', { name: '2.jpeg' })).toBeTruthy();
+
+    fireEvent.keyDown(document, { key: 'ArrowLeft' });
+    expect(screen.getByRole('heading', { name: '1.jpeg' })).toBeTruthy();
+
+    // Кнопка «назад» — в ту же сторону, что ArrowLeft: заворачивается на 3.jpeg.
+    fireEvent.click(screen.getByLabelText('Предыдущее изображение'));
+    expect(screen.getByRole('heading', { name: '3.jpeg' })).toBeTruthy();
   });
 });

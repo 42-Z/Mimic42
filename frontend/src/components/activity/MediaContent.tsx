@@ -83,29 +83,33 @@ function LightboxImage({ agentId, item }: { agentId: string; item: MediaItem }) 
 }
 
 export function MediaContent({ agentId, items }: { agentId: string; items: MediaItem[] }) {
-  const [preview, setPreview] = useState<MediaItem | null>(null);
+  // Индекс, а не объект: после пересборки items (realtime-инвалидация) ссылки
+  // меняются, и поиск по идентичности ломает навигацию лайтбокса.
+  const [previewIndex, setPreviewIndex] = useState<number | null>(null);
 
   const images = items?.filter((item) => IMAGE_KINDS.has(item.kind)) ?? [];
+  const preview = previewIndex !== null ? (images[previewIndex] ?? null) : null;
 
   // Стрелки листают галерею; порядок — как в ряду превью.
-  const previewIndex = preview ? images.indexOf(preview) : -1;
   const step = useCallback(
     (delta: number) => {
-      if (previewIndex < 0 || images.length < 2) return;
-      setPreview(images[(previewIndex + delta + images.length) % images.length] ?? null);
+      setPreviewIndex((current) => {
+        if (current === null || images.length < 2) return current;
+        return (current + delta + images.length) % images.length;
+      });
     },
-    [previewIndex, images],
+    [images.length],
   );
 
   useEffect(() => {
-    if (!preview) return;
+    if (previewIndex === null) return;
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'ArrowLeft') step(1);
-      if (event.key === 'ArrowRight') step(-1);
+      if (event.key === 'ArrowLeft') step(-1);
+      if (event.key === 'ArrowRight') step(1);
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [preview, step]);
+  }, [previewIndex, step]);
 
   if (!items?.length) return null;
 
@@ -125,7 +129,7 @@ export function MediaContent({ agentId, items }: { agentId: string; items: Media
               type="button"
               onClick={(event) => {
                 event.stopPropagation();
-                setPreview(item);
+                setPreviewIndex(i);
               }}
               className="cursor-zoom-in"
             >
@@ -140,7 +144,7 @@ export function MediaContent({ agentId, items }: { agentId: string; items: Media
             type="button"
             onClick={(event) => {
               event.stopPropagation();
-              setPreview(item);
+              setPreviewIndex(i);
             }}
             className="cursor-zoom-in"
           >
@@ -153,7 +157,7 @@ export function MediaContent({ agentId, items }: { agentId: string; items: Media
       ))}
       <Modal
         isOpen={preview !== null}
-        onClose={() => setPreview(null)}
+        onClose={() => setPreviewIndex(null)}
         title={preview?.name ?? ''}
         size="lg"
       >
