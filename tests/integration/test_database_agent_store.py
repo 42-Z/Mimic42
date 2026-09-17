@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mimic42.core.agent_runtime import AgentRuntimeState
@@ -154,6 +154,27 @@ async def test_delete_agent_for_missing_agent_is_noop(
     store = DatabaseAgentStore(db_session_factory)
 
     await store.delete_agent(uuid4())
+
+
+async def test_unknown_agent_status_does_not_break_listing(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    """The DB enum has extra values (the `draft` default): one of them must
+    not break the whole agent list / startup restore."""
+    owner_id = clean_slot.persona("empty").user_id
+    store = DatabaseAgentStore(db_session_factory)
+    await store.create_from_onboarding(_make_session(owner_id, uuid4(), "Drafty"))
+
+    async with db_session_factory() as session:
+        await session.execute(
+            update(AgentModel).where(AgentModel.owner_id == owner_id).values(status="draft")
+        )
+        await session.commit()
+
+    agents = await store.list_agents(owner_id=owner_id)
+
+    assert [agent.state for agent in agents] == [AgentRuntimeState.STOPPED]
 
 
 async def test_database_conversation_groups_messages_and_tool_events(

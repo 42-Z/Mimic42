@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
@@ -24,6 +25,8 @@ from mimic42.integrations.database_models import (
     AgentOnboardingSessionModel,
     TelegramSessionModel,
 )
+
+logger = logging.getLogger("mimic42.agent_store")
 
 
 class DatabaseAgentStore:
@@ -432,19 +435,25 @@ class DatabaseAgentStore:
                     if not turn.peer_id:
                         turn.peer_id = str(payload.get("parent_peer") or payload.get("peer") or "")
                     continue
-                # Lifecycle events (start/stop/timer) belong to no turn: they
-                # always stay their own block so history matches the realtime
-                # feed and nothing is duplicated inside a neighbouring turn.
-                legacy_turns.append(
-                    ConversationTurn(
-                        id=evt.id,
-                        agent_id=agent_id,
-                        timestamp=evt.created_at,
-                        peer_id=str((evt.payload or {}).get("parent_peer", "")),
-                        direction="tools",
-                        tools=[tool],
+                # Lifecycle events (start/stop/timer/failure) belong to no turn:
+                # they always stay their own block so history matches the
+                # realtime feed and nothing is duplicated inside a turn.
+                # Legacy tool events (no turn_id, pre-`tool.*` naming) still
+                # attach to the turn they ran in.
+                is_lifecycle = item.event_type.startswith(("agent.", "timer.", "turn.", "message."))
+                if is_lifecycle or legacy_current is None:
+                    legacy_turns.append(
+                        ConversationTurn(
+                            id=evt.id,
+                            agent_id=agent_id,
+                            timestamp=evt.created_at,
+                            peer_id=str((evt.payload or {}).get("parent_peer", "")),
+                            direction="tools",
+                            tools=[tool],
+                        )
                     )
-                )
+                else:
+                    legacy_current.tools.append(tool)
 
         if legacy_current is not None:
             legacy_turns.append(legacy_current)
@@ -470,11 +479,21 @@ class DatabaseAgentStore:
 
 
 def _agent_record(agent: AgentModel) -> AgentRecord:
+    # The DB enum carries extra values (e.g. the `draft` default for rows
+    # created outside AgentRuntimeState). One unexpected status must not break
+    # the whole agent list or the startup restore — treat it as stopped.
+    try:
+        state = AgentRuntimeState(agent.status)
+    except ValueError:
+        logger.warning(
+            "Agent %s has unsupported status %r, treating it as stopped", agent.id, agent.status
+        )
+        state = AgentRuntimeState.STOPPED
     return AgentRecord(
         agent_id=agent.id,
         owner_id=agent.owner_id,
         name=agent.name,
-        state=AgentRuntimeState(agent.status),
+        state=state,
     )
 
 
