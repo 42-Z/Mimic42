@@ -181,6 +181,7 @@ class AlbumGrouper:
         self._sleep = sleep if sleep is not None else asyncio.sleep
         self._events: dict[AlbumKey, list[Any]] = {}
         self._deadlines: dict[AlbumKey, float] = {}
+        self._cap_deadlines: dict[AlbumKey, float] = {}
         self._tasks: dict[AlbumKey, asyncio.Task[None]] = {}
 
     @staticmethod
@@ -194,10 +195,11 @@ class AlbumGrouper:
             self._events[key].append(event)
             # Окно отсчитывается от последнего элемента, но не дальше капа,
             # зафиксированного на момент прибытия первого.
-            self._deadlines[key] = min(self._deadlines[key], now + self._quiet)
+            self._deadlines[key] = min(self._cap_deadlines[key], now + self._quiet)
             return
         self._events[key] = [event]
-        self._deadlines[key] = now + self._cap
+        self._cap_deadlines[key] = now + self._cap
+        self._deadlines[key] = now + self._quiet
         self._tasks[key] = asyncio.create_task(self._flush_after(key))
 
     async def close(self) -> None:
@@ -212,6 +214,7 @@ class AlbumGrouper:
         dropped = sum(len(events) for events in self._events.values())
         self._events.clear()
         self._deadlines.clear()
+        self._cap_deadlines.clear()
         if dropped:
             logger.warning("Dropped %d buffered album item(s) on close", dropped)
 
@@ -228,6 +231,7 @@ class AlbumGrouper:
             return
         events = self._events.pop(key, [])
         self._deadlines.pop(key, None)
+        self._cap_deadlines.pop(key, None)
         self._tasks.pop(key, None)
         if not events:
             return
