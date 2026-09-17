@@ -131,11 +131,13 @@ async def test_dashboard_conversation_groups_incoming_and_outgoing() -> None:
         )
 
     assert conversation.status_code == 200
-    turns = conversation.json()
+    body = conversation.json()
+    turns = body["turns"]
     assert len(turns) == 1
     assert turns[0]["direction"] == "both"
     assert turns[0]["incoming"] == "hi"
     assert turns[0]["outgoing"] == "hello"
     assert turns[0]["peer_name"] == "Ivan"
+    assert "next_before" in body
     assert limited.status_code == 200
-    assert len(limited.json()) == 1
+    assert len(limited.json()["turns"]) == 1

@@ -3,10 +3,11 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Annotated, Any, Protocol
+from datetime import datetime
+from typing import Annotated, Any, Literal, Protocol
 from uuid import UUID, uuid4
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Response, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -25,7 +26,7 @@ from mimic42.core.agent_store import (
     AgentMessageRecord,
     AgentRecord,
     AgentStore,
-    ConversationTurn,
+    ConversationPage,
 )
 from mimic42.core.crypto import FernetSecretCipher
 from mimic42.core.manager import (
@@ -34,6 +35,7 @@ from mimic42.core.manager import (
     LangChainAgentFactory,
     TelegramClientFactory,
 )
+from mimic42.core.media import MediaUploader
 from mimic42.core.memory import LongTermMemoryLike, RuntimeMemoryService
 from mimic42.core.onboarding import (
     AgentOnboardingService,
@@ -55,6 +57,7 @@ from mimic42.integrations.database_onboarding import (
 )
 from mimic42.integrations.database_session import create_engine, create_session_factory
 from mimic42.integrations.mem0_memory import build_mem0_memory
+from mimic42.integrations.supabase_media import SupabaseMediaStorage
 from mimic42.integrations.telegram_auth import TelethonAuthClientFactory
 
 logger = logging.getLogger("mimic42.api.app")
@@ -164,12 +167,33 @@ def create_app(
     telegram_client_factory: TelegramClientFactory | None = None,
     langchain_agent_factory: LangChainAgentFactory | None = None,
     long_term_memory: LongTermMemoryLike | None = None,
+    media_uploader: MediaUploader | None = None,
 ) -> FastAPI:
     app_settings = settings or Settings()
     app_telegram_factory = telegram_factory or TelethonAuthClientFactory()
+    # Resolution order: explicit argument → uploader of an injected manager →
+    # storage built from settings. A broken Storage configuration must degrade
+    # to "media unavailable", not crash application startup.
+    app_media_storage: MediaUploader | None = media_uploader or getattr(
+        manager, "media_uploader", None
+    )
+    if (
+        app_media_storage is None
+        and app_settings.supabase_url
+        and app_settings.supabase_service_key
+    ):
+        try:
+            app_media_storage = SupabaseMediaStorage(
+                supabase_url=app_settings.supabase_url,
+                service_key=app_settings.supabase_service_key,
+            )
+        except Exception:
+            logger.warning("Failed to initialise Supabase media storage", exc_info=True)
+            app_media_storage = None
     app_manager = manager or AgentManager(
         telegram_client_factory=telegram_client_factory,
         langchain_agent_factory=langchain_agent_factory,
+        media_uploader=app_media_storage,
     )
     app_onboarding_service = onboarding_service or AgentOnboardingService(
         telegram_factory=app_telegram_factory,
@@ -215,6 +239,7 @@ def create_app(
                     session_factory=session_factory,
                     telegram_client_factory=telegram_client_factory,
                     langchain_agent_factory=langchain_agent_factory,
+                    media_uploader=app_media_storage,
                 )
         try:
             # Restore running agents from database after restart
@@ -263,6 +288,7 @@ def create_app(
     app.state.agent_manager = app_manager
     app.state.onboarding_service = app_onboarding_service
     app.state.agent_store = agent_store
+    app.state.media_uploader = app_media_storage
     app.state.long_term_memory = None
     app.state.auth_verifier = auth_verifier or (
         SupabaseJWTVerifier(supabase_url=app_settings.supabase_url)
@@ -492,18 +518,79 @@ def create_app(
         await _ensure_agent_owner(store, agent_id=agent_id, user_id=current_user.user_id)
         return await store.list_activities(agent_id=agent_id, limit=limit, offset=offset)
 
-    @app.get("/api/v1/agents/{agent_id}/conversation", response_model=list[ConversationTurn])
+    @app.get("/api/v1/agents/{agent_id}/conversation", response_model=ConversationPage)
     async def get_agent_conversation(
         agent_id: UUID,
         current_user: CurrentUserDep,
-        limit: Annotated[int, Query(ge=1, le=1000)] = 50,
-        offset: Annotated[int, Query(ge=0)] = 0,
-    ) -> list[ConversationTurn]:
+        limit: Annotated[int, Query(ge=1, le=200)] = 50,
+        before: Annotated[datetime | None, Query()] = None,
+        before_id: Annotated[UUID | None, Query()] = None,
+    ) -> ConversationPage:
         store = _get_agent_store(app)
         if store is None:
-            return []
+            return ConversationPage()
         await _ensure_agent_owner(store, agent_id=agent_id, user_id=current_user.user_id)
-        return await store.get_conversation(agent_id=agent_id, limit=limit, offset=offset)
+        return await store.get_conversation(
+            agent_id=agent_id, limit=limit, before=before, before_id=before_id
+        )
+
+    @app.get("/api/v1/agents/{agent_id}/media/{media_path:path}")
+    async def get_agent_media(
+        agent_id: UUID,
+        media_path: str,
+        current_user: CurrentUserDep,
+        request: Request,
+    ) -> Response:
+        store = _get_agent_store(app)
+        media_storage: MediaUploader | None = getattr(app.state, "media_uploader", None)
+        if store is None or media_storage is None:
+            raise HTTPException(status_code=404, detail="Медиа недоступно")
+        await _ensure_agent_owner(store, agent_id=agent_id, user_id=current_user.user_id)
+        # Объект обязан лежать внутри папки агента — иначе доступ к чужому
+        # файлу. `..`-сегменты отклоняются: URL-нормализация внутри storage-клиента
+        # иначе увела бы запрос в чужую папку ({agent_id}/../{other}/file).
+        path_segments = [segment for segment in media_path.split("/") if segment]
+        if (
+            not media_path.startswith(f"{agent_id}/")
+            or ".." in path_segments
+            or media_path.startswith("/")
+        ):
+            raise HTTPException(status_code=403, detail="Нет доступа к этому файлу")
+        data = await media_storage.open(media_path)
+        if data is None:
+            raise HTTPException(status_code=404, detail="Файл не найден")
+        extension = media_path.rsplit(".", 1)[-1].lower()
+        content_types = {
+            "jpeg": "image/jpeg",
+            "jpg": "image/jpeg",
+            "png": "image/png",
+            "webp": "image/webp",
+            "gif": "image/gif",
+            "ogg": "audio/ogg",
+            "mp4": "video/mp4",
+            "pdf": "application/pdf",
+        }
+        media_type = content_types.get(extension, "application/octet-stream")
+        cache_headers = {"Cache-Control": "private, max-age=300", "Accept-Ranges": "bytes"}
+        # Range даёт браузеру листать видео/аудио без выкачивания всего файла.
+        byte_range = _parse_byte_range(request.headers.get("range"), len(data))
+        if byte_range == "invalid":
+            return Response(
+                status_code=416,
+                headers={**cache_headers, "Content-Range": f"bytes */{len(data)}"},
+            )
+        if byte_range is not None:
+            start, end = byte_range
+            return Response(
+                content=data[start : end + 1],
+                status_code=206,
+                media_type=media_type,
+                headers={
+                    **cache_headers,
+                    "Content-Range": f"bytes {start}-{end}/{len(data)}",
+                },
+            )
+        return Response(content=data, media_type=media_type, headers=cache_headers)
 
     @app.post(
         "/api/v1/agents",
@@ -583,6 +670,13 @@ def create_app(
                 await memory_store.clear_all_memories(agent_id)
             except Exception:
                 logger.exception("Failed to clear Mem0 memories for agent %s", agent_id)
+
+        media_storage: MediaUploader | None = getattr(app.state, "media_uploader", None)
+        if media_storage is not None:
+            try:
+                await media_storage.remove_prefix(agent_id)
+            except Exception:
+                logger.warning("Failed to remove media for agent %s", agent_id, exc_info=True)
 
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -802,6 +896,37 @@ async def _ensure_agent_owner(store: AgentStore, *, agent_id: UUID, user_id: UUI
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Agent {agent_id} does not exist",
         )
+
+
+def _parse_byte_range(
+    header: str | None, total: int
+) -> tuple[int, int] | Literal["invalid"] | None:
+    """Разобрать `Range: bytes=start-end` (единственный диапазон).
+
+    Возвращает (start, end) для 206, None — заголовка нет/не поддержан,
+    "invalid" — диапазон некорректен (ответ 416).
+    """
+    if header is None or total == 0:
+        return None
+    units, _, spec = header.partition("=")
+    if units.strip().lower() != "bytes" or "," in spec:
+        return None
+    start_raw, dash, end_raw = spec.strip().partition("-")
+    if not dash:
+        return "invalid"
+    try:
+        if not start_raw:
+            length = int(end_raw)
+            if length <= 0:
+                return "invalid"
+            return max(0, total - length), total - 1
+        start = int(start_raw)
+        end = int(end_raw) if end_raw else total - 1
+    except ValueError:
+        return "invalid"
+    if start < 0 or start > end or start >= total:
+        return "invalid"
+    return start, min(end, total - 1)
 
 
 async def _ensure_runtime_owner(app: FastAPI, *, agent_id: UUID, user_id: UUID) -> None:

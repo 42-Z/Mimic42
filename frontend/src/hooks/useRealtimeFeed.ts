@@ -1,11 +1,11 @@
 'use client';
 
-import { useEffect, useRef, useCallback, useState } from 'react';
+import { useEffect, useRef, useCallback, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { getSupabaseClient } from '@/lib/supabase/client';
 import { queryKeys } from '@/lib/queryClient';
 import { buildActivityFeed, type ActivityItem, type EventLike, type MessageLike } from '@/lib/activity/normalize';
-import type { AgentMessageRow, AgentEventRow, ConversationTurn, MessageThreadRow, ToolCallRecord, RealtimePayload } from '@/types';
+import type { AgentMessageRow, AgentEventRow, MessageThreadRow, RealtimePayload } from '@/types';
 import type { RealtimeChannel } from '@supabase/supabase-js';
 
 const MAX_FEED_ITEMS = 200;
@@ -69,29 +69,16 @@ async function fetchActivitySeed(agentIds: string[]): Promise<ActivitySeed> {
  * Manages Supabase Realtime subscriptions for an agent's messages and events.
  * Incoming rows are normalized into human-facing activity items (`items`
  * for the activity feed); raw tool transcripts are discarded on the client
- * (the typed events replace them). The same rows are also folded into
- * conversation turns (`newTurns` for the chat view).
+ * (the typed events replace them).
  *
- * Initial data must be loaded separately (via useAgentMessages /
- * useAgentActions for activity, useConversation for chat).
+ * Initial data must be loaded separately (via useActivityFeed).
  */
 export function useRealtimeFeed(agentId: string) {
   const qc = useQueryClient();
   const channelRef = useRef<RealtimeChannel | null>(null);
-  const [newTurns, setNewTurns] = useState<ConversationTurn[]>([]);
   const [newMessages, setNewMessages] = useState<AgentMessageRow[]>([]);
   const [newEvents, setNewEvents] = useState<AgentEventRow[]>([]);
   const [isConnected, setIsConnected] = useState(false);
-
-  const addTurn = useCallback((turn: ConversationTurn) => {
-    setNewTurns((prev) => {
-      const updated = [...prev, turn];
-      if (updated.length > MAX_FEED_ITEMS) {
-        return updated.slice(updated.length - MAX_FEED_ITEMS);
-      }
-      return updated;
-    });
-  }, []);
 
   // Debounced invalidation: coalesce rapid realtime bursts into at most
   // one refetch per second so that a flurry of tool events doesn't hammer
@@ -105,12 +92,8 @@ export function useRealtimeFeed(agentId: string) {
     for (const key of keys) {
       if (key === 'conversation') {
         qc.invalidateQueries({ queryKey: queryKeys.conversation.byAgent(agentId) });
-      } else if (key === 'messages') {
-        qc.invalidateQueries({ queryKey: queryKeys.messages.byAgent(agentId) });
       } else if (key === 'threads') {
         qc.invalidateQueries({ queryKey: queryKeys.threads.byAgent(agentId) });
-      } else if (key === 'actions') {
-        qc.invalidateQueries({ queryKey: queryKeys.actions.byAgent(agentId) });
       }
     }
     invalidateTimer.current = null;
@@ -124,7 +107,6 @@ export function useRealtimeFeed(agentId: string) {
   }, [flushInvalidates]);
 
   const addMessage = useCallback((msg: AgentMessageRow) => {
-    const isIncoming = msg.direction === 'incoming' || msg.direction === 'dashboard_trigger';
     if (!isTranscriptRow(msg)) {
       setNewMessages((prev) => {
         const updated = [...prev, msg];
@@ -132,23 +114,12 @@ export function useRealtimeFeed(agentId: string) {
           ? updated.slice(updated.length - MAX_FEED_ITEMS)
           : updated;
       });
-      scheduleInvalidate('messages');
       scheduleInvalidate('threads');
+      // Reconcile the live block with the canonical history turn (server-side
+      // grouping, peer names, media metadata).
+      scheduleInvalidate('conversation');
     }
-    const turn: ConversationTurn = {
-      id: msg.id,
-      agent_id: agentId,
-      timestamp: msg.created_at,
-      peer_id: msg.peer || String(msg.payload?.peer ?? ''),
-      peer_name: String(msg.payload?.peer_name ?? ''),
-      agent_name: String(msg.payload?.agent_name ?? ''),
-      incoming: isIncoming ? msg.content : '',
-      outgoing: isIncoming ? '' : msg.content,
-      direction: isIncoming ? 'incoming' : 'outgoing',
-      tools: [],
-    };
-    addTurn(turn);
-  }, [agentId, addTurn, scheduleInvalidate]);
+  }, [scheduleInvalidate]);
 
   const addEvent = useCallback((event: AgentEventRow) => {
     setNewEvents((prev) => {
@@ -157,40 +128,10 @@ export function useRealtimeFeed(agentId: string) {
         ? updated.slice(updated.length - MAX_FEED_ITEMS)
         : updated;
     });
-    scheduleInvalidate('actions');
-    const started = (event as unknown as Record<string, unknown>).started_at;
-    const completed = (event as unknown as Record<string, unknown>).completed_at;
-    let duration_ms = 0;
-    if (typeof started === 'string' && typeof completed === 'string') {
-      const ms = new Date(completed).getTime() - new Date(started).getTime();
-      if (Number.isFinite(ms) && ms >= 0) duration_ms = ms;
-    }
-    const tool: ToolCallRecord = {
-      id: event.id,
-      name: event.event_type,
-      status: event.status,
-      payload: event.payload ?? undefined,
-      result: event.result,
-      error: event.error,
-      duration_ms,
-      created_at: event.created_at,
-    };
-    const turn: ConversationTurn = {
-      id: event.id,
-      agent_id: agentId,
-      timestamp: event.created_at,
-      peer_id: String(event.payload?.parent_peer ?? ''),
-      peer_name: '',
-      agent_name: '',
-      incoming: '',
-      outgoing: '',
-      direction: 'tools',
-      tools: [tool],
-    };
-    addTurn(turn);
-  }, [agentId, addTurn]);
+    scheduleInvalidate('conversation');
+  }, [scheduleInvalidate]);
+
   useEffect(() => {
-    setNewTurns([]);
     setNewMessages([]);
     setNewEvents([]);
   }, [agentId]);
@@ -253,17 +194,19 @@ export function useRealtimeFeed(agentId: string) {
     };
   }, [agentId, addMessage, addEvent]);
 
-  const items: ActivityItem[] = buildActivityFeed(
-    newMessages as unknown as MessageLike[],
-    newEvents as unknown as EventLike[],
+  const items: ActivityItem[] = useMemo(
+    () =>
+      buildActivityFeed(
+        newMessages as unknown as MessageLike[],
+        newEvents as unknown as EventLike[],
+      ),
+    [newMessages, newEvents],
   );
 
   return {
     items,
-    newTurns,
     isConnected,
     clearFeed: () => {
-      setNewTurns([]);
       setNewMessages([]);
       setNewEvents([]);
     },
@@ -326,7 +269,6 @@ export function useMultiAgentRealtimeFeed(agentIds: string[]) {
               ? updated.slice(updated.length - MAX_FEED_ITEMS)
               : updated;
           });
-          qc.invalidateQueries({ queryKey: queryKeys.messages.byAgent(msg.agent_id) });
         }
       )
       .on<AgentEventRow>(
@@ -345,7 +287,6 @@ export function useMultiAgentRealtimeFeed(agentIds: string[]) {
               ? updated.slice(updated.length - MAX_FEED_ITEMS)
               : updated;
           });
-          qc.invalidateQueries({ queryKey: queryKeys.actions.byAgent(event.agent_id) });
         }
       )
       .subscribe((status) => {
@@ -359,17 +300,18 @@ export function useMultiAgentRealtimeFeed(agentIds: string[]) {
   }, [agentKey, qc]);
 
   // Merge the seed (recent history) with realtime increments, then normalize.
-  const mergedMessages = dedupeById([...(seed?.messages ?? []), ...newMessages]).slice(
-    -MAX_FEED_ITEMS,
-  );
-  const mergedEvents = dedupeById([...(seed?.events ?? []), ...newEvents]).slice(
-    -MAX_FEED_ITEMS,
-  );
-
-  const items: ActivityItem[] = buildActivityFeed(
-    mergedMessages as unknown as MessageLike[],
-    mergedEvents as unknown as EventLike[],
-  );
+  const items: ActivityItem[] = useMemo(() => {
+    const mergedMessages = dedupeById([...(seed?.messages ?? []), ...newMessages]).slice(
+      -MAX_FEED_ITEMS,
+    );
+    const mergedEvents = dedupeById([...(seed?.events ?? []), ...newEvents]).slice(
+      -MAX_FEED_ITEMS,
+    );
+    return buildActivityFeed(
+      mergedMessages as unknown as MessageLike[],
+      mergedEvents as unknown as EventLike[],
+    );
+  }, [seed, newMessages, newEvents]);
 
   return {
     items,

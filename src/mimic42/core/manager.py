@@ -19,6 +19,7 @@ from mimic42.core.agent_runtime import (
     MimicAgentRuntime,
     TelegramClientLike,
 )
+from mimic42.core.media import MediaUploader
 from mimic42.core.memory import RuntimeMemoryService
 from mimic42.integrations.langchain_agent import build_langchain_agent
 from mimic42.integrations.telegram_tools import (
@@ -54,6 +55,25 @@ class RuntimeFactoryWithSession(Protocol):
     ) -> MimicAgentRuntime: ...
 
 
+class RuntimeFactoryWithMedia(Protocol):
+    def __call__(
+        self,
+        config: AgentRuntimeConfig,
+        *,
+        session_factory: async_sessionmaker[AsyncSession] | None = None,
+        media_uploader: MediaUploader | None = None,
+    ) -> MimicAgentRuntime: ...
+
+
+class RuntimeFactoryWithMediaOnly(Protocol):
+    def __call__(
+        self,
+        config: AgentRuntimeConfig,
+        *,
+        media_uploader: MediaUploader | None = None,
+    ) -> MimicAgentRuntime: ...
+
+
 class AgentManager:
     """In-process async registry for multiple users and their agent runtimes."""
 
@@ -66,12 +86,14 @@ class AgentManager:
         session_factory: async_sessionmaker[AsyncSession] | None = None,
         telegram_client_factory: TelegramClientFactory | None = None,
         langchain_agent_factory: LangChainAgentFactory | None = None,
+        media_uploader: MediaUploader | None = None,
     ) -> None:
         self._runtime_factory = runtime_factory or _build_runtime
         self._memory_service_factory = memory_service_factory
         self._config_loader = config_loader
         self._status_sink = status_sink
         self.session_factory = session_factory
+        self.media_uploader = media_uploader
         self._telegram_client_factory: TelegramClientFactory = telegram_client_factory or (
             lambda config: cast(TelegramClientLike, build_telegram_client(config))
         )
@@ -109,7 +131,19 @@ class AgentManager:
         if self._memory_service_factory is not None:
             return self._build_runtime_with_memory(config)
         sig = inspect.signature(self._runtime_factory)
-        if "session_factory" in sig.parameters:
+        accepts_session = "session_factory" in sig.parameters
+        accepts_media = "media_uploader" in sig.parameters
+        if accepts_media:
+            if accepts_session:
+                factory_with_media = cast(RuntimeFactoryWithMedia, self._runtime_factory)
+                return factory_with_media(
+                    config,
+                    session_factory=self.session_factory,
+                    media_uploader=self.media_uploader,
+                )
+            factory_with_media_only = cast(RuntimeFactoryWithMediaOnly, self._runtime_factory)
+            return factory_with_media_only(config, media_uploader=self.media_uploader)
+        if accepts_session:
             factory_with_session = cast(RuntimeFactoryWithSession, self._runtime_factory)
             return factory_with_session(
                 config,
@@ -243,11 +277,13 @@ class AgentManager:
                     cast(TelethonRequestClient, telegram_client),
                     agent_id=config.agent_id,
                     session_factory=self.session_factory,
+                    media_uploader=self.media_uploader,
                 ),
                 self.session_factory,
             ),
             memory_service=memory_service,
             session_factory=self.session_factory,
+            media_uploader=self.media_uploader,
         )
 
     async def _save_status(self, agent_id: UUID, state: AgentRuntimeState) -> None:
@@ -259,6 +295,7 @@ class AgentManager:
 def _build_runtime(
     config: AgentRuntimeConfig,
     session_factory: async_sessionmaker[AsyncSession] | None = None,
+    media_uploader: MediaUploader | None = None,
 ) -> MimicAgentRuntime:
     telegram_client = cast(TelegramClientLike, build_telegram_client(config))
     return MimicAgentRuntime(
@@ -270,10 +307,12 @@ def _build_runtime(
                 cast(TelethonRequestClient, telegram_client),
                 agent_id=config.agent_id,
                 session_factory=session_factory,
+                media_uploader=media_uploader,
             ),
             session_factory=session_factory,
         ),
         session_factory=session_factory,
+        media_uploader=media_uploader,
     )
 
 

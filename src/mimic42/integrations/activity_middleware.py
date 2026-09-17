@@ -14,8 +14,33 @@ from mimic42.core.activity import ActivityRecorder
 
 logger = logging.getLogger("mimic42.activity")
 
+_BASE64_DATA_URL_MIN = 400
+
 ModelCallHandler = Callable[[Any], Awaitable[Any]]
 ToolCallHandler = Callable[[ToolCallRequest], Awaitable[Any]]
+
+
+def _sanitize_result(result: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Replace inline base64 payloads with markers so logs stay compact.
+
+    Media bytes are archived to Storage by the tools themselves; the
+    ``media_ref`` items (storage_path) survive sanitization untouched.
+    """
+    if result is None:
+        return None
+
+    def clean(value: Any) -> Any:
+        if isinstance(value, str):
+            if value.startswith("data:") and len(value) > _BASE64_DATA_URL_MIN:
+                return {"_omitted": "base64 media, archived in Storage"}
+            return value
+        if isinstance(value, dict):
+            return {key: clean(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [clean(item) for item in value]
+        return value
+
+    return clean(result)
 
 
 def _turn_fields(request: Any) -> tuple[str | None, str | None]:
@@ -126,7 +151,7 @@ class ActivityMiddleware(AgentMiddleware):
                 "peer": peer,
                 "args": request.tool_call.get("args", {}),
             },
-            result=result,
+            result=_sanitize_result(result),
             error=error,
             started_at=started_at,
             completed_at=datetime.now(UTC),

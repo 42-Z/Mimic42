@@ -1,5 +1,11 @@
 import { describe, expect, test } from 'bun:test';
-import { buildActivityFeed, type EventLike, type MessageLike } from '@/lib/activity/normalize';
+import {
+  buildActivityFeed,
+  turnToActivityItem,
+  type EventLike,
+  type MessageLike,
+} from '@/lib/activity/normalize';
+import type { ConversationTurn } from '@/types';
 
 const msg = (over: Partial<MessageLike>): MessageLike => ({
   id: 'm1',
@@ -103,5 +109,287 @@ describe('buildActivityFeed', () => {
       ],
     );
     expect(items[0]?.actions[0]?.hint).toBe('provider down');
+  });
+
+  test('resolves structured_response text as the response', () => {
+    const items = buildActivityFeed(
+      [
+        msg({
+          id: 's1',
+          role: 'assistant',
+          direction: 'agent_response',
+          content: '',
+          payload: { turn_id: 't1', structured_response: { text: 'Привет!' } },
+        }),
+      ],
+      [],
+    );
+    expect(items[0]?.response?.content).toBe('Привет!');
+  });
+
+  test('falls back to a successful send_text_message tool call', () => {
+    const items = buildActivityFeed(
+      [msg({ id: 'in', payload: { turn_id: 't2' } })],
+      [
+        evt({
+          id: 'sent',
+          payload: { turn_id: 't2', args: { message: 'Ответ тулзой' } },
+        }),
+      ],
+    );
+    expect(items[0]?.response?.content).toBe('Ответ тулзой');
+  });
+
+  test('realtime turns carry the interlocutor name from payload', () => {
+    const items = buildActivityFeed(
+      [
+        msg({
+          id: 'in',
+          payload: {
+            turn_id: 't-name',
+            peer: '6121153070',
+            peer_name: 'Miqqil⁴² 5opka - MAGNUM (@miqqil, ID: 6121153070)',
+          },
+        }),
+      ],
+      [],
+    );
+    expect(items[0]?.peer).toBe('6121153070');
+    expect(items[0]?.peerTitle).toBe('Miqqil⁴² 5opka - MAGNUM (@miqqil, ID: 6121153070)');
+  });
+
+  test('carries reply info for realtime turns', () => {
+    const items = buildActivityFeed(
+      [
+        msg({
+          id: 'in',
+          content: 'лови реплай',
+          payload: {
+            turn_id: 't-reply',
+            peer: '1',
+            reply: { message_id: 5, preview: 'предыдущее сообщение' },
+          },
+        }),
+        msg({
+          id: 'out',
+          role: 'assistant',
+          direction: 'agent_response',
+          content: 'держи',
+          created_at: '2026-09-09T10:00:10Z',
+          payload: {
+            turn_id: 't-reply',
+            peer: '1',
+            structured_response: { text: 'держи', reply_to: 736 },
+          },
+        }),
+      ],
+      [],
+    );
+
+    expect(items[0]?.incoming?.reply?.message_id).toBe(5);
+    expect(items[0]?.incoming?.reply?.preview).toBe('предыдущее сообщение');
+    expect(items[0]?.responseReplyTo).toBe(736);
+  });
+
+  test('reply target falls back to a send_text_message tool call', () => {
+    const items = buildActivityFeed(
+      [msg({ id: 'in', payload: { turn_id: 't-tool-reply' } })],
+      [
+        evt({
+          id: 'sent',
+          payload: { turn_id: 't-tool-reply', args: { message: 'ответ', reply_to_msg_id: 99 } },
+        }),
+      ],
+    );
+    expect(items[0]?.responseReplyTo).toBe(99);
+  });
+
+  test('carries incoming media from payload', () => {
+    const items = buildActivityFeed(
+      [
+        msg({
+          id: 'media',
+          content: '[Фото id=photo:1:2:aa:5]',
+          payload: {
+            turn_id: 't3',
+            media: [
+              {
+                kind: 'photo',
+                name: 'photo.jpeg',
+                mime_type: 'image/jpeg',
+                size: 3,
+                storage_path: 'ag/1/p.jpeg',
+              },
+            ],
+          },
+        }),
+      ],
+      [],
+    );
+    expect(items[0]?.incomingMedia?.length).toBe(1);
+    expect(items[0]?.incomingMedia?.[0]?.storage_path).toBe('ag/1/p.jpeg');
+  });
+});
+
+describe('turnToActivityItem', () => {
+  test('maps reply fields from a backend turn', () => {
+    const turn = {
+      id: 'm-reply',
+      agent_id: 'agent-1',
+      timestamp: '2026-01-01T00:00:00Z',
+      turn_id: 't-reply',
+      peer_id: '1',
+      peer_name: 'Аня',
+      agent_name: 'Мими',
+      incoming: 'лови реплай',
+      outgoing: 'держи',
+      direction: 'both',
+      incoming_media: [],
+      incoming_reply: { message_id: 5, preview: 'предыдущее' },
+      outgoing_reply_id: 736,
+      tools: [],
+    } as unknown as ConversationTurn;
+
+    const item = turnToActivityItem(turn);
+
+    expect(item.incoming?.reply?.message_id).toBe(5);
+    expect(item.incoming?.reply?.preview).toBe('предыдущее');
+    expect(item.responseReplyTo).toBe(736);
+  });
+
+  test('maps a lifecycle-only turn to a compact lifecycle item', () => {
+    const turn = {
+      id: 'evt-1',
+      agent_id: 'agent-1',
+      timestamp: '2026-01-01T00:00:00Z',
+      turn_id: null,
+      peer_id: '',
+      peer_name: '',
+      agent_name: '',
+      incoming: '',
+      outgoing: '',
+      direction: 'tools',
+      incoming_media: [],
+      tools: [
+        {
+          id: 'e1',
+          name: 'agent.started',
+          status: 'succeeded',
+          payload: {},
+          result: null,
+          error: null,
+          duration_ms: 0,
+          created_at: '2026-01-01T00:00:00Z',
+        },
+      ],
+    } as unknown as ConversationTurn;
+
+    const item = turnToActivityItem(turn);
+
+    expect(item.kind).toBe('lifecycle');
+    expect(item.id).toBe('evt:e1');
+    expect(item.actions).toHaveLength(1);
+    expect(item.actions[0]?.eventType).toBe('agent.started');
+  });
+
+  test('maps a backend turn preserving media and turn identity', () => {
+    const turn = {
+      id: 'm1',
+      agent_id: 'agent-1',
+      timestamp: '2026-01-01T00:00:00Z',
+      turn_id: 't9',
+      peer_id: '1',
+      peer_name: 'Аня',
+      agent_name: 'Мими',
+      incoming: 'Привет',
+      outgoing: 'Привет-привет',
+      direction: 'both',
+      tools: [],
+      incoming_media: [
+        {
+          kind: 'photo',
+          name: 'p.jpeg',
+          mime_type: 'image/jpeg',
+          size: 3,
+          storage_path: 'ag/1/p.jpeg',
+        },
+      ],
+    } as unknown as ConversationTurn;
+
+    const item = turnToActivityItem(turn);
+
+    expect(item.id).toBe('turn:t9');
+    expect(item.agentId).toBe('agent-1');
+    expect(item.incomingMedia?.[0]?.storage_path).toBe('ag/1/p.jpeg');
+    expect(item.response?.content).toBe('Привет-привет');
+    expect(item.peerTitle).toBe('Аня');
+  });
+
+  test('maps tool records to actions with human labels', () => {
+    const turn = {
+      id: 'm2',
+      agent_id: 'agent-1',
+      timestamp: '2026-01-01T00:00:00Z',
+      turn_id: 't10',
+      peer_id: '1',
+      peer_name: '',
+      agent_name: '',
+      incoming: 'Привет',
+      outgoing: '',
+      direction: 'incoming',
+      incoming_media: [],
+      tools: [
+        {
+          id: 'ev1',
+          name: 'tool.send_text_message',
+          status: 'succeeded',
+          payload: { args: { peer: '1', message: 'hi' } },
+          result: { success: true },
+          error: null,
+          duration_ms: 100,
+          created_at: '2026-01-01T00:00:05Z',
+        },
+      ],
+    } as unknown as ConversationTurn;
+
+    const item = turnToActivityItem(turn);
+
+    expect(item.actions).toHaveLength(1);
+    expect(item.actions[0]?.eventType).toBe('tool.send_text_message');
+    expect(item.actions[0]?.status).toBe('succeeded');
+    expect(item.actions[0]?.label).not.toContain('<');
+  });
+
+  test('historical tool keeps its duration instead of zero', () => {
+    const turn = {
+      id: 'm3',
+      agent_id: 'agent-1',
+      timestamp: '2026-01-01T00:00:00Z',
+      turn_id: 't11',
+      peer_id: '1',
+      peer_name: '',
+      agent_name: '',
+      incoming: 'Привет',
+      outgoing: '',
+      direction: 'incoming',
+      incoming_media: [],
+      tools: [
+        {
+          id: 'ev2',
+          name: 'tool.get_dialogs',
+          status: 'succeeded',
+          payload: {},
+          result: null,
+          error: null,
+          duration_ms: 1500,
+          created_at: '2026-01-01T00:00:05Z',
+        },
+      ],
+    } as unknown as ConversationTurn;
+
+    const [action] = turnToActivityItem(turn).actions;
+
+    expect(action?.completedAt).toBe('2026-01-01T00:00:05Z');
+    expect(action?.startedAt).toBe('2026-01-01T00:00:03.500Z');
   });
 });

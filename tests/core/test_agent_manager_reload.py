@@ -12,6 +12,7 @@ from mimic42.core.agent_runtime import (
 from mimic42.core.manager import AgentManager
 
 from .test_agent_runtime import FakeLangChainAgent, FakeTelegramClient
+from .test_runtime_media import FakeUploader
 
 
 def _build_config(agent_id: UUID, llm_model: str = "z-ai/glm-5.3-flash") -> AgentRuntimeConfig:
@@ -116,3 +117,34 @@ async def test_reload_propagates_stop_failures() -> None:
     # Без тумбстоуна: агент всё ещё в БД, ре-материализация должна остаться
     # возможной при следующем get_agent.
     assert agent_id not in manager._removed
+
+
+@pytest.mark.asyncio
+async def test_factory_with_media_but_without_session_gets_no_session_kwarg() -> None:
+    """Фабрика с media_uploader, но без session_factory, не должна получать
+    лишний kwarg: иначе TypeErrror на создании агента."""
+    received: dict[str, object] = {}
+
+    def factory(
+        runtime_config: AgentRuntimeConfig, *, media_uploader: object | None = None
+    ) -> MimicAgentRuntime:
+        received["media_uploader"] = media_uploader
+        return MimicAgentRuntime(
+            config=runtime_config,
+            telegram_client=FakeTelegramClient(),
+            langchain_agent=FakeLangChainAgent(),
+        )
+
+    agent_id = uuid4()
+    configs = {agent_id: _build_config(agent_id)}
+    uploader = FakeUploader()
+    manager = AgentManager(
+        runtime_factory=factory,
+        config_loader=ConfigStore(configs),
+        media_uploader=uploader,
+    )
+
+    runtime = await manager.create_agent(configs[agent_id])
+
+    assert runtime.config.agent_id == agent_id
+    assert received["media_uploader"] is uploader

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 from datetime import datetime, timedelta
 from typing import Any, Literal, Protocol
 from uuid import UUID
@@ -10,6 +11,10 @@ from langchain_core.tools import BaseTool, StructuredTool
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from telethon import functions, types
 from telethon.extensions import markdown
+
+from mimic42.core.media import MediaUploader
+
+logger = logging.getLogger("mimic42.telegram_tools")
 
 
 class TelethonRequestClient(Protocol):
@@ -245,11 +250,13 @@ class TelegramToolbox:
         client: Any,
         agent_id: UUID | None = None,
         session_factory: async_sessionmaker[AsyncSession] | None = None,
+        media_uploader: MediaUploader | None = None,
     ) -> None:
         self._client = client
         self._agent_id = agent_id
         self._session_factory = session_factory
         self._last_send_text_message: dict[str, datetime] = {}
+        self._media_uploader = media_uploader
 
     async def _resolve_peer(self, peer: Any, as_input: bool = True) -> Any:
         """Resolve a peer string/int to a Telethon entity."""
@@ -716,12 +723,39 @@ class TelegramToolbox:
                 return [{"type": "text", "text": "Failed to download media."}]
 
             base64_str = base64.b64encode(data).decode("utf-8")
-            return [
+
+            storage_path: str | None = None
+            if self._media_uploader is not None and self._agent_id is not None:
+                try:
+                    archived = await self._media_uploader.upload(
+                        agent_id=self._agent_id,
+                        filename=f"view_{media_type}_{obj_id}." + mime_type.split("/")[-1],
+                        data=data,
+                        mime_type=mime_type,
+                        kind=media_type,
+                    )
+                    storage_path = archived.storage_path if archived else None
+                except Exception:
+                    logger.warning("view_image media upload failed", exc_info=True)
+
+            items: list[dict[str, Any]] = []
+            if storage_path:
+                items.append(
+                    {
+                        "type": "media_ref",
+                        "storage_path": storage_path,
+                        "mime_type": mime_type,
+                        "size": len(data),
+                        "name": f"view_{media_type}_{obj_id}",
+                    }
+                )
+            items.append(
                 {
                     "type": "image_url",
                     "image_url": {"url": f"data:{mime_type};base64,{base64_str}"},
                 }
-            ]
+            )
+            return items
         except Exception as e:
             return [
                 {
@@ -2463,9 +2497,15 @@ def build_telegram_langchain_tools(
     client: TelethonRequestClient,
     agent_id: UUID | None = None,
     session_factory: async_sessionmaker[AsyncSession] | None = None,
+    media_uploader: MediaUploader | None = None,
 ) -> list[BaseTool]:
     """Expose all 91 tools as LangChain StructuredTools."""
-    toolbox = TelegramToolbox(client, agent_id=agent_id, session_factory=session_factory)
+    toolbox = TelegramToolbox(
+        client,
+        agent_id=agent_id,
+        session_factory=session_factory,
+        media_uploader=media_uploader,
+    )
 
     return [
         StructuredTool.from_function(

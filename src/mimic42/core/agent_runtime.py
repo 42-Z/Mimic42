@@ -14,6 +14,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mimic42.core.activity import ActivityRecorder
+from mimic42.core.album_grouper import AlbumGrouper
+from mimic42.core.media import MAX_MEDIA_BYTES, MediaFile, MediaUploader
 from mimic42.core.memory import MemoryServiceLike, RuntimeMemoryService
 from mimic42.core.model_catalog import DEFAULT_LLM_MODEL
 
@@ -69,6 +71,9 @@ class AgentTrigger(BaseModel):
     message_id: int | None = Field(default=None, gt=0)
     thread_id: UUID | None = None
     thread_title: str | None = None
+    media: list[dict[str, Any]] = Field(default_factory=list)
+    reply_to_message_id: int | None = Field(default=None, gt=0)
+    reply_preview: str | None = None
 
 
 class AgentTriggerResult(BaseModel):
@@ -146,12 +151,14 @@ class MimicAgentRuntime:
         langchain_agent: LangChainAgentLike,
         memory_service: MemoryServiceLike | None = None,
         session_factory: async_sessionmaker[AsyncSession] | None = None,
+        media_uploader: MediaUploader | None = None,
     ) -> None:
         self.config = config
         self._telegram_client = telegram_client
         self._langchain_agent = langchain_agent
         self._memory_service = memory_service or RuntimeMemoryService()
         self._session_factory = session_factory
+        self._media_uploader = media_uploader
         self._state = AgentRuntimeState.STOPPED
         self._lifecycle_lock = asyncio.Lock()
         self._trigger_lock = asyncio.Lock()
@@ -160,6 +167,7 @@ class MimicAgentRuntime:
         self._chat_mute_cache: dict[str, tuple[bool, float]] = {}
         self._scheduler_task: asyncio.Task[None] | None = None
         self._http_client: Any | None = None
+        self._album_grouper = AlbumGrouper(self._flush_album)
         self._activity = ActivityRecorder(session_factory) if session_factory is not None else None
 
     async def _record_event(
@@ -260,6 +268,8 @@ class MimicAgentRuntime:
                     except asyncio.CancelledError:
                         pass
                     self._scheduler_task = None
+
+                await self._album_grouper.close()
 
                 if self._http_client is not None:
                     try:
@@ -409,6 +419,14 @@ class MimicAgentRuntime:
             logger.debug(f"Processing message from {trigger.peer}: {trigger.text[:100]}")
             turn_id = str(uuid4())
             turn_context = TurnContext(turn_id=turn_id, peer=trigger.peer)
+            reply_payload = (
+                {
+                    "message_id": trigger.reply_to_message_id,
+                    "preview": trigger.reply_preview,
+                }
+                if trigger.reply_to_message_id is not None
+                else None
+            )
             messages = await self._memory_service.build_messages(
                 agent_id=self.config.agent_id,
                 peer=trigger.peer,
@@ -444,8 +462,11 @@ class MimicAgentRuntime:
                         peer=trigger.peer,
                         input_messages=messages,
                         output_messages=[],
+                        raw_user_text=trigger.raw_text,
                         turn_id=turn_id,
                         thread_id=trigger.thread_id,
+                        media=trigger.media or None,
+                        reply=reply_payload,
                     )
                 except Exception:
                     logger.warning(
@@ -550,6 +571,8 @@ class MimicAgentRuntime:
                 raw_user_text=trigger.raw_text,
                 turn_id=turn_id,
                 thread_id=trigger.thread_id,
+                media=trigger.media or None,
+                reply=reply_payload,
             )
 
         return AgentTriggerResult(
@@ -622,6 +645,30 @@ class MimicAgentRuntime:
         self._message_handler_registered = True
 
     async def _handle_incoming_message(self, event: TelegramEventLike) -> None:
+        """Альбомы буферизуются, одиночные сообщения обрабатываются сразу."""
+        grouped_id = getattr(event, "grouped_id", None)
+        if not isinstance(grouped_id, int):
+            # TL: grouped_id — flags.17?long, то есть int или None. Любое другое
+            # значение означает «это не элемент альбома».
+            await self._process_incoming([event])
+            return
+        chat_id = getattr(event, "chat_id", None)
+        self._album_grouper.add((str(chat_id), str(grouped_id)), event)
+
+    async def _flush_album(self, events: list[TelegramEventLike]) -> None:
+        """Буфер альбома доставлен — обработать элементы одним ходом."""
+        logger.info(
+            "Grouped album with %d item(s) from chat %s",
+            len(events),
+            getattr(events[0], "chat_id", None),
+        )
+        try:
+            await self._process_incoming(events)
+        except Exception:
+            logger.exception("Failed to process grouped album")
+
+    async def _process_incoming(self, events: list[TelegramEventLike]) -> None:
+        event = events[0]
         logger.info("Incoming message event received")
         logger.info(
             "Incoming message event: chat_id=%s, text=%s",
@@ -693,12 +740,30 @@ class MimicAgentRuntime:
 
         # Protect the rest of the message handling pipeline from crashes
         try:
-            raw_text = getattr(event, "raw_text", None) or getattr(event, "text", None)
-            if not isinstance(raw_text, str):
-                raw_text = ""
+            # Элементы альбома обрабатываются по отдельности (у каждого свой
+            # маркер и своя подпись), но ход, ответ и запись — общие.
+            merged_content: list[str] = []
+            merged_raw: list[str] = []
+            media_files: list[MediaFile] = []
+            for item in events:
+                item_raw = getattr(item, "raw_text", None) or getattr(item, "text", None)
+                if not isinstance(item_raw, str):
+                    item_raw = ""
+                if item_raw:
+                    merged_raw.append(item_raw)
+                item_text, item_media = await _process_media_and_text(
+                    item,
+                    item_raw,
+                    http_client=self._http_client,
+                    media_uploader=self._media_uploader,
+                    agent_id=self.config.agent_id,
+                )
+                if item_text:
+                    merged_content.append(item_text)
+                media_files.extend(item_media)
 
-            # Process attachments in memory and transcribers
-            text = await _process_media_and_text(event, raw_text, http_client=self._http_client)
+            raw_text = "\n".join(merged_raw)
+            text = "\n".join(merged_content)
             if not text:
                 logger.info(
                     "Empty text after _process_media_and_text for chat %s, skipping",
@@ -857,6 +922,7 @@ class MimicAgentRuntime:
                     reply_to_msg_id = getattr(reply_to, "reply_to_msg_id", None)
 
             reply_str = ""
+            reply_preview = ""
             if reply_to_msg_id:
                 logger.debug(
                     "Reply detected: reply_to_msg_id=%s for chat_id=%s",
@@ -904,12 +970,21 @@ class MimicAgentRuntime:
 
             # Format output message text
             incoming_msg_id = _extract_incoming_message_id(event)
+            album_note = ""
+            if len(events) > 1:
+                item_ids = [
+                    str(item_id)
+                    for item in events
+                    if (item_id := _extract_incoming_message_id(item)) is not None
+                ]
+                album_note = f"Альбом из {len(events)} файлов (ID: {', '.join(item_ids)})\n"
             text = (
                 f"[Входящее сообщение]\n"
                 f"Время: {time_str}\n"
                 f"Чат: {chat_type_str}\n"
                 f"Отправитель: {sender_str}\n"
                 f"ID сообщения: {incoming_msg_id}\n"
+                f"{album_note}"
                 f"{reply_str}"
                 f"Содержимое: {text}"
             )
@@ -930,6 +1005,9 @@ class MimicAgentRuntime:
                     message_id=_extract_incoming_message_id(event),
                     thread_id=thread_id,
                     thread_title=thread_title,
+                    media=[m.as_payload() for m in media_files],
+                    reply_to_message_id=reply_to_msg_id,
+                    reply_preview=reply_preview[:200] if reply_preview else None,
                 )
             )
         except Exception as e:
@@ -1037,32 +1115,74 @@ class MimicAgentRuntime:
                     await update_session.commit()
 
 
+def _sticker_file_of(message: Any) -> tuple[str, str]:
+    """Имя и mime файла стикера: статичный — webp, анимированные — tgs/webm.
+    Иначе анимированный стикер получает битый mime и не открывается в ленте."""
+    doc = getattr(getattr(message, "media", None), "document", None)
+    mime = getattr(doc, "mime_type", None)
+    if mime == "application/x-tgsticker":
+        return "sticker.tgs", "application/x-tgsticker"
+    if isinstance(mime, str) and "webm" in mime:
+        return "sticker.webm", "video/webm"
+    return "sticker.webp", "image/webp"
+
+
 async def _process_media_and_text(
     event: TelegramEventLike,
     text: str,
     *,
     http_client: Any | None = None,
-) -> str:
+    media_uploader: MediaUploader | None = None,
+    agent_id: UUID | None = None,
+) -> tuple[str, list[MediaFile]]:
     message = getattr(event, "message", None)
     if not message or not getattr(message, "media", None):
-        return text
+        return text, []
+
+    media_files: list[MediaFile] = []
+
+    async def _archive(kind: str, filename: str, mime_type: str, data: bytes) -> None:
+        """Archive one attachment to Storage; never break the turn on failure."""
+        if media_uploader is None or agent_id is None or not data:
+            return
+        try:
+            archived = await media_uploader.upload(
+                agent_id=agent_id,
+                filename=filename,
+                data=data,
+                mime_type=mime_type,
+                kind=kind,
+            )
+        except Exception:
+            logger.warning("Media archiving failed for %s", filename, exc_info=True)
+            return
+        if archived is not None:
+            media_files.append(archived)
 
     try:
         from mimic42.integrations.telegram_tools import format_media_object
 
         media_id = format_media_object(message)
         if not media_id:
-            return text
+            return text, media_files
 
         if media_id.startswith("photo:"):
-            return f"[Фото id={media_id}]" + (f" {text}" if text else "")
+            data = await event.client.download_media(message, file=bytes)
+            await _archive("photo", "photo.jpeg", "image/jpeg", data or b"")
+            return f"[Фото id={media_id}]" + (f" {text}" if text else ""), media_files
 
         elif media_id.startswith("sticker:"):
             parts = media_id.split(":")
             emoji = parts[5] if len(parts) > 5 else ""
             pack_name = parts[6] if len(parts) > 6 else ""
             pack_str = f" пак={pack_name}" if pack_name else ""
-            return f"[Стикер {emoji} id={media_id}{pack_str}]" + (f" {text}" if text else "")
+            data = await event.client.download_media(message, file=bytes)
+            sticker_name, sticker_mime = _sticker_file_of(message)
+            await _archive("sticker", sticker_name, sticker_mime, data or b"")
+            return (
+                f"[Стикер {emoji} id={media_id}{pack_str}]" + (f" {text}" if text else ""),
+                media_files,
+            )
 
         elif media_id.startswith(("voice:", "round:")):
             from io import BytesIO
@@ -1075,16 +1195,23 @@ async def _process_media_and_text(
             api_key = settings.openrouter_api_key
             if not api_key:
                 err_msg = "[Голосовое сообщение (ошибка: OPENROUTER_API_KEY не установлен)]"
-                return err_msg + (f" {text}" if text else "")
+                return err_msg + (f" {text}" if text else ""), media_files
 
             buffer = BytesIO()
             await event.client.download_media(message, file=buffer)
             file_bytes = buffer.getvalue()
             if not file_bytes:
                 err_msg = "[Голосовое сообщение (ошибка: файл пустой)]"
-                return err_msg + (f" {text}" if text else "")
+                return err_msg + (f" {text}" if text else ""), media_files
 
             filename = "voice.ogg" if media_id.startswith("voice:") else "video.mp4"
+            is_voice = media_id.startswith("voice:")
+            await _archive(
+                "voice" if is_voice else "round",
+                filename,
+                "audio/ogg" if is_voice else "video/mp4",
+                file_bytes,
+            )
 
             try:
                 client = http_client
@@ -1114,10 +1241,13 @@ async def _process_media_and_text(
                 transcription = res_json.get("text", "")
                 mtype = "Голосовое сообщение" if media_id.startswith("voice:") else "Видеосообщение"
                 trans_text = f'[{mtype} (расшифровка: "{transcription}")]'
-                return trans_text + (f" {text}" if text else "")
+                return trans_text + (f" {text}" if text else ""), media_files
             except Exception as e:
                 mtype = "Голосовое сообщение" if media_id.startswith("voice:") else "Видеосообщение"
-                return f"[{mtype} (ошибка транскрипции: {e})]" + (f" {text}" if text else "")
+                return (
+                    f"[{mtype} (ошибка транскрипции: {e})]" + (f" {text}" if text else ""),
+                    media_files,
+                )
 
         elif media_id.startswith("doc:"):
             parts = media_id.split(":")
@@ -1138,18 +1268,47 @@ async def _process_media_and_text(
                 "yaml",
                 "yml",
             )
+            from io import BytesIO
+
+            media_obj = getattr(message, "media", None)
+            doc_obj = getattr(media_obj, "document", None)
+            doc_mime = getattr(doc_obj, "mime_type", None)
+            doc_mime_type = doc_mime if isinstance(doc_mime, str) else "application/octet-stream"
+            doc_size = getattr(doc_obj, "size", None)
+
             if ext not in allowed_exts and ext != "":
-                return f"[Файл name={filename} (этот тип документа нельзя открыть)]" + (
-                    f" {text}" if text else ""
+                # The LLM cannot read this type, but the dashboard must still be
+                # able to open the file from the logs — archive it (with the
+                # same size cap as the storage layer) unless it is huge.
+                if not isinstance(doc_size, int) or doc_size <= MAX_MEDIA_BYTES:
+                    buffer = BytesIO()
+                    await event.client.download_media(message, file=buffer)
+                    await _archive("doc", filename, doc_mime_type, buffer.getvalue())
+                return (
+                    f"[Файл name={filename} (этот тип документа нельзя открыть)]"
+                    + (f" {text}" if text else ""),
+                    media_files,
                 )
 
-            from io import BytesIO
+            # Size cap applies to readable types too: the file is pulled into
+            # memory and fed to the LLM, so a huge one must not be downloaded.
+            if isinstance(doc_size, int) and doc_size > MAX_MEDIA_BYTES:
+                return (
+                    f"[Файл name={filename} (слишком большой: {doc_size} байт)]"
+                    + (f" {text}" if text else ""),
+                    media_files,
+                )
 
             buffer = BytesIO()
             await event.client.download_media(message, file=buffer)
             file_bytes = buffer.getvalue()
             if not file_bytes:
-                return f"[Файл name={filename} (пустой)]" + (f" {text}" if text else "")
+                return (
+                    f"[Файл name={filename} (пустой)]" + (f" {text}" if text else ""),
+                    media_files,
+                )
+
+            await _archive("doc", filename, doc_mime_type, file_bytes)
 
             if ext == "docx":
                 try:
@@ -1163,10 +1322,10 @@ async def _process_media_and_text(
                             paragraphs.append(" | ".join(row_text))
                     doc_content = "\n".join(paragraphs)
                     doc_text = f'[Файл name={filename} (содержимое: "{doc_content}")]'
-                    return doc_text + (f" {text}" if text else "")
+                    return doc_text + (f" {text}" if text else ""), media_files
                 except Exception as e:
                     err_msg = f"[Файл name={filename} (ошибка чтения: {e})]"
-                    return err_msg + (f" {text}" if text else "")
+                    return err_msg + (f" {text}" if text else ""), media_files
 
             elif ext == "xlsx":
                 try:
@@ -1182,10 +1341,10 @@ async def _process_media_and_text(
                                 sheet_texts.append(row_str)
                     xlsx_content = "\n".join(sheet_texts)
                     xlsx_text = f'[Файл name={filename} (содержимое: "{xlsx_content}")]'
-                    return xlsx_text + (f" {text}" if text else "")
+                    return xlsx_text + (f" {text}" if text else ""), media_files
                 except Exception as e:
                     err_msg = f"[Файл name={filename} (ошибка чтения: {e})]"
-                    return err_msg + (f" {text}" if text else "")
+                    return err_msg + (f" {text}" if text else ""), media_files
 
             else:
                 try:
@@ -1197,12 +1356,12 @@ async def _process_media_and_text(
                         txt_content = f"<Ошибка декодирования: {e}>"
 
                 txt_text = f'[Файл name={filename} (содержимое: "{txt_content}")]'
-                return txt_text + (f" {text}" if text else "")
+                return txt_text + (f" {text}" if text else ""), media_files
 
     except Exception:
         pass
 
-    return text
+    return text, media_files
 
 
 def _messages_to_dicts(response: object) -> list[dict[str, Any]]:

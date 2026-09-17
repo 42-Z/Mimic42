@@ -1,0 +1,573 @@
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+from uuid import UUID, uuid4
+
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from mimic42.core.agent_runtime import AgentRuntimeState
+from mimic42.integrations.database_agent_store import DatabaseAgentStore
+from mimic42.integrations.database_models import (
+    AgentEventModel,
+    AgentMessageModel,
+    AgentModel,
+)
+from mimic42.testing.slots import Slot
+
+
+async def _seed(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    owner_id: UUID,
+    base: datetime,
+) -> UUID:
+    """Three complete turns, each: incoming → tool event → agent_response."""
+    agent_id = uuid4()
+    async with db_session_factory() as session:
+        session.add(
+            AgentModel(
+                id=agent_id,
+                owner_id=owner_id,
+                name="Mimic",
+                status=AgentRuntimeState.STOPPED.value,
+                soul_prompt="Soul",
+            )
+        )
+        await session.commit()
+    async with db_session_factory() as session:
+        for i, offset in enumerate((2, 1, 0)):
+            t = base + timedelta(minutes=i * 10)
+            session.add(
+                AgentMessageModel(
+                    agent_id=agent_id,
+                    direction="incoming",
+                    role="user",
+                    content=f"turn-{offset}",
+                    payload={"peer": "chat", "turn_id": f"t{offset}"},
+                    created_at=t,
+                )
+            )
+            session.add(
+                AgentEventModel(
+                    agent_id=agent_id,
+                    event_type="tool.get_dialogs",
+                    status="succeeded",
+                    payload={"turn_id": f"t{offset}"},
+                    created_at=t + timedelta(seconds=1),
+                    started_at=t,
+                    completed_at=t + timedelta(seconds=1),
+                )
+            )
+            session.add(
+                AgentMessageModel(
+                    agent_id=agent_id,
+                    direction="agent_response",
+                    role="assistant",
+                    content=f"reply-{offset}",
+                    payload={"peer": "chat", "turn_id": f"t{offset}"},
+                    created_at=t + timedelta(seconds=2),
+                )
+            )
+        await session.commit()
+    return agent_id
+
+
+async def test_cursor_pagination_no_duplicates_no_gaps(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    owner_id = clean_slot.persona("twofa").user_id
+    base = datetime(2026, 5, 19, 23, 30, tzinfo=UTC)
+    agent_id = await _seed(db_session_factory, owner_id, base)
+    store = DatabaseAgentStore(db_session_factory)
+
+    page1 = await store.get_conversation(agent_id=agent_id, limit=2)
+    assert len(page1.turns) == 2
+    assert page1.next_before is not None
+
+    page2 = await store.get_conversation(agent_id=agent_id, limit=2, before=page1.next_before)
+    assert len(page2.turns) == 1
+
+    ids = {turn.id for turn in page1.turns} | {turn.id for turn in page2.turns}
+    assert len(ids) == 3  # ни дубликатов, ни потерь
+
+
+async def test_turns_are_newest_first_with_turn_identity(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    owner_id = clean_slot.persona("twofa").user_id
+    base = datetime(2026, 5, 19, 23, 30, tzinfo=UTC)
+    agent_id = await _seed(db_session_factory, owner_id, base)
+    store = DatabaseAgentStore(db_session_factory)
+
+    page = await store.get_conversation(agent_id=agent_id, limit=10)
+
+    assert [turn.timestamp for turn in page.turns] == sorted(
+        [turn.timestamp for turn in page.turns], reverse=True
+    )
+    assert all(turn.turn_id for turn in page.turns)
+    assert all(len(turn.tools) == 1 for turn in page.turns)
+    assert all(turn.outgoing for turn in page.turns)
+    # Страница неполная — продолжения нет.
+    assert page.next_before is None
+
+
+async def test_incoming_media_surfaces_on_turn(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    owner_id = clean_slot.persona("twofa").user_id
+    base = datetime(2026, 5, 19, 23, 30, tzinfo=UTC)
+    agent_id = await _seed(db_session_factory, owner_id, base)
+    media = [
+        {
+            "kind": "photo",
+            "name": "photo.jpeg",
+            "mime_type": "image/jpeg",
+            "size": 3,
+            "storage_path": "ag/u1/photo.jpeg",
+        }
+    ]
+    async with db_session_factory() as session:
+        session.add(
+            AgentMessageModel(
+                agent_id=agent_id,
+                direction="incoming",
+                role="user",
+                content="[Фото id=photo:1:2:aa:5]",
+                payload={"peer": "chat", "turn_id": "t-media", "media": media},
+                created_at=base + timedelta(hours=1),
+            )
+        )
+        await session.commit()
+    store = DatabaseAgentStore(db_session_factory)
+
+    page = await store.get_conversation(agent_id=agent_id, limit=1)
+
+    assert page.turns[0].turn_id == "t-media"
+    assert page.turns[0].incoming_media == media
+
+
+async def test_lifecycle_events_stay_standalone(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    """Start/stop events carry no turn_id: they must not be glued to the
+    neighbouring message turn (history would duplicate the live feed)."""
+    owner_id = clean_slot.persona("twofa").user_id
+    base = datetime(2026, 5, 19, 23, 30, tzinfo=UTC)
+    agent_id = uuid4()
+    async with db_session_factory() as session:
+        session.add(
+            AgentModel(
+                id=agent_id,
+                owner_id=owner_id,
+                name="Mimic",
+                status=AgentRuntimeState.STOPPED.value,
+                soul_prompt="Soul",
+            )
+        )
+        await session.commit()
+    async with db_session_factory() as session:
+        session.add(
+            AgentEventModel(
+                agent_id=agent_id,
+                event_type="agent.started",
+                status="succeeded",
+                payload={"peer": "chat"},
+                created_at=base,
+            )
+        )
+        session.add(
+            AgentMessageModel(
+                agent_id=agent_id,
+                direction="incoming",
+                role="user",
+                content="Привет",
+                payload={"peer": "chat"},
+                created_at=base + timedelta(seconds=1),
+            )
+        )
+        session.add(
+            AgentMessageModel(
+                agent_id=agent_id,
+                direction="agent_response",
+                role="assistant",
+                content="Здравствуйте!",
+                payload={"peer": "chat"},
+                created_at=base + timedelta(seconds=2),
+            )
+        )
+        session.add(
+            AgentEventModel(
+                agent_id=agent_id,
+                event_type="agent.stopped",
+                status="succeeded",
+                payload={"peer": "chat"},
+                created_at=base + timedelta(seconds=3),
+            )
+        )
+        await session.commit()
+
+    store = DatabaseAgentStore(db_session_factory)
+    page = await store.get_conversation(agent_id=agent_id, limit=10)
+
+    message_turns = [turn for turn in page.turns if turn.incoming]
+    assert len(message_turns) == 1
+    assert message_turns[0].outgoing == "Здравствуйте!"
+    assert message_turns[0].tools == []
+
+    lifecycle_turns = [turn for turn in page.turns if turn.direction == "tools"]
+    assert len(lifecycle_turns) == 2
+    assert {turn.tools[0].name for turn in lifecycle_turns} == {"agent.started", "agent.stopped"}
+
+
+async def test_reply_targets_surface_on_turn(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    owner_id = clean_slot.persona("twofa").user_id
+    base = datetime(2026, 5, 19, 23, 30, tzinfo=UTC)
+    agent_id = uuid4()
+    async with db_session_factory() as session:
+        session.add(
+            AgentModel(
+                id=agent_id,
+                owner_id=owner_id,
+                name="Mimic",
+                status=AgentRuntimeState.STOPPED.value,
+                soul_prompt="Soul",
+            )
+        )
+        await session.commit()
+    async with db_session_factory() as session:
+        session.add(
+            AgentMessageModel(
+                agent_id=agent_id,
+                direction="incoming",
+                role="user",
+                content="лови реплай",
+                payload={
+                    "peer": "chat",
+                    "turn_id": "t-reply",
+                    "reply": {"message_id": 5, "preview": "предыдущее"},
+                },
+                created_at=base,
+            )
+        )
+        session.add(
+            AgentMessageModel(
+                agent_id=agent_id,
+                direction="agent_response",
+                role="assistant",
+                content="держи",
+                payload={
+                    "peer": "chat",
+                    "turn_id": "t-reply",
+                    "structured_response": {"text": "держи", "reply_to": 736},
+                },
+                created_at=base + timedelta(seconds=1),
+            )
+        )
+        # Tool-based answer: reply target lives in the tool args.
+        session.add(
+            AgentMessageModel(
+                agent_id=agent_id,
+                direction="incoming",
+                role="user",
+                content="ответь тулзой",
+                payload={"peer": "chat", "turn_id": "t-tool"},
+                created_at=base + timedelta(minutes=1),
+            )
+        )
+        session.add(
+            AgentEventModel(
+                agent_id=agent_id,
+                event_type="tool.send_text_message",
+                status="succeeded",
+                payload={"turn_id": "t-tool", "args": {"message": "ок", "reply_to_msg_id": 99}},
+                created_at=base + timedelta(minutes=1, seconds=1),
+                started_at=base + timedelta(minutes=1),
+                completed_at=base + timedelta(minutes=1, seconds=1),
+            )
+        )
+        await session.commit()
+
+    store = DatabaseAgentStore(db_session_factory)
+    page = await store.get_conversation(agent_id=agent_id, limit=10)
+    by_turn = {turn.turn_id: turn for turn in page.turns}
+
+    assert by_turn["t-reply"].incoming_reply == {"message_id": 5, "preview": "предыдущее"}
+    assert by_turn["t-reply"].outgoing_reply_id == 736
+    assert by_turn["t-tool"].outgoing_reply_id == 99
+
+
+async def test_real_write_order_keeps_one_merged_turn(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    """Tool events are persisted while the turn runs; the incoming and
+    response rows are saved afterwards with a later timestamp. Grouping by
+    turn_id must still yield one block (incoming + tools + response)."""
+    owner_id = clean_slot.persona("twofa").user_id
+    base = datetime(2026, 5, 19, 23, 30, tzinfo=UTC)
+    agent_id = uuid4()
+    async with db_session_factory() as session:
+        session.add(
+            AgentModel(
+                id=agent_id,
+                owner_id=owner_id,
+                name="Mimic",
+                status=AgentRuntimeState.STOPPED.value,
+                soul_prompt="Soul",
+            )
+        )
+        await session.commit()
+    async with db_session_factory() as session:
+        # 1) Tool events recorded mid-turn (earliest timestamps)...
+        session.add(
+            AgentEventModel(
+                agent_id=agent_id,
+                event_type="tool.get_dialogs",
+                status="succeeded",
+                payload={"turn_id": "t-real"},
+                created_at=base,
+                started_at=base,
+                completed_at=base + timedelta(seconds=1),
+            )
+        )
+        # 2) ...then the incoming row (written by save_messages at turn end)...
+        session.add(
+            AgentMessageModel(
+                agent_id=agent_id,
+                direction="incoming",
+                role="user",
+                content="Привет",
+                payload={"peer": "chat", "peer_name": "Ivan", "turn_id": "t-real"},
+                created_at=base + timedelta(seconds=5),
+            )
+        )
+        # 3) ...and the response row, saved in the same batch.
+        session.add(
+            AgentMessageModel(
+                agent_id=agent_id,
+                direction="agent_response",
+                role="assistant",
+                content="Здравствуйте!",
+                payload={"peer": "chat", "turn_id": "t-real"},
+                created_at=base + timedelta(seconds=5, microseconds=1000),
+            )
+        )
+        await session.commit()
+
+    store = DatabaseAgentStore(db_session_factory)
+    page = await store.get_conversation(agent_id=agent_id, limit=10)
+
+    assert len(page.turns) == 1
+    turn = page.turns[0]
+    assert turn.turn_id == "t-real"
+    assert turn.incoming == "Привет"
+    assert turn.outgoing == "Здравствуйте!"
+    assert turn.direction == "both"
+    assert [tool.name for tool in turn.tools] == ["tool.get_dialogs"]
+    assert turn.timestamp == base  # oldest item of the turn
+
+
+async def _add_agent(db_session_factory: async_sessionmaker[AsyncSession], owner_id: UUID) -> UUID:
+    agent_id = uuid4()
+    async with db_session_factory() as session:
+        session.add(
+            AgentModel(
+                id=agent_id,
+                owner_id=owner_id,
+                name="Mimic",
+                status=AgentRuntimeState.STOPPED.value,
+                soul_prompt="Soul",
+            )
+        )
+        await session.commit()
+    return agent_id
+
+
+async def test_turn_with_many_events_is_never_cut_by_a_page(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    """Ход с сотнями tool-событий не должен терять события из-за лимита окна:
+    события выбираются по turn_id ходов, попавших в страницу."""
+    owner_id = clean_slot.persona("twofa").user_id
+    base = datetime(2026, 5, 19, 23, 30, tzinfo=UTC)
+    agent_id = await _add_agent(db_session_factory, owner_id)
+
+    async with db_session_factory() as session:
+        session.add(
+            AgentMessageModel(
+                agent_id=agent_id,
+                direction="incoming",
+                role="user",
+                content="обычный ход",
+                payload={"peer": "chat", "turn_id": "t-new"},
+                created_at=base + timedelta(hours=1),
+            )
+        )
+        session.add(
+            AgentMessageModel(
+                agent_id=agent_id,
+                direction="incoming",
+                role="user",
+                content="ход с ворохом инструментов",
+                payload={"peer": "chat", "turn_id": "t-fat"},
+                created_at=base,
+            )
+        )
+        for i in range(200):
+            session.add(
+                AgentEventModel(
+                    agent_id=agent_id,
+                    event_type="tool.get_dialogs",
+                    status="succeeded",
+                    payload={"turn_id": "t-fat", "step": i},
+                    created_at=base + timedelta(milliseconds=i),
+                    started_at=base,
+                    completed_at=base + timedelta(milliseconds=i),
+                )
+            )
+        await session.commit()
+
+    store = DatabaseAgentStore(db_session_factory)
+    page1 = await store.get_conversation(agent_id=agent_id, limit=1)
+    assert [turn.turn_id for turn in page1.turns] == ["t-new"]
+    assert page1.next_before is not None
+
+    page2 = await store.get_conversation(
+        agent_id=agent_id,
+        limit=1,
+        before=page1.next_before,
+        before_id=page1.next_before_id,
+    )
+    assert [turn.turn_id for turn in page2.turns] == ["t-fat"]
+    assert len(page2.turns[0].tools) == 200
+
+
+async def test_equal_timestamps_do_not_lose_or_duplicate_turns(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    """Keyset-курсор (created_at, id): ходы с одинаковым временем не теряются."""
+    owner_id = clean_slot.persona("twofa").user_id
+    base = datetime(2026, 5, 19, 23, 30, tzinfo=UTC)
+    agent_id = await _add_agent(db_session_factory, owner_id)
+
+    async with db_session_factory() as session:
+        for name in ("t-a", "t-b"):
+            session.add(
+                AgentMessageModel(
+                    agent_id=agent_id,
+                    direction="incoming",
+                    role="user",
+                    content=name,
+                    payload={"peer": "chat", "turn_id": name},
+                    created_at=base,
+                )
+            )
+        await session.commit()
+
+    store = DatabaseAgentStore(db_session_factory)
+    page1 = await store.get_conversation(agent_id=agent_id, limit=1)
+    page2 = await store.get_conversation(
+        agent_id=agent_id,
+        limit=1,
+        before=page1.next_before,
+        before_id=page1.next_before_id,
+    )
+
+    ids = [turn.turn_id for turn in [*page1.turns, *page2.turns]]
+    assert sorted(ids) == ["t-a", "t-b"]
+
+
+async def test_second_incoming_in_a_turn_gets_a_unique_block(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    """Дубликат incoming из старых данных рендерится отдельным блоком с
+    уникальным id (turn_id не переиспользуется)."""
+    owner_id = clean_slot.persona("twofa").user_id
+    base = datetime(2026, 5, 19, 23, 30, tzinfo=UTC)
+    agent_id = await _add_agent(db_session_factory, owner_id)
+
+    async with db_session_factory() as session:
+        session.add(
+            AgentMessageModel(
+                agent_id=agent_id,
+                direction="incoming",
+                role="user",
+                content="Привет",
+                payload={"peer": "chat", "turn_id": "t-dup"},
+                created_at=base,
+            )
+        )
+        session.add(
+            AgentMessageModel(
+                agent_id=agent_id,
+                direction="incoming",
+                role="user",
+                content="[Входящее сообщение] Содержимое: Привет",
+                payload={"peer": "chat", "turn_id": "t-dup"},
+                created_at=base + timedelta(microseconds=1000),
+            )
+        )
+        await session.commit()
+
+    store = DatabaseAgentStore(db_session_factory)
+    page = await store.get_conversation(agent_id=agent_id, limit=10)
+
+    assert len(page.turns) == 2
+    turn_ids = [turn.turn_id for turn in page.turns]
+    assert turn_ids.count("t-dup") == 1
+    assert turn_ids.count(None) == 1
+    assert len({turn.id for turn in page.turns}) == 2
+
+
+async def test_saturated_window_drops_the_boundary_turn_without_gaps(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    """Граничная ветка: когда окно сообщений заполнено целиком, самый старый
+    (возможно, обрезанный снизу) ход уходит на следующую страницу, а не
+    отдаётся неполным. Полный обход страниц обязан вернуть все ходы ровно раз."""
+    owner_id = clean_slot.persona("twofa").user_id
+    base = datetime(2026, 5, 19, 23, 30, tzinfo=UTC)
+    agent_id = await _add_agent(db_session_factory, owner_id)
+    turn_count = 35  # 70 сообщений: больше msg_fetch = limit*4+60 при limit=1
+
+    async with db_session_factory() as session:
+        for i in range(turn_count):
+            moment = base + timedelta(minutes=i)
+            for offset, direction in ((0, "incoming"), (1, "agent_response")):
+                session.add(
+                    AgentMessageModel(
+                        agent_id=agent_id,
+                        direction=direction,
+                        role="user" if direction == "incoming" else "assistant",
+                        content=f"turn-{i}",
+                        payload={"peer": "chat", "turn_id": f"t{i}"},
+                        created_at=moment + timedelta(seconds=offset),
+                    )
+                )
+        await session.commit()
+
+    store = DatabaseAgentStore(db_session_factory)
+    collected: list[str] = []
+    before: datetime | None = None
+    before_id: UUID | None = None
+    for _ in range(turn_count + 2):
+        page = await store.get_conversation(
+            agent_id=agent_id, limit=1, before=before, before_id=before_id
+        )
+        collected.extend(turn.turn_id or "" for turn in page.turns)
+        if page.next_before is None:
+            break
+        before, before_id = page.next_before, page.next_before_id
+
+    expected = [f"t{i}" for i in range(turn_count - 1, -1, -1)]
+    assert collected == expected  # все ходы, новейшие первыми, без дыр и дублей

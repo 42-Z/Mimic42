@@ -69,7 +69,19 @@ class ConversationTurn(BaseModel):
     incoming: str = ""  # user message
     outgoing: str = ""  # agent response
     direction: str = ""  # "incoming" | "outgoing" | "both" | "tools"
+    turn_id: str | None = None
+    incoming_media: list[dict[str, Any]] = Field(default_factory=list)
+    incoming_reply: dict[str, Any] | None = None
+    outgoing_reply_id: int | None = None
     tools: list[ToolCallRecord] = Field(default_factory=list)
+
+
+class ConversationPage(BaseModel):
+    """A cursor page of conversation turns, newest first."""
+
+    turns: list[ConversationTurn] = Field(default_factory=list)
+    next_before: datetime | None = None
+    next_before_id: UUID | None = None
 
 
 class AgentStore(Protocol):
@@ -100,8 +112,24 @@ class AgentStore(Protocol):
         *,
         agent_id: UUID,
         limit: int = 50,
-        offset: int = 0,
-    ) -> list[ConversationTurn]: ...
+        before: datetime | None = None,
+        before_id: UUID | None = None,
+    ) -> ConversationPage: ...
+
+
+def reply_target_of(payload: dict[str, Any]) -> int | None:
+    """Reply target of an answer row: structured response `reply_to`.
+
+    Одна и та же логика для обоих сторов: расхождение копий ломало протокол
+    (in-memory стору не хватало фолбэка по args тула)."""
+    structured = payload.get("structured_response")
+    if isinstance(structured, dict):
+        value = structured.get("reply_to")
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str) and value.isdigit():
+            return int(value)
+    return None
 
 
 class InMemoryAgentStore:
@@ -191,10 +219,20 @@ class InMemoryAgentStore:
         *,
         agent_id: UUID,
         limit: int = 50,
-        offset: int = 0,
-    ) -> list[ConversationTurn]:
+        before: datetime | None = None,
+        before_id: UUID | None = None,
+    ) -> ConversationPage:
         # Simplistic grouping for in-memory store: pair incoming + outgoing
         filtered = [msg for msg in self._messages if msg.agent_id == agent_id]
+        if before is not None:
+            if before_id is not None:
+                filtered = [
+                    msg
+                    for msg in filtered
+                    if msg.created_at < before or (msg.created_at == before and msg.id < before_id)
+                ]
+            else:
+                filtered = [msg for msg in filtered if msg.created_at < before]
         turns: list[ConversationTurn] = []
         i = 0
         while i < len(filtered):
@@ -208,6 +246,15 @@ class InMemoryAgentStore:
                     peer_name=msg.peer_name,
                     agent_name=msg.agent_name,
                     incoming=msg.content,
+                    turn_id=msg.payload.get("turn_id"),
+                    incoming_media=[
+                        item for item in (msg.payload.get("media") or []) if isinstance(item, dict)
+                    ],
+                    incoming_reply=(
+                        msg.payload.get("reply")
+                        if isinstance(msg.payload.get("reply"), dict)
+                        else None
+                    ),
                 )
                 # Look ahead for an outgoing response
                 if i + 1 < len(filtered) and filtered[i + 1].direction in (
@@ -215,6 +262,7 @@ class InMemoryAgentStore:
                     "outgoing",
                 ):
                     turn.outgoing = filtered[i + 1].content
+                    turn.outgoing_reply_id = reply_target_of(filtered[i + 1].payload)
                     turn.direction = "both"
                     i += 1
                 else:
@@ -232,10 +280,18 @@ class InMemoryAgentStore:
                         agent_name=msg.agent_name,
                         outgoing=msg.content,
                         direction="outgoing",
+                        turn_id=msg.payload.get("turn_id"),
+                        outgoing_reply_id=reply_target_of(msg.payload),
                     )
                 )
             i += 1
-        # Apply offset/limit
-        start = max(0, len(turns) - offset - limit)
-        end = max(0, len(turns) - offset)
-        return turns[start:end]
+        turns.sort(key=lambda t: (t.timestamp, t.id), reverse=True)
+        page = turns[:limit]
+        next_before: datetime | None = None
+        next_before_id: UUID | None = None
+        if len(page) == limit:
+            next_before = min(turn.timestamp for turn in page)
+            next_before_id = min(
+                (turn for turn in page if turn.timestamp == next_before), key=lambda t: t.id
+            ).id
+        return ConversationPage(turns=page, next_before=next_before, next_before_id=next_before_id)

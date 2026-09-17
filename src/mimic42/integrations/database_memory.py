@@ -71,16 +71,23 @@ class DatabaseShortTermMemory:
         raw_user_text: str = "",
         turn_id: str | None = None,
         thread_id: UUID | None = None,
+        media: list[dict[str, Any]] | None = None,
+        reply: dict[str, Any] | None = None,
     ) -> None:
         """Save a list of LangChain message dicts to the database.
 
         Normalizes roles, filters tool-result dumps, and stores UI metadata.
         Also persists the incoming user message so the UI can display the full
-        conversation thread (incoming + outgoing).
+        conversation thread (incoming + outgoing). ``media`` carries archived
+        attachment metadata (Storage paths) for the incoming message; ``reply``
+        carries the Telegram reply target (message id + preview).
         """
         from datetime import datetime, timedelta
 
         now = datetime.now(UTC)
+        media_attached = False
+        reply_attached = False
+        user_row_written = False
         async with self._session_factory() as db_session:
             # ── Persist incoming user message first ──────────────────────────
             # Avoid duplicate if raw_user_text matches the last user message
@@ -108,6 +115,14 @@ class DatabaseShortTermMemory:
                     user_payload["peer_name"] = peer_name
                 if agent_name:
                     user_payload["agent_name"] = agent_name
+                if turn_id is not None:
+                    user_payload["turn_id"] = turn_id
+                if media:
+                    user_payload["media"] = media
+                    media_attached = True
+                if reply:
+                    user_payload["reply"] = reply
+                    reply_attached = True
                 db_session.add(
                     AgentMessageModel(
                         agent_id=agent_id,
@@ -118,6 +133,7 @@ class DatabaseShortTermMemory:
                         created_at=now,
                     )
                 )
+                user_row_written = True
 
             row_count = 0
             for i, msg in enumerate(messages):
@@ -142,12 +158,30 @@ class DatabaseShortTermMemory:
                 # ── Normalize roles ─────────────────────────────────────────────
                 if role in ("human", "user"):
                     role = "user"
+                    if user_row_written:
+                        # One turn = one incoming row. The raw telegram text (or
+                        # the prepended human message) already represents this
+                        # user message; writing the formatted duplicate would
+                        # create two incoming rows with the same turn_id and
+                        # duplicate feed blocks with identical react keys.
+                        continue
+                    user_row_written = True
                 elif role in ("ai", "assistant"):
                     role = "assistant"
                 elif role == "tool":
                     # Skip tool-result messages entirely — they clutter the UI.
                     # Tool usage will be surfaced via agent_events in a later phase.
                     continue
+
+                # Media/reply metadata belongs to the incoming message row. When
+                # the dedup above skipped creating that row, attach it to the
+                # first stored user message of this batch instead.
+                if media and not media_attached and role == "user":
+                    payload["media"] = media
+                    media_attached = True
+                if reply and not reply_attached and role == "user":
+                    payload["reply"] = reply
+                    reply_attached = True
 
                 # ── Clean assistant content ──────────────────────────────────────
                 if role == "assistant":

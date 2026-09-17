@@ -71,6 +71,14 @@ export interface ToolCallRecord {
   created_at: string;
 }
 
+export interface MediaItem {
+  kind: 'photo' | 'sticker' | 'voice' | 'round' | 'doc';
+  name: string;
+  mime_type: string;
+  size: number;
+  storage_path: string | null;
+}
+
 export interface ConversationTurn {
   id: string;
   agent_id: string;
@@ -81,6 +89,10 @@ export interface ConversationTurn {
   incoming: string;
   outgoing: string;
   direction: 'incoming' | 'outgoing' | 'both' | 'tools';
+  turn_id: string | null;
+  incoming_media: MediaItem[];
+  incoming_reply?: { message_id: number; preview?: string | null } | null;
+  outgoing_reply_id?: number | null;
   tools: ToolCallRecord[];
 }
 
