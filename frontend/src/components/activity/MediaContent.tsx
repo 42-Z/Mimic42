@@ -8,7 +8,15 @@ import type { MediaItem } from '@/types';
 
 const IMAGE_KINDS = new Set(['photo', 'sticker']);
 
-function MediaView({ agentId, item }: { agentId: string; item: MediaItem }) {
+function MediaView({
+  agentId,
+  item,
+  compact = false,
+}: {
+  agentId: string;
+  item: MediaItem;
+  compact?: boolean;
+}) {
   const { url, status } = useMediaUrl(agentId, item.storage_path);
 
   if (!item.storage_path) {
@@ -37,7 +45,11 @@ function MediaView({ agentId, item }: { agentId: string; item: MediaItem }) {
       <img
         src={url}
         alt={item.name}
-        className="max-h-40 max-w-56 rounded-sm border border-void-800 object-cover"
+        className={
+          compact
+            ? 'h-16 w-16 flex-none rounded-sm border border-void-800 object-cover'
+            : 'max-h-40 max-w-56 rounded-sm border border-void-800 object-cover'
+        }
       />
     );
   }
@@ -72,10 +84,33 @@ export function MediaContent({ agentId, items }: { agentId: string; items: Media
 
   if (!items?.length) return null;
 
+  const images = items.filter((item) => IMAGE_KINDS.has(item.kind));
+  const others = items.filter((item) => !IMAGE_KINDS.has(item.kind));
+  const gallery = images.length > 1;
+
   return (
     <div className="flex flex-wrap items-center gap-2">
-      {items.map((item, i) =>
-        IMAGE_KINDS.has(item.kind) ? (
+      {gallery ? (
+        <div
+          data-testid="media-gallery"
+          className="flex flex-row items-center gap-1.5 overflow-x-auto"
+        >
+          {images.map((item, i) => (
+            <button
+              key={`${item.storage_path ?? i}-${item.name}`}
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                setPreview(item);
+              }}
+              className="cursor-zoom-in"
+            >
+              <MediaView agentId={agentId} item={item} compact />
+            </button>
+          ))}
+        </div>
+      ) : (
+        images.map((item, i) => (
           <button
             key={`${item.storage_path ?? i}-${item.name}`}
             type="button"
@@ -87,14 +122,11 @@ export function MediaContent({ agentId, items }: { agentId: string; items: Media
           >
             <MediaView agentId={agentId} item={item} />
           </button>
-        ) : (
-          <MediaView
-            key={`${item.storage_path ?? i}-${item.name}`}
-            agentId={agentId}
-            item={item}
-          />
-        ),
+        ))
       )}
+      {others.map((item, i) => (
+        <MediaView key={`${item.storage_path ?? i}-${item.name}`} agentId={agentId} item={item} />
+      ))}
       <Modal
         isOpen={preview !== null}
         onClose={() => setPreview(null)}

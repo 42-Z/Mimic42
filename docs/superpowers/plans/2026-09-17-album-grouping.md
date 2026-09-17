@@ -542,10 +542,13 @@ describe('MediaContent', () => {
 
   test('не-картинки не попадают в галерею', () => {
     render(
-      <MediaContent agentId="a1" items={[item('photo', '1.jpeg'), item('doc', 'report.pdf')]} />,
+      <MediaContent
+        agentId="a1"
+        items={[item('photo', '1.jpeg'), item('photo', '2.jpeg'), item('doc', 'report.pdf')]}
+      />,
     );
     const gallery = screen.getByTestId('media-gallery');
-    expect(within(gallery).getAllByRole('button')).toHaveLength(1);
+    expect(within(gallery).getAllByRole('button')).toHaveLength(2);
     expect(screen.getByText(/report\.pdf/)).toBeInTheDocument();
   });
 });
