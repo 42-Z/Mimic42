@@ -25,8 +25,10 @@ dependencies = [
 [dependency-groups]
 dev = [
     "httpx>=0.28.1",
+    "playwright>=1.63.0",
     "pytest>=9.0.3",
     "pytest-asyncio>=1.3.0",
+    "pytest-playwright>=0.9.0",
     "python-dotenv>=1.2.2",
     "ruff>=0.15.13",
     "ty>=0.0.37",
@@ -45,11 +47,15 @@ asyncio_default_fixture_loop_scope = "session"
 asyncio_default_test_loop_scope = "session"
 testpaths = ["tests"]
 # Тесты против настоящей базы по умолчанию исключены: они занимают слот
-# тестовых аккаунтов и чистят данные в общей Dev-базе. Явный `-m db` с
-# командной строки перекрывает этот addopts и включает их.
-addopts = ["-m", "not db"]
+# тестовых аккаунтов и чистят данные в общей Dev-базе. e2e поднимает серверы
+# и браузер, real_tg требует настоящих Telegram-аккаунтов — оба слоя
+# запускаются явно. Явный `-m db` (или e2e/real_tg) с командной строки
+# перекрывает этот addopts и включает нужный слой.
+addopts = ["-m", "not db and not e2e and not real_tg"]
 markers = [
     "db: требует подключения к тестовой базе Mimic42 Dev",
+    "e2e: поднимает тестовый сервер и фронт, гоняет браузерные сценарии",
+    "real_tg: требует настоящих Telegram-аккаунтов, сети и секретов",
 ]
 
 [tool.ruff]
