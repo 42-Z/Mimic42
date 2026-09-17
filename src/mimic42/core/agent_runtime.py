@@ -647,7 +647,9 @@ class MimicAgentRuntime:
     async def _handle_incoming_message(self, event: TelegramEventLike) -> None:
         """Альбомы буферизуются, одиночные сообщения обрабатываются сразу."""
         grouped_id = getattr(event, "grouped_id", None)
-        if grouped_id is None:
+        if not isinstance(grouped_id, int):
+            # TL: grouped_id — flags.17?long, то есть int или None. Любое другое
+            # значение означает «это не элемент альбома».
             await self._process_incoming([event])
             return
         chat_id = getattr(event, "chat_id", None)
