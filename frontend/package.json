@@ -9,7 +9,6 @@
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
-    "test:e2e": "playwright test",
     "test:watch": "bun test --watch",
     "generate:types": "supabase gen types typescript --project-id ipqylrdmmjitemjrygej > src/types/supabase.ts",
     "audit": "bun audit"
@@ -36,7 +35,6 @@
   },
   "devDependencies": {
     "@happy-dom/global-registrator": "^20.14.0",
-    "@playwright/test": "^1.48.0",
     "@testing-library/jest-dom": "^6.5.0",
     "@testing-library/react": "^16.0.1",
     "@testing-library/user-event": "^14.5.2",
@@ -45,7 +43,6 @@
     "@types/react": "^18.3.11",
     "@types/react-dom": "^18.3.1",
     "autoprefixer": "^10.4.20",
-    "dotenv": "^17.4.2",
     "eslint": "^8.57.1",
     "eslint-config-next": "14.2.15",
     "eslint-plugin-security": "^3.0.1",

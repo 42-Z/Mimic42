@@ -74,8 +74,8 @@ The current backend model is global, not per-agent: `openrouter/free`.
 ```bash
 uv run pytest                  # everything except the database, ~30 seconds
 uv run pytest -m db            # 38 tests against the real Mimic42 Dev database, ~6 minutes
+uv run pytest -m e2e           # browser e2e: test server + frontend + Playwright
 cd frontend && bunx tsc --noEmit && bun test
-cd frontend && bun run test:e2e
 ```
 
 Tests load `.env` and `.env.test` themselves — no `source` needed. The local `.env` points at the
