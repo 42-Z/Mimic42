@@ -5,7 +5,7 @@ import logging
 from typing import Any
 from uuid import UUID, uuid4
 
-from mimic42.core.media import MAX_MEDIA_BYTES, MediaFile
+from mimic42.core.media import MAX_MEDIA_BYTES, MediaFile, safe_filename
 
 logger = logging.getLogger("mimic42.media")
 
@@ -48,7 +48,7 @@ class SupabaseMediaStorage:
         if len(data) > MAX_MEDIA_BYTES:
             logger.warning("Media %s too large (%d bytes), skipping", filename, len(data))
             return None
-        safe_name = filename.replace("/", "_") or "file"
+        safe_name = safe_filename(filename)
         path = f"{agent_id}/{uuid4()}/{safe_name}"
         try:
             await asyncio.to_thread(
