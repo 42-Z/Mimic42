@@ -1,0 +1,90 @@
+name: Real Telegram Tests
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: mimic42-dev-testdb
+  cancel-in-progress: false
+
+jobs:
+  backend-real:
+    name: backend-real-tg
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install Python
+        run: uv python install
+
+      - name: Install dependencies
+        run: uv sync --locked --all-groups
+
+      - name: Backend real-TG tests
+        run: uv run pytest tests/real_tg/backend -m real_tg -W error -q
+        env:
+          DATABASE_CONNECTION_STRING: ${{ secrets.DATABASE_CONNECTION_STRING }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          SECRET_KEY: ${{ secrets.SECRET_KEY }}
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          TG_CHECKER_API_ID: ${{ secrets.TG_CHECKER_API_ID }}
+          TG_CHECKER_API_HASH: ${{ secrets.TG_CHECKER_API_HASH }}
+          TG_CHECKER_SESSION: ${{ secrets.TG_CHECKER_SESSION }}
+          REAL_TG_EMAIL: ${{ secrets.REAL_TG_EMAIL }}
+          REAL_TG_PASSWORD: ${{ secrets.REAL_TG_PASSWORD }}
+          REAL_TG_USER_ID: ${{ secrets.REAL_TG_USER_ID }}
+
+  frontend-real:
+    name: frontend-real-tg
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install Python
+        run: uv python install
+
+      - name: Install dependencies
+        run: uv sync --locked --all-groups
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
+        working-directory: frontend
+
+      - name: Install Playwright browsers
+        run: uv run playwright install --with-deps chromium
+
+      - name: Run real dashboard dialog
+        run: uv run pytest tests/real_tg/frontend -m real_tg -W error -q
+        env:
+          CI: true
+          DATABASE_CONNECTION_STRING: ${{ secrets.DATABASE_CONNECTION_STRING }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          SECRET_KEY: ${{ secrets.SECRET_KEY }}
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          TG_CHECKER_API_ID: ${{ secrets.TG_CHECKER_API_ID }}
+          TG_CHECKER_API_HASH: ${{ secrets.TG_CHECKER_API_HASH }}
+          TG_CHECKER_SESSION: ${{ secrets.TG_CHECKER_SESSION }}
+          REAL_TG_EMAIL: ${{ secrets.REAL_TG_EMAIL }}
+          REAL_TG_PASSWORD: ${{ secrets.REAL_TG_PASSWORD }}
+          REAL_TG_USER_ID: ${{ secrets.REAL_TG_USER_ID }}
