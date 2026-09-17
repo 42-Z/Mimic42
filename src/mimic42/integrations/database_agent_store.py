@@ -345,8 +345,12 @@ class DatabaseAgentStore:
                     turn = _turn_for(turn_id, msg.id, timestamp)
                     if msg.direction in ("incoming", "dashboard_trigger"):
                         if turn.incoming:
-                            # Second incoming row in one turn (duplicate save):
-                            # keep them in separate blocks to lose nothing.
+                            # Second incoming row in one turn (duplicate save in
+                            # legacy data): keep both blocks so nothing is lost,
+                            # but the extra block must not reuse the turn id —
+                            # duplicated ids make react keys collide and blur the
+                            # per-block state of tools/media. Without turn_id the
+                            # frontend keys it by its own message id.
                             turn = ConversationTurn(
                                 id=msg.id,
                                 agent_id=agent_id,
@@ -356,7 +360,7 @@ class DatabaseAgentStore:
                                 agent_name=str(payload.get("agent_name", "")),
                                 incoming=content,
                                 direction="incoming",
-                                turn_id=turn_id,
+                                turn_id=None,
                                 incoming_media=media,
                                 incoming_reply=_incoming_reply_of(msg),
                             )

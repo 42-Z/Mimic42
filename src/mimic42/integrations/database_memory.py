@@ -87,6 +87,7 @@ class DatabaseShortTermMemory:
         now = datetime.now(UTC)
         media_attached = False
         reply_attached = False
+        user_row_written = False
         async with self._session_factory() as db_session:
             # ── Persist incoming user message first ──────────────────────────
             # Avoid duplicate if raw_user_text matches the last user message
@@ -132,6 +133,7 @@ class DatabaseShortTermMemory:
                         created_at=now,
                     )
                 )
+                user_row_written = True
 
             row_count = 0
             for i, msg in enumerate(messages):
@@ -156,6 +158,14 @@ class DatabaseShortTermMemory:
                 # ── Normalize roles ─────────────────────────────────────────────
                 if role in ("human", "user"):
                     role = "user"
+                    if user_row_written:
+                        # One turn = one incoming row. The raw telegram text (or
+                        # the prepended human message) already represents this
+                        # user message; writing the formatted duplicate would
+                        # create two incoming rows with the same turn_id and
+                        # duplicate feed blocks with identical react keys.
+                        continue
+                    user_row_written = True
                 elif role in ("ai", "assistant"):
                     role = "assistant"
                 elif role == "tool":

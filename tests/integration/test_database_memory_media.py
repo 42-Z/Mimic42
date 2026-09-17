@@ -114,3 +114,38 @@ async def test_save_messages_attaches_media_when_incoming_row_deduped(
             )
         )
         assert any(row.payload.get("media") == MEDIA for row in rows)
+
+
+async def test_save_messages_writes_single_incoming_row_when_raw_differs(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    """Форматированный human в messages не должен дублировать raw-строку:
+    две incoming-строки в одном turn_id ломают ленту (одинаковые id блоков)."""
+    owner_id = clean_slot.persona("twofa").user_id
+    agent_id = await _create_agent(db_session_factory, owner_id)
+    store = DatabaseShortTermMemory(db_session_factory)
+    formatted = "[Входящее сообщение]\nСодержимое: Привет"
+
+    await store.save_messages(
+        agent_id=agent_id,
+        peer="12345",
+        messages=[
+            {"role": "user", "content": formatted},
+            {"role": "assistant", "content": "Ответ"},
+        ],
+        raw_user_text="Привет",
+        turn_id="turn-7",
+    )
+
+    async with db_session_factory() as session:
+        rows = list(
+            await session.scalars(
+                select(AgentMessageModel)
+                .where(AgentMessageModel.agent_id == agent_id)
+                .where(AgentMessageModel.direction == "incoming")
+            )
+        )
+        assert len(rows) == 1
+        assert rows[0].content == "Привет"
+        assert rows[0].payload.get("turn_id") == "turn-7"
