@@ -27,5 +27,3 @@ export function useActivityFeed(agentId: string) {
     staleTime: HISTORICAL_STALE_TIME,
   });
 }
-
-export const ACTIVITY_PAGE_SIZE = PAGE_SIZE;

@@ -117,8 +117,11 @@ class AgentStore(Protocol):
     ) -> ConversationPage: ...
 
 
-def _reply_id_of(payload: dict[str, Any]) -> int | None:
-    """Reply target of an answer row: structured response `reply_to`."""
+def reply_target_of(payload: dict[str, Any]) -> int | None:
+    """Reply target of an answer row: structured response `reply_to`.
+
+    Одна и та же логика для обоих сторов: расхождение копий ломало протокол
+    (in-memory стору не хватало фолбэка по args тула)."""
     structured = payload.get("structured_response")
     if isinstance(structured, dict):
         value = structured.get("reply_to")
@@ -259,7 +262,7 @@ class InMemoryAgentStore:
                     "outgoing",
                 ):
                     turn.outgoing = filtered[i + 1].content
-                    turn.outgoing_reply_id = _reply_id_of(filtered[i + 1].payload)
+                    turn.outgoing_reply_id = reply_target_of(filtered[i + 1].payload)
                     turn.direction = "both"
                     i += 1
                 else:
@@ -278,7 +281,7 @@ class InMemoryAgentStore:
                         outgoing=msg.content,
                         direction="outgoing",
                         turn_id=msg.payload.get("turn_id"),
-                        outgoing_reply_id=_reply_id_of(msg.payload),
+                        outgoing_reply_id=reply_target_of(msg.payload),
                     )
                 )
             i += 1

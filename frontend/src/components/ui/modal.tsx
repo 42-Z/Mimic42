@@ -30,6 +30,8 @@ export function Modal({
   className,
   size = 'md',
 }: ModalProps) {
+  const panelRef = React.useRef<HTMLDivElement>(null);
+
   // Close on Escape key
   React.useEffect(() => {
     if (!isOpen) return;
@@ -39,11 +41,34 @@ export function Modal({
     };
     document.addEventListener('keydown', handleKey);
 
+    // Keep Tab inside the dialog while it is open.
+    const panel = panelRef.current;
+    panel?.focus();
+    const handleTab = (e: KeyboardEvent) => {
+      if (e.key !== 'Tab' || !panel) return;
+      const focusables = panel.querySelectorAll<HTMLElement>(
+        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+      );
+      if (focusables.length === 0) return;
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      if (!first || !last) return;
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener('keydown', handleTab);
+
     // Lock body scroll
     document.body.style.overflow = 'hidden';
 
     return () => {
       document.removeEventListener('keydown', handleKey);
+      document.removeEventListener('keydown', handleTab);
       document.body.style.overflow = '';
     };
   }, [isOpen, onClose]);
@@ -67,6 +92,8 @@ export function Modal({
 
       {/* Panel */}
       <div
+        ref={panelRef}
+        tabIndex={-1}
         className={cn(
           'relative w-full z-10',
           'bg-void-800 border border-void-600',

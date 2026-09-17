@@ -16,6 +16,7 @@ from mimic42.core.agent_store import (
     ConversationPage,
     ConversationTurn,
     ToolCallRecord,
+    reply_target_of,
 )
 from mimic42.core.onboarding import OnboardingSession, SecretCipher
 from mimic42.integrations.database_models import (
@@ -344,11 +345,9 @@ class DatabaseAgentStore:
         def _outgoing_reply_id_of(msg: AgentMessageModel) -> int | None:
             """Reply target of the agent's answer: the structured response's
             `reply_to`, or the AgentResponse tool call args."""
-            structured = msg.payload.get("structured_response")
-            if isinstance(structured, dict):
-                found = _reply_id(structured.get("reply_to"))
-                if found is not None:
-                    return found
+            found = reply_target_of(msg.payload)
+            if found is not None:
+                return found
             tool_calls = msg.payload.get("tool_calls")
             if isinstance(tool_calls, list):
                 for call in tool_calls:

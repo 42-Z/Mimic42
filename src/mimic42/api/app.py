@@ -4,10 +4,10 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import Annotated, Any, Protocol
+from typing import Annotated, Any, Literal, Protocol
 from uuid import UUID, uuid4
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Response, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -539,6 +539,7 @@ def create_app(
         agent_id: UUID,
         media_path: str,
         current_user: CurrentUserDep,
+        request: Request,
     ) -> Response:
         store = _get_agent_store(app)
         media_storage: MediaUploader | None = getattr(app.state, "media_uploader", None)
@@ -569,11 +570,27 @@ def create_app(
             "mp4": "video/mp4",
             "pdf": "application/pdf",
         }
-        return Response(
-            content=data,
-            media_type=content_types.get(extension, "application/octet-stream"),
-            headers={"Cache-Control": "private, max-age=300"},
-        )
+        media_type = content_types.get(extension, "application/octet-stream")
+        cache_headers = {"Cache-Control": "private, max-age=300", "Accept-Ranges": "bytes"}
+        # Range даёт браузеру листать видео/аудио без выкачивания всего файла.
+        byte_range = _parse_byte_range(request.headers.get("range"), len(data))
+        if byte_range == "invalid":
+            return Response(
+                status_code=416,
+                headers={**cache_headers, "Content-Range": f"bytes */{len(data)}"},
+            )
+        if byte_range is not None:
+            start, end = byte_range
+            return Response(
+                content=data[start : end + 1],
+                status_code=206,
+                media_type=media_type,
+                headers={
+                    **cache_headers,
+                    "Content-Range": f"bytes {start}-{end}/{len(data)}",
+                },
+            )
+        return Response(content=data, media_type=media_type, headers=cache_headers)
 
     @app.post(
         "/api/v1/agents",
@@ -879,6 +896,37 @@ async def _ensure_agent_owner(store: AgentStore, *, agent_id: UUID, user_id: UUI
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Agent {agent_id} does not exist",
         )
+
+
+def _parse_byte_range(
+    header: str | None, total: int
+) -> tuple[int, int] | Literal["invalid"] | None:
+    """Разобрать `Range: bytes=start-end` (единственный диапазон).
+
+    Возвращает (start, end) для 206, None — заголовка нет/не поддержан,
+    "invalid" — диапазон некорректен (ответ 416).
+    """
+    if header is None or total == 0:
+        return None
+    units, _, spec = header.partition("=")
+    if units.strip().lower() != "bytes" or "," in spec:
+        return None
+    start_raw, dash, end_raw = spec.strip().partition("-")
+    if not dash:
+        return "invalid"
+    try:
+        if not start_raw:
+            length = int(end_raw)
+            if length <= 0:
+                return "invalid"
+            return max(0, total - length), total - 1
+        start = int(start_raw)
+        end = int(end_raw) if end_raw else total - 1
+    except ValueError:
+        return "invalid"
+    if start < 0 or start > end or start >= total:
+        return "invalid"
+    return start, min(end, total - 1)
 
 
 async def _ensure_runtime_owner(app: FastAPI, *, agent_id: UUID, user_id: UUID) -> None:

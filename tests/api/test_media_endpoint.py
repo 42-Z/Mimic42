@@ -70,7 +70,47 @@ async def test_media_returns_file_for_owner() -> None:
 
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("image/jpeg")
+    assert resp.headers["accept-ranges"] == "bytes"
     assert resp.content == b"IMG"
+
+
+@pytest.mark.asyncio
+async def test_media_serves_partial_content_for_range() -> None:
+    """Range нужен, чтобы видео/аудио в ленте листались без полного файла."""
+    owner_id = uuid4()
+    agent_id = uuid4()
+    path = f"{agent_id}/{uuid4()}/clip.mp4"
+    app = create_app(
+        agent_store=_store_with_agent(owner_id, agent_id),
+        auth_verifier=FakeAuthVerifier(owner_id),
+        media_uploader=FakeMediaStorage({path: b"0123456789"}),
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        resp = await client.get(
+            f"/api/v1/agents/{agent_id}/media/{path}",
+            headers={**AUTH_HEADERS, "Range": "bytes=2-5"},
+        )
+        suffix = await client.get(
+            f"/api/v1/agents/{agent_id}/media/{path}",
+            headers={**AUTH_HEADERS, "Range": "bytes=-3"},
+        )
+        invalid = await client.get(
+            f"/api/v1/agents/{agent_id}/media/{path}",
+            headers={**AUTH_HEADERS, "Range": "bytes=50-60"},
+        )
+
+    assert resp.status_code == 206
+    assert resp.content == b"2345"
+    assert resp.headers["content-range"] == "bytes 2-5/10"
+
+    assert suffix.status_code == 206
+    assert suffix.content == b"789"
+
+    assert invalid.status_code == 416
+    assert invalid.headers["content-range"] == "bytes */10"
 
 
 @pytest.mark.asyncio
