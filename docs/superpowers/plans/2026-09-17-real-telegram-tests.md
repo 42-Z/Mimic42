@@ -1545,7 +1545,7 @@ git commit -m "feat: checker session login script"
 # --- Реальные Telegram-тесты (pytest -m real_tg) ---
 # Выделенный аккаунт сайта Mimic (владелец агентов-мимиков), создаётся
 # scripts/test_env_bootstrap.py один раз.
-TEST_ACCOUNT_EMAIL=real-tg@example.com
+TEST_ACCOUNT_EMAIL=test@mail.zomb.top
 TEST_ACCOUNT_PASSWORD=
 # Проверяющий Telegram-аккаунт (реальный): session string — секрет.
 TG_CHECKER_API_ID=
