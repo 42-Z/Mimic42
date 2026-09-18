@@ -218,19 +218,12 @@ export function useFinalizeAgent() {
       onboardingId: string;
       session: OnboardingSessionRow;
     }) => {
-      const result = await onboardingApi.finalizeAgent(onboardingId, {
+      // Бэкенд сам помечает черновик завершённым вместе с созданием агента:
+      // отдельный клиентский апдейт мог упасть и блокировал переход на дашборд.
+      return await onboardingApi.finalizeAgent(onboardingId, {
         name: session.agent_name ?? 'Мой агент',
         soul_prompt: session.soul_prompt ?? '',
       });
-
-      // Mark onboarding as complete in Supabase
-      const supabase = getSupabaseClient();
-      await supabase
-        .from('agent_onboarding_sessions')
-        .update({ completed_agent_id: result.agent_id })
-        .eq('id', onboardingId);
-
-      return result;
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: queryKeys.onboarding.session() });

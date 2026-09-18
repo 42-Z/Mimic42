@@ -74,6 +74,7 @@ class OnboardingSession(BaseModel):
     session_secret: str | None = None
     name: str | None = None
     soul_prompt: str | None = None
+    completed_agent_id: UUID | None = None
 
 
 class OnboardingPublicStatus(BaseModel):
@@ -283,6 +284,11 @@ class AgentOnboardingService:
 
         if self._agent_store is not None:
             await self._agent_store.create_from_onboarding(session)
+            # Черновик помечается завершённым на сервере, а не клиентом:
+            # браузерный апдейт после финализации мог отвалиться, и мастер
+            # подхватывал уже использованный черновик заново.
+            session.completed_agent_id = session.onboarding_id
+            await self._repository.save(session)
 
         return AgentStatus(
             agent_id=session.onboarding_id,
