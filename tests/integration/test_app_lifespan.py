@@ -10,6 +10,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from mimic42.config import Settings
 from mimic42.core.agent_runtime import AgentRuntimeState
 from mimic42.core.crypto import FernetSecretCipher
 from mimic42.core.onboarding import OnboardingSession, TelegramLoginStatus
@@ -89,3 +90,38 @@ async def test_encrypted_telegram_session_is_decrypted_on_start(
         config = await app.state.agent_store.get_runtime_config(agent_id)
 
     assert config.telegram_session_string == "fake-session:+79990000000"
+
+
+@pytest.mark.asyncio
+async def test_restore_skipped_when_disabled(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    """RESTORE_RUNNING_AGENTS=false: чужие RUNNING-агенты не поднимаются.
+
+    Иначе real_tg-тесты стартовали бы реальных агентов разработчика и
+    ломали их Telegram-сессии параллельным подключением."""
+    cipher = _cipher()
+    owner_id = clean_slot.persona("full").user_id
+    agent_id = uuid4()
+    store = DatabaseAgentStore(db_session_factory, cipher=cipher)
+    await store.create_from_onboarding(
+        OnboardingSession(
+            onboarding_id=agent_id,
+            owner_id=owner_id,
+            authorization_status=TelegramLoginStatus.AUTHORIZED,
+            api_id=1,
+            api_hash_secret=cipher.encrypt("test-api-hash"),
+            session_secret=cipher.encrypt("fake-session:+79990000000"),
+            name="не должен подняться",
+            soul_prompt="спокойный помощник, отвечает коротко",
+        )
+    )
+    await store.update_status(agent_id, AgentRuntimeState.RUNNING)
+
+    settings = Settings(restore_running_agents=False)
+    app = build_test_app(settings=settings)
+    async with app.router.lifespan_context(app):
+        statuses = await app.state.agent_manager.list_agents()
+
+    assert agent_id not in {status.agent_id for status in statuses}

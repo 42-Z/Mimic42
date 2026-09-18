@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import os
 import re
 import subprocess
@@ -15,6 +16,7 @@ import time
 import urllib.request
 from collections.abc import Iterator
 from pathlib import Path
+from typing import cast
 
 import httpx
 import pytest
@@ -60,9 +62,13 @@ def _wait_for(url: str, timeout: float) -> None:
 def real_servers() -> Iterator[None]:
     """Настоящий mimic42.main:app + фронт (dev)."""
     env = os.environ.copy()
+    # Чужие RUNNING-агенты (реальные агенты разработчика в Dev) не поднимаем:
+    # параллельный старт ломает их Telegram-сессии (AuthKeyDuplicated).
+    env["RESTORE_RUNNING_AGENTS"] = "false"
     api_proc = subprocess.Popen(
         ["uv", "run", "uvicorn", "mimic42.main:app", "--port", str(API_PORT)],
         cwd=ROOT,
+        env=env,
     )
     try:
         _wait_for(f"{API_URL}/health", timeout=90)
@@ -119,7 +125,11 @@ def mimic_agents(real_servers: None, sync_checker: SyncChecker) -> list[tuple[st
                 agents.append((agent_id, phone))
         return agents
 
-    return asyncio.run(start_all())
+    # pytest-asyncio держит собственный session-луп, поэтому asyncio.run
+    # в этом потоке невозможен — корутина выполняется в отдельном потоке.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        result = pool.submit(asyncio.run, start_all()).result(timeout=120)
+    return cast(list[tuple[str, str]], result)
 
 
 @pytest.fixture(scope="session")

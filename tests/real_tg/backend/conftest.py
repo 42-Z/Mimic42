@@ -31,6 +31,7 @@ async def real_app() -> AsyncIterator[tuple[FastAPI, AsyncClient]]:
         telegram_api_id=int(os.environ["TELEGRAM_API_ID"]),
         telegram_api_hash=os.environ["TELEGRAM_API_HASH"],
         mem0_api_key=None,  # Mem0 в тестах не дёргаем
+        restore_running_agents=False,  # чужие RUNNING-агенты не поднимаем
     )
     app = create_app(settings=settings)
     async with app.router.lifespan_context(app):

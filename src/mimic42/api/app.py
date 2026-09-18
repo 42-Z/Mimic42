@@ -246,7 +246,7 @@ def create_app(
             logger.info(
                 f"[lifespan] should_build={should_build_database}, manager_none={manager is None}"
             )
-            if should_build_database and manager is None:
+            if should_build_database and manager is None and app_settings.restore_running_agents:
                 try:
                     agent_records = await database_agent_store.list_agents()
                     logger.info(f"[lifespan] Found {len(agent_records)} agents")

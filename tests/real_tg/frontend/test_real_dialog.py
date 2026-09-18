@@ -26,7 +26,12 @@ def test_dialog_visible_in_dashboard(
         page.goto(f"/agent/{agent_id}?tab=logs")
         reply = sync_checker.send_and_wait_reply(phone, "Привет из реального теста", timeout=300)
         assert reply.strip()
-        expect(page.get_by_text("Привет из реального теста")).to_be_visible(timeout=180_000)
-        expect(page.get_by_text(reply[:40])).to_be_visible(timeout=180_000)
+        # Лента не обязана обновляться live: перечитываем страницу, как это
+        # сделал бы человек, и проверяем, что входящее и ответ видны.
+        page.reload()
+        # Один и тот же текст встречается в ленте дважды (входящее и блок
+        # триггера), поэтому проверяем первый видимый элемент.
+        expect(page.get_by_text("Привет из реального теста").first).to_be_visible(timeout=180_000)
+        expect(page.get_by_text(reply[:40]).first).to_be_visible(timeout=180_000)
     finally:
         context.close()
