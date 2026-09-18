@@ -26,6 +26,7 @@ from mimic42.testing.real_tg.checker import SyncChecker
 from tests.real_tg.backend.helpers import (
     agent_id_for_phone,
     anon_key,
+    ensure_free_model,
     jwt,
     user_id_from_token,
 )
@@ -123,6 +124,7 @@ def mimic_agents(real_servers: None, sync_checker: SyncChecker) -> list[tuple[st
         async with httpx.AsyncClient(base_url=API_URL, timeout=60.0) as client:
             for phone in phones:
                 agent_id = await agent_id_for_phone(dsn, phone, owner_id)
+                await ensure_free_model(dsn, agent_id)
                 response = await client.post(
                     f"/api/v1/agents/{agent_id}/start",
                     headers={"Authorization": f"Bearer {token}"},

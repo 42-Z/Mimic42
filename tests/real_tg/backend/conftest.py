@@ -59,7 +59,12 @@ async def started_mimics(
 ) -> list[tuple[str, str]]:
     """Запускает агентов-мимиков через API; возвращает [(agent_id, phone)]."""
     _, client = real_app
-    from tests.real_tg.backend.helpers import agent_id_for_phone, jwt, user_id_from_token
+    from tests.real_tg.backend.helpers import (
+        agent_id_for_phone,
+        ensure_free_model,
+        jwt,
+        user_id_from_token,
+    )
 
     token = await jwt()
     owner_id = user_id_from_token(token)
@@ -68,6 +73,7 @@ async def started_mimics(
     agents: list[tuple[str, str]] = []
     for phone in phones:
         agent_id = await agent_id_for_phone(dsn, phone, owner_id)
+        await ensure_free_model(dsn, agent_id)
         response = await client.post(
             f"/api/v1/agents/{agent_id}/start",
             headers={"Authorization": f"Bearer {token}"},

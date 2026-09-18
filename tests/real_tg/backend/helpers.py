@@ -10,6 +10,7 @@ import asyncpg
 import httpx
 import jwt as pyjwt
 
+from mimic42.core.model_catalog import DEFAULT_LLM_MODEL, resolve_model_chain
 from mimic42.testing.slots import plain_dsn
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -69,3 +70,26 @@ async def agent_id_for_phone(dsn: str, phone: str, owner_id: UUID) -> str:
         await conn.close()
     assert row, f"Нет агента с телефоном {phone}"
     return str(row["agent_id"])
+
+
+async def ensure_free_model(dsn: str, agent_id: str) -> None:
+    """Тестовый мимик обязан работать на бесплатной модели.
+
+    Реальные прогоны не должны жечь платные токены; проверка с понятным
+    сообщением вместо тихой траты денег.
+    """
+    conn = await asyncpg.connect(plain_dsn(dsn))
+    try:
+        row = await conn.fetchrow(
+            "select settings->>'model' as model from agents where id = $1::uuid",
+            agent_id,
+        )
+    finally:
+        await conn.close()
+    model = (row["model"] if row else None) or DEFAULT_LLM_MODEL
+    chain = resolve_model_chain(model)
+    if not chain[0].endswith(":free"):
+        raise AssertionError(
+            f"У мимика {agent_id} выбрана модель {model!r} без бесплатного варианта: "
+            "открой настройки агента и выбери Ling 3.0 Flash VL или Laguna S 2.1"
+        )
