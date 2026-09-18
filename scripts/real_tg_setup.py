@@ -3,9 +3,8 @@
     TEST_SUPABASE_SERVICE_ROLE_KEY=... TEST_ACCOUNT_EMAIL=... TEST_ACCOUNT_PASSWORD=... \
         uv run python scripts/real_tg_setup.py
 
-Идемпотентен: существующий пользователь не трогается. Owner-id фиксирован
-константой TEST_ACCOUNT_USER_ID — тесты находят мимиков по нему без Admin-ключа.
-GoTrue принимает явный `id` в admin create user (supabase/auth#1641).
+Идемпотентен: существующий пользователь не трогается. Id аккаунта нигде не
+фиксируется — тесты берут owner_id из claim `sub` своего JWT после логина.
 """
 
 from __future__ import annotations
@@ -17,7 +16,6 @@ import sys
 import httpx
 
 from mimic42.testing.env import load_test_env
-from mimic42.testing.real_tg import TEST_ACCOUNT_USER_ID
 from mimic42.testing.slots import assert_test_project
 
 
@@ -52,16 +50,15 @@ async def main() -> int:
             "/auth/v1/admin/users",
             headers=headers,
             json={
-                "id": str(TEST_ACCOUNT_USER_ID),
                 "email": email,
                 "password": password,
                 "email_confirm": True,
             },
         )
         if response.status_code in (200, 201):
-            print(f"создан {email} ({TEST_ACCOUNT_USER_ID})")
+            print(f"создан {email}")
         elif response.status_code in (409, 422):
-            print(f"уже есть {email} ({TEST_ACCOUNT_USER_ID})")
+            print(f"уже есть {email}")
         else:
             print(f"не удалось создать: {response.status_code} {response.text}", file=sys.stderr)
             return 1

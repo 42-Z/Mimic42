@@ -1458,16 +1458,9 @@ class SyncChecker:
 и `__init__.py`:
 
 ```python
-from uuid import UUID
-
 from mimic42.testing.real_tg.checker import Checker, SyncChecker
 
-# Фиксированный UUID владельца-тестового аккаунта сайта; создаётся
-# scripts/real_tg_setup.py через Admin API. Фиксированный id нужен, чтобы
-# тесты находили агентов-мимиков по owner_id без Admin-ключа в рантайме.
-TEST_ACCOUNT_USER_ID = UUID("7e2f1a3c-9d4e-4f5b-8a6c-1b2d3e4f5a6b")
-
-__all__ = ["Checker", "TEST_ACCOUNT_USER_ID", "SyncChecker"]
+__all__ = ["Checker", "SyncChecker"]
 ```
 
 - [ ] **Step 2: линт**
@@ -1545,8 +1538,8 @@ git commit -m "feat: checker session login script"
     TEST_SUPABASE_SERVICE_ROLE_KEY=... TEST_ACCOUNT_EMAIL=... TEST_ACCOUNT_PASSWORD=... \
         uv run python scripts/real_tg_setup.py
 
-Идемпотентен: существующий пользователь не трогается. Owner-id фиксирован
-константой TEST_ACCOUNT_USER_ID — тесты находят мимиков по нему без Admin-ключа.
+Идемпотентен: существующий пользователь не трогается. Id аккаунта нигде не
+фиксируется — тесты берут owner_id из claim `sub` своего JWT после логина.
 """
 
 from __future__ import annotations
@@ -1558,7 +1551,6 @@ import sys
 import httpx
 
 from mimic42.testing.env import load_test_env
-from mimic42.testing.real_tg import TEST_ACCOUNT_USER_ID
 from mimic42.testing.slots import assert_test_project
 
 
@@ -1579,7 +1571,6 @@ async def main() -> int:
             "/auth/v1/admin/users",
             headers=headers,
             json={
-                "id": str(TEST_ACCOUNT_USER_ID),
                 "email": email,
                 "password": password,
                 "email_confirm": True,
@@ -1607,7 +1598,6 @@ if __name__ == "__main__":
 # scripts/real_tg_setup.py один раз.
 TEST_ACCOUNT_EMAIL=real-tg@example.com
 TEST_ACCOUNT_PASSWORD=
-TEST_ACCOUNT_USER_ID=7e2f1a3c-9d4e-4f5b-8a6c-1b2d3e4f5a6b
 # Проверяющий Telegram-аккаунт (реальный): session string — секрет.
 TG_CHECKER_API_ID=
 TG_CHECKER_API_HASH=
@@ -1626,7 +1616,7 @@ git commit -m "feat: real-tg site account setup script and env contract"
 - [ ] 1. `TEST_SUPABASE_SERVICE_ROLE_KEY=... TEST_ACCOUNT_EMAIL=... TEST_ACCOUNT_PASSWORD=... uv run python scripts/real_tg_setup.py` → вписать `TEST_ACCOUNT_*` в `.env.test`
 - [ ] 2. Онборд двух мимиков через дашборд вручную (онбординг тестами не покрывается)
 - [ ] 3. `uv run python -m mimic42.testing.real_tg.login` → session string → `.env.test`
-- [ ] 4. Секреты CI: TG_CHECKER_API_ID/HASH/SESSION, TEST_ACCOUNT_EMAIL/PASSWORD/USER_ID, TELEGRAM_API_ID/HASH, OPENROUTER_API_KEY, SUPABASE_ANON_KEY
+- [ ] 4. Секреты CI: TG_CHECKER_API_ID/HASH/SESSION, TEST_ACCOUNT_EMAIL/PASSWORD, TELEGRAM_API_ID/HASH, OPENROUTER_API_KEY, SUPABASE_ANON_KEY
 
 ### Task C5: бэкенд-слой real_tg
 
@@ -1636,15 +1626,34 @@ git commit -m "feat: real-tg site account setup script and env contract"
 - [ ] **Step 1: helpers.py**
 
 ```python
-"""Помощники реальных TG-тестов бэкенда: JWT и поиск агентов в базе."""
+"""Помощники реальных TG-тестов бэкенда: логин, owner id и поиск агентов."""
 
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from uuid import UUID
 
 import asyncpg
 import httpx
+import jwt as pyjwt
+
+from mimic42.testing.slots import plain_dsn
+
+ROOT = Path(__file__).resolve().parents[3]
+
+
+def anon_key() -> str:
+    """Публичный anon-ключ: из окружения (CI) или frontend/.env.local (локально)."""
+    value = os.environ.get("SUPABASE_ANON_KEY") or os.environ.get("NEXT_PUBLIC_SUPABASE_ANON_KEY")
+    if value:
+        return value
+    env_local = ROOT / "frontend" / ".env.local"
+    if env_local.exists():
+        for line in env_local.read_text().splitlines():
+            if line.startswith("NEXT_PUBLIC_SUPABASE_ANON_KEY="):
+                return line.split("=", 1)[1].strip()
+    raise RuntimeError("SUPABASE_ANON_KEY / NEXT_PUBLIC_SUPABASE_ANON_KEY не найден")
 
 
 async def jwt() -> str:
@@ -1652,18 +1661,28 @@ async def jwt() -> str:
     async with httpx.AsyncClient(base_url=os.environ["SUPABASE_URL"].rstrip("/")) as client:
         response = await client.post(
             "/auth/v1/token?grant_type=password",
-            headers={"apikey": os.environ["SUPABASE_ANON_KEY"]},
+            headers={"apikey": anon_key()},
             json={
                 "email": os.environ["TEST_ACCOUNT_EMAIL"],
                 "password": os.environ["TEST_ACCOUNT_PASSWORD"],
             },
         )
         response.raise_for_status()
-        return response.json()["access_token"]
+        return str(response.json()["access_token"])
+
+
+def user_id_from_token(token: str) -> UUID:
+    """owner_id — тот же claim `sub`, что читает прод (`api/auth.py`).
+
+    Подпись не проверяется: токен только что получен от Supabase по TLS,
+    из него берётся собственная личность, а не принимается чужое решение.
+    """
+    payload = pyjwt.decode(token, options={"verify_signature": False})
+    return UUID(str(payload["sub"]))
 
 
 async def agent_id_for_phone(dsn: str, phone: str, owner_id: UUID) -> str:
-    conn = await asyncpg.connect(dsn)
+    conn = await asyncpg.connect(plain_dsn(dsn))
     try:
         row = await conn.fetchrow(
             """
@@ -1690,9 +1709,7 @@ from __future__ import annotations
 import os
 from collections.abc import AsyncIterator
 from pathlib import Path
-from uuid import UUID
 
-import pytest
 import pytest_asyncio
 from dotenv import load_dotenv
 from fastapi import FastAPI
@@ -1702,7 +1719,7 @@ from mimic42.config import Settings
 
 ROOT = Path(__file__).resolve().parents[3]
 # real_tg работает с боевой конфигурацией: .env грузится ПОВЕРХ тестовых
-# переопределений (корневой conftest выставил TELEGRAM_API_ID=1).
+# переопределений (.env.test выставляет заглушки телеги и правит базу).
 load_dotenv(ROOT / ".env", override=True)
 
 from mimic42.api.app import create_app  # noqa: E402
@@ -1743,14 +1760,14 @@ async def checker() -> AsyncIterator[object]:
 @pytest_asyncio.fixture
 async def started_mimics(
     real_app: tuple[FastAPI, AsyncClient], checker: object
-) -> AsyncIterator[list[tuple[str, str]]]:
+) -> list[tuple[str, str]]:
     """Запускает агентов-мимиков через API; возвращает [(agent_id, phone)]."""
     _, client = real_app
-    from tests.real_tg.backend.helpers import agent_id_for_phone, jwt
+    from tests.real_tg.backend.helpers import agent_id_for_phone, jwt, user_id_from_token
 
     token = await jwt()
+    owner_id = user_id_from_token(token)
     dsn = os.environ["DATABASE_CONNECTION_STRING"]
-    owner_id = UUID(os.environ["TEST_ACCOUNT_USER_ID"])
     phones = await checker.mimic_phones(dsn, owner_id)
     agents: list[tuple[str, str]] = []
     for phone in phones:
@@ -1759,7 +1776,7 @@ async def started_mimics(
             f"/api/v1/agents/{agent_id}/start",
             headers={"Authorization": f"Bearer {token}"},
         )
-        assert response.status_code in (204, 409), response.text
+        assert response.status_code == 204, response.text
         agents.append((agent_id, phone))
     return agents
 ```
@@ -1773,104 +1790,29 @@ from __future__ import annotations
 
 import asyncio
 import os
-import uuid
-from collections.abc import AsyncIterator
 from uuid import UUID
 
 import asyncpg
 import pytest
+from fastapi import FastAPI
+from httpx import AsyncClient
 
-from mimic42.testing.real_tg import TEST_ACCOUNT_USER_ID
-from tests.real_tg.backend.helpers import agent_id_for_phone, jwt
-
-pytestmark = pytest.mark.real_tg
-
-
-async def test_agent_replies_in_real_telegram(
-    checker: object,
-    started_mimics: list[tuple[str, str]],
-) -> None:
-    agent_id, phone = started_mimics[0]
-    await checker.ensure_contact(phone)
-    reply = await checker.send_and_wait_reply(phone, "Привет, как дела?", timeout=300)
-    assert reply and reply.strip(), "Мимик не ответил в реальном Telegram"
-
-    conn = await asyncpg.connect(os.environ["DATABASE_CONNECTION_STRING"])
-    try:
-        rows = await conn.fetch(
-            "select direction from agent_messages where agent_id = $1 "
-            "order by created_at desc limit 10",
-            UUID(agent_id),
-        )
-    finally:
-        await conn.close()
-    directions = {row["direction"] for row in rows}
-    assert "incoming" in directions, "Входящее не записано в agent_messages"
-    assert "outgoing" in directions, "Ответ не записан в agent_messages"
-
-
-async def test_trigger_message_arrives_in_telegram(
-    real_app: object,
-    checker: object,
-    started_mimics: list[tuple[str, str]],
-) -> None:
-    from tests.real_tg.backend.helpers import jwt
-
-    agent_id, phone = started_mimics[1]
-    _, client = real_app
-    token = await jwt()
-    await checker.ensure_contact(phone)
-    # Хендлер регистрируется ДО триггера — ответ не может прийти раньше подписки.
-    incoming: AsyncIterator[object] = asyncio.ensure_future(
-        checker.wait_incoming(phone, timeout=180)
-    )
-    response = await client.post(
-        f"/api/v1/agents/{agent_id}/messages/trigger",
-        headers={"Authorization": f"Bearer {token}"},
-        json={"peer": phone, "text": "Тестовое сообщение из дашборда"},
-    )
-    assert response.status_code == 200, response.text
-    text = await asyncio.wrap_future(incoming) if False else await incoming
-    assert text and text.strip()
-```
-
-Исправь последнюю строку теста на `text = await incoming` (без wrap_future и `if False`):
-
-```python
-    text = await incoming
-    assert text and text.strip()
-```
-
-И удали неиспользуемые импорты (`os`, `uuid`, `agent_id_for_phone` — оставь только используемые).
-
-- [ ] **Step 3.1: чистая версия test_real_dialog.py** (именно её коммитим):
-
-```python
-"""Реальный диалог: проверяющий пишет мимику, мимик отвечает в настоящем TG."""
-
-from __future__ import annotations
-
-import asyncio
-import os
-from uuid import UUID
-
-import asyncpg
-import pytest
-
+from mimic42.testing.real_tg.checker import Checker
+from mimic42.testing.slots import plain_dsn
 from tests.real_tg.backend.helpers import jwt
 
 pytestmark = pytest.mark.real_tg
 
 
 async def test_agent_replies_in_real_telegram(
-    checker: object, started_mimics: list[tuple[str, str]]
+    checker: Checker, started_mimics: list[tuple[str, str]]
 ) -> None:
     agent_id, phone = started_mimics[0]
-    await checker.ensure_contact(phone)
+    await checker.import_contact(phone)
     reply = await checker.send_and_wait_reply(phone, "Привет, как дела?", timeout=300)
     assert reply and reply.strip(), "Мимик не ответил в реальном Telegram"
 
-    conn = await asyncpg.connect(os.environ["DATABASE_CONNECTION_STRING"])
+    conn = await asyncpg.connect(plain_dsn(os.environ["DATABASE_CONNECTION_STRING"]))
     try:
         rows = await conn.fetch(
             "select direction from agent_messages where agent_id = $1 "
@@ -1885,12 +1827,14 @@ async def test_agent_replies_in_real_telegram(
 
 
 async def test_trigger_message_arrives_in_telegram(
-    real_app: object, checker: object, started_mimics: list[tuple[str, str]]
+    real_app: tuple[FastAPI, AsyncClient],
+    checker: Checker,
+    started_mimics: list[tuple[str, str]],
 ) -> None:
     agent_id, phone = started_mimics[1]
     _, client = real_app
     token = await jwt()
-    await checker.ensure_contact(phone)
+    await checker.import_contact(phone)
     incoming = asyncio.ensure_future(checker.wait_incoming(phone, timeout=180))
     response = await client.post(
         f"/api/v1/agents/{agent_id}/messages/trigger",
@@ -1936,8 +1880,13 @@ import pytest
 from playwright.sync_api import Browser
 from dotenv import load_dotenv
 
-from mimic42.testing.real_tg import TEST_ACCOUNT_USER_ID
 from mimic42.testing.real_tg.checker import SyncChecker
+from tests.real_tg.backend.helpers import (
+    agent_id_for_phone,
+    anon_key,
+    jwt,
+    user_id_from_token,
+)
 
 ROOT = Path(__file__).resolve().parents[3]
 AUTH_DIR = ROOT / "tests" / "e2e" / ".auth"
@@ -1945,7 +1894,7 @@ API_PORT = int(os.environ.get("E2E_API_PORT", "8000"))
 APP_PORT = int(os.environ.get("E2E_APP_PORT", "3000"))
 API_URL = f"http://127.0.0.1:{API_PORT}"
 APP_URL = f"http://127.0.0.1:{APP_PORT}"
-# Боевые переменные поверх тестовых переопределений корневого conftest.
+# Боевые переменные поверх тестовых переопределений (.env.test).
 load_dotenv(ROOT / ".env", override=True)
 
 
@@ -2011,30 +1960,27 @@ def sync_checker() -> Iterator[SyncChecker]:
 
 
 @pytest.fixture(scope="session")
-def mimic_agents(sync_checker: SyncChecker) -> list[tuple[str, str]]:
-    """[(agent_id, phone)] мимиков: телефоны и id — из Dev-базы."""
-    import asyncpg
-
+def mimic_agents(real_servers: None, sync_checker: SyncChecker) -> list[tuple[str, str]]:
+    """Запускает мимиков через настоящий API; [(agent_id, phone)] из Dev-базы."""
     dsn = os.environ["DATABASE_CONNECTION_STRING"]
-    phones = sync_checker.mimic_phones(dsn, TEST_ACCOUNT_USER_ID)
-    conn = asyncpg.connect(dsn)
-    try:
-        agents = []
-        for phone in phones:
-            row = conn.fetchrow(
-                """
-                select a.id::text as agent_id
-                from agents a join telegram_sessions ts on ts.agent_id = a.id
-                where ts.phone_number = $1 and a.owner_id = $2
-                """,
-                phone,
-                TEST_ACCOUNT_USER_ID,
-            )
-            assert row, f"Нет агента с телефоном {phone}"
-            agents.append((str(row["agent_id"]), phone))
+
+    async def start_all() -> list[tuple[str, str]]:
+        token = await jwt()
+        owner_id = user_id_from_token(token)
+        phones = sync_checker.mimic_phones(dsn, owner_id)
+        agents: list[tuple[str, str]] = []
+        async with httpx.AsyncClient(base_url=API_URL, timeout=60.0) as client:
+            for phone in phones:
+                agent_id = await agent_id_for_phone(dsn, phone, owner_id)
+                response = await client.post(
+                    f"/api/v1/agents/{agent_id}/start",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                assert response.status_code == 204, response.text
+                agents.append((agent_id, phone))
         return agents
-    finally:
-        conn.close()
+
+    return asyncio.run(start_all())
 
 
 @pytest.fixture(scope="session")
@@ -2140,7 +2086,8 @@ jobs:
           TG_CHECKER_API_ID: ${{ secrets.TG_CHECKER_API_ID }}
           TG_CHECKER_API_HASH: ${{ secrets.TG_CHECKER_API_HASH }}
           TG_CHECKER_SESSION: ${{ secrets.TG_CHECKER_SESSION }}
-          TEST_ACCOUNT_USER_ID: ${{ secrets.TEST_ACCOUNT_USER_ID }}
+          TEST_ACCOUNT_EMAIL: ${{ secrets.TEST_ACCOUNT_EMAIL }}
+          TEST_ACCOUNT_PASSWORD: ${{ secrets.TEST_ACCOUNT_PASSWORD }}
 
   frontend-real:
     name: frontend-real-tg
@@ -2173,7 +2120,6 @@ jobs:
           TG_CHECKER_SESSION: ${{ secrets.TG_CHECKER_SESSION }}
           TEST_ACCOUNT_EMAIL: ${{ secrets.TEST_ACCOUNT_EMAIL }}
           TEST_ACCOUNT_PASSWORD: ${{ secrets.TEST_ACCOUNT_PASSWORD }}
-          TEST_ACCOUNT_USER_ID: ${{ secrets.TEST_ACCOUNT_USER_ID }}
 ```
 
 - [ ] **Step 2: commit**
@@ -2199,4 +2145,4 @@ git commit -m "ci: manual real telegram test workflow"
 
 1. **Спека → задачи:** строгий клиент (A1), поле конфига (A2), контракт API (A3), мусор (A4), прогоны (A5); маркеры/зависимости (B1); helpers/conftest/порты (B2–B7); удаление TS e2e и CI (B8); проверяющий и вход (C1–C2); сайт-аккаунт и env (C3); ручная настройка (C4); бэкенд-слой (C5); фронт-слой (C6); workflow (C7); регресс (C8). Онбординг мимиков — ручная операция вне тестов (см. спеку). Всё из спеки покрыто.
 2. **Плейсхолдеры:** все фрагменты кода полные; вспомогательные функции (`_jwt`, `agent_id_for_phone`, `mimic_agents`) определены в своих файлах.
-3. **Типы/имена:** `Checker.mimic_phones(dsn, owner_id)` и `SyncChecker.mimic_phones(dsn, owner_id)` — единые сигнатуры; `TEST_ACCOUNT_USER_ID` — константа в `real_tg/__init__.py`; `auth_states`/`persona_page`/`mimic_agents` согласованы между conftest и тестами.
+3. **Типы/имена:** `Checker.mimic_phones(dsn, owner_id)` и `SyncChecker.mimic_phones(dsn, owner_id)` — единые сигнатуры; owner_id везде берётся из `sub` JWT (`user_id_from_token`); `auth_states`/`persona_page`/`mimic_agents` согласованы между conftest и тестами.

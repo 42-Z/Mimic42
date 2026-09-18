@@ -26,7 +26,6 @@
 ```
 TEST_ACCOUNT_EMAIL=...          # выделенный аккаунт сайта Mimic, владелец мимиков
 TEST_ACCOUNT_PASSWORD=...
-TEST_ACCOUNT_USER_ID=...        # зафиксирован при регистрации аккаунта
 TG_CHECKER_API_ID=...
 TG_CHECKER_API_HASH=...
 TG_CHECKER_SESSION=...
@@ -35,9 +34,10 @@ TG_CHECKER_SESSION=...
 Ключевые решения:
 
 - **Аккаунт сайта** (`TEST_ACCOUNT_*`) — отдельный от слотовых персон,
-  регистрируется в Dev-проекте Supabase один раз (id фиксирован). Не входит
-  в `SLOTS`, поэтому `purge_slot_data` его не трогает, и сессии мимиков не
-  протухают между прогонами.
+  регистрируется в Dev-проекте Supabase один раз. Не входит в `SLOTS`, поэтому
+  `purge_slot_data` его не трогает, и сессии мимиков не протухают между
+  прогонами. Id нигде не фиксируется: тесты берут owner_id из claim `sub`
+  своего JWT — тем же путём, что и прод (`api/auth.py`).
 - **Номера мимиков нигде не хранятся**: тесты читают их из Dev-базы
   (`telegram_sessions.phone_number` агентов, принадлежащих `TEST_ACCOUNT_EMAIL`).
 - **Проверяющий** — единый Python-хелпер `src/mimic42/testing/real_tg/`:
@@ -107,7 +107,7 @@ TG_CHECKER_SESSION=...
 - Новый `real-tg.yml`: только `workflow_dispatch` (ручной запуск). Джобы:
   бэкенд-слой (`uv run pytest tests/real_tg/backend -m real_tg`) и фронт-слой
   (`uv run pytest tests/real_tg/frontend -m real_tg`). Секреты:
-  `TG_CHECKER_API_ID/HASH/SESSION`, `TEST_ACCOUNT_EMAIL/PASSWORD/USER_ID` +
+  `TG_CHECKER_API_ID/HASH/SESSION`, `TEST_ACCOUNT_EMAIL/PASSWORD` +
   существующие креды Dev-базы.
 
 ## Безопасность аккаунтов и лимиты

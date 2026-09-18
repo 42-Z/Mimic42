@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 from collections.abc import AsyncIterator
 from pathlib import Path
-from uuid import UUID
 
 import pytest_asyncio
 from dotenv import load_dotenv
@@ -59,11 +58,11 @@ async def started_mimics(
 ) -> list[tuple[str, str]]:
     """Запускает агентов-мимиков через API; возвращает [(agent_id, phone)]."""
     _, client = real_app
-    from tests.real_tg.backend.helpers import agent_id_for_phone, jwt
+    from tests.real_tg.backend.helpers import agent_id_for_phone, jwt, user_id_from_token
 
     token = await jwt()
+    owner_id = user_id_from_token(token)
     dsn = os.environ["DATABASE_CONNECTION_STRING"]
-    owner_id = UUID(os.environ["TEST_ACCOUNT_USER_ID"])
     phones = await checker.mimic_phones(dsn, owner_id)
     agents: list[tuple[str, str]] = []
     for phone in phones:

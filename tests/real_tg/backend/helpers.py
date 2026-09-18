@@ -1,4 +1,4 @@
-"""Помощники реальных TG-тестов бэкенда: JWT и поиск агентов в базе."""
+"""Помощники реальных TG-тестов бэкенда: логин, owner id и поиск агентов."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from uuid import UUID
 
 import asyncpg
 import httpx
+import jwt as pyjwt
 
 from mimic42.testing.slots import plain_dsn
 
@@ -40,6 +41,16 @@ async def jwt() -> str:
         )
         response.raise_for_status()
         return str(response.json()["access_token"])
+
+
+def user_id_from_token(token: str) -> UUID:
+    """owner_id — тот же claim `sub`, что читает прод (`api/auth.py`).
+
+    Подпись не проверяется: токен только что получен от Supabase по TLS,
+    из него берётся собственная личность, а не принимается чужое решение.
+    """
+    payload = pyjwt.decode(token, options={"verify_signature": False})
+    return UUID(str(payload["sub"]))
 
 
 async def agent_id_for_phone(dsn: str, phone: str, owner_id: UUID) -> str:

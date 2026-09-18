@@ -41,7 +41,6 @@ jobs:
           TG_CHECKER_SESSION: ${{ secrets.TG_CHECKER_SESSION }}
           TEST_ACCOUNT_EMAIL: ${{ secrets.TEST_ACCOUNT_EMAIL }}
           TEST_ACCOUNT_PASSWORD: ${{ secrets.TEST_ACCOUNT_PASSWORD }}
-          TEST_ACCOUNT_USER_ID: ${{ secrets.TEST_ACCOUNT_USER_ID }}
 
   frontend-real:
     name: frontend-real-tg
@@ -87,4 +86,3 @@ jobs:
           TG_CHECKER_SESSION: ${{ secrets.TG_CHECKER_SESSION }}
           TEST_ACCOUNT_EMAIL: ${{ secrets.TEST_ACCOUNT_EMAIL }}
           TEST_ACCOUNT_PASSWORD: ${{ secrets.TEST_ACCOUNT_PASSWORD }}
-          TEST_ACCOUNT_USER_ID: ${{ secrets.TEST_ACCOUNT_USER_ID }}
