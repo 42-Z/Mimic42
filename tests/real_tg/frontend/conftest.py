@@ -11,7 +11,6 @@ import asyncio
 import concurrent.futures
 import os
 import re
-import subprocess
 import time
 import urllib.request
 from collections.abc import Iterator
@@ -30,6 +29,7 @@ from tests.real_tg.backend.helpers import (
     jwt,
     user_id_from_token,
 )
+from tests.servers import assert_port_free, spawn, terminate
 
 ROOT = Path(__file__).resolve().parents[3]
 AUTH_DIR = ROOT / "tests" / "e2e" / ".auth"
@@ -38,6 +38,9 @@ APP_PORT = int(os.environ.get("E2E_APP_PORT", "3000"))
 API_URL = f"http://127.0.0.1:{API_PORT}"
 APP_URL = f"http://127.0.0.1:{APP_PORT}"
 ACTION_TIMEOUT_MS = 15_000
+# Dev-сервер компилирует маршруты по требованию: первая навигация бывает
+# заметно дольше 15 секунд.
+NAVIGATION_TIMEOUT_MS = 60_000
 # Боевые переменные поверх тестовых переопределений (.env.test).
 load_dotenv(ROOT / ".env", override=True)
 
@@ -61,11 +64,16 @@ def _wait_for(url: str, timeout: float) -> None:
 @pytest.fixture(scope="session")
 def real_servers() -> Iterator[None]:
     """Настоящий mimic42.main:app + фронт (dev)."""
+    assert_port_free(API_PORT)
+    assert_port_free(APP_PORT)
     env = os.environ.copy()
     # Чужие RUNNING-агенты (реальные агенты разработчика в Dev) не поднимаем:
     # параллельный старт ломает их Telegram-сессии (AuthKeyDuplicated).
     env["RESTORE_RUNNING_AGENTS"] = "false"
-    api_proc = subprocess.Popen(
+    # CORS бэкенда должен знать фактический порт фронта (он может быть
+    # переопределён через E2E_APP_PORT, если 3000 занят).
+    env["CORS_ALLOW_ORIGINS"] = f"http://127.0.0.1:{APP_PORT},http://localhost:{APP_PORT}"
+    api_proc = spawn(
         ["uv", "run", "uvicorn", "mimic42.main:app", "--port", str(API_PORT)],
         cwd=ROOT,
         env=env,
@@ -80,16 +88,14 @@ def real_servers() -> Iterator[None]:
             "NEXT_PUBLIC_API_BASE_URL": API_URL,
             "PORT": str(APP_PORT),
         }
-        web_proc = subprocess.Popen(["bun", "run", "dev"], cwd=ROOT / "frontend", env=front_env)
+        web_proc = spawn(["bun", "run", "dev"], cwd=ROOT / "frontend", env=front_env)
         try:
             _wait_for(APP_URL, timeout=180)
             yield
         finally:
-            web_proc.terminate()
-            web_proc.wait(timeout=30)
+            terminate(web_proc)
     finally:
-        api_proc.terminate()
-        api_proc.wait(timeout=30)
+        terminate(api_proc)
 
 
 @pytest.fixture(scope="session")
@@ -140,6 +146,7 @@ def real_auth(browser: Browser, real_servers: None) -> str:
     AUTH_DIR.mkdir(parents=True, exist_ok=True)
     context = browser.new_context(base_url=APP_URL)
     context.set_default_timeout(ACTION_TIMEOUT_MS)
+    context.set_default_navigation_timeout(NAVIGATION_TIMEOUT_MS)
     page = context.new_page()
     page.goto("/login")
     page.get_by_label("Email").fill(os.environ["TEST_ACCOUNT_EMAIL"])

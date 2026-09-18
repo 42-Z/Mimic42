@@ -36,6 +36,7 @@ from tests.e2e.helpers import (  # noqa: E402
     reset_backend,
     users_from_slot_description,
 )
+from tests.servers import assert_port_free, spawn, terminate  # noqa: E402
 
 # Как в playwright.config.ts: dev-сервер компилирует маршруты по требованию,
 # поэтому веб-first проверки ждут 15 секунд, а не дефолтные 5.
@@ -43,6 +44,9 @@ expect.set_options(timeout=15_000)
 
 API_PORT = int(os.environ.get("E2E_API_PORT", "8000"))
 ACTION_TIMEOUT_MS = 15_000
+# Dev-сервер компилирует маршруты по требованию: первая навигация бывает
+# заметно дольше 15 секунд.
+NAVIGATION_TIMEOUT_MS = 60_000
 # Как у Playwright APIRequestContext: первый старт агента может тянуть
 # холодные импорты LangChain, поэтому дефолтных 5 секунд httpx мало.
 HTTP_TIMEOUT_SECONDS = 30.0
@@ -51,6 +55,7 @@ HTTP_TIMEOUT_SECONDS = 30.0
 def _new_context(browser: Browser, *, storage_state: str | None = None) -> BrowserContext:
     context = browser.new_context(base_url=APP_URL, storage_state=storage_state)
     context.set_default_timeout(ACTION_TIMEOUT_MS)
+    context.set_default_navigation_timeout(NAVIGATION_TIMEOUT_MS)
     return context
 
 
@@ -117,12 +122,19 @@ def _anon_key(env: dict[str, str]) -> str:
 @pytest.fixture(scope="session")
 def servers() -> Iterator[None]:
     """Поднимает тестовый сервер и фронт; в CI фронт — прод-сборка."""
+    assert_port_free(API_PORT)
+    assert_port_free(int(os.environ.get("E2E_APP_PORT", "3000")))
     env = os.environ.copy()
+    # CORS тестового сервера должен знать фактический порт фронта (его можно
+    # переопределить через E2E_APP_PORT, если 3000 занят).
+    app_port = int(os.environ.get("E2E_APP_PORT", "3000"))
+    env["CORS_ALLOW_ORIGINS"] = f"http://127.0.0.1:{app_port},http://localhost:{app_port}"
     assert_test_project(env["SUPABASE_URL"], env["DATABASE_CONNECTION_STRING"])
 
-    api_proc = subprocess.Popen(
+    api_proc = spawn(
         ["uv", "run", "uvicorn", "mimic42.testing.server:app", "--port", str(API_PORT)],
         cwd=ROOT,
+        env=env,
     )
     try:
         _wait_for(f"{API_URL}/health", timeout=60)
@@ -141,16 +153,14 @@ def servers() -> Iterator[None]:
             app_command = ["bun", "run", "start"]
         else:
             app_command = ["bun", "run", "dev"]
-        web_proc = subprocess.Popen(app_command, cwd=ROOT / "frontend", env=front_env)
+        web_proc = spawn(app_command, cwd=ROOT / "frontend", env=front_env)
         try:
             _wait_for(APP_URL, timeout=180)
             yield
         finally:
-            web_proc.terminate()
-            web_proc.wait(timeout=30)
+            terminate(web_proc)
     finally:
-        api_proc.terminate()
-        api_proc.wait(timeout=30)
+        terminate(api_proc)
 
 
 @pytest.fixture(scope="session")
