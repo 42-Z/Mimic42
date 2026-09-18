@@ -24,7 +24,7 @@
 | e2e (Python) | `tests/e2e/conftest.py`, `tests/e2e/helpers.py`, `tests/e2e/test_*.py` |
 | Проверяющий | `src/mimic42/testing/real_tg/checker.py`, `login.py`, `__init__.py` |
 | Реальные тесты | `tests/real_tg/backend/*`, `tests/real_tg/frontend/*` |
-| Скрипт настройки | `scripts/real_tg_setup.py` |
+| Скрипт настройки | `scripts/test_env_bootstrap.py` (сайт-аккаунт — `ensure_real_tg_account`) |
 | CI | `.github/workflows/ci.yml`, `.github/workflows/real-tg.yml` |
 | Конфиги | `pyproject.toml`, `.env.example`, `.gitignore`, `frontend/package.json` |
 | Удаление | `frontend/e2e/`, `frontend/playwright.config.ts`, `PLAN.md`, корневые `*.session`, `sessions/` |
@@ -1527,75 +1527,25 @@ git commit -m "feat: checker session login script"
 ### Task C3: настройка сайт-аккаунта и переменные
 
 **Files:**
-- Create: `scripts/real_tg_setup.py`
+- Modify: `scripts/test_env_bootstrap.py` (регистрация сайт-аккаунта влита
+  в существующий bootstrap как `ensure_real_tg_account`)
 - Modify: `.env.example`
 
-- [ ] **Step 1: скрипт регистрации**
+- [ ] **Step 1: регистрация аккаунта**
 
-```python
-"""Регистрирует выделенный аккаунт сайта для реальных TG-тестов.
-
-    TEST_SUPABASE_SERVICE_ROLE_KEY=... TEST_ACCOUNT_EMAIL=... TEST_ACCOUNT_PASSWORD=... \
-        uv run python scripts/real_tg_setup.py
-
-Идемпотентен: существующий пользователь не трогается. Id аккаунта нигде не
-фиксируется — тесты берут owner_id из claim `sub` своего JWT после логина.
-"""
-
-from __future__ import annotations
-
-import asyncio
-import os
-import sys
-
-import httpx
-
-from mimic42.testing.env import load_test_env
-from mimic42.testing.slots import assert_test_project
-
-
-async def main() -> int:
-    load_test_env()
-    supabase_url = os.environ["SUPABASE_URL"]
-    email = os.environ["TEST_ACCOUNT_EMAIL"]
-    password = os.environ["TEST_ACCOUNT_PASSWORD"]
-    service_key = os.environ.get("TEST_SUPABASE_SERVICE_ROLE_KEY", "")
-    assert_test_project(supabase_url, service_key)
-    headers = {
-        "apikey": service_key,
-        "Authorization": f"Bearer {service_key}",
-        "Content-Type": "application/json",
-    }
-    async with httpx.AsyncClient(base_url=supabase_url.rstrip("/"), timeout=30.0) as client:
-        response = await client.post(
-            "/auth/v1/admin/users",
-            headers=headers,
-            json={
-                "email": email,
-                "password": password,
-                "email_confirm": True,
-            },
-        )
-        if response.status_code in (200, 201):
-            print(f"создан {email}")
-        elif response.status_code in (409, 422):
-            print(f"уже есть {email}")
-        else:
-            print(f"не удалось создать: {response.status_code} {response.text}", file=sys.stderr)
-            return 1
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(asyncio.run(main()))
-```
+Отдельный скрипт не создаётся: `scripts/test_env_bootstrap.py` уже заводит
+тестовые учётки через Admin API, поэтому аккаунт реальных TG-тестов заводится
+там же — опционально, если заданы `TEST_ACCOUNT_EMAIL/PASSWORD`, и без
+фиксированного id (тесты берут owner_id из `sub` JWT). Сервисный ключ берётся
+из `SUPABASE_SERVICE_ROLE_KEY` в `.env`, явный
+`TEST_SUPABASE_SERVICE_ROLE_KEY` остаётся оверрайдом.
 
 - [ ] **Step 2: допиши `.env.example`**
 
 ```
 # --- Реальные Telegram-тесты (pytest -m real_tg) ---
-# Выделенный аккаунт сайта Mimic (владелец агентов-мимиков), регистрируется
-# scripts/real_tg_setup.py один раз.
+# Выделенный аккаунт сайта Mimic (владелец агентов-мимиков), создаётся
+# scripts/test_env_bootstrap.py один раз.
 TEST_ACCOUNT_EMAIL=real-tg@example.com
 TEST_ACCOUNT_PASSWORD=
 # Проверяющий Telegram-аккаунт (реальный): session string — секрет.
@@ -1607,13 +1557,13 @@ TG_CHECKER_SESSION=
 - [ ] **Step 3: commit**
 
 ```bash
-git add scripts/real_tg_setup.py .env.example
+git add scripts/test_env_bootstrap.py .env.example
 git commit -m "feat: real-tg site account setup script and env contract"
 ```
 
 ### Task C4: ручная настройка (выполняет человек)
 
-- [ ] 1. `TEST_SUPABASE_SERVICE_ROLE_KEY=... TEST_ACCOUNT_EMAIL=... TEST_ACCOUNT_PASSWORD=... uv run python scripts/real_tg_setup.py` → вписать `TEST_ACCOUNT_*` в `.env.test`
+- [ ] 1. `uv run python scripts/test_env_bootstrap.py` (при заданных `TEST_ACCOUNT_EMAIL/PASSWORD` заводит сайт-аккаунт) → `TEST_ACCOUNT_*` в `.env.test`
 - [ ] 2. Онборд двух мимиков через дашборд вручную (онбординг тестами не покрывается)
 - [ ] 3. `uv run python -m mimic42.testing.real_tg.login` → session string → `.env.test`
 - [ ] 4. Секреты CI: TG_CHECKER_API_ID/HASH/SESSION, TEST_ACCOUNT_EMAIL/PASSWORD, TELEGRAM_API_ID/HASH, OPENROUTER_API_KEY, SUPABASE_ANON_KEY
