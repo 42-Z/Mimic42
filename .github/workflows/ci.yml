@@ -183,7 +183,10 @@ jobs:
       - name: Set up Supabase CLI
         uses: supabase/setup-cli@v1
         with:
-          version: latest
+          # Пин версии, а не latest: поиск «последней» версии — это запрос
+          # к GitHub API, который ловил rate limit и ронял job до всякого
+          # сравнения миграций. Версия совпадает с локальной (supabase --version).
+          version: 2.100.1
 
       - name: Link Supabase project
         # GitHub-hosted runners have no IPv6, and a direct `migration list`
