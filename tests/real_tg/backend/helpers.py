@@ -34,8 +34,8 @@ async def jwt() -> str:
             "/auth/v1/token?grant_type=password",
             headers={"apikey": anon_key()},
             json={
-                "email": os.environ["REAL_TG_EMAIL"],
-                "password": os.environ["REAL_TG_PASSWORD"],
+                "email": os.environ["TEST_ACCOUNT_EMAIL"],
+                "password": os.environ["TEST_ACCOUNT_PASSWORD"],
             },
         )
         response.raise_for_status()

@@ -39,8 +39,8 @@ jobs:
           TG_CHECKER_API_ID: ${{ secrets.TG_CHECKER_API_ID }}
           TG_CHECKER_API_HASH: ${{ secrets.TG_CHECKER_API_HASH }}
           TG_CHECKER_SESSION: ${{ secrets.TG_CHECKER_SESSION }}
-          REAL_TG_EMAIL: ${{ secrets.REAL_TG_EMAIL }}
-          REAL_TG_PASSWORD: ${{ secrets.REAL_TG_PASSWORD }}
+          TEST_ACCOUNT_EMAIL: ${{ secrets.TEST_ACCOUNT_EMAIL }}
+          TEST_ACCOUNT_PASSWORD: ${{ secrets.TEST_ACCOUNT_PASSWORD }}
           REAL_TG_USER_ID: ${{ secrets.REAL_TG_USER_ID }}
 
   frontend-real:
@@ -85,6 +85,6 @@ jobs:
           TG_CHECKER_API_ID: ${{ secrets.TG_CHECKER_API_ID }}
           TG_CHECKER_API_HASH: ${{ secrets.TG_CHECKER_API_HASH }}
           TG_CHECKER_SESSION: ${{ secrets.TG_CHECKER_SESSION }}
-          REAL_TG_EMAIL: ${{ secrets.REAL_TG_EMAIL }}
-          REAL_TG_PASSWORD: ${{ secrets.REAL_TG_PASSWORD }}
+          TEST_ACCOUNT_EMAIL: ${{ secrets.TEST_ACCOUNT_EMAIL }}
+          TEST_ACCOUNT_PASSWORD: ${{ secrets.TEST_ACCOUNT_PASSWORD }}
           REAL_TG_USER_ID: ${{ secrets.REAL_TG_USER_ID }}

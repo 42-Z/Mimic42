@@ -1542,7 +1542,7 @@ git commit -m "feat: checker session login script"
 ```python
 """Регистрирует выделенный аккаунт сайта для реальных TG-тестов.
 
-    TEST_SUPABASE_SERVICE_ROLE_KEY=... REAL_TG_EMAIL=... REAL_TG_PASSWORD=... \
+    TEST_SUPABASE_SERVICE_ROLE_KEY=... TEST_ACCOUNT_EMAIL=... TEST_ACCOUNT_PASSWORD=... \
         uv run python scripts/real_tg_setup.py
 
 Идемпотентен: существующий пользователь не трогается. Owner-id фиксирован
@@ -1565,8 +1565,8 @@ from mimic42.testing.slots import assert_test_project
 async def main() -> int:
     load_test_env()
     supabase_url = os.environ["SUPABASE_URL"]
-    email = os.environ["REAL_TG_EMAIL"]
-    password = os.environ["REAL_TG_PASSWORD"]
+    email = os.environ["TEST_ACCOUNT_EMAIL"]
+    password = os.environ["TEST_ACCOUNT_PASSWORD"]
     service_key = os.environ.get("TEST_SUPABASE_SERVICE_ROLE_KEY", "")
     assert_test_project(supabase_url, service_key)
     headers = {
@@ -1605,8 +1605,8 @@ if __name__ == "__main__":
 # --- Реальные Telegram-тесты (pytest -m real_tg) ---
 # Выделенный аккаунт сайта Mimic (владелец агентов-мимиков), регистрируется
 # scripts/real_tg_setup.py один раз.
-REAL_TG_EMAIL=real-tg@example.com
-REAL_TG_PASSWORD=
+TEST_ACCOUNT_EMAIL=real-tg@example.com
+TEST_ACCOUNT_PASSWORD=
 REAL_TG_USER_ID=7e2f1a3c-9d4e-4f5b-8a6c-1b2d3e4f5a6b
 # Проверяющий Telegram-аккаунт (реальный): session string — секрет.
 TG_CHECKER_API_ID=
@@ -1627,10 +1627,10 @@ git commit -m "feat: real-tg site account setup script and env contract"
 
 ### Task C4: ручная настройка (выполняет человек)
 
-- [ ] 1. `TEST_SUPABASE_SERVICE_ROLE_KEY=... REAL_TG_EMAIL=... REAL_TG_PASSWORD=... uv run python scripts/real_tg_setup.py` → вписать REAL_TG_* в `.env.test`
+- [ ] 1. `TEST_SUPABASE_SERVICE_ROLE_KEY=... TEST_ACCOUNT_EMAIL=... TEST_ACCOUNT_PASSWORD=... uv run python scripts/real_tg_setup.py` → вписать REAL_TG_* в `.env.test`
 - [ ] 2. Онборд двух мимиков через дашборд вручную (или через тест Task C6: `TG_ONBOARD_PHONE=... uv run pytest tests/real_tg/frontend/test_real_onboarding.py -m real_tg`, код из SMS — в файл `REAL_TG_CODE_FILE`)
 - [ ] 3. `uv run python -m mimic42.testing.real_tg.login` → session string → `.env.test`
-- [ ] 4. Секреты CI: TG_CHECKER_API_ID/HASH/SESSION, REAL_TG_EMAIL/PASSWORD/USER_ID, TELEGRAM_API_ID/HASH, OPENROUTER_API_KEY, SUPABASE_ANON_KEY
+- [ ] 4. Секреты CI: TG_CHECKER_API_ID/HASH/SESSION, TEST_ACCOUNT_EMAIL/PASSWORD/USER_ID, TELEGRAM_API_ID/HASH, OPENROUTER_API_KEY, SUPABASE_ANON_KEY
 
 ### Task C5: бэкенд-слой real_tg
 
@@ -1658,8 +1658,8 @@ async def jwt() -> str:
             "/auth/v1/token?grant_type=password",
             headers={"apikey": os.environ["SUPABASE_ANON_KEY"]},
             json={
-                "email": os.environ["REAL_TG_EMAIL"],
-                "password": os.environ["REAL_TG_PASSWORD"],
+                "email": os.environ["TEST_ACCOUNT_EMAIL"],
+                "password": os.environ["TEST_ACCOUNT_PASSWORD"],
             },
         )
         response.raise_for_status()
@@ -2050,8 +2050,8 @@ def real_auth(browser: object, real_servers: None) -> str:
     context = browser.new_context(base_url=APP_URL)
     page = context.new_page()
     page.goto("/login")
-    page.get_by_label("Email").fill(os.environ["REAL_TG_EMAIL"])
-    page.get_by_label("Пароль", exact=True).fill(os.environ["REAL_TG_PASSWORD"])
+    page.get_by_label("Email").fill(os.environ["TEST_ACCOUNT_EMAIL"])
+    page.get_by_label("Пароль", exact=True).fill(os.environ["TEST_ACCOUNT_PASSWORD"])
     page.get_by_role("button", name="Войти").click()
     page.wait_for_url("**/onboarding**", timeout=60_000)
     context.storage_state(path=str(state_path))
@@ -2293,8 +2293,8 @@ jobs:
           TG_CHECKER_API_ID: ${{ secrets.TG_CHECKER_API_ID }}
           TG_CHECKER_API_HASH: ${{ secrets.TG_CHECKER_API_HASH }}
           TG_CHECKER_SESSION: ${{ secrets.TG_CHECKER_SESSION }}
-          REAL_TG_EMAIL: ${{ secrets.REAL_TG_EMAIL }}
-          REAL_TG_PASSWORD: ${{ secrets.REAL_TG_PASSWORD }}
+          TEST_ACCOUNT_EMAIL: ${{ secrets.TEST_ACCOUNT_EMAIL }}
+          TEST_ACCOUNT_PASSWORD: ${{ secrets.TEST_ACCOUNT_PASSWORD }}
           REAL_TG_USER_ID: ${{ secrets.REAL_TG_USER_ID }}
 ```
 

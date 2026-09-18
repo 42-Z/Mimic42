@@ -127,8 +127,8 @@ def real_auth(browser: Browser, real_servers: None) -> str:
     context.set_default_timeout(ACTION_TIMEOUT_MS)
     page = context.new_page()
     page.goto("/login")
-    page.get_by_label("Email").fill(os.environ["REAL_TG_EMAIL"])
-    page.get_by_label("Пароль", exact=True).fill(os.environ["REAL_TG_PASSWORD"])
+    page.get_by_label("Email").fill(os.environ["TEST_ACCOUNT_EMAIL"])
+    page.get_by_label("Пароль", exact=True).fill(os.environ["TEST_ACCOUNT_PASSWORD"])
     page.get_by_role("button", name="Войти").click()
     # У аккаунта есть агенты-мимики, но состояние зависит от прогона: логин
     # может упасть и на дашборд, и на онбординг (если агентов ещё нет).

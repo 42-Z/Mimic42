@@ -1,6 +1,6 @@
 """Регистрирует выделенный аккаунт сайта для реальных TG-тестов.
 
-    TEST_SUPABASE_SERVICE_ROLE_KEY=... REAL_TG_EMAIL=... REAL_TG_PASSWORD=... \
+    TEST_SUPABASE_SERVICE_ROLE_KEY=... TEST_ACCOUNT_EMAIL=... TEST_ACCOUNT_PASSWORD=... \
         uv run python scripts/real_tg_setup.py
 
 Идемпотентен: существующий пользователь не трогается. Owner-id фиксирован
@@ -25,14 +25,14 @@ async def main() -> int:
     load_test_env()
     supabase_url = os.environ["SUPABASE_URL"]
     dsn = os.environ["DATABASE_CONNECTION_STRING"]
-    email = os.environ["REAL_TG_EMAIL"]
-    password = os.environ["REAL_TG_PASSWORD"]
+    email = os.environ["TEST_ACCOUNT_EMAIL"]
+    password = os.environ["TEST_ACCOUNT_PASSWORD"]
     # Сервисный ключ намеренно не лежит в env-файлах: его передают явно.
     service_key = os.environ.get("TEST_SUPABASE_SERVICE_ROLE_KEY", "")
     if not service_key:
         raise SystemExit(
             "TEST_SUPABASE_SERVICE_ROLE_KEY не задан. Запуск:\n"
-            "  TEST_SUPABASE_SERVICE_ROLE_KEY=... REAL_TG_EMAIL=... REAL_TG_PASSWORD=... "
+            "  TEST_SUPABASE_SERVICE_ROLE_KEY=... TEST_ACCOUNT_EMAIL=... TEST_ACCOUNT_PASSWORD=... "
             "uv run python scripts/real_tg_setup.py"
         )
     try:

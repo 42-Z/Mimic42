@@ -24,8 +24,8 @@
 Тестовый конфиг (`.env.test` локально + секреты CI), больше ничего телеграфного:
 
 ```
-REAL_TG_EMAIL=...          # выделенный аккаунт сайта Mimic, владелец мимиков
-REAL_TG_PASSWORD=...
+TEST_ACCOUNT_EMAIL=...          # выделенный аккаунт сайта Mimic, владелец мимиков
+TEST_ACCOUNT_PASSWORD=...
 TG_CHECKER_API_ID=...
 TG_CHECKER_API_HASH=...
 TG_CHECKER_SESSION=...
@@ -42,7 +42,7 @@ TG_ONBOARD_PHONE=+79...                       # включает тест реа
   в Dev-проекте Supabase один раз. Не входит в `SLOTS`, поэтому `purge_slot_data`
   его не трогает, и сессии мимиков не протухают между прогонами.
 - **Номера мимиков нигде не хранятся**: тесты читают их из Dev-базы
-  (`telegram_sessions.phone_number` агентов, принадлежащих `REAL_TG_EMAIL`).
+  (`telegram_sessions.phone_number` агентов, принадлежащих `TEST_ACCOUNT_EMAIL`).
 - **Проверяющий** — единый Python-хелпер `src/mimic42/testing/real_tg/`:
   Telethon-клиент на проверочной сессии. Асинхронное ядро + синхронная обёртка
   для pytest-playwright (синхронные тесты). Функции: отправить сообщение,
@@ -113,7 +113,7 @@ TG_ONBOARD_PHONE=+79...                       # включает тест реа
   бэкенд-слой (`uv run pytest tests/real_tg/backend -m real_tg`) и фронт-слой
   (`uv run pytest tests/real_tg/frontend -m real_tg`; реальный онборд скипается
   без `TG_ONBOARD_PHONE`). Секреты: `TG_CHECKER_API_ID/HASH/SESSION`,
-  `REAL_TG_EMAIL/PASSWORD` + существующие креды Dev-базы.
+  `TEST_ACCOUNT_EMAIL/PASSWORD` + существующие креды Dev-базы.
 
 ## Безопасность аккаунтов и лимиты
 
