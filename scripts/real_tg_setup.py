@@ -1,8 +1,9 @@
 """Регистрирует выделенный аккаунт сайта для реальных TG-тестов.
 
-    TEST_SUPABASE_SERVICE_ROLE_KEY=... TEST_ACCOUNT_EMAIL=... TEST_ACCOUNT_PASSWORD=... \
-        uv run python scripts/real_tg_setup.py
+    uv run python scripts/real_tg_setup.py
 
+TEST_ACCOUNT_EMAIL/PASSWORD читаются из .env/.env.test, сервисный ключ — из
+SUPABASE_SERVICE_ROLE_KEY в .env (или явного TEST_SUPABASE_SERVICE_ROLE_KEY).
 Идемпотентен: существующий пользователь не трогается. Id аккаунта нигде не
 фиксируется — тесты берут owner_id из claim `sub` своего JWT после логина.
 """
@@ -25,13 +26,16 @@ async def main() -> int:
     dsn = os.environ["DATABASE_CONNECTION_STRING"]
     email = os.environ["TEST_ACCOUNT_EMAIL"]
     password = os.environ["TEST_ACCOUNT_PASSWORD"]
-    # Сервисный ключ намеренно не лежит в env-файлах: его передают явно.
-    service_key = os.environ.get("TEST_SUPABASE_SERVICE_ROLE_KEY", "")
+    # Приложенческий service-ключ уже лежит в .env (он же нужен медиа-стораджу);
+    # TEST_SUPABASE_SERVICE_ROLE_KEY остаётся явным оверрайдом для CI и разовых
+    # запусков, где .env недоступен.
+    service_key = os.environ.get("TEST_SUPABASE_SERVICE_ROLE_KEY") or os.environ.get(
+        "SUPABASE_SERVICE_ROLE_KEY", ""
+    )
     if not service_key:
         raise SystemExit(
-            "TEST_SUPABASE_SERVICE_ROLE_KEY не задан. Запуск:\n"
-            "  TEST_SUPABASE_SERVICE_ROLE_KEY=... TEST_ACCOUNT_EMAIL=... TEST_ACCOUNT_PASSWORD=... "
-            "uv run python scripts/real_tg_setup.py"
+            "Сервисный ключ не найден: заполни SUPABASE_SERVICE_ROLE_KEY в .env "
+            "или передай TEST_SUPABASE_SERVICE_ROLE_KEY явно."
         )
     try:
         # service_key сразу пойдёт в Admin API: проверяем и его, — иначе чужим
