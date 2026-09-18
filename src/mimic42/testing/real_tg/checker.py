@@ -97,6 +97,12 @@ class Checker:
         message = await self.client.send_message(phone, text)
         return int(cast(Any, message).id)
 
+    async def my_id(self) -> int:
+        me = await self.client.get_me()
+        if me is None:
+            raise RuntimeError("Проверяющий не авторизован")
+        return int(cast(Any, me).id)
+
     async def wait_incoming(self, phone: str, *, timeout: float = REPLY_TIMEOUT_SECONDS) -> str:
         """Ждёт первое входящее сообщение от `phone` с момента вызова."""
         loop = asyncio.get_running_loop()

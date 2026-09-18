@@ -37,7 +37,7 @@ async def test_agent_replies_in_real_telegram(
         await conn.close()
     directions = {row["direction"] for row in rows}
     assert "incoming" in directions, "Входящее не записано в agent_messages"
-    assert "outgoing" in directions, "Ответ не записан в agent_messages"
+    assert "agent_response" in directions, "Ответ не записан в agent_messages"
 
 
 async def test_trigger_message_arrives_in_telegram(
@@ -49,12 +49,23 @@ async def test_trigger_message_arrives_in_telegram(
     _, client = real_app
     token = await jwt()
     await checker.import_contact(phone)
-    incoming = asyncio.ensure_future(checker.wait_incoming(phone, timeout=180))
+    # Мимик должен увидеть проверяющего: телефон резолвится только из контактов,
+    # а числовой id — из кэша сессии после входящего сообщения. Заодно ждём
+    # ответ, чтобы кэш точно был заполнен до триггера.
+    await checker.send_and_wait_reply(phone, "Разогрев перед триггером", timeout=300)
+    checker_id = await checker.my_id()
+    incoming = asyncio.ensure_future(checker.wait_incoming(phone, timeout=300))
     response = await client.post(
         f"/api/v1/agents/{agent_id}/messages/trigger",
         headers={"Authorization": f"Bearer {token}"},
-        json={"peer": phone, "text": "Тестовое сообщение из дашборда"},
+        json={
+            "peer": str(checker_id),
+            "text": "Ответь проверяющему, что сообщение из дашборда дошло",
+        },
     )
     assert response.status_code == 200, response.text
+    # Модель обязана отправить ответ (а не промолчать) — иначе ждать доставку
+    # бессмысленно, и это видно сразу по ответу API.
+    assert response.json()["telegram_message_id"] is not None, response.text
     text = await incoming
     assert text and text.strip()
