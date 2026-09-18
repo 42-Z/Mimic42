@@ -1465,9 +1465,9 @@ from mimic42.testing.real_tg.checker import Checker, SyncChecker
 # Фиксированный UUID владельца-тестового аккаунта сайта; создаётся
 # scripts/real_tg_setup.py через Admin API. Фиксированный id нужен, чтобы
 # тесты находили агентов-мимиков по owner_id без Admin-ключа в рантайме.
-REAL_TG_USER_ID = UUID("7e2f1a3c-9d4e-4f5b-8a6c-1b2d3e4f5a6b")
+TEST_ACCOUNT_USER_ID = UUID("7e2f1a3c-9d4e-4f5b-8a6c-1b2d3e4f5a6b")
 
-__all__ = ["Checker", "REAL_TG_USER_ID", "SyncChecker"]
+__all__ = ["Checker", "TEST_ACCOUNT_USER_ID", "SyncChecker"]
 ```
 
 - [ ] **Step 2: линт**
@@ -1546,7 +1546,7 @@ git commit -m "feat: checker session login script"
         uv run python scripts/real_tg_setup.py
 
 Идемпотентен: существующий пользователь не трогается. Owner-id фиксирован
-константой REAL_TG_USER_ID — тесты находят мимиков по нему без Admin-ключа.
+константой TEST_ACCOUNT_USER_ID — тесты находят мимиков по нему без Admin-ключа.
 """
 
 from __future__ import annotations
@@ -1558,7 +1558,7 @@ import sys
 import httpx
 
 from mimic42.testing.env import load_test_env
-from mimic42.testing.real_tg import REAL_TG_USER_ID
+from mimic42.testing.real_tg import TEST_ACCOUNT_USER_ID
 from mimic42.testing.slots import assert_test_project
 
 
@@ -1579,7 +1579,7 @@ async def main() -> int:
             "/auth/v1/admin/users",
             headers=headers,
             json={
-                "id": str(REAL_TG_USER_ID),
+                "id": str(TEST_ACCOUNT_USER_ID),
                 "email": email,
                 "password": password,
                 "email_confirm": True,
@@ -1607,15 +1607,11 @@ if __name__ == "__main__":
 # scripts/real_tg_setup.py один раз.
 TEST_ACCOUNT_EMAIL=real-tg@example.com
 TEST_ACCOUNT_PASSWORD=
-REAL_TG_USER_ID=7e2f1a3c-9d4e-4f5b-8a6c-1b2d3e4f5a6b
+TEST_ACCOUNT_USER_ID=7e2f1a3c-9d4e-4f5b-8a6c-1b2d3e4f5a6b
 # Проверяющий Telegram-аккаунт (реальный): session string — секрет.
 TG_CHECKER_API_ID=
 TG_CHECKER_API_HASH=
 TG_CHECKER_SESSION=
-# Ручной онборд нового мимика (только локально):
-TG_ONBOARD_PHONE=
-REAL_TG_CODE_FILE=/tmp/mimic42-tg-code
-REAL_TG_PASSWORD_FILE=/tmp/mimic42-tg-pass
 ```
 
 - [ ] **Step 3: commit**
@@ -1627,8 +1623,8 @@ git commit -m "feat: real-tg site account setup script and env contract"
 
 ### Task C4: ручная настройка (выполняет человек)
 
-- [ ] 1. `TEST_SUPABASE_SERVICE_ROLE_KEY=... TEST_ACCOUNT_EMAIL=... TEST_ACCOUNT_PASSWORD=... uv run python scripts/real_tg_setup.py` → вписать REAL_TG_* в `.env.test`
-- [ ] 2. Онборд двух мимиков через дашборд вручную (или через тест Task C6: `TG_ONBOARD_PHONE=... uv run pytest tests/real_tg/frontend/test_real_onboarding.py -m real_tg`, код из SMS — в файл `REAL_TG_CODE_FILE`)
+- [ ] 1. `TEST_SUPABASE_SERVICE_ROLE_KEY=... TEST_ACCOUNT_EMAIL=... TEST_ACCOUNT_PASSWORD=... uv run python scripts/real_tg_setup.py` → вписать `TEST_ACCOUNT_*` в `.env.test`
+- [ ] 2. Онборд двух мимиков через дашборд вручную (онбординг тестами не покрывается)
 - [ ] 3. `uv run python -m mimic42.testing.real_tg.login` → session string → `.env.test`
 - [ ] 4. Секреты CI: TG_CHECKER_API_ID/HASH/SESSION, TEST_ACCOUNT_EMAIL/PASSWORD/USER_ID, TELEGRAM_API_ID/HASH, OPENROUTER_API_KEY, SUPABASE_ANON_KEY
 
@@ -1754,7 +1750,7 @@ async def started_mimics(
 
     token = await jwt()
     dsn = os.environ["DATABASE_CONNECTION_STRING"]
-    owner_id = UUID(os.environ["REAL_TG_USER_ID"])
+    owner_id = UUID(os.environ["TEST_ACCOUNT_USER_ID"])
     phones = await checker.mimic_phones(dsn, owner_id)
     agents: list[tuple[str, str]] = []
     for phone in phones:
@@ -1784,7 +1780,7 @@ from uuid import UUID
 import asyncpg
 import pytest
 
-from mimic42.testing.real_tg import REAL_TG_USER_ID
+from mimic42.testing.real_tg import TEST_ACCOUNT_USER_ID
 from tests.real_tg.backend.helpers import agent_id_for_phone, jwt
 
 pytestmark = pytest.mark.real_tg
@@ -1940,7 +1936,7 @@ import pytest
 from playwright.sync_api import Browser
 from dotenv import load_dotenv
 
-from mimic42.testing.real_tg import REAL_TG_USER_ID
+from mimic42.testing.real_tg import TEST_ACCOUNT_USER_ID
 from mimic42.testing.real_tg.checker import SyncChecker
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -2020,7 +2016,7 @@ def mimic_agents(sync_checker: SyncChecker) -> list[tuple[str, str]]:
     import asyncpg
 
     dsn = os.environ["DATABASE_CONNECTION_STRING"]
-    phones = sync_checker.mimic_phones(dsn, REAL_TG_USER_ID)
+    phones = sync_checker.mimic_phones(dsn, TEST_ACCOUNT_USER_ID)
     conn = asyncpg.connect(dsn)
     try:
         agents = []
@@ -2032,7 +2028,7 @@ def mimic_agents(sync_checker: SyncChecker) -> list[tuple[str, str]]:
                 where ts.phone_number = $1 and a.owner_id = $2
                 """,
                 phone,
-                REAL_TG_USER_ID,
+                TEST_ACCOUNT_USER_ID,
             )
             assert row, f"Нет агента с телефоном {phone}"
             agents.append((str(row["agent_id"]), phone))
@@ -2105,125 +2101,7 @@ git add tests/real_tg/frontend
 git commit -m "feat: real telegram dashboard dialog test"
 ```
 
-### Task C7: реальный онборд (ручной тест)
-
-- [ ] **Step 1: создай `tests/real_tg/frontend/test_real_onboarding.py`**
-
-```python
-"""Онборд нового мимика с настоящим входом. Только вручную, локально:
-
-    TG_ONBOARD_PHONE=+7... uv run pytest tests/real_tg/frontend/test_real_onboarding.py -m real_tg
-
-Код из SMS положи в REAL_TG_CODE_FILE, пароль 2FA (если есть) — в
-REAL_TG_PASSWORD_FILE. Без TG_ONBOARD_PHONE тест скипается.
-"""
-
-from __future__ import annotations
-
-import os
-import time
-from pathlib import Path
-
-import pytest
-from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
-from playwright.sync_api import expect
-
-from tests.real_tg.frontend.conftest import APP_URL
-
-pytestmark = pytest.mark.real_tg
-
-
-def _read_when_ready(path_value: str, timeout: float = 600.0) -> str:
-    path = Path(path_value)
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        try:
-            content = path.read_text().strip()
-            if content:
-                return content
-        except FileNotFoundError:
-            pass
-        time.sleep(2)
-    raise TimeoutError(f"Код не появился в {path} за {timeout}с")
-
-
-@pytest.mark.skipif(
-    os.environ.get("TG_ONBOARD_PHONE") is None, reason="TG_ONBOARD_PHONE не задан"
-)
-def test_real_onboarding_new_mimic(
-    browser: object, real_servers: None, mimic_agents: list[tuple[str, str]]
-) -> None:
-    phone = os.environ["TG_ONBOARD_PHONE"]
-    password_path = os.environ.get("REAL_TG_PASSWORD_FILE", "")
-    agents_before = {agent_id for agent_id, _ in mimic_agents}
-
-    context = browser.new_context(base_url=APP_URL)
-    page = context.new_page()
-    try:
-        page.goto("/onboarding")
-        page.get_by_label("Имя агента").fill("Мимик реальный")
-        page.get_by_role("button", name="Продолжить →").click()
-        page.get_by_label("SOUL.md").fill("спокойный помощник, отвечает коротко")
-        page.get_by_role("button", name="Продолжить →").click()
-        page.get_by_label("Номер телефона").fill(phone)
-        page.get_by_role("button", name="Получить код →").click()
-        expect(page.get_by_role("heading", name="Код из Telegram")).to_be_visible(timeout=60_000)
-
-        code = _read_when_ready(os.environ["REAL_TG_CODE_FILE"])
-        page.get_by_label("Код подтверждения").fill(code)
-        page.get_by_role("button", name="Подтвердить →").click()
-
-        twofa_heading = page.get_by_role("heading", name="Двухфакторная аутентификация")
-        try:
-            twofa_heading.wait_for(timeout=15_000)
-        except PlaywrightTimeoutError:
-            twofa_heading = None
-        if twofa_heading is not None:
-            password = _read_when_ready(os.environ.get("REAL_TG_PASSWORD_FILE", ""), timeout=120)
-            page.get_by_label("Пароль 2FA").fill(password)
-            page.get_by_role("button", name="Подтвердить →").click()
-
-        expect(page.get_by_role("heading", name="Всё готово!")).to_be_visible(timeout=30_000)
-        page.get_by_role("button", name="Создать агента").click()
-        page.wait_for_url("**/dashboard", timeout=30_000)
-
-        # Новый агент появился, его сессия авторизована: проверка по базе.
-        import asyncpg
-
-        from mimic42.testing.real_tg import REAL_TG_USER_ID
-
-        conn = asyncpg.connect(os.environ["DATABASE_CONNECTION_STRING"])
-        try:
-            rows = conn.fetch(
-                """
-                select a.id::text as agent_id, ts.authorization_status
-                from agents a join telegram_sessions ts on ts.agent_id = a.id
-                where a.owner_id = $1
-                """,
-                REAL_TG_USER_ID,
-            )
-        finally:
-            conn.close()
-        new_agents = {row["agent_id"] for row in rows} - agents_before
-        assert new_agents, "Новый агент не появился"
-        statuses = {
-            row["authorization_status"]
-            for row in rows
-            if row["agent_id"] in new_agents
-        }
-        assert statuses == {"authorized"}
-    finally:
-        context.close()
-```
-
-- [ ] **Step 2: commit**
-
-```bash
-git add tests/real_tg/frontend/test_real_onboarding.py
-git commit -m "feat: manual real telegram onboarding test"
-```
-
-### Task C8: real-tg.yml
+### Task C7: real-tg.yml
 
 - [ ] **Step 1: создай `.github/workflows/real-tg.yml`**
 
@@ -2262,7 +2140,7 @@ jobs:
           TG_CHECKER_API_ID: ${{ secrets.TG_CHECKER_API_ID }}
           TG_CHECKER_API_HASH: ${{ secrets.TG_CHECKER_API_HASH }}
           TG_CHECKER_SESSION: ${{ secrets.TG_CHECKER_SESSION }}
-          REAL_TG_USER_ID: ${{ secrets.REAL_TG_USER_ID }}
+          TEST_ACCOUNT_USER_ID: ${{ secrets.TEST_ACCOUNT_USER_ID }}
 
   frontend-real:
     name: frontend-real-tg
@@ -2295,7 +2173,7 @@ jobs:
           TG_CHECKER_SESSION: ${{ secrets.TG_CHECKER_SESSION }}
           TEST_ACCOUNT_EMAIL: ${{ secrets.TEST_ACCOUNT_EMAIL }}
           TEST_ACCOUNT_PASSWORD: ${{ secrets.TEST_ACCOUNT_PASSWORD }}
-          REAL_TG_USER_ID: ${{ secrets.REAL_TG_USER_ID }}
+          TEST_ACCOUNT_USER_ID: ${{ secrets.TEST_ACCOUNT_USER_ID }}
 ```
 
 - [ ] **Step 2: commit**
@@ -2305,7 +2183,7 @@ git add .github/workflows/real-tg.yml
 git commit -m "ci: manual real telegram test workflow"
 ```
 
-### Task C9: финальный прогон
+### Task C8: финальный прогон
 
 - [ ] `uv run pytest -m "not db and not e2e and not real_tg" -q` → passed
 - [ ] `uv run pytest -m db -q` → passed
@@ -2319,6 +2197,6 @@ git commit -m "ci: manual real telegram test workflow"
 
 ## Самопроверка
 
-1. **Спека → задачи:** строгий клиент (A1), поле конфига (A2), контракт API (A3), мусор (A4), прогоны (A5); маркеры/зависимости (B1); helpers/conftest/порты (B2–B7); удаление TS e2e и CI (B8); проверяющий и вход (C1–C2); сайт-аккаунт и env (C3); ручная настройка (C4); бэкенд-слой (C5); фронт-слой и онборд (C6–C7); workflow (C8); регресс (C9). Всё из спеки покрыто.
+1. **Спека → задачи:** строгий клиент (A1), поле конфига (A2), контракт API (A3), мусор (A4), прогоны (A5); маркеры/зависимости (B1); helpers/conftest/порты (B2–B7); удаление TS e2e и CI (B8); проверяющий и вход (C1–C2); сайт-аккаунт и env (C3); ручная настройка (C4); бэкенд-слой (C5); фронт-слой (C6); workflow (C7); регресс (C8). Онбординг мимиков — ручная операция вне тестов (см. спеку). Всё из спеки покрыто.
 2. **Плейсхолдеры:** все фрагменты кода полные; вспомогательные функции (`_jwt`, `agent_id_for_phone`, `mimic_agents`) определены в своих файлах.
-3. **Типы/имена:** `Checker.mimic_phones(dsn, owner_id)` и `SyncChecker.mimic_phones(dsn, owner_id)` — единые сигнатуры; `REAL_TG_USER_ID` — константа в `real_tg/__init__.py`; `auth_states`/`persona_page`/`mimic_agents` согласованы между conftest и тестами.
+3. **Типы/имена:** `Checker.mimic_phones(dsn, owner_id)` и `SyncChecker.mimic_phones(dsn, owner_id)` — единые сигнатуры; `TEST_ACCOUNT_USER_ID` — константа в `real_tg/__init__.py`; `auth_states`/`persona_page`/`mimic_agents` согласованы между conftest и тестами.

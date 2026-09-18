@@ -63,7 +63,7 @@ async def started_mimics(
 
     token = await jwt()
     dsn = os.environ["DATABASE_CONNECTION_STRING"]
-    owner_id = UUID(os.environ["REAL_TG_USER_ID"])
+    owner_id = UUID(os.environ["TEST_ACCOUNT_USER_ID"])
     phones = await checker.mimic_phones(dsn, owner_id)
     agents: list[tuple[str, str]] = []
     for phone in phones:

@@ -21,7 +21,7 @@ import pytest
 from dotenv import load_dotenv
 from playwright.sync_api import Browser
 
-from mimic42.testing.real_tg import REAL_TG_USER_ID
+from mimic42.testing.real_tg import TEST_ACCOUNT_USER_ID
 from mimic42.testing.real_tg.checker import SyncChecker
 from tests.real_tg.backend.helpers import agent_id_for_phone, anon_key, jwt
 
@@ -98,14 +98,14 @@ def sync_checker() -> Iterator[SyncChecker]:
 def mimic_agents(real_servers: None, sync_checker: SyncChecker) -> list[tuple[str, str]]:
     """Запускает мимиков через настоящий API; [(agent_id, phone)] из Dev-базы."""
     dsn = os.environ["DATABASE_CONNECTION_STRING"]
-    phones = sync_checker.mimic_phones(dsn, REAL_TG_USER_ID)
+    phones = sync_checker.mimic_phones(dsn, TEST_ACCOUNT_USER_ID)
 
     async def start_all() -> list[tuple[str, str]]:
         token = await jwt()
         agents: list[tuple[str, str]] = []
         async with httpx.AsyncClient(base_url=API_URL, timeout=60.0) as client:
             for phone in phones:
-                agent_id = await agent_id_for_phone(dsn, phone, REAL_TG_USER_ID)
+                agent_id = await agent_id_for_phone(dsn, phone, TEST_ACCOUNT_USER_ID)
                 response = await client.post(
                     f"/api/v1/agents/{agent_id}/start",
                     headers={"Authorization": f"Bearer {token}"},
