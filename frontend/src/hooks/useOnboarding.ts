@@ -1,7 +1,6 @@
 'use client';
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { useRouter } from 'next/navigation';
 import { getSupabaseClient } from '@/lib/supabase/client';
 import { onboardingApi } from '@/lib/api';
 import { queryKeys } from '@/lib/queryClient';
@@ -207,9 +206,6 @@ export function useSubmitTelegramCode() {
  * Step 5: Finalize agent creation
  */
 export function useFinalizeAgent() {
-  const qc = useQueryClient();
-  const router = useRouter();
-
   return useMutation({
     mutationFn: async ({
       onboardingId,
@@ -226,9 +222,10 @@ export function useFinalizeAgent() {
       });
     },
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: queryKeys.onboarding.session() });
-      qc.invalidateQueries({ queryKey: queryKeys.agents.list() });
-      router.push(`/dashboard`);
+      // Полная навигация вместо router.push: клиентский Router Cache мог
+      // сохранить префетч /dashboard → /onboarding (сделанный, пока агента
+      // ещё не было), и push вернул бы на онбординг без запроса к серверу.
+      window.location.assign('/dashboard');
     },
   });
 }
