@@ -89,7 +89,8 @@ class TestWholeFlow:
         _wait_code_cleared(page)
 
         page.get_by_role("button", name="Создать агента").click()
-        page.wait_for_url("**/dashboard", timeout=15_000)
+        # Dev-сервер компилирует /dashboard по требованию — 15 секунд мало.
+        page.wait_for_url("**/dashboard", timeout=60_000)
         expect(page.get_by_test_id(f"agent-card-{draft_id}").get_by_text("Тест")).to_be_visible()
 
 
