@@ -74,6 +74,7 @@ class OnboardingSession(BaseModel):
     session_secret: str | None = None
     name: str | None = None
     soul_prompt: str | None = None
+    completed_agent_id: UUID | None = None
 
 
 class OnboardingPublicStatus(BaseModel):
@@ -283,6 +284,11 @@ class AgentOnboardingService:
 
         if self._agent_store is not None:
             await self._agent_store.create_from_onboarding(session)
+            # Черновик помечается завершённым на сервере, а не клиентом:
+            # браузерный апдейт после финализации мог отвалиться, и мастер
+            # подхватывал уже использованный черновик заново.
+            session.completed_agent_id = session.onboarding_id
+            await self._repository.save(session)
 
         return AgentStatus(
             agent_id=session.onboarding_id,
@@ -298,7 +304,6 @@ class AgentOnboardingService:
         return AgentRuntimeConfig(
             agent_id=session.onboarding_id,
             owner_id=session.owner_id,
-            telegram_session_name=session.onboarding_id.hex,
             telegram_api_id=session.api_id,
             telegram_api_hash=self._cipher.decrypt(session.api_hash_secret),
             telegram_session_string=_decrypt_optional(self._cipher, session.session_secret),

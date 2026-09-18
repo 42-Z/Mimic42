@@ -44,7 +44,7 @@ async def test_create_start_and_trigger_agent_through_api() -> None:
             headers=AUTH_HEADERS,
             json={
                 "agent_id": str(agent_id),
-                "telegram_session_name": "sessions/api-agent",
+                "telegram_session_string": "1BQANOTEuMTA4LjUuMLB6LjE",
                 "telegram_api_id": 12345,
                 "telegram_api_hash": "hash",
                 "soul_prompt": "Short replies",
@@ -90,7 +90,7 @@ async def test_reload_agent_returns_204_for_owner() -> None:
             headers=AUTH_HEADERS,
             json={
                 "agent_id": str(agent_id),
-                "telegram_session_name": "sessions/api-agent",
+                "telegram_session_string": "1BQANOTEuMTA4LjUuMLB6LjE",
                 "telegram_api_id": 12345,
                 "telegram_api_hash": "hash",
                 "soul_prompt": "Short replies",

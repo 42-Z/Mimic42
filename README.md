@@ -74,23 +74,22 @@ The current backend model is global, not per-agent: `openrouter/free`.
 ```bash
 uv run pytest                  # everything except the database, ~30 seconds
 uv run pytest -m db            # 38 tests against the real Mimic42 Dev database, ~6 minutes
+uv run pytest -m e2e           # browser e2e: test server + frontend + Playwright
 cd frontend && bunx tsc --noEmit && bun test
-cd frontend && bun run test:e2e
 ```
 
 Tests load `.env` and `.env.test` themselves — no `source` needed. The local `.env` points at the
 **Mimic42 Dev** project; production values live only in `/etc/mimic42.env` on the server and are
-never committed. The only test-specific names left are `TEST_USER_PASSWORD` (e2e login and account
-bootstrap) and `TEST_SUPABASE_SERVICE_ROLE_KEY`; everything else is shared with the application —
-see `.env.example` for both sections.
+never committed. The only test-specific name left is `TEST_USER_PASSWORD` (e2e login and account
+bootstrap); everything else is shared with the application — see `.env.example` for both sections.
 
 Database tests carry the `db` marker and are excluded by default: they lease a test-account slot and
 purge that slot's data before running, so they only start on an explicit `-m db`. If the settings
 are missing, such a run fails with an explanation instead of reporting a green no-op.
 
-The Dev service-role key is deliberately not stored in any env file: only the one-off account
-bootstrap needs it, and it is passed explicitly.
+Account bootstrap reuses the application's Dev service-role key (`SUPABASE_SERVICE_ROLE_KEY` in
+`.env`, the same key media storage uses) and refuses to run against anything but Dev.
 
 ```bash
-TEST_SUPABASE_SERVICE_ROLE_KEY=... uv run python scripts/test_env_bootstrap.py
+uv run python scripts/test_env_bootstrap.py
 ```

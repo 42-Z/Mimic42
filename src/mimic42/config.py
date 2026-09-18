@@ -25,6 +25,10 @@ class Settings(BaseSettings):
     secret_key: str | None = Field(default=None, validation_alias="SECRET_KEY")
     telegram_api_id: int | None = Field(default=None, validation_alias="TELEGRAM_API_ID")
     telegram_api_hash: str | None = Field(default=None, validation_alias="TELEGRAM_API_HASH")
+    # Поднимать ли RUNNING-агентов из базы при старте приложения. Тесты
+    # real_tg выключают: иначе поднялся бы чужой агент (и Telegram убил бы
+    # его сессию за параллельное использование).
+    restore_running_agents: bool = Field(default=True, validation_alias="RESTORE_RUNNING_AGENTS")
     cors_allow_origins: Annotated[list[str], NoDecode] = Field(
         default=["http://localhost:3000", "http://127.0.0.1:3000"],
         validation_alias="CORS_ALLOW_ORIGINS",

@@ -98,7 +98,7 @@ async def test_create_agent_uses_authenticated_user_not_payload_owner_id() -> No
             json={
                 "agent_id": str(agent_id),
                 "owner_id": str(payload_owner_id),
-                "telegram_session_name": "sessions/api-agent",
+                "telegram_session_string": "1BQANOTEuMTA4LjUuMLB6LjE",
                 "telegram_api_id": 12345,
                 "telegram_api_hash": "hash",
             },

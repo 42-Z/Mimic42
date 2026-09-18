@@ -33,6 +33,7 @@ class DatabaseOnboardingRepository:
             model.authorization_status = session.authorization_status.value
             model.agent_name = session.name
             model.soul_prompt = session.soul_prompt
+            model.completed_agent_id = session.completed_agent_id
             await db_session.commit()
 
     async def get(self, onboarding_id: UUID) -> OnboardingSession:
@@ -59,4 +60,5 @@ def _model_to_session(model: AgentOnboardingSessionModel) -> OnboardingSession:
         session_secret=model.session_ciphertext,
         name=model.agent_name,
         soul_prompt=model.soul_prompt,
+        completed_agent_id=model.completed_agent_id,
     )

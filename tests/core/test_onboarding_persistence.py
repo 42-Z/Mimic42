@@ -64,6 +64,9 @@ async def test_finalize_agent_persists_agent_and_telegram_session() -> None:
 
     assert status.agent_id == onboarding_id
     assert status.state is AgentRuntimeState.STOPPED
+    # Черновик помечен завершённым на сервере: клиентский апдейт мог упасть.
+    completed = await onboarding_repository.get(onboarding_id)
+    assert completed.completed_agent_id == onboarding_id
     persisted = await agent_store.get_runtime_config(onboarding_id)
     assert persisted.owner_id == owner_id
     assert persisted.telegram_api_hash == "encrypted-hash"

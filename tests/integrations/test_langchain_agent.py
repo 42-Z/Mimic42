@@ -14,7 +14,7 @@ def _config(llm_model: str, reasoning_effort: str = "high") -> AgentRuntimeConfi
     return AgentRuntimeConfig(
         agent_id=uuid4(),
         owner_id=uuid4(),
-        telegram_session_name="sess",
+        telegram_session_string="sess",
         telegram_api_id=12345,
         telegram_api_hash="hash",
         system_prompt="system",

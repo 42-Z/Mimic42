@@ -79,13 +79,16 @@ class CreateTestAgentRequest(BaseModel):
 def _test_settings() -> Settings:
     database_connection_string = os.environ["DATABASE_CONNECTION_STRING"]
     supabase_url = os.environ["SUPABASE_URL"]
+    # CORS берём из окружения (CORS_ALLOW_ORIGINS), как боевой Settings: e2e
+    # умеет переопределять порт фронта, и API обязан следовать за ним.
+    cors_allow_origins = Settings().cors_allow_origins
     return Settings(
         database_connection_string=database_connection_string,
         supabase_url=supabase_url,
         secret_key=os.environ["SECRET_KEY"],
         telegram_api_id=int(os.environ.get("TELEGRAM_API_ID", "1")),
         telegram_api_hash=os.environ.get("TELEGRAM_API_HASH", "test-api-hash"),
-        cors_allow_origins=["http://127.0.0.1:3000", "http://localhost:3000"],
+        cors_allow_origins=cors_allow_origins,
         # Явно отключает Mem0: без этого Settings() подхватил бы боевой
         # MEM0_API_KEY из .env разработчика, и тесты били бы по настоящему
         # внешнему сервису. Память подменяется FakeLongTermMemory ниже.
