@@ -82,6 +82,11 @@ async def test_turn_events_query_uses_turn_id_index(
         # Свежая статистика: план должен считаться по реальному объёму, а не
         # по пустой таблице.
         await session.execute(text(f"analyze public.{AgentEventModel.__tablename__}"))
+        # Выключаем seqscan, чтобы тест не зависел от того, насколько велика
+        # общая таблица на Dev и как её оценил планировщик: проверяется именно
+        # пригодность выражения-индекса под этот предикат. Если выражение не
+        # совпадёт, план уйдёт на индекс по agent_id без Index Cond по turn_id.
+        await session.execute(text("set local enable_seqscan = off"))
         plan_rows = (await session.execute(text(f"explain {compiled}"))).scalars().all()
 
     plan = "\n".join(plan_rows)
