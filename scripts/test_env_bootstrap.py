@@ -2,9 +2,8 @@
 
 Создаёт схему test_support с таблицей аренды слотов, заводит тестовые
 учётки персон и, если заданы TEST_ACCOUNT_EMAIL/PASSWORD, аккаунт сайта для
-реальных TG-тестов — всё через Admin API GoTrue. Запускается руками; берёт
-SUPABASE_SERVICE_ROLE_KEY из .env (или явного TEST_SUPABASE_SERVICE_ROLE_KEY).
-Повторный запуск ничего не ломает.
+реальных TG-тестов — всё через Admin API GoTrue. Запускается руками и берёт
+SUPABASE_SERVICE_ROLE_KEY из .env. Повторный запуск ничего не ломает.
 """
 
 from __future__ import annotations
@@ -112,17 +111,10 @@ async def main() -> int:
     dsn = os.environ["DATABASE_CONNECTION_STRING"]
     supabase_url = os.environ["SUPABASE_URL"]
     password = os.environ["TEST_USER_PASSWORD"]
-    # Приложенческий service-ключ уже лежит в .env (нужен медиа-стораджу);
-    # TEST_SUPABASE_SERVICE_ROLE_KEY остаётся явным оверрайдом для запусков,
-    # где .env недоступен.
-    service_key = os.environ.get("TEST_SUPABASE_SERVICE_ROLE_KEY") or os.environ.get(
-        "SUPABASE_SERVICE_ROLE_KEY", ""
-    )
+    # Тот же service-ключ, что приложение использует для медиа-стораджа.
+    service_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
     if not service_key:
-        raise SystemExit(
-            "Сервисный ключ не найден: заполни SUPABASE_SERVICE_ROLE_KEY в .env "
-            "или передай TEST_SUPABASE_SERVICE_ROLE_KEY явно."
-        )
+        raise SystemExit("SUPABASE_SERVICE_ROLE_KEY не задан: заполни .env (см. .env.example).")
     try:
         # service_key сразу пойдёт в Admin API: проверяем и его, а не только
         # DSN с адресом, — иначе чужим ключом можно завести юзеров не туда.

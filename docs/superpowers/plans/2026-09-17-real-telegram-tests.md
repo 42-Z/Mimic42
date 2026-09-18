@@ -1536,9 +1536,8 @@ git commit -m "feat: checker session login script"
 Отдельный скрипт не создаётся: `scripts/test_env_bootstrap.py` уже заводит
 тестовые учётки через Admin API, поэтому аккаунт реальных TG-тестов заводится
 там же — опционально, если заданы `TEST_ACCOUNT_EMAIL/PASSWORD`, и без
-фиксированного id (тесты берут owner_id из `sub` JWT). Сервисный ключ берётся
-из `SUPABASE_SERVICE_ROLE_KEY` в `.env`, явный
-`TEST_SUPABASE_SERVICE_ROLE_KEY` остаётся оверрайдом.
+фиксированного id (тесты берут owner_id из `sub` JWT). Сервисный ключ —
+`SUPABASE_SERVICE_ROLE_KEY` из `.env` (тот же, что у медиа-стораджа).
 
 - [ ] **Step 2: допиши `.env.example`**
 
