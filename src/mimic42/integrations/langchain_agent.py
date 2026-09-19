@@ -12,8 +12,10 @@ from mimic42.config import Settings
 from mimic42.core.activity import ActivityRecorder
 from mimic42.core.agent_runtime import AgentRuntimeConfig, LangChainAgentLike, TurnContext
 from mimic42.core.model_catalog import resolve_model_chain
+from mimic42.core.token_usage import TokenUsageRecorder
 from mimic42.integrations.activity_middleware import ActivityMiddleware
 from mimic42.integrations.agent_response_schema import AgentResponse
+from mimic42.integrations.token_usage_middleware import TokenUsageMiddleware
 
 
 class LangChainGraphAgent:
@@ -74,6 +76,12 @@ def build_langchain_agent(
     if session_factory is not None:
         recorder = ActivityRecorder(session_factory)
         middleware.append(ActivityMiddleware(agent_id=config.agent_id, recorder=recorder))
+        middleware.append(
+            TokenUsageMiddleware(
+                agent_id=config.agent_id,
+                recorder=TokenUsageRecorder(session_factory),
+            )
+        )
 
     return LangChainGraphAgent(
         create_agent(
