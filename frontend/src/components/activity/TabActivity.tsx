@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useSearchParams } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { Activity, Wifi, WifiOff } from 'lucide-react';
 import { useActivityFeed } from '@/hooks/useActivityFeed';
 import { useRealtimeFeed } from '@/hooks/useRealtimeFeed';
@@ -21,7 +21,7 @@ const FILTER_LABELS: Record<FeedFilter, string> = {
 };
 
 function isFeedFilter(value: string | null): value is FeedFilter {
-  return value !== null && value in FILTER_LABELS;
+  return value !== null && Object.hasOwn(FILTER_LABELS, value);
 }
 
 function isDialog(item: ActivityItem): boolean {
@@ -39,6 +39,7 @@ function matchesSearch(item: ActivityItem, q: string): boolean {
 }
 
 export function TabActivity({ agentId, agentName }: { agentId: string; agentName?: string }) {
+  const router = useRouter();
   const searchParams = useSearchParams();
   const { data, isLoading, fetchNextPage, hasNextPage, isFetchingNextPage } =
     useActivityFeed(agentId);
@@ -49,6 +50,15 @@ export function TabActivity({ agentId, agentName }: { agentId: string; agentName
     const initial = searchParams.get('filter');
     return isFeedFilter(initial) ? initial : 'full';
   });
+
+  // Keep the filter in the URL so a reload or a shared link restores it.
+  const applyFilter = (next: FeedFilter) => {
+    setFilter(next);
+    const params = new URLSearchParams(searchParams.toString());
+    if (next === 'full') params.delete('filter');
+    else params.set('filter', next);
+    router.replace(`/agent/${agentId}?${params.toString()}`, { scroll: false });
+  };
   const [search, setSearch] = useState('');
   const [autoScroll, setAutoScroll] = useState(true);
   const topRef = useRef<HTMLDivElement>(null);
@@ -122,7 +132,7 @@ export function TabActivity({ agentId, agentName }: { agentId: string; agentName
             <button
               key={f}
               data-testid={`log-filter-${f}`}
-              onClick={() => setFilter(f)}
+              onClick={() => applyFilter(f)}
               className={cn(
                 'px-3 py-1.5 rounded-sm font-mono text-xs border transition-colors',
                 filter === f
@@ -169,21 +179,28 @@ export function TabActivity({ agentId, agentName }: { agentId: string; agentName
             <div className="flex items-center justify-center h-full">
               <Spinner />
             </div>
-          ) : filtered.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-full text-void-600 gap-2">
-              <Activity className="h-8 w-8 opacity-30" />
-              <p>Нет записей</p>
-            </div>
           ) : (
             <>
-              {filtered.map((item) => (
-                <TurnCard
-                  key={item.id}
-                  item={item}
-                  chatOnly={filter === 'chat'}
-                  agentName={agentName}
-                />
-              ))}
+              {filtered.length === 0 ? (
+                <div
+                  className={cn(
+                    'flex flex-col items-center justify-center text-void-600 gap-2',
+                    hasNextPage ? 'py-16' : 'h-full',
+                  )}
+                >
+                  <Activity className="h-8 w-8 opacity-30" />
+                  <p>{hasNextPage ? 'На этой странице совпадений нет' : 'Нет записей'}</p>
+                </div>
+              ) : (
+                filtered.map((item) => (
+                  <TurnCard
+                    key={item.id}
+                    item={item}
+                    chatOnly={filter === 'chat'}
+                    agentName={agentName}
+                  />
+                ))
+              )}
               <div className="py-3 text-center">
                 {isFetchingNextPage ? (
                   <Spinner className="inline-block" />

@@ -90,13 +90,16 @@ class TestAgentPage:
         expect(page.get_by_text("Просмотрел список диалогов")).to_be_visible()
 
         page.get_by_test_id("log-filter-chat").click()
+        expect(page).to_have_url(re.compile(r"[?&]filter=chat"))
         expect(page.get_by_text("Здравствуйте!")).to_be_visible()
         expect(page.get_by_text("Просмотрел список диалогов")).to_have_count(0)
 
         page.get_by_test_id("log-filter-full").click()
+        expect(page).not_to_have_url(re.compile(r"[?&]filter="))
         expect(page.get_by_text("Просмотрел список диалогов")).to_be_visible()
 
         page.get_by_test_id("log-filter-errors").click()
+        expect(page).to_have_url(re.compile(r"[?&]filter=errors"))
         expect(page.get_by_text("Просмотрел список диалогов")).to_be_visible()
         expect(page.get_by_text("Здравствуйте!")).to_have_count(0)
 
