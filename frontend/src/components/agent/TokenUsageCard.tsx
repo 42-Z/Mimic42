@@ -6,7 +6,7 @@ import { cn } from '@/lib/utils';
 import { formatCompactNumber } from '@/lib/format';
 
 export function TokenUsageCard({ agentId }: { agentId: string }) {
-  const { data, isLoading } = useTokenUsage(agentId);
+  const { data, isLoading, isError } = useTokenUsage(agentId);
 
   return (
     <Card variant="glass" padding="md" data-testid="token-usage-card">
@@ -17,6 +17,7 @@ export function TokenUsageCard({ agentId }: { agentId: string }) {
         inputTokens={data?.input_tokens ?? 0}
         outputTokens={data?.output_tokens ?? 0}
         isLoading={isLoading}
+        isError={isError}
       />
     </Card>
   );
@@ -26,13 +27,23 @@ export function TokenUsageStats({
   inputTokens,
   outputTokens,
   isLoading,
+  isError,
 }: {
   inputTokens: number;
   outputTokens: number;
   isLoading: boolean;
+  isError: boolean;
 }) {
   if (isLoading) {
     return <Skeleton className="h-10 w-64" />;
+  }
+
+  if (isError) {
+    return (
+      <p className="font-mono text-xs text-crimson-400" role="alert">
+        Не удалось загрузить счётчики
+      </p>
+    );
   }
 
   return (
