@@ -4,6 +4,7 @@ import { useEffect, useRef, useCallback, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { getSupabaseClient } from '@/lib/supabase/client';
 import { queryKeys } from '@/lib/queryClient';
+import { refreshActivityFeedHead } from '@/hooks/useActivityFeed';
 import { buildActivityFeed, type ActivityItem, type EventLike, type MessageLike } from '@/lib/activity/normalize';
 import type { AgentMessageRow, AgentEventRow, MessageThreadRow, RealtimePayload } from '@/types';
 import type { RealtimeChannel } from '@supabase/supabase-js';
@@ -91,7 +92,13 @@ export function useRealtimeFeed(agentId: string) {
     pendingInvalidates.current.clear();
     for (const key of keys) {
       if (key === 'conversation') {
-        qc.invalidateQueries({ queryKey: queryKeys.conversation.byAgent(agentId) });
+        // Keyset-курсор делает глубокие страницы неизменяемыми: на вспышку
+        // обновляем только голову ленты, а не все загруженные страницы.
+        // Сырые realtime-инкременты уже в ленте, поэтому сбой головы не
+        // повод перезапрашивать историю — следующая вспышка повторит попытку.
+        void refreshActivityFeedHead(qc, agentId).catch((error: unknown) => {
+          console.warn('activity feed head refresh failed', error);
+        });
       } else if (key === 'threads') {
         qc.invalidateQueries({ queryKey: queryKeys.threads.byAgent(agentId) });
       }

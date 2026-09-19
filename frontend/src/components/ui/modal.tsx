@@ -31,6 +31,7 @@ export function Modal({
   size = 'md',
 }: ModalProps) {
   const panelRef = React.useRef<HTMLDivElement>(null);
+  const triggerRef = React.useRef<HTMLElement | null>(null);
   const onCloseRef = React.useRef(onClose);
   React.useEffect(() => {
     onCloseRef.current = onClose;
@@ -45,9 +46,11 @@ export function Modal({
     };
     document.addEventListener('keydown', handleKey);
 
-    // Keep Tab inside the dialog while it is open. Focus is set once per open:
-    // depending on `onClose` would re-focus on every parent render and reset
-    // the user's Tab position.
+    // Remember what opened the dialog and move focus inside. Focus is set once
+    // per open: depending on `onClose` would re-focus on every parent render
+    // and reset the user's Tab position.
+    triggerRef.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const panel = panelRef.current;
     panel?.focus();
     const handleTab = (e: KeyboardEvent) => {
@@ -69,13 +72,22 @@ export function Modal({
     };
     document.addEventListener('keydown', handleTab);
 
-    // Lock body scroll
+    // Lock body scroll, restoring whatever was set before (nested modals,
+    // callers that manage overflow themselves).
+    const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
 
     return () => {
       document.removeEventListener('keydown', handleKey);
       document.removeEventListener('keydown', handleTab);
-      document.body.style.overflow = '';
+      document.body.style.overflow = previousOverflow;
+
+      // Return focus to the trigger so keyboard users keep their place.
+      const trigger = triggerRef.current;
+      if (trigger && document.contains(trigger)) {
+        trigger.focus();
+      }
+      triggerRef.current = null;
     };
   }, [isOpen]);
 

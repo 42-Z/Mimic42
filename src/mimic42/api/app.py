@@ -492,26 +492,36 @@ def create_app(
                 detail=str(exc),
             ) from exc
 
-    @app.get("/api/v1/agents/{agent_id}/messages", response_model=list[AgentMessageRecord])
+    @app.get(
+        "/api/v1/agents/{agent_id}/messages",
+        response_model=list[AgentMessageRecord],
+        deprecated=True,
+    )
     async def list_agent_messages(
         agent_id: UUID,
         current_user: CurrentUserDep,
         limit: Annotated[int, Query(ge=1, le=1000)] = 50,
         offset: Annotated[int, Query(ge=0)] = 0,
     ) -> list[AgentMessageRecord]:
+        """Deprecated: UI uses ``/conversation``; kept for external consumers."""
         store = _get_agent_store(app)
         if store is None:
             return []
         await _ensure_agent_owner(store, agent_id=agent_id, user_id=current_user.user_id)
         return await store.list_messages(agent_id=agent_id, limit=limit, offset=offset)
 
-    @app.get("/api/v1/agents/{agent_id}/actions", response_model=list[AgentActivity])
+    @app.get(
+        "/api/v1/agents/{agent_id}/actions",
+        response_model=list[AgentActivity],
+        deprecated=True,
+    )
     async def list_agent_actions(
         agent_id: UUID,
         current_user: CurrentUserDep,
         limit: Annotated[int, Query(ge=1, le=1000)] = 50,
         offset: Annotated[int, Query(ge=0)] = 0,
     ) -> list[AgentActivity]:
+        """Deprecated: UI uses ``/conversation``; kept for external consumers."""
         store = _get_agent_store(app)
         if store is None:
             return []

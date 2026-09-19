@@ -43,23 +43,6 @@ export type AgentMessageDirection =
   | 'tool_call'
   | 'tool_result';
 
-/**
- * GET /api/v1/agents/{id}/messages — message record
- */
-export interface AgentMessageRecord {
-  id: string;
-  agent_id: string;
-  peer: string;        // telegram peer id/username
-  peer_name: string;    // human-readable sender name (e.g. "Саша")
-  agent_name: string;   // human-readable agent name (e.g. "Акакий 42")
-  role: 'user' | 'assistant' | string;
-  content: string;
-  created_at: string;  // ISO 8601
-  direction?: AgentMessageDirection;
-  thread_id?: string;
-  payload?: Record<string, unknown>;
-}
-
 export interface ToolCallRecord {
   id: string;
   name: string;
@@ -100,22 +83,6 @@ export interface ConversationTurn {
  * Event/action status
  */
 export type EventStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled';
-
-/**
- * GET /api/v1/agents/{id}/actions — activity/event record
- */
-export interface AgentActivity {
-  id?: string;
-  agent_id: string;
-  event_type: string;
-  status: EventStatus;
-  created_at: string;
-  payload?: Record<string, unknown> | null;
-  result?: Record<string, unknown> | null;
-  error: string | null;
-  started_at?: string | null;
-  completed_at?: string | null;
-}
 
 /**
  * POST /api/v1/onboarding/telegram — initiate telegram auth
