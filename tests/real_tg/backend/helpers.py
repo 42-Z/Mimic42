@@ -93,3 +93,16 @@ async def ensure_free_model(dsn: str, agent_id: str) -> None:
             f"У мимика {agent_id} выбрана модель {model!r} без бесплатного варианта: "
             "открой настройки агента и выбери Ling 3.0 Flash VL или Laguna S 2.1"
         )
+
+
+async def disable_auto_restore(dsn: str, owner_id: UUID) -> None:
+    """Тестовые мимики — инфраструктура тестов: обычный запуск бэкенда их не
+    поднимает, иначе их сессии конфликтуют с прогоном этих же тестов."""
+    conn = await asyncpg.connect(plain_dsn(dsn))
+    try:
+        await conn.execute(
+            "update agents set restore_on_start = false where owner_id = $1 and restore_on_start",
+            owner_id,
+        )
+    finally:
+        await conn.close()

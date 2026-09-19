@@ -263,6 +263,7 @@ export type Database = {
           last_stopped_at: string | null
           name: string
           owner_id: string
+          restore_on_start: boolean
           settings: Json
           soul_prompt: string
           status: Database["public"]["Enums"]["agent_runtime_status"]
@@ -275,6 +276,7 @@ export type Database = {
           last_stopped_at?: string | null
           name: string
           owner_id: string
+          restore_on_start?: boolean
           settings?: Json
           soul_prompt?: string
           status?: Database["public"]["Enums"]["agent_runtime_status"]
@@ -287,6 +289,7 @@ export type Database = {
           last_stopped_at?: string | null
           name?: string
           owner_id?: string
+          restore_on_start?: boolean
           settings?: Json
           soul_prompt?: string
           status?: Database["public"]["Enums"]["agent_runtime_status"]
