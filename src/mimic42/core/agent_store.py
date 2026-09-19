@@ -17,6 +17,8 @@ class AgentRecord(BaseModel):
     owner_id: UUID
     name: str
     state: AgentRuntimeState
+    # Внутренний признак восстановления при старте: в API-ответ не попадает.
+    restore_on_start: bool = Field(default=True, exclude=True)
 
 
 class AgentMessageRecord(BaseModel):

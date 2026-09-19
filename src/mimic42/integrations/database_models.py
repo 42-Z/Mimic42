@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import (
     JSON,
     BigInteger,
+    Boolean,
     DateTime,
     Enum,
     ForeignKey,
@@ -84,6 +85,7 @@ class AgentModel(Base):
     owner_id: Mapped[UUID] = mapped_column(ForeignKey("profiles.id", ondelete="CASCADE"))
     name: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(AgentRuntimeStatus, default="draft")
+    restore_on_start: Mapped[bool] = mapped_column(Boolean, default=True)
     soul_prompt: Mapped[str] = mapped_column(Text, default="")
     settings: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     last_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

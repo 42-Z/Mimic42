@@ -574,6 +574,7 @@ def _agent_record(agent: AgentModel) -> AgentRecord:
         owner_id=agent.owner_id,
         name=agent.name,
         state=state,
+        restore_on_start=agent.restore_on_start,
     )
 
 

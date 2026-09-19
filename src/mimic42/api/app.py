@@ -252,7 +252,7 @@ def create_app(
                     logger.info(f"[lifespan] Found {len(agent_records)} agents")
                     for record in agent_records:
                         logger.debug(f"[lifespan] Agent {record.agent_id} state={record.state}")
-                        if record.state == AgentRuntimeState.RUNNING:
+                        if record.state == AgentRuntimeState.RUNNING and record.restore_on_start:
                             try:
                                 config = await database_agent_store.get_runtime_config(
                                     record.agent_id
@@ -269,6 +269,11 @@ def create_app(
                                 logger.exception(
                                     f"[lifespan] Failed to restore agent {record.agent_id}: {exc}"
                                 )
+                        elif record.state == AgentRuntimeState.RUNNING:
+                            logger.info(
+                                "[lifespan] Skipping agent %s: restore_on_start is disabled",
+                                record.agent_id,
+                            )
                 except Exception as exc:
                     logger.exception(f"[lifespan] Failed to restore running agents: {exc}")
             yield

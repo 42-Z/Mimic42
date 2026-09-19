@@ -61,6 +61,7 @@ async def started_mimics(
     _, client = real_app
     from tests.real_tg.backend.helpers import (
         agent_id_for_phone,
+        disable_auto_restore,
         ensure_free_model,
         jwt,
         user_id_from_token,
@@ -69,6 +70,7 @@ async def started_mimics(
     token = await jwt()
     owner_id = user_id_from_token(token)
     dsn = os.environ["DATABASE_CONNECTION_STRING"]
+    await disable_auto_restore(dsn, owner_id)
     phones = await checker.mimic_phones(dsn, owner_id)
     agents: list[tuple[str, str]] = []
     for phone in phones:
