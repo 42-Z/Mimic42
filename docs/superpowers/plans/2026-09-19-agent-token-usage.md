@@ -647,7 +647,7 @@ Run:
 ```bash
 uv run ruff check
 uv run ty check
-uv run pytest -m "not db"
+uv run pytest -m "not db and not e2e and not real_tg" -W error -q
 ```
 
 Expected: без замечаний, все не-db тесты зелёные.
@@ -1044,11 +1044,11 @@ Run:
 ```bash
 uv run ruff check
 uv run ty check
-uv run pytest
+uv run pytest -m "not db and not e2e and not real_tg" -W error -q
 ```
 
 Expected: зелёные. Db-тесты (включая `tests/integration/test_token_usage.py`) запускаются явно:
-`uv run pytest -m db` — требуют Dev-DSN и применённой миграции.
+`uv run pytest -m db -W error -q` — требуют Dev-DSN и применённой миграции.
 
 - [ ] **Step 2: Полный прогон фронтенда**
 
