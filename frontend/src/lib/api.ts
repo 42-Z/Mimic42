@@ -122,8 +122,6 @@ function formatValidationError(detail: unknown): string {
 import type {
   AgentRecord,
   AgentStatus,
-  AgentMessageRecord,
-  AgentActivity,
   OnboardingTelegramInput,
   OnboardingPublicStatus,
   TelegramCodeInput,
@@ -158,18 +156,6 @@ export const agentsApi = {
   /** DELETE /api/v1/agents/:id */
   remove: (id: string) =>
     apiClient.delete<void>(`/agents/${id}`).then(() => undefined),
-
-  /** GET /api/v1/agents/:id/messages */
-  getMessages: (id: string, limit = 50, offset = 0) =>
-    apiClient
-      .get<AgentMessageRecord[]>(`/agents/${id}/messages`, { params: { limit, offset } })
-      .then((r) => r.data),
-
-  /** GET /api/v1/agents/:id/actions */
-  getActions: (id: string, limit = 50, offset = 0) =>
-    apiClient
-      .get<AgentActivity[]>(`/agents/${id}/actions`, { params: { limit, offset } })
-      .then((r) => r.data),
 
   /** GET /api/v1/agents/:id/conversation — cursor page, newest first */
   getConversation: (id: string, limit = 50, before?: string | null, beforeId?: string | null) =>
