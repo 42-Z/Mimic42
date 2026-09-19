@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { Activity, Wifi, WifiOff } from 'lucide-react';
 import { useActivityFeed } from '@/hooks/useActivityFeed';
 import { useRealtimeFeed } from '@/hooks/useRealtimeFeed';
@@ -11,9 +12,17 @@ import { TurnCard } from './TurnCard';
 import { turnToActivityItem, type ActivityItem } from '@/lib/activity/normalize';
 import { cn } from '@/lib/utils';
 
-type FeedFilter = 'full' | 'chat';
+type FeedFilter = 'full' | 'chat' | 'errors';
 
-const FILTER_LABELS: Record<FeedFilter, string> = { full: 'Полный', chat: 'Только чат' };
+const FILTER_LABELS: Record<FeedFilter, string> = {
+  full: 'Полный',
+  chat: 'Только чат',
+  errors: 'Ошибки',
+};
+
+function isFeedFilter(value: string | null): value is FeedFilter {
+  return value !== null && Object.hasOwn(FILTER_LABELS, value);
+}
 
 function isDialog(item: ActivityItem): boolean {
   return Boolean(item.incoming || item.trigger || item.response);
@@ -30,12 +39,26 @@ function matchesSearch(item: ActivityItem, q: string): boolean {
 }
 
 export function TabActivity({ agentId, agentName }: { agentId: string; agentName?: string }) {
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const { data, isLoading, fetchNextPage, hasNextPage, isFetchingNextPage } =
     useActivityFeed(agentId);
   const { items: realtimeItems, isConnected } = useRealtimeFeed(agentId);
   const { data: threads } = useMessageThreads(agentId);
 
-  const [filter, setFilter] = useState<FeedFilter>('full');
+  const [filter, setFilter] = useState<FeedFilter>(() => {
+    const initial = searchParams.get('filter');
+    return isFeedFilter(initial) ? initial : 'full';
+  });
+
+  // Keep the filter in the URL so a reload or a shared link restores it.
+  const applyFilter = (next: FeedFilter) => {
+    setFilter(next);
+    const params = new URLSearchParams(searchParams.toString());
+    if (next === 'full') params.delete('filter');
+    else params.set('filter', next);
+    router.replace(`/agent/${agentId}?${params.toString()}`, { scroll: false });
+  };
   const [search, setSearch] = useState('');
   const [autoScroll, setAutoScroll] = useState(true);
   const topRef = useRef<HTMLDivElement>(null);
@@ -73,6 +96,7 @@ export function TabActivity({ agentId, agentName }: { agentId: string; agentName
     const q = search.trim().toLowerCase();
     return items.filter((item) => {
       if (filter === 'chat' && !isDialog(item)) return false;
+      if (filter === 'errors' && !item.failed) return false;
       if (q && !matchesSearch(item, q)) return false;
       return true;
     });
@@ -108,7 +132,7 @@ export function TabActivity({ agentId, agentName }: { agentId: string; agentName
             <button
               key={f}
               data-testid={`log-filter-${f}`}
-              onClick={() => setFilter(f)}
+              onClick={() => applyFilter(f)}
               className={cn(
                 'px-3 py-1.5 rounded-sm font-mono text-xs border transition-colors',
                 filter === f
@@ -155,21 +179,28 @@ export function TabActivity({ agentId, agentName }: { agentId: string; agentName
             <div className="flex items-center justify-center h-full">
               <Spinner />
             </div>
-          ) : filtered.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-full text-void-600 gap-2">
-              <Activity className="h-8 w-8 opacity-30" />
-              <p>Нет записей</p>
-            </div>
           ) : (
             <>
-              {filtered.map((item) => (
-                <TurnCard
-                  key={item.id}
-                  item={item}
-                  chatOnly={filter === 'chat'}
-                  agentName={agentName}
-                />
-              ))}
+              {filtered.length === 0 ? (
+                <div
+                  className={cn(
+                    'flex flex-col items-center justify-center text-void-600 gap-2',
+                    hasNextPage ? 'py-16' : 'h-full',
+                  )}
+                >
+                  <Activity className="h-8 w-8 opacity-30" />
+                  <p>{hasNextPage ? 'На этой странице совпадений нет' : 'Нет записей'}</p>
+                </div>
+              ) : (
+                filtered.map((item) => (
+                  <TurnCard
+                    key={item.id}
+                    item={item}
+                    chatOnly={filter === 'chat'}
+                    agentName={agentName}
+                  />
+                ))
+              )}
               <div className="py-3 text-center">
                 {isFetchingNextPage ? (
                   <Spinner className="inline-block" />
