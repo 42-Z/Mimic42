@@ -85,7 +85,7 @@ function KPIRow({ agentIds }: { agentIds: string[] }) {
       .limit(1)
       .maybeSingle();
     if (data?.agent_id) {
-      router.push(`/agent/${data.agent_id}?tab=logs`);
+      router.push(`/agent/${data.agent_id}?tab=logs&filter=errors`);
     } else {
       toast('Не удалось найти ошибки', 'warning');
     }

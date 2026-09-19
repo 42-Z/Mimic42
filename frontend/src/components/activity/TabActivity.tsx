@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { Activity, Wifi, WifiOff } from 'lucide-react';
 import { useActivityFeed } from '@/hooks/useActivityFeed';
 import { useRealtimeFeed } from '@/hooks/useRealtimeFeed';
@@ -11,9 +12,17 @@ import { TurnCard } from './TurnCard';
 import { turnToActivityItem, type ActivityItem } from '@/lib/activity/normalize';
 import { cn } from '@/lib/utils';
 
-type FeedFilter = 'full' | 'chat';
+type FeedFilter = 'full' | 'chat' | 'errors';
 
-const FILTER_LABELS: Record<FeedFilter, string> = { full: 'Полный', chat: 'Только чат' };
+const FILTER_LABELS: Record<FeedFilter, string> = {
+  full: 'Полный',
+  chat: 'Только чат',
+  errors: 'Ошибки',
+};
+
+function isFeedFilter(value: string | null): value is FeedFilter {
+  return value !== null && value in FILTER_LABELS;
+}
 
 function isDialog(item: ActivityItem): boolean {
   return Boolean(item.incoming || item.trigger || item.response);
@@ -30,12 +39,16 @@ function matchesSearch(item: ActivityItem, q: string): boolean {
 }
 
 export function TabActivity({ agentId, agentName }: { agentId: string; agentName?: string }) {
+  const searchParams = useSearchParams();
   const { data, isLoading, fetchNextPage, hasNextPage, isFetchingNextPage } =
     useActivityFeed(agentId);
   const { items: realtimeItems, isConnected } = useRealtimeFeed(agentId);
   const { data: threads } = useMessageThreads(agentId);
 
-  const [filter, setFilter] = useState<FeedFilter>('full');
+  const [filter, setFilter] = useState<FeedFilter>(() => {
+    const initial = searchParams.get('filter');
+    return isFeedFilter(initial) ? initial : 'full';
+  });
   const [search, setSearch] = useState('');
   const [autoScroll, setAutoScroll] = useState(true);
   const topRef = useRef<HTMLDivElement>(null);
@@ -73,6 +86,7 @@ export function TabActivity({ agentId, agentName }: { agentId: string; agentName
     const q = search.trim().toLowerCase();
     return items.filter((item) => {
       if (filter === 'chat' && !isDialog(item)) return false;
+      if (filter === 'errors' && !item.failed) return false;
       if (q && !matchesSearch(item, q)) return false;
       return true;
     });

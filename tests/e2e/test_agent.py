@@ -96,6 +96,15 @@ class TestAgentPage:
         page.get_by_test_id("log-filter-full").click()
         expect(page.get_by_text("Просмотрел список диалогов")).to_be_visible()
 
+        page.get_by_test_id("log-filter-errors").click()
+        expect(page.get_by_text("Просмотрел список диалогов")).to_be_visible()
+        expect(page.get_by_text("Здравствуйте!")).to_have_count(0)
+
+        # The dashboard KPI «Ошибки» deep-links here pre-filtered.
+        page.goto(f"/agent/{agent_id}?tab=logs&filter=errors")
+        expect(page.get_by_text("Просмотрел список диалогов")).to_be_visible()
+        expect(page.get_by_text("Здравствуйте!")).to_have_count(0)
+
     def test_stop_confirm_dialog(
         self, persona_page: Callable[..., Page], api: httpx.Client, users: dict
     ) -> None:
