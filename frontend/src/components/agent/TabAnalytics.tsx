@@ -7,6 +7,7 @@ import {
 } from 'recharts';
 import { useAnalyticsData } from '@/hooks/useTelegramSession';
 import { Card, Skeleton } from '@/components/ui/card';
+import { TokenUsageCard } from '@/components/agent/TokenUsageCard';
 import { cn } from '@/lib/utils';
 
 const TOOLTIP_STYLE = {
@@ -24,6 +25,8 @@ export function TabAnalytics({ agentId }: { agentId: string }) {
 
   return (
     <div className="space-y-6">
+      <TokenUsageCard agentId={agentId} />
+
       <div className="flex items-center gap-2">
         {([7, 30] as const).map((d) => (
           <button
