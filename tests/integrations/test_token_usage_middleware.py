@@ -34,7 +34,7 @@ def _ai_message(input_tokens: int, output_tokens: int) -> AIMessage:
 async def test_middleware_sums_usage_across_messages() -> None:
     agent_id = uuid4()
     recorder = FakeRecorder()
-    middleware = TokenUsageMiddleware(agent_id=agent_id, recorder=recorder)
+    middleware = TokenUsageMiddleware(agent_id=agent_id, recorder=recorder)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
 
     async def handler(request: Any) -> ModelResponse:
         return ModelResponse(result=[_ai_message(10, 2), _ai_message(5, 3)])
@@ -47,7 +47,7 @@ async def test_middleware_sums_usage_across_messages() -> None:
 async def test_middleware_accepts_bare_ai_message() -> None:
     agent_id = uuid4()
     recorder = FakeRecorder()
-    middleware = TokenUsageMiddleware(agent_id=agent_id, recorder=recorder)
+    middleware = TokenUsageMiddleware(agent_id=agent_id, recorder=recorder)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
 
     async def handler(request: Any) -> AIMessage:
         return _ai_message(7, 1)
@@ -59,7 +59,7 @@ async def test_middleware_accepts_bare_ai_message() -> None:
 
 async def test_middleware_skips_when_usage_metadata_absent() -> None:
     recorder = FakeRecorder()
-    middleware = TokenUsageMiddleware(agent_id=uuid4(), recorder=recorder)
+    middleware = TokenUsageMiddleware(agent_id=uuid4(), recorder=recorder)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
 
     async def handler(request: Any) -> ModelResponse:
         return ModelResponse(result=[AIMessage(content="ok")])
@@ -71,7 +71,7 @@ async def test_middleware_skips_when_usage_metadata_absent() -> None:
 
 async def test_middleware_does_not_record_model_failure() -> None:
     recorder = FakeRecorder()
-    middleware = TokenUsageMiddleware(agent_id=uuid4(), recorder=recorder)
+    middleware = TokenUsageMiddleware(agent_id=uuid4(), recorder=recorder)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
 
     async def failing_handler(request: Any) -> Any:
         raise RuntimeError("provider down")
