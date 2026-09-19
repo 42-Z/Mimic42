@@ -1,14 +1,17 @@
-import { describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from 'bun:test';
 import { QueryClient } from '@tanstack/react-query';
-import type { ConversationCursor } from '@/lib/api';
+import { agentsApi, type ConversationPage } from '@/lib/api';
+import { queryKeys } from '@/lib/queryClient';
+import { activityFeedQueryOptions, refreshActivityFeedHead } from '@/hooks/useActivityFeed';
+import type { ConversationTurn } from '@/types';
 
 interface Row {
   id: string;
   created_at: string;
 }
 
-// Новейшие сверху, как отдаёт бэкенд.
-const DB: Row[] = [
+// Новейшие сверху, как отдаёт бэкенд. 'b'/'a' делят timestamp — проверяем keyset.
+const SEED: Row[] = [
   { id: 'c', created_at: '2026-09-17T10:00:00Z' },
   { id: 'b', created_at: '2026-09-17T09:00:00Z' },
   { id: 'a', created_at: '2026-09-17T09:00:00Z' },
@@ -17,66 +20,103 @@ const DB: Row[] = [
   { id: 'x', created_at: '2026-09-17T06:00:00Z' },
 ];
 
-const PAGE_SIZE = 2;
+interface RecordedCall {
+  agentId: string;
+  limit: number;
+  before: string | null;
+  beforeId: string | null;
+}
 
-function slice(cursor: ConversationCursor | null) {
-  const rows = DB.filter(
-    (row) =>
-      !cursor ||
-      row.created_at < cursor.before ||
-      (row.created_at === cursor.before && row.id < cursor.id),
-  );
-  const turns = rows.slice(0, PAGE_SIZE);
-  const last = turns[turns.length - 1];
-  const hasNext = turns.length === PAGE_SIZE && last !== undefined;
+let DB: Row[];
+
+function turn(id: string, createdAt: string): ConversationTurn {
   return {
-    turns,
-    next_before: hasNext ? last.created_at : null,
-    next_before_id: hasNext ? last.id : null,
+    id,
+    agent_id: 'agent-1',
+    timestamp: createdAt,
+    peer_id: 'chat',
+    peer_name: '',
+    agent_name: '',
+    incoming: '',
+    outgoing: '',
+    direction: 'incoming',
+    turn_id: null,
+    incoming_media: [],
+    tools: [],
   };
 }
 
-function feedOptions() {
-  return {
-    queryKey: ['feed'] as const,
-    queryFn: ({ pageParam }: { pageParam: ConversationCursor | null }) =>
-      Promise.resolve(slice(pageParam)),
-    initialPageParam: null as ConversationCursor | null,
-    getNextPageParam: (lastPage: ReturnType<typeof slice>) =>
-      lastPage.next_before
-        ? { before: lastPage.next_before, id: lastPage.next_before_id ?? '' }
-        : undefined,
-  };
+/** Подменяет настоящий клиент: записи о вызовах + та же keyset-выборка, что и на бэке. */
+function installApi(calls: RecordedCall[]) {
+  return spyOn(agentsApi, 'getConversation').mockImplementation(
+    async (agentId, limit = 50, before = null, beforeId = null) => {
+      calls.push({ agentId, limit, before: before ?? null, beforeId: beforeId ?? null });
+      const rows = DB.filter(
+        (row) =>
+          !before ||
+          row.created_at < before ||
+          (row.created_at === before && row.id < (beforeId ?? '')),
+      );
+      const page = rows.slice(0, limit);
+      const last = page[page.length - 1];
+      const hasNext = page.length === limit && last !== undefined;
+      return {
+        turns: page.map((row) => turn(row.id, row.created_at)),
+        next_before: hasNext ? last.created_at : null,
+        next_before_id: hasNext ? last.id : null,
+      };
+    },
+  );
 }
 
 function loadedIds(qc: QueryClient): string[] {
-  const data = qc.getQueryData<{ pages: ReturnType<typeof slice>[] }>(['feed']);
-  return (data?.pages ?? []).flatMap((page) => page.turns.map((turn) => turn.id));
+  const data = qc.getQueryData<{ pages: ConversationPage[] }>(
+    queryKeys.conversation.byAgent('agent-1'),
+  );
+  return (data?.pages ?? []).flatMap((page) => page.turns.map((t) => t.id));
 }
 
+beforeEach(() => {
+  DB = SEED.map((row) => ({ ...row }));
+});
+
+afterEach(() => {
+  mock.restore();
+});
+
 describe('пагинация ленты активности', () => {
-  test('курсор (before, id) не теряет и не дублирует ходы при равных timestamp', async () => {
+  test('курсор (before, id) реального клиента не теряет и не дублирует ходы', async () => {
     const qc = new QueryClient();
-    await qc.fetchInfiniteQuery({ ...feedOptions(), pages: 3 });
+    const calls: RecordedCall[] = [];
+    installApi(calls);
+
+    await qc.fetchInfiniteQuery({ ...activityFeedQueryOptions('agent-1', 2), pages: 3 });
+
+    // Второй и третий запросы обязаны нести курсор последнего хода страницы.
+    expect(calls).toEqual([
+      { agentId: 'agent-1', limit: 2, before: null, beforeId: null },
+      { agentId: 'agent-1', limit: 2, before: '2026-09-17T09:00:00Z', beforeId: 'b' },
+      { agentId: 'agent-1', limit: 2, before: '2026-09-17T08:00:00Z', beforeId: 'z' },
+    ]);
     expect(loadedIds(qc)).toEqual(['c', 'b', 'a', 'z', 'y', 'x']);
   });
 
-  test('рефетч после нового хода пересобирает страницы без дыр и дублей', async () => {
+  test('live-tail: realtime обновляет только голову, не трогая глубокие страницы', async () => {
     const qc = new QueryClient();
-    await qc.fetchInfiniteQuery({ ...feedOptions(), pages: 3 });
+    const calls: RecordedCall[] = [];
+    installApi(calls);
 
-    // Новое сообщение пришло сверху — ровно то, что делает realtime-инвалидация.
+    await qc.fetchInfiniteQuery({ ...activityFeedQueryOptions('agent-1', 2), pages: 2 });
+    expect(loadedIds(qc)).toEqual(['c', 'b', 'a', 'z']);
+
+    calls.length = 0;
     DB.unshift({ id: 'n', created_at: '2026-09-17T11:00:00Z' });
-    await qc.refetchQueries({ queryKey: ['feed'], type: 'all' });
+    await refreshActivityFeedHead(qc, 'agent-1', 2);
 
-    // Сплошной префикс свежих ходов: без выпавшего интервала и без дублей.
-    // Самый старый загруженный ход выезжает за окно — он не потерян, а
-    // достаётся следующей страницей.
-    expect(loadedIds(qc)).toEqual(['n', 'c', 'b', 'a', 'z', 'y']);
+    // Ровно один запрос — за головой. Глубокие страницы не перезапрашивались.
+    expect(calls).toEqual([{ agentId: 'agent-1', limit: 2, before: null, beforeId: null }]);
 
-    await qc.fetchInfiniteQuery({ ...feedOptions(), pages: 4 });
-    expect(loadedIds(qc)).toEqual(['n', 'c', 'b', 'a', 'z', 'y', 'x']);
-
-    DB.shift();
+    // 'b' не потерян, дублей нет: граница со второй страницей сохранена.
+    expect(loadedIds(qc)).toEqual(['n', 'c', 'b', 'a', 'z']);
   });
 });
