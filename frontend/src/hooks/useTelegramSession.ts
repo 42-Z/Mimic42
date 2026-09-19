@@ -279,3 +279,32 @@ export function useAnalyticsData(agentId: string, days: 7 | 30) {
     staleTime: 5 * 60 * 1000,
   });
 }
+
+/**
+ * Fetch the agent's lifetime token counters from Supabase.
+ * Counters always accumulate; the hook is independent of the day range.
+ */
+export function useTokenUsage(agentId: string) {
+  const isValidId = agentIdSchema.safeParse(agentId).success;
+
+  return useQuery({
+    queryKey: queryKeys.analytics.usage(agentId),
+    queryFn: async () => {
+      const supabase = getSupabaseClient();
+      const { data, error } = await supabase
+        .from('agent_token_usage')
+        .select('input_tokens, output_tokens')
+        .eq('agent_id', agentId)
+        .maybeSingle();
+
+      if (error) throw error;
+      return {
+        input_tokens: data?.input_tokens ?? 0,
+        output_tokens: data?.output_tokens ?? 0,
+      };
+    },
+    enabled: isValidId,
+    staleTime: 60_000,
+    refetchInterval: 60_000,
+  });
+}

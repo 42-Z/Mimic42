@@ -45,6 +45,7 @@ export const queryKeys = {
     kpis: (agentId: string) => [...queryKeys.analytics.all, agentId, 'kpis'] as const,
     kpisAll: (agentIds: string[]) =>
       [...queryKeys.analytics.all, { kpisAll: [...agentIds].sort() }] as const,
+    usage: (agentId: string) => [...queryKeys.analytics.all, agentId, 'usage'] as const,
   },
 
   // Profile

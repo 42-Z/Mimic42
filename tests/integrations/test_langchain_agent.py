@@ -7,7 +7,8 @@ import pytest
 
 import mimic42.integrations.langchain_agent as langchain_agent_module
 from mimic42.core.agent_runtime import AgentRuntimeConfig
-from mimic42.integrations.langchain_agent import build_chat_model
+from mimic42.integrations.langchain_agent import build_chat_model, build_langchain_agent
+from mimic42.integrations.token_usage_middleware import TokenUsageMiddleware
 
 
 def _config(llm_model: str, reasoning_effort: str = "high") -> AgentRuntimeConfig:
@@ -87,3 +88,39 @@ def test_openrouter_free_stays_special(recorded: list[dict[str, Any]]) -> None:
 
 def test_plain_name_without_slash_is_returned_as_string() -> None:
     assert build_chat_model(_config("mistral-small", reasoning_effort="none")) == "mistral-small"
+
+
+def test_build_langchain_agent_registers_token_usage_middleware(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_create_agent(**kwargs: Any) -> str:
+        captured.update(kwargs)
+        return "graph"
+
+    monkeypatch.setattr(langchain_agent_module, "create_agent", fake_create_agent)
+
+    build_langchain_agent(
+        _config("mistral-small"),
+        session_factory=object(),  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
+    )
+
+    middleware = captured["middleware"]
+    assert any(isinstance(m, TokenUsageMiddleware) for m in middleware)
+
+
+def test_build_langchain_agent_has_no_middleware_without_session_factory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_create_agent(**kwargs: Any) -> str:
+        captured.update(kwargs)
+        return "graph"
+
+    monkeypatch.setattr(langchain_agent_module, "create_agent", fake_create_agent)
+
+    build_langchain_agent(_config("mistral-small"))
+
+    assert captured["middleware"] == []
