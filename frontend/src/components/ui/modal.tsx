@@ -72,13 +72,15 @@ export function Modal({
     };
     document.addEventListener('keydown', handleTab);
 
-    // Lock body scroll
+    // Lock body scroll, restoring whatever was set before (nested modals,
+    // callers that manage overflow themselves).
+    const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
 
     return () => {
       document.removeEventListener('keydown', handleKey);
       document.removeEventListener('keydown', handleTab);
-      document.body.style.overflow = '';
+      document.body.style.overflow = previousOverflow;
 
       // Return focus to the trigger so keyboard users keep their place.
       const trigger = triggerRef.current;

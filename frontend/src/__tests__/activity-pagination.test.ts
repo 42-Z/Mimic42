@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from 'bun:test';
 import { QueryClient } from '@tanstack/react-query';
-import { agentsApi, type ConversationPage } from '@/lib/api';
+import { apiClient, agentsApi, type ConversationPage } from '@/lib/api';
 import { queryKeys } from '@/lib/queryClient';
 import { activityFeedQueryOptions, refreshActivityFeedHead } from '@/hooks/useActivityFeed';
 import type { ConversationTurn } from '@/types';
@@ -69,11 +69,15 @@ function installApi(calls: RecordedCall[]) {
   );
 }
 
-function loadedIds(qc: QueryClient): string[] {
+function pageRecords(qc: QueryClient): ConversationPage[] {
   const data = qc.getQueryData<{ pages: ConversationPage[] }>(
     queryKeys.conversation.byAgent('agent-1'),
   );
-  return (data?.pages ?? []).flatMap((page) => page.turns.map((t) => t.id));
+  return data?.pages ?? [];
+}
+
+function loadedIds(qc: QueryClient): string[] {
+  return pageRecords(qc).flatMap((page) => page.turns.map((t) => t.id));
 }
 
 beforeEach(() => {
@@ -118,5 +122,94 @@ describe('пагинация ленты активности', () => {
 
     // 'b' не потерян, дублей нет: граница со второй страницей сохранена.
     expect(loadedIds(qc)).toEqual(['n', 'c', 'b', 'a', 'z']);
+  });
+
+  test('после live-tail полный рефетч пересобирает страницы без дыр', async () => {
+    const qc = new QueryClient();
+    const calls: RecordedCall[] = [];
+    installApi(calls);
+
+    await qc.fetchInfiniteQuery({ ...activityFeedQueryOptions('agent-1', 2), pages: 3 });
+    DB.unshift({ id: 'n', created_at: '2026-09-17T11:00:00Z' });
+    await refreshActivityFeedHead(qc, 'agent-1', 2);
+
+    await qc.refetchQueries({ queryKey: queryKeys.conversation.byAgent('agent-1'), type: 'all' });
+
+    expect(loadedIds(qc)).toEqual(['n', 'c', 'b', 'a', 'z', 'y']);
+  });
+
+  test('вспышка больше страницы: зазор догоняется, ходы не теряются', async () => {
+    const qc = new QueryClient();
+    const calls: RecordedCall[] = [];
+    installApi(calls);
+
+    await qc.fetchInfiniteQuery({ ...activityFeedQueryOptions('agent-1', 2), pages: 2 });
+    expect(loadedIds(qc)).toEqual(['c', 'b', 'a', 'z']);
+
+    calls.length = 0;
+    DB.unshift(
+      { id: 'n3', created_at: '2026-09-17T11:30:00Z' },
+      { id: 'n2', created_at: '2026-09-17T11:20:00Z' },
+      { id: 'n1', created_at: '2026-09-17T11:10:00Z' },
+    );
+    await refreshActivityFeedHead(qc, 'agent-1', 2);
+
+    // Догнали вторую страницу: n1 не провалился в зазор.
+    expect(calls).toEqual([
+      { agentId: 'agent-1', limit: 2, before: null, beforeId: null },
+      { agentId: 'agent-1', limit: 2, before: '2026-09-17T11:20:00Z', beforeId: 'n2' },
+    ]);
+    expect(loadedIds(qc)).toEqual(['n3', 'n2', 'n1', 'c', 'b', 'a', 'z']);
+  });
+
+  test('размер страниц ограничен: голова не растёт бесконечно', async () => {
+    const qc = new QueryClient();
+    const calls: RecordedCall[] = [];
+    installApi(calls);
+
+    await qc.fetchInfiniteQuery({ ...activityFeedQueryOptions('agent-1', 2), pages: 1 });
+    expect(loadedIds(qc)).toEqual(['c', 'b']);
+
+    for (let i = 0; i < 5; i += 1) {
+      DB.unshift({ id: `m${i}`, created_at: `2026-09-17T12:0${i}:00Z` });
+      await refreshActivityFeedHead(qc, 'agent-1', 2);
+    }
+
+    const pages = pageRecords(qc);
+    expect(pages.every((page) => page.turns.length <= 2)).toBe(true);
+    expect(loadedIds(qc)).toEqual(['m4', 'm3', 'm2', 'm1', 'm0', 'c', 'b']);
+    expect(new Set(loadedIds(qc)).size).toBe(loadedIds(qc).length);
+  });
+
+  test('сбой запроса головы не портит кэш', async () => {
+    const qc = new QueryClient();
+    installApi([]);
+    await qc.fetchInfiniteQuery({ ...activityFeedQueryOptions('agent-1', 2), pages: 2 });
+    const before = loadedIds(qc);
+
+    spyOn(agentsApi, 'getConversation').mockImplementation(async () => {
+      throw new Error('boom');
+    });
+
+    await expect(refreshActivityFeedHead(qc, 'agent-1', 2)).rejects.toThrow('boom');
+    expect(loadedIds(qc)).toEqual(before);
+  });
+
+  test('клиент getConversation маппит beforeId в before_id', async () => {
+    const get = spyOn(apiClient, 'get').mockImplementation(
+      async () =>
+        ({
+          data: { turns: [], next_before: null, next_before_id: null },
+        }) as never,
+    );
+
+    await agentsApi.getConversation('agent-1', 2, '2026-09-17T09:00:00Z', 'b');
+    expect(get).toHaveBeenCalledWith('/agents/agent-1/conversation', {
+      params: { limit: 2, before: '2026-09-17T09:00:00Z', before_id: 'b' },
+    });
+
+    get.mockClear();
+    await agentsApi.getConversation('agent-1', 2, null, null);
+    expect(get).toHaveBeenCalledWith('/agents/agent-1/conversation', { params: { limit: 2 } });
   });
 });

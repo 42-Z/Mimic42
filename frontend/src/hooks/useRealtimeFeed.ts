@@ -94,8 +94,10 @@ export function useRealtimeFeed(agentId: string) {
       if (key === 'conversation') {
         // Keyset-курсор делает глубокие страницы неизменяемыми: на вспышку
         // обновляем только голову ленты, а не все загруженные страницы.
-        void refreshActivityFeedHead(qc, agentId).catch(() => {
-          qc.invalidateQueries({ queryKey: queryKeys.conversation.byAgent(agentId) });
+        // Сырые realtime-инкременты уже в ленте, поэтому сбой головы не
+        // повод перезапрашивать историю — следующая вспышка повторит попытку.
+        void refreshActivityFeedHead(qc, agentId).catch((error: unknown) => {
+          console.warn('activity feed head refresh failed', error);
         });
       } else if (key === 'threads') {
         qc.invalidateQueries({ queryKey: queryKeys.threads.byAgent(agentId) });
