@@ -50,16 +50,20 @@ function cursorOf(turn: ConversationTurn): ConversationCursor {
 /**
  * Раскладывает непрерывный список ходов (новейшие сверху) на страницы и
  * пересобирает `pageParams` так, чтобы полный рефетч оставался корректным.
- * Каждая страница несёт курсор своего последнего хода (по нему TanStack
- * пересобирает страницы при рефетче), а у последней берём курсор прежней
- * последней страницы: только он знает, есть ли ещё история за загруженным.
+ *
+ * `maxPages` держит окно в тех же границах, что и обычный рефетч: сколько
+ * страниц было загружено, столько и остаётся. Более старые ходы вытесняются,
+ * но за последней страницей остаётся настоящий курсор, поэтому их можно
+ * дозагрузить. Без `maxPages` (переполнения нет) у последней страницы
+ * сохраняем курсор прежней последней — только он знает, есть ли ещё история.
  */
 function paginate(
   turns: ConversationTurn[],
   pageSize: number,
   previousTail: ConversationPage | undefined,
+  maxPages?: number,
 ): ActivityFeedPages {
-  const pages: ConversationPage[] = [];
+  let pages: ConversationPage[] = [];
   for (let start = 0; start < turns.length; start += pageSize) {
     const slice = turns.slice(start, start + pageSize);
     const last = slice[slice.length - 1];
@@ -69,11 +73,26 @@ function paginate(
       next_before_id: last ? last.id : null,
     });
   }
-  const pageParams: (ConversationCursor | null)[] = pages.map((_, index) => {
+  let pageParams: (ConversationCursor | null)[] = pages.map((_, index) => {
     if (index === 0) return null;
     const previousLast = turns[index * pageSize - 1];
     return previousLast ? cursorOf(previousLast) : null;
   });
+
+  if (maxPages !== undefined && maxPages > 0 && pages.length > maxPages) {
+    // Окно переполнено: старые страницы вытесняем, но оставляем на последней
+    // странице реальный keyset-курсор, чтобы их можно было дозагрузить.
+    pages = pages.slice(0, maxPages);
+    pageParams = pageParams.slice(0, maxPages);
+    const keptLast = pages[pages.length - 1];
+    const keptLastTurn = keptLast?.turns[keptLast.turns.length - 1];
+    if (keptLast) {
+      keptLast.next_before = keptLastTurn ? keptLastTurn.timestamp : null;
+      keptLast.next_before_id = keptLastTurn ? keptLastTurn.id : null;
+    }
+    return { pages, pageParams };
+  }
+
   const lastPage = pages[pages.length - 1];
   if (lastPage) {
     lastPage.next_before = previousTail?.next_before ?? null;
@@ -82,16 +101,23 @@ function paginate(
   return { pages, pageParams };
 }
 
+interface HeadRefreshState {
+  running: Promise<void> | null;
+  queued: boolean;
+}
+
 // Один live-tail-рефреш на агента: вспышки, наложившиеся друг на друга, не
 // гонятся наперегонки и не могут применить устаревший снимок поверх свежего.
-const refreshesInFlight = new Map<string, Promise<void>>();
+// Вспышка, пришедшая во время рефреша, ставит в очередь ещё один проход,
+// чтобы её собственный ход не выпал из кэша.
+const headRefreshes = new Map<string, HeadRefreshState>();
 
 /**
  * Live-tail: с keyset-курсором глубокие страницы неизменяемы, поэтому на
  * realtime-вспышку обновляем только голову ленты. Забираем новейшие страницы
  * до перекрытия с уже загруженной головой — иначе вспышка больше `pageSize`
- * оставила бы непокрытый зазор. Затем пересобираем страницы по `pageSize`,
- * чтобы голова не росла бесконечно за долгую сессию.
+ * оставила бы непокрытый зазор. Окно держим в границах загруженных страниц,
+ * пересобирая их по `pageSize`, чтобы кэш не рос бесконечно.
  * Нет данных — начальная загрузка ещё в полёте, не трогаем.
  */
 export function refreshActivityFeedHead(
@@ -99,14 +125,26 @@ export function refreshActivityFeedHead(
   agentId: string,
   pageSize = PAGE_SIZE,
 ): Promise<void> {
-  const running = refreshesInFlight.get(agentId);
-  if (running) return running;
+  const state = headRefreshes.get(agentId) ?? { running: null, queued: false };
+  headRefreshes.set(agentId, state);
 
-  const task = runHeadRefresh(queryClient, agentId, pageSize).finally(() => {
-    refreshesInFlight.delete(agentId);
+  if (state.running) {
+    state.queued = true;
+    return state.running;
+  }
+
+  const run = (async () => {
+    do {
+      state.queued = false;
+      await runHeadRefresh(queryClient, agentId, pageSize);
+    } while (state.queued);
+  })();
+
+  state.running = run.finally(() => {
+    state.running = null;
+    headRefreshes.delete(agentId);
   });
-  refreshesInFlight.set(agentId, task);
-  return task;
+  return state.running;
 }
 
 async function runHeadRefresh(
@@ -153,7 +191,7 @@ async function runHeadRefresh(
     const existing = old.pages.flatMap((page) => page.turns);
     const merged = [...fetched, ...existing.filter((turn) => !fetchedIds.has(turn.id))];
     if (merged.length === 0) return old;
-    return paginate(merged, pageSize, previousTail);
+    return paginate(merged, pageSize, previousTail, old.pages.length);
   });
 }
 

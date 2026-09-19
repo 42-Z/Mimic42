@@ -105,7 +105,7 @@ describe('пагинация ленты активности', () => {
     expect(loadedIds(qc)).toEqual(['c', 'b', 'a', 'z', 'y', 'x']);
   });
 
-  test('live-tail: realtime обновляет только голову, не трогая глубокие страницы', async () => {
+  test('live-tail: один запрос за головой, история не перезапрашивается', async () => {
     const qc = new QueryClient();
     const calls: RecordedCall[] = [];
     installApi(calls);
@@ -120,8 +120,8 @@ describe('пагинация ленты активности', () => {
     // Ровно один запрос — за головой. Глубокие страницы не перезапрашивались.
     expect(calls).toEqual([{ agentId: 'agent-1', limit: 2, before: null, beforeId: null }]);
 
-    // 'b' не потерян, дублей нет: граница со второй страницей сохранена.
-    expect(loadedIds(qc)).toEqual(['n', 'c', 'b', 'a', 'z']);
+    // Окно держится в границах загруженных двух страниц, порядок непрерывный.
+    expect(loadedIds(qc)).toEqual(['n', 'c', 'b', 'a']);
   });
 
   test('после live-tail полный рефетч пересобирает страницы без дыр', async () => {
@@ -159,16 +159,17 @@ describe('пагинация ленты активности', () => {
       { agentId: 'agent-1', limit: 2, before: null, beforeId: null },
       { agentId: 'agent-1', limit: 2, before: '2026-09-17T11:20:00Z', beforeId: 'n2' },
     ]);
-    expect(loadedIds(qc)).toEqual(['n3', 'n2', 'n1', 'c', 'b', 'a', 'z']);
+    // Вспышка из 3 ходов уложилась в окно двух страниц: n1 на месте, без зазора.
+    expect(loadedIds(qc)).toEqual(['n3', 'n2', 'n1', 'c']);
   });
 
-  test('размер страниц ограничен: голова не растёт бесконечно', async () => {
+  test('окно ограничено загруженными страницами и не растёт бесконечно', async () => {
     const qc = new QueryClient();
     const calls: RecordedCall[] = [];
     installApi(calls);
 
-    await qc.fetchInfiniteQuery({ ...activityFeedQueryOptions('agent-1', 2), pages: 1 });
-    expect(loadedIds(qc)).toEqual(['c', 'b']);
+    await qc.fetchInfiniteQuery({ ...activityFeedQueryOptions('agent-1', 2), pages: 2 });
+    expect(loadedIds(qc)).toEqual(['c', 'b', 'a', 'z']);
 
     for (let i = 0; i < 5; i += 1) {
       DB.unshift({ id: `m${i}`, created_at: `2026-09-17T12:0${i}:00Z` });
@@ -176,9 +177,12 @@ describe('пагинация ленты активности', () => {
     }
 
     const pages = pageRecords(qc);
+    expect(pages).toHaveLength(2);
     expect(pages.every((page) => page.turns.length <= 2)).toBe(true);
-    expect(loadedIds(qc)).toEqual(['m4', 'm3', 'm2', 'm1', 'm0', 'c', 'b']);
+    expect(loadedIds(qc)).toEqual(['m4', 'm3', 'm2', 'm1']);
     expect(new Set(loadedIds(qc)).size).toBe(loadedIds(qc).length);
+    // Вытесненные ходы достижимы: у последней страницы настоящий курсор.
+    expect(pages[pages.length - 1]?.next_before).not.toBeNull();
   });
 
   test('сбой запроса головы не портит кэш', async () => {
