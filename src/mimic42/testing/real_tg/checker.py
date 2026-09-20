@@ -21,6 +21,7 @@ from telethon import TelegramClient, events, utils
 from telethon.sessions import StringSession
 from telethon.tl.functions.channels import (
     CreateChannelRequest,
+    DeleteChannelRequest,
     InviteToChannelRequest,
     ToggleSlowModeRequest,
 )
@@ -159,6 +160,11 @@ class Checker:
             if missing:
                 raise RuntimeError(f"Не удалось пригласить в группу: {missing}")
         return peer_id
+
+    async def delete_group(self, peer_id: int) -> None:
+        """Убирает тестовую группу: они создаются на настоящем аккаунте и копились бы."""
+        channel = await self.client.get_input_entity(peer_id)
+        await self.client(DeleteChannelRequest(channel=cast(Any, channel)))
 
     async def set_slow_mode(self, peer_id: int, seconds: int) -> None:
         """Допустимо: 0 (выкл), 10, 30, 60, 300, 900, 3600 — иначе SecondsInvalidError."""
