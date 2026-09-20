@@ -190,6 +190,9 @@ class MimicAgentRuntime:
         self._state = AgentRuntimeState.STOPPED
         self._lifecycle_lock = asyncio.Lock()
         self._trigger_lock = asyncio.Lock()
+        # Проверка окна и ход по ней — одна операция: иначе сообщения, пришедшие во время
+        # хода, проходят гейт при ещё открытом окне и упираются в закрытое на отправке.
+        self._dispatch_lock = asyncio.Lock()
         self._message_handler_registered = False
         self._member_tag_cache: dict[tuple[int, int], tuple[str | None, float]] = {}
         self._chat_mute_cache: dict[str, tuple[bool, float]] = {}
@@ -1073,7 +1076,12 @@ class MimicAgentRuntime:
             return
         if await self._is_chat_muted(event, peer):
             return
+        async with self._dispatch_lock:
+            await self._gate_and_process(event, events, peer)
 
+    async def _gate_and_process(
+        self, event: TelegramEventLike, events: list[TelegramEventLike], peer: str
+    ) -> None:
         # Окно отправки бывает только у групп. В ЛС ограничений на запись нет, а пост
         # канала читают, не отвечая в него: комментарий уходит в связанную группу.
         if self._send_window is None or not getattr(event, "is_group", False):
@@ -1153,20 +1161,21 @@ class MimicAgentRuntime:
 
     async def _flush_deferred(self, peer: str, groups: list[list[Any]]) -> None:
         """Окно должно было открыться: перепроверяем и разбираем накопленное одним ходом."""
-        if self._send_window is not None:
-            now = datetime.now(UTC)
-            window = await self._send_window.check(peer)
-            if not window.is_open(now):
-                retry_after = window.retry_after(now)
-                if retry_after is not None and retry_after <= DEFER_LIMIT_SECONDS:
-                    # Слот успел закрыться снова (свой ответ инструментом, ошибка Telegram).
-                    delay = max(_delay_until(window, now), 1.0)
-                    for group in groups:
-                        self._deferred_inbox.add(peer, group, delay=delay)
-                else:
-                    logger.info("Окно в чате %s закрыто надолго, накопленное отброшено", peer)
-                return
-        await self._process_batch(peer, groups)
+        async with self._dispatch_lock:
+            if self._send_window is not None:
+                now = datetime.now(UTC)
+                window = await self._send_window.check(peer)
+                if not window.is_open(now):
+                    retry_after = window.retry_after(now)
+                    if retry_after is not None and retry_after <= DEFER_LIMIT_SECONDS:
+                        # Слот успел закрыться снова (свой ответ инструментом, ошибка Telegram).
+                        delay = max(_delay_until(window, now), 1.0)
+                        for group in groups:
+                            self._deferred_inbox.add(peer, group, delay=delay)
+                    else:
+                        logger.info("Окно в чате %s закрыто надолго, накопленное отброшено", peer)
+                    return
+            await self._process_batch(peer, groups)
 
     async def _process_batch(self, peer: str, groups: list[list[TelegramEventLike]]) -> None:
         """Один ход по нескольким группам входящих (сообщение или альбом)."""
@@ -1324,7 +1333,14 @@ def _delay_until(window: SendWindow, now: datetime) -> float:
 
 
 def _batch_header(block_count: int, window: SendWindow | None) -> str:
-    """Шапка над входящим: сколько накопилось и сколько стоит ответ."""
+    """Шапка над входящим: сколько накопилось и сколько стоит ответ.
+
+    Формулировка подобрана замером на самой слабой модели каталога. Прежняя
+    («ответить можно только ОДНИМ сообщением») читалась как требование
+    отвечать: в чужом разговоре модель отвечала в 4 из 4 случаев против 2 из 4
+    без шапки. Теперь ответ явно необязателен и привязан к адресованности,
+    а пропущенный reply_to достраивает рантайм (fallback_reply_to).
+    """
     seconds = window.slowmode_seconds if window is not None else None
     if block_count <= 1:
         if seconds is None:
@@ -1335,9 +1351,9 @@ def _batch_header(block_count: int, window: SendWindow | None) -> str:
         )
     mode = f" Медленный режим: одно сообщение раз в {seconds} с." if seconds is not None else ""
     return (
-        f"[Пока ты молчал, в чате накопилось сообщений: {block_count}.{mode}]\n"
-        "Ответить можно только ОДНИМ сообщением — обязательно укажи reply_to, "
-        "иначе будет непонятно, на что ты отвечаешь.\n\n"
+        f"[Накопилось сообщений: {block_count}.{mode} "
+        "Ответить можно один раз и только если что-то из этого адресовано тебе — тогда "
+        "укажи в reply_to ID нужного сообщения. Иначе send_any_message = false]\n\n"
     )
 
 

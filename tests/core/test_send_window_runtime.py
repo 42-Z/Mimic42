@@ -168,6 +168,9 @@ async def test_forbidden_chat_notifies_once_and_then_stays_silent() -> None:
     assert len(agent.texts) == 1
     assert "право писать" in agent.texts[0]
     assert "первое" not in agent.texts[0]
+    # RecordingAgent на уведомление отвечает текстом (слабая модель делает так всегда):
+    # предохранитель обязан не выпустить этот ответ в чат, где писать нельзя.
+    assert cast(Any, runtime._telegram_client).account.sent == []
     await finish(runtime)
 
 
@@ -248,4 +251,47 @@ async def test_deferral_is_recorded_once_per_closure() -> None:
     await dispatch(runtime, FakeEvent(1, "первое"))
     await dispatch(runtime, FakeEvent(2, "второе"))
     assert events == [("message.deferred", "succeeded")]
+    await finish(runtime)
+
+
+class SlotConsumingTracker(ScriptedTracker):
+    """После успешной отправки закрывает окно на 30 с — как медленный режим."""
+
+    def note_sent(self, peer: str) -> None:
+        self.window = slowmode_closed(30)
+
+
+class SlowAgent(RecordingAgent):
+    async def ainvoke(
+        self, input_data: dict[str, object], context: object | None = None
+    ) -> dict[str, object]:
+        await asyncio.sleep(0.1)  # генерация занимает время: именно тут окно и закрывается
+        return await super().ainvoke(input_data, context)
+
+
+async def test_messages_arriving_during_a_turn_are_deferred_not_lost() -> None:
+    """Сообщения 2 и 3 пришли, пока шёл ход по первому: окно тогда было открыто, но к
+    моменту их хода слот уже потрачен. Без сериализации проверки и хода они прошли бы гейт
+    и были отменены предохранителем, а их содержимое потерялось бы вместо отсрочки."""
+    account = FakeTelegramAccount()
+    account.authorized = True
+    agent = SlowAgent()
+    tracker = SlotConsumingTracker(SendWindow(slowmode_seconds=30))
+    runtime = MimicAgentRuntime(
+        config=make_config(),
+        telegram_client=cast(Any, FakeTelegramClient(account)),
+        langchain_agent=cast(Any, agent),
+        send_window=tracker,
+    )
+    events = _capture_events(runtime)
+
+    await asyncio.gather(
+        dispatch(runtime, FakeEvent(1, "первое")),
+        dispatch(runtime, FakeEvent(2, "второе")),
+        dispatch(runtime, FakeEvent(3, "третье")),
+    )
+
+    assert len(agent.texts) == 1, "ход на закрытом окне — пустая трата"
+    assert "message.blocked" not in [name for name, _ in events]
+    assert ("message.deferred", "succeeded") in events
     await finish(runtime)
