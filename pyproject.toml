@@ -61,6 +61,8 @@ markers = [
 [tool.ruff]
 line-length = 100
 target-version = "py313"
+# Скиллы вендорные: их хэши зафиксированы в skills-lock.json, правки по нашим правилам ломают синхронизацию.
+extend-exclude = [".agents", ".claude"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "ANN"]
