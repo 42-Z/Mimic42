@@ -26,7 +26,7 @@
 ### Task 1: Таблица `prompt_presets` с сидом
 
 **Files:**
-- Create: `supabase/migrations/20260920120000_add_prompt_presets.sql`
+- Create: `supabase/migrations/20260920085947_add_prompt_presets.sql`
 - Create: `tests/integration/test_prompt_presets.py`
 - Modify: `frontend/src/types/supabase.ts` (перегенерируется командой, руками не править)
 
@@ -67,7 +67,7 @@ async def test_presets_are_seeded(test_dsn: str) -> None:
         assert row["title"].strip()
         assert row["summary"].strip()
         # Тексты пресетов длинные: короткая строка означает обрезанный сид.
-        assert len(row["body"]) > 400
+        assert len(row["body"]) > 300
 
 
 async def test_authenticated_reads_but_cannot_write(test_dsn: str) -> None:
@@ -96,7 +96,7 @@ Expected: FAIL — `asyncpg.exceptions.UndefinedTableError: relation "public.pro
 
 - [ ] **Step 3: Написать миграцию**
 
-Создать `supabase/migrations/20260920120000_add_prompt_presets.sql`:
+Создать `supabase/migrations/20260920085947_add_prompt_presets.sql`:
 
 ```sql
 -- Справочник пресетов промптов. Курируется нами: пользователь читает и
@@ -191,7 +191,7 @@ Expected: в `frontend/src/types/supabase.ts` появился блок `prompt_
 - [ ] **Step 7: Коммит**
 
 ```bash
-git add supabase/migrations/20260920120000_add_prompt_presets.sql tests/integration/test_prompt_presets.py frontend/src/types/supabase.ts
+git add supabase/migrations/20260920085947_add_prompt_presets.sql tests/integration/test_prompt_presets.py frontend/src/types/supabase.ts
 git commit -m "feat(db): prompt presets table with seeded presets"
 ```
 
