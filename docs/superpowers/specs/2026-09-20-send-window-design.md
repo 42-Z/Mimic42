@@ -41,31 +41,70 @@ Issue: https://github.com/42-Z/Mimic42/issues/72
 
 ## Фактура Telethon и Telegram API
 
-Проверено по документации и установленной версии Telethon.
+Собрано по docs.telethon.dev, tl.telethon.dev и core.telegram.org.
 
-- Медленный режим есть только в супергруппах. В ЛС и обычных группах его не бывает.
-- `types.Channel` приходит вместе с сущностью чата и уже содержит всё дешёвое:
-  `slowmode_enabled`, `banned_rights` (личное ограничение **этого** аккаунта),
-  `default_banned_rights` (общий запрет для всех), `admin_rights`, `creator`,
-  `broadcast`, `megagroup`, `left`.
-- `types.Chat` (обычная группа) содержит только `default_banned_rights` — личных
-  ограничений в базовых группах не бывает.
-- `ChatBannedRights` — флаги `send_messages`, `send_media`, `send_plain`, `send_photos`,
-  `send_videos`, `send_voices`, `send_stickers`, `send_polls` и `until_date`.
-  `until_date == 0` или дата дальше чем через 366 дней означает «навсегда».
-- Точные числа медленного режима — в `ChannelFull`
-  (`channels.GetFullChannelRequest`): `slowmode_seconds` («писать можно не чаще раза в
-  N секунд») и `slowmode_next_send_date` («когда именно этому аккаунту снова можно
-  писать», unixtime). Запрос дорогой, поэтому кэшируется.
-- Админ супергруппы не подчиняется ни медленному режиму, ни `default_banned_rights`.
-- Ошибки, которые Telegram отдаёт по этой теме (все есть в `telethon.errors`):
-  `SlowModeWaitError` (несёт точный остаток в `.seconds`), `ChatWriteForbiddenError`,
-  `UserBannedInChannelError`, `ChatRestrictedError`, `ChatSendPlainForbiddenError`,
-  `ChatSendMediaForbiddenError`, `ChatSendStickersForbiddenError`,
-  `ChatSendGifsForbiddenError`, `ChatSendPhotosForbiddenError`,
-  `ChatSendVideosForbiddenError`, `ChatSendVoicesForbiddenError`,
-  `ChatSendPollForbiddenError`, `ChatAdminRequiredError`.
-  `SlowModeWaitError` и `FloodWaitError` — общий предок `FloodError`.
+**Типы чатов.** Медленный режим есть только в супергруппах: `Channel` с `megagroup`.
+Обычная группа — `Chat`, у неё есть только `default_banned_rights`, личных ограничений
+в базовых группах не бывает (`channels.editBanned` работает лишь с каналами).
+`Channel` с `gigagroup` — супергруппа, где писать могут только админы; Telegram при
+конвертации сам выставляет `default_banned_rights.send_messages`, но явная ветка
+дешевле проверки флага.
+
+**Права.** `Channel.banned_rights` — ограничения **этого** аккаунта в чате,
+`Channel.default_banned_rights` — общие для всех, `Channel.admin_rights` и
+`Channel.creator` — админство, `Channel.left` — аккаунт не в чате.
+В `ChatBannedRights` важны два разных флага: `send_messages` («нельзя писать вообще»)
+и `send_plain` («нельзя текстом, медиа можно»).
+
+**Срок ограничения.** `until_date` — «считается вечным любое значение меньше 30 секунд
+или больше 366 дней» (core.telegram.org/constructor/chatBannedRights). Telethon отдаёт
+его как `datetime`, а не как unixtime, поэтому сравнивать надо длительность
+`until_date - now`, а не само число.
+
+**Ловушка `min`.** У `Channel` есть флаг `min`. Документация Telegram перечисляет поля,
+которые можно применять поверх локальной копии у min-версии: `default_banned_rights` и
+`slowmode_enabled` в списке есть, а `banned_rights` и `admin_rights` — **нет**. То есть
+личные права и админство у min-сущности недостоверны, и при `channel.min` нужна полная
+сущность через `get_entity`.
+
+**Цена получения сущности.** `get_input_entity` берёт из кэша сессии и почти никогда не
+ходит в сеть, но прав не содержит. `get_entity` «всегда делает API-вызов, чтобы получить
+самую свежую информацию» — то есть права стоят запроса, и TTL-кэш обязателен.
+`event.chat` может быть `None` (Telegram не всегда шлёт эти данные), нужен
+`await event.get_chat()`.
+
+**Числа медленного режима.** `ChannelFull` (через `channels.GetFullChannelRequest`,
+возвращает `messages.ChatFull` с полем `full_chat`): `slowmode_seconds` — «пользователи
+в супергруппах смогут отправлять не больше одного сообщения каждые N секунд»,
+`slowmode_next_send_date` — «когда пользователю будет разрешено отправить следующее
+сообщение» (Telethon отдаёт `datetime`). Оба поля опциональны и могут быть `None`.
+Запрос знает четыре ошибки, из них для нас важна `ChannelPrivateError` — её же отдают,
+если аккаунт из чата забанен.
+
+**Ошибки** (`from telethon import errors`): `SlowModeWaitError` (несёт точный остаток в
+`.seconds`), `ChatWriteForbiddenError`, `UserBannedInChannelError`, `ChatRestrictedError`,
+`ChatSendPlainForbiddenError`, `ChatSendMediaForbiddenError`,
+`ChatSendStickersForbiddenError`, `ChatSendGifsForbiddenError`,
+`ChatSendPhotosForbiddenError`, `ChatSendVideosForbiddenError`,
+`ChatSendVoicesForbiddenError`, `ChatSendPollForbiddenError`, `ChatAdminRequiredError`.
+
+**Telethon умеет ждать сам, и это мешает.** У клиента есть `flood_sleep_threshold`,
+по умолчанию 60: документация прямо говорит, что при флуд-ошибках меньше порога
+библиотека засыпает сама и повторяет запрос. `SlowModeWaitError` — флуд-ошибка и несёт
+`.seconds`. Значит при кд в 30 секунд `send_message` молча проспит эти 30 секунд внутри
+хода, удерживая `_trigger_lock`, — ровно то отставание, ради устранения которого всё и
+затевается. Поэтому клиенту агента выставляется `flood_sleep_threshold = 0`: решение
+«ждать или нет» принимает окно отправки, а не библиотека.
+
+**Обновления прав.** Изменения приходят апдейтами `UpdateChannel(channel_id)` и
+`UpdateChatDefaultBannedRights(peer, default_banned_rights, version)`, их можно ловить
+через `events.Raw(types=[...])` и сбрасывать кэш окна мгновенно вместо ожидания TTL.
+Какие именно апдейты реально прилетают при включении кд и при выдаче мьюта —
+проверяется в живом тесте, и уже по результату решается, подписываться ли.
+
+**Требует проверки на живом Telegram, а не принимается на веру:** освобождён ли админ от
+медленного режима (в документации это нигде не написано прямо) и приходит ли апдейт при
+включении кд.
 
 ## Принятые решения
 
@@ -79,6 +118,7 @@ Issue: https://github.com/42-Z/Mimic42/issues/72
 | Забрали право писать надолго | Один ход-уведомление на смене состояния, дальше чат игнорируется до снятия |
 | Проверка прав | Дёшево из сущности чата, дорого (`GetFullChannel`) только при медленном режиме |
 | Источник истины | Ошибка Telegram. Локальный расчёт — оптимизация, ошибка его перетирает |
+| Автосон Telethon | Отключается (`flood_sleep_threshold = 0`), ждать решает окно, а не библиотека |
 
 ## Архитектура
 
@@ -255,6 +295,41 @@ Telegram отказал раньше локальной проверки.
   отменяет отправку
 - `tests/integrations/test_telegram_tools.py` — `send_*` при закрытом окне возвращает
   `retry_after_seconds` и причину; успешная отправка расходует слот
+
+Модульных тестов мало: они проверяют, что механика работает, но не то, что поведение
+получилось разумным. Поэтому работа не считается сделанной, пока не пройдены две
+проверки на настоящих системах.
+
+### Проверка на модели
+
+Поведение решает не код, а модель: именно она смотрит на строку про медленный режим и
+выбирает, тратить слот или молчать. Проверяется на **самой слабой** модели из каталога —
+чтобы видеть худший сценарий, а не лучший. Сценарии собираются как пачки входящих с
+реальной шапкой и прогоняются через настоящий ход агента; смотрим на структурированный
+ответ:
+
+- пачка из пяти сообщений, из которых актуально одно → один ответ с `reply_to` на нужное
+- пачка, где ничего не адресовано агенту → `send_any_message = False`
+- чат, где право писать забрали → агент не пытается слать инструментом в этот же чат
+- обычный чат без ограничений → поведение не изменилось, лишних упоминаний кд нет
+
+Если слабая модель на шапке путается — правится формулировка шапки и промпта, а не
+ожидания теста.
+
+### Проверка на живом Telegram
+
+Проверяющий аккаунт (`tests/real_tg/`, фикстура `checker`) создаёт супергруппу,
+приглашает мимика и включает медленный режим. Проверяется и поведение, и фактура:
+
+- какие события и апдейты реально приходят мимику при включении кд и при выдаче мьюта,
+  и не упущено ли что-то, на что стоит реагировать
+- освобождён ли админ от медленного режима
+- что отдаёт `GetFullChannel` обычному участнику: приходит ли `slowmode_next_send_date`
+  и совпадает ли он с локальным расчётом
+- поток сообщений быстрее кд → мимик отвечает одним сообщением с реплаем, а не копит
+  хвост, и `SlowModeWaitError` в логах не появляется
+- ограничение прав через `channels.EditBannedRequest` → мимик не пытается отправить,
+  в `agent_events` появляется событие, после снятия ограничения чат снова живой
 
 ## Что в объём не входит
 
