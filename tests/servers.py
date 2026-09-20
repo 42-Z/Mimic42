@@ -49,6 +49,9 @@ def terminate(proc: subprocess.Popen[bytes]) -> None:
 def assert_port_free(port: int) -> None:
     """Порт обязан быть свободен: иначе тесты молча пойдут в чужой сервер."""
     with socket.socket() as sock:
+        # Как у uvicorn и next: остатки прошлого прогона в TIME_WAIT порт не
+        # занимают. Живой слушатель bind по-прежнему отвергает.
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             sock.bind(("127.0.0.1", port))
         except OSError as exc:

@@ -371,3 +371,16 @@ export interface MemoryHistoryItem {
   user_id?: string | null;
 }
 
+
+// ── Prompt presets ────────────────────────────────────────────────────────────
+export interface PromptPresetRow {
+  id: string;
+  slug: string;
+  title: string;
+  summary: string;
+  body: string;
+  sort_order: number;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
