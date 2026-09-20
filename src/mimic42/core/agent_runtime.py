@@ -139,6 +139,22 @@ class TurnContext:
     peer: str
 
 
+@dataclass
+class IncomingBlock:
+    """Одно входящее (или один альбом), уже приведённое к тексту для модели."""
+
+    text: str
+    media: list[MediaFile]
+    message_id: int | None
+    reply_to_msg_id: int | None
+    reply_preview: str
+    raw_text: str
+    thread_title: str | None
+    sender_str: str
+    chat_type_str: str
+    msg_date: datetime
+
+
 class MimicAgentRuntime:
     """Async runtime that owns one Telegram user session and one LangChain agent."""
 
@@ -666,17 +682,9 @@ class MimicAgentRuntime:
         except Exception:
             logger.exception("Failed to process grouped album")
 
-    async def _process_incoming(self, events: list[TelegramEventLike]) -> None:
-        event = events[0]
-        logger.info("Incoming message event received")
-        logger.info(
-            "Incoming message event: chat_id=%s, text=%s",
-            getattr(event, "chat_id", None),
-            getattr(event, "raw_text", "")[:50],
-        )
-        # Check if chat is muted
+    async def _is_chat_muted(self, event: TelegramEventLike, peer: str) -> bool:
+        """Приглушён ли чат у самого агента (уведомления), а не запрет писать в него."""
         try:
-            peer = await _extract_incoming_peer(event)
             import time
 
             now_ts = time.time()
@@ -687,7 +695,7 @@ class MimicAgentRuntime:
                 if now_ts < expiry:
                     is_muted = cached_muted
                     if is_muted:
-                        return
+                        return True
                 else:
                     self._chat_mute_cache.pop(peer, None)
 
@@ -733,299 +741,348 @@ class MimicAgentRuntime:
 
                     if is_muted:
                         logger.info("Chat %s is muted, skipping", peer)
-                        return
+                        return True
         except Exception:
             logger.exception("Failed to check mute status for peer %s", peer)
 
-        # Protect the rest of the message handling pipeline from crashes
-        try:
-            # Элементы альбома обрабатываются по отдельности (у каждого свой
-            # маркер и своя подпись), но ход, ответ и запись — общие.
-            merged_content: list[str] = []
-            merged_raw: list[str] = []
-            media_files: list[MediaFile] = []
-            for item in events:
-                item_raw = getattr(item, "raw_text", None) or getattr(item, "text", None)
-                if not isinstance(item_raw, str):
-                    item_raw = ""
-                if item_raw:
-                    merged_raw.append(item_raw)
-                item_text, item_media = await _process_media_and_text(
-                    item,
-                    item_raw,
-                    http_client=self._http_client,
-                    media_uploader=self._media_uploader,
-                    agent_id=self.config.agent_id,
-                )
-                if item_text:
-                    merged_content.append(item_text)
-                media_files.extend(item_media)
+        return False
 
-            raw_text = "\n".join(merged_raw)
-            text = "\n".join(merged_content)
-            if not text:
-                logger.info(
-                    "Empty text after _process_media_and_text for chat %s, skipping",
-                    getattr(event, "chat_id", None),
+    async def _format_incoming(self, events: list[TelegramEventLike]) -> IncomingBlock | None:
+        """Привести одно входящее или один альбом к тексту для модели."""
+        event = events[0]
+        # Элементы альбома обрабатываются по отдельности (у каждого свой
+        # маркер и своя подпись), но ход, ответ и запись — общие.
+        merged_content: list[str] = []
+        merged_raw: list[str] = []
+        media_files: list[MediaFile] = []
+        for item in events:
+            item_raw = getattr(item, "raw_text", None) or getattr(item, "text", None)
+            if not isinstance(item_raw, str):
+                item_raw = ""
+            if item_raw:
+                merged_raw.append(item_raw)
+            item_text, item_media = await _process_media_and_text(
+                item,
+                item_raw,
+                http_client=self._http_client,
+                media_uploader=self._media_uploader,
+                agent_id=self.config.agent_id,
+            )
+            if item_text:
+                merged_content.append(item_text)
+            media_files.extend(item_media)
+
+        raw_text = "\n".join(merged_raw)
+        text = "\n".join(merged_content)
+        if not text:
+            logger.info(
+                "Empty text after _process_media_and_text for chat %s, skipping",
+                getattr(event, "chat_id", None),
+            )
+            return None
+
+        # Format sender name and metadata
+        is_private = getattr(event, "is_private", False)
+        is_group = getattr(event, "is_group", False)
+
+        from datetime import datetime
+
+        msg_date = getattr(event, "date", None)
+        if not msg_date:
+            message = getattr(event, "message", None)
+            msg_date = getattr(message, "date", None)
+        if not msg_date:
+            msg_date = datetime.now()
+        time_str = msg_date.strftime("%Y-%m-%d %H:%M:%S")
+
+        # Chat name
+        chat = None
+        if is_private:
+            chat_type_str = "ЛС"
+        else:
+            chat = await event.get_chat()
+            chat_title = getattr(chat, "title", "")
+            if not chat_title:
+                chat_title = getattr(chat, "username", "") or str(getattr(event, "chat_id", ""))
+            if is_group:
+                chat_type_str = f'Группа "{chat_title}"'
+            else:
+                chat_type_str = f'Канал "{chat_title}"'
+
+        # Sender details
+        get_sender = getattr(event, "get_sender", None)
+        sender = None
+        if callable(get_sender):
+            try:
+                import inspect
+
+                res = get_sender()
+                if inspect.isawaitable(res):
+                    sender = await res
+                else:
+                    sender = res
+            except Exception:
+                logger.warning("Failed to get sender for event", exc_info=True)
+        if sender:
+            first_name = getattr(sender, "first_name", None) or ""
+            last_name = getattr(sender, "last_name", None) or ""
+            name_parts = []
+            if first_name:
+                name_parts.append(first_name)
+            if last_name:
+                name_parts.append(last_name)
+            name_str = " ".join(name_parts)
+            if not name_str:
+                name_str = (
+                    getattr(sender, "title", None)
+                    or getattr(sender, "username", None)
+                    or str(getattr(sender, "id", ""))
                 )
+            if not name_str:
+                name_str = "Unknown"
+
+            username = getattr(sender, "username", None)
+            username_str = f"@{username}" if username else ""
+            sender_id = getattr(sender, "id", None)
+            id_str = f"ID: {sender_id}" if sender_id else ""
+
+            details = ", ".join(filter(None, [username_str, id_str]))
+            details_str = f" ({details})" if details else ""
+            sender_str = f"{name_str}{details_str}"
+        else:
+            chat = await event.get_chat()
+            if isinstance(chat, str):
+                sender_str = chat
+            else:
+                chat_title = getattr(chat, "title", None)
+                sender_str = chat_title if isinstance(chat_title, str) else "Unknown"
+
+        # Check role/title
+        title = None
+        event_chat_id = event.chat_id
+        event_sender_id = event.sender_id
+        if event_sender_id and event_chat_id:
+            cache_key = (event_chat_id, event_sender_id)
+            import time
+
+            now_ts = time.time()
+            if cache_key in self._member_tag_cache:
+                cached_title, expiry = self._member_tag_cache[cache_key]
+                if now_ts < expiry:
+                    title = cached_title
+
+            is_expired = (
+                cache_key not in self._member_tag_cache
+                or now_ts >= self._member_tag_cache[cache_key][1]
+            )
+            if is_expired:
+                try:
+                    from telethon.tl import functions
+
+                    is_supergroup = getattr(event, "is_channel", False)
+                    if is_supergroup:
+                        input_chat = getattr(event, "input_chat", None) or event_chat_id
+                        input_sender = getattr(event, "input_sender", None) or event_sender_id
+                        res = await event.client(
+                            functions.channels.GetParticipantRequest(
+                                channel=cast(Any, input_chat),
+                                participant=cast(Any, input_sender),
+                            )
+                        )
+                        title = res.participant.title if hasattr(res.participant, "title") else None
+                except Exception:
+                    logger.warning("Failed to get participant title", exc_info=True)
+                    title = None
+                self._member_tag_cache[cache_key] = (title, now_ts + 3600.0)
+
+        # Fallback to channel post author signature
+        post_author = getattr(getattr(event, "message", None), "post_author", None)
+        if not title and post_author:
+            title = post_author
+
+        if title:
+            sender_str += f" [Подпись/Роль: {title}]"
+
+        # Thread title for the dashboard: reuse the entities already
+        # fetched above — no extra Telegram requests. For private chats
+        # the interlocutor is the chat itself.
+        thread_title: str | None = None
+        thread_entity = chat if (not is_private and chat is not None) else sender
+        if thread_entity is not None:
+            from telethon import utils as telethon_utils
+
+            thread_title = telethon_utils.get_display_name(thread_entity) or None
+        if not thread_title:
+            thread_title = str(getattr(event, "chat_id", "")) or None
+
+        # NewMessage.Event delegates __getattr__ to self.message, but
+        # self.message is a raw types.Message (not the custom wrapper),
+        # so it lacks the reply_to_msg_id property. Inspect reply_to directly.
+        from telethon.tl import types
+
+        reply_to_msg_id = None
+        ev_message = getattr(event, "message", None)
+        if ev_message:
+            reply_to = getattr(ev_message, "reply_to", None)
+            if isinstance(reply_to, types.MessageReplyHeader):
+                reply_to_msg_id = reply_to.reply_to_msg_id
+            elif reply_to:
+                reply_to_msg_id = getattr(reply_to, "reply_to_msg_id", None)
+
+        reply_str = ""
+        reply_preview = ""
+        if reply_to_msg_id:
+            logger.debug(
+                "Reply detected: reply_to_msg_id=%s for chat_id=%s",
+                reply_to_msg_id,
+                getattr(event, "chat_id", None),
+            )
+            reply_preview = ""
+            try:
+                reply_msg = await event.get_reply_message()
+                if reply_msg:
+                    raw = getattr(reply_msg, "raw_text", "")
+                    reply_preview = raw or getattr(reply_msg, "text", "")
+                    logger.debug(
+                        "get_reply_message succeeded, preview=%s",
+                        reply_preview[:30] if reply_preview else "(empty)",
+                    )
+                else:
+                    logger.debug("get_reply_message returned None")
+            except Exception:
+                logger.debug("get_reply_message failed", exc_info=True)
+
+            if not reply_preview:
+                # Fallback: fetch the replied message directly via RPC
+                try:
+                    get_messages = getattr(self._telegram_client, "get_messages", None)
+                    if callable(get_messages):
+                        peer = await _extract_incoming_peer(event)
+                        msgs = await get_messages(peer, ids=reply_to_msg_id)
+                        if msgs:
+                            reply_msg = msgs[0] if isinstance(msgs, list) else msgs
+                            raw = getattr(reply_msg, "raw_text", "")
+                            reply_preview = raw or getattr(reply_msg, "text", "")
+                            logger.debug(
+                                "Fallback get_messages succeeded, preview=%s",
+                                reply_preview[:30] if reply_preview else "(empty)",
+                            )
+                except Exception:
+                    logger.debug("Fallback get_messages failed", exc_info=True)
+
+            if reply_preview:
+                preview = reply_preview[:20]
+                reply_str = f'Ответ на сообщение #{reply_to_msg_id} ("{preview}...")\n'
+            else:
+                reply_str = f"Ответ на сообщение #{reply_to_msg_id}\n"
+
+        # Format output message text
+        incoming_msg_id = _extract_incoming_message_id(event)
+        album_note = ""
+        if len(events) > 1:
+            item_ids = [
+                str(item_id)
+                for item in events
+                if (item_id := _extract_incoming_message_id(item)) is not None
+            ]
+            album_note = f"Альбом из {len(events)} файлов (ID: {', '.join(item_ids)})\n"
+        text = (
+            f"[Входящее сообщение]\n"
+            f"Время: {time_str}\n"
+            f"Чат: {chat_type_str}\n"
+            f"Отправитель: {sender_str}\n"
+            f"ID сообщения: {incoming_msg_id}\n"
+            f"{album_note}"
+            f"{reply_str}"
+            f"Содержимое: {text}"
+        )
+
+        return IncomingBlock(
+            text=text,
+            media=media_files,
+            message_id=_extract_incoming_message_id(event),
+            reply_to_msg_id=reply_to_msg_id,
+            reply_preview=reply_preview,
+            raw_text=raw_text,
+            thread_title=thread_title,
+            sender_str=sender_str,
+            chat_type_str=chat_type_str,
+            msg_date=msg_date,
+        )
+
+    async def _process_incoming(self, events: list[TelegramEventLike]) -> None:
+        event = events[0]
+        logger.info("Incoming message event received")
+        logger.info(
+            "Incoming message event: chat_id=%s, text=%s",
+            getattr(event, "chat_id", None),
+            getattr(event, "raw_text", "")[:50],
+        )
+        try:
+            peer = await _extract_incoming_peer(event)
+        except Exception as e:
+            await self._record_incoming_failure(str(getattr(event, "chat_id", "") or ""), e)
+            return
+        if await self._is_chat_muted(event, peer):
+            return
+        await self._process_batch(peer, [events])
+
+    async def _process_batch(self, peer: str, groups: list[list[TelegramEventLike]]) -> None:
+        """Один ход по нескольким группам входящих (сообщение или альбом)."""
+        # Защищаем остальной конвейер обработки сообщения от падений.
+        try:
+            blocks: list[IncomingBlock] = []
+            for group in groups:
+                block = await self._format_incoming(group)
+                if block is not None:
+                    blocks.append(block)
+            if not blocks:
+                logger.info("Пачка для чата %s пуста после разбора, пропускаем", peer)
                 return
 
-            # Format sender name and metadata
-            is_private = getattr(event, "is_private", False)
-            is_group = getattr(event, "is_group", False)
+            last = blocks[-1]
+            text = "\n\n".join(block.text for block in blocks)
+            media: list[dict[str, Any]] = []
+            for block in blocks:
+                media.extend(m.as_payload() for m in block.media)
 
-            from datetime import datetime
-
-            msg_date = getattr(event, "date", None)
-            if not msg_date:
-                message = getattr(event, "message", None)
-                msg_date = getattr(message, "date", None)
-            if not msg_date:
-                msg_date = datetime.now()
-            time_str = msg_date.strftime("%Y-%m-%d %H:%M:%S")
-
-            # Chat name
-            chat = None
-            if is_private:
-                chat_type_str = "ЛС"
-            else:
-                chat = await event.get_chat()
-                chat_title = getattr(chat, "title", "")
-                if not chat_title:
-                    chat_title = getattr(chat, "username", "") or str(getattr(event, "chat_id", ""))
-                if is_group:
-                    chat_type_str = f'Группа "{chat_title}"'
-                else:
-                    chat_type_str = f'Канал "{chat_title}"'
-
-            # Sender details
-            get_sender = getattr(event, "get_sender", None)
-            sender = None
-            if callable(get_sender):
-                try:
-                    import inspect
-
-                    res = get_sender()
-                    if inspect.isawaitable(res):
-                        sender = await res
-                    else:
-                        sender = res
-                except Exception:
-                    logger.warning("Failed to get sender for event", exc_info=True)
-            if sender:
-                first_name = getattr(sender, "first_name", None) or ""
-                last_name = getattr(sender, "last_name", None) or ""
-                name_parts = []
-                if first_name:
-                    name_parts.append(first_name)
-                if last_name:
-                    name_parts.append(last_name)
-                name_str = " ".join(name_parts)
-                if not name_str:
-                    name_str = (
-                        getattr(sender, "title", None)
-                        or getattr(sender, "username", None)
-                        or str(getattr(sender, "id", ""))
-                    )
-                if not name_str:
-                    name_str = "Unknown"
-
-                username = getattr(sender, "username", None)
-                username_str = f"@{username}" if username else ""
-                sender_id = getattr(sender, "id", None)
-                id_str = f"ID: {sender_id}" if sender_id else ""
-
-                details = ", ".join(filter(None, [username_str, id_str]))
-                details_str = f" ({details})" if details else ""
-                sender_str = f"{name_str}{details_str}"
-            else:
-                chat = await event.get_chat()
-                if isinstance(chat, str):
-                    sender_str = chat
-                else:
-                    chat_title = getattr(chat, "title", None)
-                    sender_str = chat_title if isinstance(chat_title, str) else "Unknown"
-
-            # Check role/title
-            title = None
-            event_chat_id = event.chat_id
-            event_sender_id = event.sender_id
-            if event_sender_id and event_chat_id:
-                cache_key = (event_chat_id, event_sender_id)
-                import time
-
-                now_ts = time.time()
-                if cache_key in self._member_tag_cache:
-                    cached_title, expiry = self._member_tag_cache[cache_key]
-                    if now_ts < expiry:
-                        title = cached_title
-
-                is_expired = (
-                    cache_key not in self._member_tag_cache
-                    or now_ts >= self._member_tag_cache[cache_key][1]
-                )
-                if is_expired:
-                    try:
-                        from telethon.tl import functions
-
-                        is_supergroup = getattr(event, "is_channel", False)
-                        if is_supergroup:
-                            input_chat = getattr(event, "input_chat", None) or event_chat_id
-                            input_sender = getattr(event, "input_sender", None) or event_sender_id
-                            res = await event.client(
-                                functions.channels.GetParticipantRequest(
-                                    channel=cast(Any, input_chat),
-                                    participant=cast(Any, input_sender),
-                                )
-                            )
-                            title = (
-                                res.participant.title if hasattr(res.participant, "title") else None
-                            )
-                    except Exception:
-                        logger.warning("Failed to get participant title", exc_info=True)
-                        title = None
-                    self._member_tag_cache[cache_key] = (title, now_ts + 3600.0)
-
-            # Fallback to channel post author signature
-            post_author = getattr(getattr(event, "message", None), "post_author", None)
-            if not title and post_author:
-                title = post_author
-
-            if title:
-                sender_str += f" [Подпись/Роль: {title}]"
-
-            # Thread title for the dashboard: reuse the entities already
-            # fetched above — no extra Telegram requests. For private chats
-            # the interlocutor is the chat itself.
-            thread_title: str | None = None
-            thread_entity = chat if (not is_private and chat is not None) else sender
-            if thread_entity is not None:
-                from telethon import utils as telethon_utils
-
-                thread_title = telethon_utils.get_display_name(thread_entity) or None
-            if not thread_title:
-                thread_title = str(getattr(event, "chat_id", "")) or None
-
-            # NewMessage.Event delegates __getattr__ to self.message, but
-            # self.message is a raw types.Message (not the custom wrapper),
-            # so it lacks the reply_to_msg_id property. Inspect reply_to directly.
-            from telethon.tl import types
-
-            reply_to_msg_id = None
-            ev_message = getattr(event, "message", None)
-            if ev_message:
-                reply_to = getattr(ev_message, "reply_to", None)
-                if isinstance(reply_to, types.MessageReplyHeader):
-                    reply_to_msg_id = reply_to.reply_to_msg_id
-                elif reply_to:
-                    reply_to_msg_id = getattr(reply_to, "reply_to_msg_id", None)
-
-            reply_str = ""
-            reply_preview = ""
-            if reply_to_msg_id:
-                logger.debug(
-                    "Reply detected: reply_to_msg_id=%s for chat_id=%s",
-                    reply_to_msg_id,
-                    getattr(event, "chat_id", None),
-                )
-                reply_preview = ""
-                try:
-                    reply_msg = await event.get_reply_message()
-                    if reply_msg:
-                        raw = getattr(reply_msg, "raw_text", "")
-                        reply_preview = raw or getattr(reply_msg, "text", "")
-                        logger.debug(
-                            "get_reply_message succeeded, preview=%s",
-                            reply_preview[:30] if reply_preview else "(empty)",
-                        )
-                    else:
-                        logger.debug("get_reply_message returned None")
-                except Exception:
-                    logger.debug("get_reply_message failed", exc_info=True)
-
-                if not reply_preview:
-                    # Fallback: fetch the replied message directly via RPC
-                    try:
-                        get_messages = getattr(self._telegram_client, "get_messages", None)
-                        if callable(get_messages):
-                            peer = await _extract_incoming_peer(event)
-                            msgs = await get_messages(peer, ids=reply_to_msg_id)
-                            if msgs:
-                                reply_msg = msgs[0] if isinstance(msgs, list) else msgs
-                                raw = getattr(reply_msg, "raw_text", "")
-                                reply_preview = raw or getattr(reply_msg, "text", "")
-                                logger.debug(
-                                    "Fallback get_messages succeeded, preview=%s",
-                                    reply_preview[:30] if reply_preview else "(empty)",
-                                )
-                    except Exception:
-                        logger.debug("Fallback get_messages failed", exc_info=True)
-
-                if reply_preview:
-                    preview = reply_preview[:20]
-                    reply_str = f'Ответ на сообщение #{reply_to_msg_id} ("{preview}...")\n'
-                else:
-                    reply_str = f"Ответ на сообщение #{reply_to_msg_id}\n"
-
-            # Format output message text
-            incoming_msg_id = _extract_incoming_message_id(event)
-            album_note = ""
-            if len(events) > 1:
-                item_ids = [
-                    str(item_id)
-                    for item in events
-                    if (item_id := _extract_incoming_message_id(item)) is not None
-                ]
-                album_note = f"Альбом из {len(events)} файлов (ID: {', '.join(item_ids)})\n"
-            text = (
-                f"[Входящее сообщение]\n"
-                f"Время: {time_str}\n"
-                f"Чат: {chat_type_str}\n"
-                f"Отправитель: {sender_str}\n"
-                f"ID сообщения: {incoming_msg_id}\n"
-                f"{album_note}"
-                f"{reply_str}"
-                f"Содержимое: {text}"
-            )
-
-            peer = await _extract_incoming_peer(event)
             thread_id = await self._upsert_thread(
                 peer=peer,
-                title=thread_title,
-                last_message_at=msg_date,
+                title=last.thread_title,
+                last_message_at=last.msg_date,
             )
             await self.trigger_message(
                 AgentTrigger(
                     peer=peer,
                     text=text,
-                    raw_text=raw_text,
-                    peer_name=sender_str,
-                    chat_name=chat_type_str,
-                    message_id=_extract_incoming_message_id(event),
+                    raw_text="\n".join(block.raw_text for block in blocks),
+                    peer_name=last.sender_str,
+                    chat_name=last.chat_type_str,
+                    message_id=last.message_id,
                     thread_id=thread_id,
-                    thread_title=thread_title,
-                    media=[m.as_payload() for m in media_files],
-                    reply_to_message_id=reply_to_msg_id,
-                    reply_preview=reply_preview[:200] if reply_preview else None,
+                    thread_title=last.thread_title,
+                    media=media,
+                    reply_to_message_id=last.reply_to_msg_id,
+                    reply_preview=last.reply_preview[:200] if last.reply_preview else None,
                 )
             )
         except Exception as e:
-            logger.exception("Unhandled exception in incoming message handler")
-            if getattr(e, "_mimic_turn_failed_recorded", False):
-                # trigger_message already recorded turn.failed with the
-                # turn_id — a second row would double the error KPI.
-                return
-            await self._record_event(
-                event_type="turn.failed",
-                status="failed",
-                payload={
-                    "peer": str(getattr(event, "chat_id", "") or ""),
-                    "error_code": type(e).__name__,
-                },
-                error=str(e),
-                started_at=datetime.now(UTC),
-                completed_at=datetime.now(UTC),
-            )
+            await self._record_incoming_failure(peer, e)
+
+    async def _record_incoming_failure(self, peer: str, exc: Exception) -> None:
+        logger.error("Unhandled exception in incoming message handler", exc_info=exc)
+        if getattr(exc, "_mimic_turn_failed_recorded", False):
+            # trigger_message already recorded turn.failed with the
+            # turn_id — a second row would double the error KPI.
+            return
+        await self._record_event(
+            event_type="turn.failed",
+            status="failed",
+            payload={"peer": peer, "error_code": type(exc).__name__},
+            error=str(exc),
+            started_at=datetime.now(UTC),
+            completed_at=datetime.now(UTC),
+        )
 
     async def _run_scheduler_loop(self) -> None:
         """Background loop to check and trigger pending agent timers."""
