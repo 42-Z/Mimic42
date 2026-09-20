@@ -7,6 +7,11 @@ import { useAgentStatus, useAgentDetails, useUpdateAgentSettings } from '@/hooks
 import { useAgentStatusRealtime } from '@/hooks/useRealtimeFeed';
 import { TabActivity } from '@/components/activity/TabActivity';
 import { TabAnalytics } from '@/components/agent/TabAnalytics';
+import {
+  EMPTY_FIRST_COMMENT,
+  FirstCommentSettingsSection,
+  readFirstComment,
+} from '@/components/agent/FirstCommentSettings';
 import { useTelegramSession } from '@/hooks/useTelegramSession';
 import { useStartAgent, useStopAgent, useTriggerMessage, useDeleteAgent } from '@/hooks/useAgents';
 import { useAgentMemories, useAgentMemoryHistory } from '@/hooks/useMemory';
@@ -199,6 +204,7 @@ function TabSettings({ agentId }: { agentId: string }) {
 
   const [values, setValues] = useState<AgentSettingsValues>({
     name: '', soul_prompt: '', reasoning_effort: 'high', model: DEFAULT_MODEL,
+    first_comment: EMPTY_FIRST_COMMENT,
   });
   const [formErrors, setFormErrors] = useState<Partial<Record<keyof AgentSettingsValues, string>>>({});
   const [dirty, setDirty] = useState(false);
@@ -211,6 +217,7 @@ function TabSettings({ agentId }: { agentId: string }) {
         reasoning_effort:
           (details.settings?.reasoning_effort as AgentSettingsValues['reasoning_effort']) ?? 'high',
         model: (details.settings?.model as string) ?? DEFAULT_MODEL,
+        first_comment: readFirstComment(details.settings),
       });
     }
   }, [details]);
@@ -253,6 +260,7 @@ function TabSettings({ agentId }: { agentId: string }) {
           // stored effort: "none" keeps the request clean.
           reasoning_effort: reasoningOptions === null ? 'none' : result.data.reasoning_effort,
           model: result.data.model,
+          first_comment: result.data.first_comment ?? EMPTY_FIRST_COMMENT,
         },
       };
       await update.mutateAsync(submissionData);
@@ -334,6 +342,16 @@ function TabSettings({ agentId }: { agentId: string }) {
           )}
         </div>
       )}
+
+      <FirstCommentSettingsSection
+        agentId={agentId}
+        value={values.first_comment ?? EMPTY_FIRST_COMMENT}
+        onChange={(next) => {
+          setValues((v) => ({ ...v, first_comment: next }));
+          setDirty(true);
+        }}
+        error={formErrors.first_comment}
+      />
 
       <div className="flex items-center gap-3 pt-2">
         <Button type="submit" isLoading={update.isPending} disabled={!dirty}>

@@ -59,12 +59,26 @@ class FakeTelegramClient:
     async def is_user_authorized(self) -> bool:
         return self.account.authorized
 
-    async def send_message(self, entity: str, message: str, **kwargs: Any) -> object:
+    async def send_message(self, entity: str | int, message: str, **kwargs: Any) -> object:
         self.account.sent.append(
             SentMessage(
                 chat_id=str(entity),
                 text=message,
                 kwargs=kwargs,
+                order=self.account.next_order(),
+            )
+        )
+        return type("Message", (), {"id": len(self.account.sent)})()
+
+    async def send_file(self, entity: str | int, file: Any, **kwargs: Any) -> object:
+        """Файл записывается как обычное сообщение: текст — подпись, а сам
+        поток кладётся в kwargs, чтобы тест мог проверить имя и содержимое."""
+        caption = kwargs.pop("caption", None) or ""
+        self.account.sent.append(
+            SentMessage(
+                chat_id=str(entity),
+                text=caption,
+                kwargs={**kwargs, "file": file},
                 order=self.account.next_order(),
             )
         )

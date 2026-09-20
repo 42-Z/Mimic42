@@ -259,3 +259,56 @@ async def test_database_conversation_groups_messages_and_tool_events(
     limited = await store.get_conversation(agent_id=agent_id, limit=1)
     assert len(limited.turns) == 1
     assert limited.turns[0].outgoing == "proactive"
+
+
+async def test_runtime_config_carries_the_first_comment_setting(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    """Настройка живёт в JSON-колонке, и рантайм обязан видеть её как модель."""
+    owner_id = clean_slot.persona("full").user_id
+    agent_id = uuid4()
+
+    store = DatabaseAgentStore(db_session_factory)
+    await store.create_from_onboarding(_make_session(owner_id, agent_id, "Mimic"))
+
+    async with db_session_factory() as session:
+        await session.execute(
+            update(AgentModel)
+            .where(AgentModel.id == agent_id)
+            .values(
+                settings={
+                    "first_comment": {
+                        "enabled": True,
+                        "variants": [
+                            {"text": "Первый!"},
+                            {"text": "  "},
+                            {"text": "", "image_path": f"{agent_id}/u/pic.jpg"},
+                        ],
+                    }
+                }
+            )
+        )
+        await session.commit()
+
+    config = await store.get_runtime_config(agent_id)
+
+    assert config.first_comment.enabled is True
+    # Пустой вариант отброшен: он не дал бы Телеграму что отправить.
+    assert [variant.text for variant in config.first_comment.variants] == ["Первый!", ""]
+    assert config.first_comment.variants[1].image_path == f"{agent_id}/u/pic.jpg"
+
+
+async def test_runtime_config_defaults_first_comment_to_off(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    owner_id = clean_slot.persona("full").user_id
+    agent_id = uuid4()
+
+    store = DatabaseAgentStore(db_session_factory)
+    await store.create_from_onboarding(_make_session(owner_id, agent_id, "Mimic"))
+
+    config = await store.get_runtime_config(agent_id)
+
+    assert config.first_comment.is_active is False

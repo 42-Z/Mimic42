@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
 import random
 from collections.abc import Awaitable, Callable, Mapping
@@ -15,6 +16,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mimic42.core.activity import ActivityRecorder
 from mimic42.core.album_grouper import AlbumGrouper
+from mimic42.core.first_comment import (
+    FirstCommentSettings,
+    FirstCommentVariant,
+    PostedAlbumGuard,
+)
 from mimic42.core.media import MAX_MEDIA_BYTES, MediaFile, MediaUploader
 from mimic42.core.memory import MemoryServiceLike, RuntimeMemoryService
 from mimic42.core.model_catalog import DEFAULT_LLM_MODEL
@@ -46,6 +52,7 @@ class AgentRuntimeConfig(BaseModel):
     system_prompt: str = Field(min_length=1)
     soul_prompt: str = Field(default="", max_length=20_000)
     name: str = Field(default="AI", min_length=1, max_length=120)
+    first_comment: FirstCommentSettings = Field(default_factory=FirstCommentSettings)
 
     @property
     def combined_prompt(self) -> str:
@@ -92,7 +99,11 @@ class TelegramClientLike(Protocol):
 
     async def is_user_authorized(self) -> bool: ...
 
-    async def send_message(self, entity: str, message: str, **kwargs: Any) -> object: ...
+    # Пир — строка (юзернейм) или число (ID чата): сессия Telethon ищет
+    # сущность по строке только среди телефонов, юзернеймов и инвайтов.
+    async def send_message(self, entity: str | int, message: str, **kwargs: Any) -> object: ...
+
+    async def send_file(self, entity: str | int, file: Any, **kwargs: Any) -> object: ...
 
     def add_event_handler(
         self,
@@ -167,6 +178,7 @@ class MimicAgentRuntime:
         self._scheduler_task: asyncio.Task[None] | None = None
         self._http_client: Any | None = None
         self._album_grouper = AlbumGrouper(self._flush_album)
+        self._album_comment_guard = PostedAlbumGuard()
         self._activity = ActivityRecorder(session_factory) if session_factory is not None else None
 
     async def _record_event(
@@ -494,15 +506,7 @@ class MimicAgentRuntime:
                 logger.info("Agent generated empty response, not sending")
                 send_any = False
 
-            # Convert stringified numeric peer ID to integer for Telethon compatibility
-            peer_id_value: str | int = trigger.peer
-            if isinstance(peer_id_value, str):
-                if peer_id_value.startswith("-") and peer_id_value[1:].isdigit():
-                    peer_id_value = int(peer_id_value)
-                elif peer_id_value.isdigit():
-                    peer_id_value = int(peer_id_value)
-            # Use the correctly typed value for sending
-            peer_id_for_send = peer_id_value
+            peer_id_for_send = _peer_for_send(trigger.peer)
             # Mark incoming message as read immediately after deciding to reply,
             # before the typing delay, so the order is: read -> typing -> send.
             if send_any and trigger.message_id is not None:
@@ -637,11 +641,121 @@ class MimicAgentRuntime:
             from telethon import events
         except ImportError:
             event_builder = None
+            first_comment_builder = None
         else:
             event_builder = events.NewMessage(incoming=True)
+            first_comment_builder = events.NewMessage(incoming=True)
 
+        # Первый комментарий регистрируется раньше ИИ-ветки: внутри одного
+        # апдейта Telethon вызывает обработчики строго в порядке регистрации,
+        # поэтому комментарий уходит до того, как начнётся ход агента.
+        self._telegram_client.add_event_handler(self._handle_channel_post, first_comment_builder)
         self._telegram_client.add_event_handler(self._handle_incoming_message, event_builder)
         self._message_handler_registered = True
+
+    async def _handle_channel_post(self, event: TelegramEventLike) -> None:
+        """Новый пост в канале — мгновенный комментарий без ИИ и задержек."""
+        settings = self.config.first_comment
+        if not settings.is_active:
+            return
+        if not _is_broadcast_post(event):
+            return
+
+        message_id = _extract_incoming_message_id(event)
+        if message_id is None:
+            return
+
+        chat_id = getattr(event, "chat_id", None)
+        grouped_id = getattr(event, "grouped_id", None)
+        if isinstance(grouped_id, int):
+            # Пост-альбом приходит несколькими апдейтами с общим grouped_id,
+            # а комментарий на него нужен один.
+            if not self._album_comment_guard.claim((str(chat_id), str(grouped_id))):
+                return
+
+        variant = random.choice(settings.usable_variants)
+        started_at = datetime.now(UTC)
+        try:
+            sent = await self._send_first_comment(event, message_id, variant)
+        except Exception as exc:
+            logger.warning(
+                "Failed to post first comment in chat %s to message %s",
+                chat_id,
+                message_id,
+                exc_info=True,
+            )
+            await self._record_event(
+                event_type="first_comment.failed",
+                status="failed",
+                payload={
+                    "peer": str(chat_id or ""),
+                    "post_id": message_id,
+                    "reason": _first_comment_failure_reason(exc),
+                    "error_code": type(exc).__name__,
+                },
+                error=str(exc),
+                started_at=started_at,
+                completed_at=datetime.now(UTC),
+            )
+            return
+
+        logger.info("Posted first comment in chat %s under post %s", chat_id, message_id)
+        await self._record_event(
+            event_type="first_comment.sent",
+            status="succeeded",
+            payload={
+                "peer": str(chat_id or ""),
+                "post_id": message_id,
+                "text": variant.text,
+                "with_image": variant.image_path is not None,
+                "comment_id": _extract_message_id(sent),
+            },
+            started_at=started_at,
+            completed_at=datetime.now(UTC),
+        )
+
+    async def _send_first_comment(
+        self,
+        event: TelegramEventLike,
+        message_id: int,
+        variant: FirstCommentVariant,
+    ) -> object:
+        """Отправить вариант в обсуждение канала.
+
+        ``comment_to`` уводит сообщение в привязанную к каналу группу
+        обсуждения — это и есть «комментарий» к посту; без такой группы
+        Telethon поднимает MsgIdInvalidError.
+        """
+        peer = _peer_for_send(await _extract_incoming_peer(event))
+        image = await self._load_first_comment_image(variant)
+        if image is not None:
+            return await self._telegram_client.send_file(
+                peer,
+                image,
+                caption=variant.text or None,
+                comment_to=message_id,
+            )
+        return await self._telegram_client.send_message(
+            peer,
+            variant.text,
+            comment_to=message_id,
+        )
+
+    async def _load_first_comment_image(self, variant: FirstCommentVariant) -> io.BytesIO | None:
+        """Картинка варианта как поток с именем.
+
+        Telethon определяет фото по расширению имени файла (``utils.is_image``),
+        а у голых ``bytes`` имени нет — такой вариант ушёл бы документом.
+        """
+        if not variant.image_path or self._media_uploader is None:
+            return None
+        data = await self._media_uploader.open(variant.image_path)
+        if not data:
+            logger.warning("First comment image %s is unavailable", variant.image_path)
+            return None
+        stream = io.BytesIO(data)
+        stream.name = variant.image_name or variant.image_path.rsplit("/", 1)[-1] or "image.jpg"
+        return stream
 
     async def _handle_incoming_message(self, event: TelegramEventLike) -> None:
         """Альбомы буферизуются, одиночные сообщения обрабатываются сразу."""
@@ -1577,6 +1691,48 @@ async def _extract_incoming_peer(event: object) -> str:
     if peer_id is not None:
         return str(peer_id)
     raise ValueError("Incoming Telegram event does not include a peer")
+
+
+def _peer_for_send(peer: str) -> str | int:
+    """Пир в виде, который Telethon умеет разрешить.
+
+    ID чата хранится строкой, а сессия ищет сущность по строке только среди
+    телефонов, юзернеймов и инвайтов: «-1001234567890» не нашлось бы ни в
+    одном из них. Числовой ID обязан уехать числом; юзернеймы — как есть.
+    """
+    if peer.startswith("-") and peer[1:].isdigit():
+        return int(peer)
+    if peer.isdigit():
+        return int(peer)
+    return peer
+
+
+def _is_broadcast_post(event: object) -> bool:
+    """Пост вещательного канала, а не сообщение в группе или личке.
+
+    В Telethon супергруппа тоже «канал» (``is_channel``), и отличает её
+    ``is_group``: у вещательного канала он False.
+    """
+    return bool(getattr(event, "is_channel", False)) and not bool(getattr(event, "is_group", False))
+
+
+def _first_comment_failure_reason(exc: Exception) -> str:
+    """Понятная причина для ленты активности.
+
+    Отсутствие группы обсуждения — штатная ситуация (комментарии у канала
+    просто выключены), и Telethon сигналит о ней MsgIdInvalidError.
+    """
+    try:
+        from telethon import errors
+    except ImportError:
+        return "exception"
+    if isinstance(exc, errors.MsgIdInvalidError):
+        return "no_discussion_group"
+    if isinstance(exc, errors.ChatWriteForbiddenError | errors.UserBannedInChannelError):
+        return "write_forbidden"
+    if isinstance(exc, errors.FloodWaitError):
+        return "flood_wait"
+    return "exception"
 
 
 def _extract_incoming_message_id(event: object) -> int | None:

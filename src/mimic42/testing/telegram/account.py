@@ -27,6 +27,9 @@ class IncomingMessage:
     reply_to_msg_id: int | None = None
     grouped_id: int | None = None
     order: int = 0
+    # Пост вещательного канала: в Telethon у него is_channel без is_group.
+    is_channel: bool = False
+    is_group: bool = False
 
 
 class _FakeReplyTo:
@@ -54,7 +57,9 @@ class FakeIncomingEvent:
         self.text = message.text
         self.raw_text = message.text
         self.message = _FakeMessage(message.reply_to_msg_id)
-        self.is_private = True
+        self.is_channel = message.is_channel
+        self.is_group = message.is_group
+        self.is_private = not (message.is_channel or message.is_group)
         self.client = client
         self.grouped_id = message.grouped_id
         self._reply_to_msg_id = message.reply_to_msg_id
@@ -107,6 +112,28 @@ class FakeTelegramAccount:
             text=text,
             sender_id=sender_id,
             order=self.next_order(),
+        )
+        self.incoming.append(message)
+        for handler in list(self.handlers):
+            await handler(FakeIncomingEvent(message, client=self))
+
+    async def deliver_post(
+        self,
+        *,
+        chat_id: int,
+        text: str,
+        grouped_id: int | None = None,
+    ) -> None:
+        """Новый пост вещательного канала, на который агент может комментировать."""
+        self._next_message_id += 1
+        message = IncomingMessage(
+            chat_id=chat_id,
+            message_id=self._next_message_id,
+            text=text,
+            sender_id=chat_id,
+            order=self.next_order(),
+            grouped_id=grouped_id,
+            is_channel=True,
         )
         self.incoming.append(message)
         for handler in list(self.handlers):

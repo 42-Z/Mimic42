@@ -18,6 +18,7 @@ from mimic42.core.agent_store import (
     ToolCallRecord,
     reply_target_of,
 )
+from mimic42.core.first_comment import parse_first_comment
 from mimic42.core.onboarding import OnboardingSession, SecretCipher
 from mimic42.integrations.database_models import (
     AgentEventModel,
@@ -135,6 +136,9 @@ class DatabaseAgentStore:
                 system_prompt=load_default_system_prompt(),
                 soul_prompt=agent.soul_prompt,
                 name=agent.name,
+                first_comment=parse_first_comment(
+                    agent.settings.get("first_comment") if agent.settings else None
+                ),
             )
 
     async def list_agents(self, *, owner_id: UUID | None = None) -> list[AgentRecord]:

@@ -9,6 +9,8 @@ Async base for a Telegram userbot agent platform:
 - Onboarding API requests a Telegram login code, verifies it, stores a session string, and
   finalizes the agent profile.
 - Runtime listens for incoming Telegram messages and replies through the LangChain agent.
+- Optional "first comment": a new broadcast-channel post gets an instant comment in the linked
+  discussion group, picked at random from the agent's configured variants — no delay, no LLM call.
 - The first Telegram tool is `set_reaction`, implemented through Telethon reactions.
 - Supabase migration defines users, agents, Telegram sessions, message history, and realtime agent events.
 - Short-term conversation context is loaded from Postgres for the last 3 hours and trimmed to

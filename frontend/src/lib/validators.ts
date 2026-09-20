@@ -102,6 +102,40 @@ export const telegram2FASchema = z.object({
     .max(128, '2FA пароль слишком длинный'),
 });
 
+// ── «Первый комментарий» ──────────────────────────────────────────────────────
+// Лимиты Телеграма: 4096 символов на сообщение и 1024 на подпись к картинке,
+// поэтому вариант с картинкой проверяется строже.
+export const FIRST_COMMENT_MAX_TEXT = 4096;
+export const FIRST_COMMENT_MAX_CAPTION = 1024;
+export const FIRST_COMMENT_MAX_VARIANTS = 20;
+
+export const firstCommentVariantSchema = z
+  .object({
+    text: z.string().max(FIRST_COMMENT_MAX_TEXT, 'Текст длиннее 4096 символов'),
+    image_path: z.string().min(1).nullable(),
+    image_name: z.string().min(1).nullable(),
+  })
+  .refine(
+    (variant) => variant.text.trim().length > 0 || variant.image_path !== null,
+    { message: 'Нужен текст или картинка', path: ['text'] }
+  )
+  .refine(
+    (variant) => variant.image_path === null || variant.text.length <= FIRST_COMMENT_MAX_CAPTION,
+    { message: 'Подпись к картинке — не больше 1024 символов', path: ['text'] }
+  );
+
+export const firstCommentSchema = z
+  .object({
+    enabled: z.boolean(),
+    variants: z
+      .array(firstCommentVariantSchema)
+      .max(FIRST_COMMENT_MAX_VARIANTS, 'Не больше 20 вариантов'),
+  })
+  .refine((value) => !value.enabled || value.variants.length > 0, {
+    message: 'Добавьте хотя бы один вариант или выключите настройку',
+    path: ['variants'],
+  });
+
 // ── Agent settings form ───────────────────────────────────────────────────────
 export const agentSettingsSchema = z.object({
   name: z
@@ -118,6 +152,8 @@ export const agentSettingsSchema = z.object({
   // The backend treats slugs outside the catalog as passthrough, so legacy
   // values are accepted instead of bricking the whole form.
   model: z.string().min(1, 'Модель обязательна'),
+  // Необязательное: у агентов, заведённых до этой настройки, ключа нет.
+  first_comment: firstCommentSchema.optional(),
 });
 
 // ── Trigger message form ──────────────────────────────────────────────────────
@@ -144,3 +180,5 @@ export type TelegramCodeValues = z.infer<typeof telegramCodeSchema>;
 export type Telegram2FAValues = z.infer<typeof telegram2FASchema>;
 export type AgentSettingsValues = z.infer<typeof agentSettingsSchema>;
 export type TriggerMessageValues = z.infer<typeof triggerMessageSchema>;
+export type FirstCommentValues = z.infer<typeof firstCommentSchema>;
+export type FirstCommentVariantValues = z.infer<typeof firstCommentVariantSchema>;

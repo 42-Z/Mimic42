@@ -7,7 +7,17 @@ from datetime import datetime
 from typing import Annotated, Any, Literal, Protocol
 from uuid import UUID, uuid4
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
+from fastapi import (
+    Depends,
+    FastAPI,
+    File,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+    status,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -35,7 +45,7 @@ from mimic42.core.manager import (
     LangChainAgentFactory,
     TelegramClientFactory,
 )
-from mimic42.core.media import MediaUploader
+from mimic42.core.media import MAX_MEDIA_BYTES, MediaUploader
 from mimic42.core.memory import LongTermMemoryLike, RuntimeMemoryService
 from mimic42.core.onboarding import (
     AgentOnboardingService,
@@ -135,6 +145,31 @@ class TelegramLoginRequest(BaseModel):
     api_hash: str | None = Field(default=None, min_length=1)
     phone_number: str = Field(min_length=5)
     onboarding_id: UUID | None = None
+
+
+class UploadedMedia(BaseModel):
+    """Ответ на загрузку картинки: путь кладётся в настройки агента."""
+
+    storage_path: str
+    name: str
+    mime_type: str
+    size: int
+
+
+# Только JPEG и PNG: Telethon отправляет фотографией ровно эти расширения
+# (`telethon.utils.is_image`), остальное ушло бы в чат файлом.
+_UPLOADABLE_IMAGE_TYPES = {
+    "image/jpeg": "jpg",
+    "image/png": "png",
+}
+
+
+def _image_filename(filename: str | None, mime_type: str) -> str:
+    """Имя с расширением, соответствующим заявленному типу картинки."""
+    extension = _UPLOADABLE_IMAGE_TYPES[mime_type]
+    base = (filename or "").strip()
+    stem = base.rsplit(".", 1)[0] if "." in base else base
+    return f"{stem or 'image'}.{extension}"
 
 
 def _resolve_telegram_app(
@@ -547,6 +582,58 @@ def create_app(
         await _ensure_agent_owner(store, agent_id=agent_id, user_id=current_user.user_id)
         return await store.get_conversation(
             agent_id=agent_id, limit=limit, before=before, before_id=before_id
+        )
+
+    @app.post(
+        "/api/v1/agents/{agent_id}/media",
+        response_model=UploadedMedia,
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def upload_agent_media(
+        agent_id: UUID,
+        current_user: CurrentUserDep,
+        file: Annotated[UploadFile, File()],
+    ) -> UploadedMedia:
+        """Картинка для настроек агента (сейчас — «Первый комментарий»).
+
+        Бакет `agent-media` закрыт для клиентских ролей, поэтому дашборд не
+        может писать в него напрямую: файл проходит через бэкенд с
+        service-ключом, и тот же путь потом читается GET-эндпоинтом медиа.
+        """
+        store = _get_agent_store(app)
+        media_storage: MediaUploader | None = getattr(app.state, "media_uploader", None)
+        if store is None or media_storage is None:
+            raise HTTPException(status_code=404, detail="Медиа недоступно")
+        await _ensure_agent_owner(store, agent_id=agent_id, user_id=current_user.user_id)
+
+        mime_type = (file.content_type or "").split(";")[0].strip().lower()
+        if mime_type not in _UPLOADABLE_IMAGE_TYPES:
+            raise HTTPException(
+                status_code=415,
+                detail="Поддерживаются только изображения JPEG и PNG",
+            )
+        data = await file.read()
+        if not data:
+            raise HTTPException(status_code=400, detail="Файл пуст")
+        if len(data) > MAX_MEDIA_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Файл больше {MAX_MEDIA_BYTES // (1024 * 1024)} МБ",
+            )
+        uploaded = await media_storage.upload(
+            agent_id=agent_id,
+            filename=_image_filename(file.filename, mime_type),
+            data=data,
+            mime_type=mime_type,
+            kind="photo",
+        )
+        if uploaded is None or uploaded.storage_path is None:
+            raise HTTPException(status_code=502, detail="Не удалось сохранить файл")
+        return UploadedMedia(
+            storage_path=uploaded.storage_path,
+            name=uploaded.name,
+            mime_type=uploaded.mime_type,
+            size=uploaded.size,
         )
 
     @app.get("/api/v1/agents/{agent_id}/media/{media_path:path}")

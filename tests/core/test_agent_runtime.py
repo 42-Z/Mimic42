@@ -306,7 +306,8 @@ async def test_runtime_registers_incoming_message_handler_and_replies() -> None:
     await runtime.start()
     await telegram.account.deliver(chat_id=99, text="incoming")
 
-    assert len(telegram.handlers) == 1
+    # Две регистрации: первый комментарий и ИИ-ветка — в этом порядке.
+    assert len(telegram.handlers) == 2
     assert telegram.sent_messages == [("99", "reply to incoming")]
 
 
@@ -565,7 +566,7 @@ async def test_runtime_triggers_unmuted_chats(monkeypatch: pytest.MonkeyPatch) -
 @pytest.mark.asyncio
 async def test_trigger_handles_telegram_permission_errors_gracefully() -> None:
     class FailingTelegramClient(FakeTelegramClient):
-        async def send_message(self, entity: str, message: str, **kwargs: Any) -> object:
+        async def send_message(self, entity: str | int, message: str, **kwargs: Any) -> object:
             from telethon.errors import ChatAdminRequiredError
             from telethon.tl.functions.messages import SendMessageRequest
 
