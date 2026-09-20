@@ -13,6 +13,7 @@ import {
   useDiscardOnboardingDraft,
 } from '@/hooks/useOnboarding';
 import { StepIndicator } from '@/components/onboarding/StepIndicator';
+import { PresetPicker } from '@/components/agent/PresetPicker';
 import { Button } from '@/components/ui/button';
 import { ConfirmDialog } from '@/components/ui/modal';
 import { Input, Textarea } from '@/components/ui/input';
@@ -262,17 +263,22 @@ function StepSoul({ session }: { session: OnboardingSessionRow | null }) {
       <div className="p-4 rounded-sm bg-plasma-950/30 border border-plasma-900/50 font-mono text-xs text-plasma-400">
         💡 SOUL.md — это душа вашего агента. Здесь задаётся всё: от манеры речи до любимых тем.
       </div>
-      <Textarea
-        label={`SOUL.md — ${session?.agent_name ?? 'Агент'}`}
-        placeholder={placeholder}
-        value={soulPrompt}
-        onChange={(e) => setSoulPrompt(e.target.value)}
-        error={error}
-        className="min-h-[220px]"
-        showCount
-        maxLength={50000}
-        autoFocus
-      />
+      <div className="space-y-2">
+        <div className="flex justify-end">
+          <PresetPicker currentValue={soulPrompt} onApply={setSoulPrompt} />
+        </div>
+        <Textarea
+          label={`SOUL.md — ${session?.agent_name ?? 'Агент'}`}
+          placeholder={placeholder}
+          value={soulPrompt}
+          onChange={(e) => setSoulPrompt(e.target.value)}
+          error={error}
+          className="min-h-[220px]"
+          showCount
+          maxLength={50000}
+          autoFocus
+        />
+      </div>
       <div className="flex gap-3">
         <Button type="submit" isLoading={save.isPending} size="lg">
           Продолжить →
