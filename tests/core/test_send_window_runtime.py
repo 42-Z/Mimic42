@@ -220,3 +220,32 @@ async def test_runtime_without_a_window_behaves_as_before() -> None:
     await dispatch(runtime, FakeEvent(1, "привет"))
     assert len(agent.texts) == 1
     await finish(runtime)
+
+
+def _capture_events(runtime: MimicAgentRuntime) -> list[tuple[str, str]]:
+    events: list[tuple[str, str]] = []
+
+    async def record(*, event_type: str, status: str, **_: Any) -> None:
+        events.append((event_type, status))
+
+    runtime._record_event = record  # ty: ignore[invalid-assignment]
+    return events
+
+
+async def test_window_events_do_not_count_as_errors() -> None:
+    """Дашборд считает ошибкой всякое failed: кд и запрет писать — не поломка агента."""
+    runtime, _, _ = build(SendWindow(reason="restricted", forever=True))
+    events = _capture_events(runtime)
+    await dispatch(runtime, FakeEvent(1, "первое"))
+    assert ("message.write_forbidden", "cancelled") in events
+    assert all(status != "failed" for _, status in events)
+    await finish(runtime)
+
+
+async def test_deferral_is_recorded_once_per_closure() -> None:
+    runtime, _, _ = build(slowmode_closed(30))
+    events = _capture_events(runtime)
+    await dispatch(runtime, FakeEvent(1, "первое"))
+    await dispatch(runtime, FakeEvent(2, "второе"))
+    assert events == [("message.deferred", "succeeded")]
+    await finish(runtime)

@@ -541,7 +541,7 @@ class MimicAgentRuntime:
                     )
                     await self._record_event(
                         event_type="message.blocked",
-                        status="failed",
+                        status="cancelled",
                         payload={
                             "turn_id": turn_id,
                             "peer": trigger.peer,
@@ -1118,7 +1118,7 @@ class MimicAgentRuntime:
         if self._send_window.announce(peer, window.reason):
             await self._record_event(
                 event_type="message.write_forbidden",
-                status="failed",
+                status="cancelled",
                 payload={
                     "peer": peer,
                     "reason": window.reason,
