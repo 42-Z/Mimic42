@@ -308,3 +308,42 @@ async def test_entity_failure_leaves_the_window_open_and_is_not_cached() -> None
     assert (await tracker.check("-100777")).is_open(clock.now())
     assert (await tracker.check("-100777")).is_open(clock.now())
     assert client.entity_calls == 2
+
+
+async def test_min_entity_from_an_event_reuses_a_fresh_cache() -> None:
+    """Сущность из события чаще всего min: ходить за полной на каждое сообщение нельзя."""
+    clock = FakeClock()
+    client = FakeClient(entity=channel())
+    tracker = tracker_for(client, clock)
+    await tracker.check("-100777", chat=channel())
+    for _ in range(3):
+        await tracker.check("-100777", chat=channel(min=True))
+    assert client.entity_calls == 0
+
+
+async def test_min_entity_refetches_once_the_cache_is_stale() -> None:
+    clock = FakeClock()
+    client = FakeClient(entity=channel())
+    tracker = SendWindowTracker(client, entity_ttl=300.0, now=clock.now)
+    await tracker.check("-100777", chat=channel())
+    clock.advance(301)
+    await tracker.check("-100777", chat=channel(min=True))
+    assert client.entity_calls == 1
+
+
+async def test_closed_window_is_rechecked_sooner_than_an_open_one() -> None:
+    """Запрет снимают руками: ждать пять минут, пока агент это заметит, незачем."""
+    clock = FakeClock()
+    closed = channel(default_banned_rights=banned(send_messages=True))
+    client = FakeClient(entity=channel())
+    tracker = SendWindowTracker(client, entity_ttl=300.0, restricted_ttl=60.0, now=clock.now)
+
+    assert (await tracker.check("-100777", chat=closed)).reason == "restricted"
+    clock.advance(30)
+    await tracker.check("-100777")
+    assert client.entity_calls == 0
+
+    clock.advance(31)
+    window = await tracker.check("-100777")
+    assert client.entity_calls == 1
+    assert window.is_open(clock.now())

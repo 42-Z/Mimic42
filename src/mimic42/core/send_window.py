@@ -187,10 +187,14 @@ class SendWindowTracker:
         client: Any,
         *,
         entity_ttl: float = 300.0,
+        restricted_ttl: float = 60.0,
         now: Callable[[], datetime] | None = None,
     ) -> None:
         self._client = client
         self._ttl = timedelta(seconds=entity_ttl)
+        # Закрытое окно перепроверяем чаще: запрет снимают руками, а обратная цена
+        # низкая — проверка происходит только когда в чат приходит сообщение.
+        self._restricted_ttl = timedelta(seconds=restricted_ttl)
         self._now = now if now is not None else lambda: datetime.now(UTC)
         self._base: dict[str, tuple[SendWindow, datetime]] = {}
         self._blocked_until: dict[str, datetime] = {}
@@ -255,6 +259,10 @@ class SendWindowTracker:
 
         window = window_from_chat(chat, now) if chat is not None else SendWindow(needs_entity=True)
         if window.needs_entity:
+            if chat is not None and fresh and cached is not None:
+                # Сущность из события почти всегда min: ходить за полной на каждое
+                # сообщение группы незачем, пока кэш свежий.
+                return cached[0]
             entity = await self._fetch_entity(peer)
             if entity is None:
                 # Права выяснить не удалось: не молчим и не запоминаем провал.
@@ -266,7 +274,8 @@ class SendWindowTracker:
                 SendWindow(slowmode_seconds=known) if known else await self._fill_slowmode(peer)
             )
 
-        self._base[peer] = (window, now + self._ttl)
+        ttl = self._restricted_ttl if window.reason == "restricted" else self._ttl
+        self._base[peer] = (window, now + ttl)
         return window
 
     async def _fetch_entity(self, peer: str) -> Any:
