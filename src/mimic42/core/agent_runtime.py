@@ -18,6 +18,7 @@ from mimic42.core.album_grouper import AlbumGrouper
 from mimic42.core.media import MAX_MEDIA_BYTES, MediaFile, MediaUploader
 from mimic42.core.memory import MemoryServiceLike, RuntimeMemoryService
 from mimic42.core.model_catalog import DEFAULT_LLM_MODEL
+from mimic42.core.send_window import SendWindowTracker
 
 logger = logging.getLogger("mimic42.agent_runtime")
 logger.setLevel(logging.INFO)
@@ -73,6 +74,9 @@ class AgentTrigger(BaseModel):
     media: list[dict[str, Any]] = Field(default_factory=list)
     reply_to_message_id: int | None = Field(default=None, gt=0)
     reply_preview: str | None = None
+    require_reply_to: bool = False
+    """Ответ на схлопнутую пачку без reply_to нечитаем: рантайм подставит fallback."""
+    fallback_reply_to: int | None = Field(default=None, gt=0)
 
 
 class AgentTriggerResult(BaseModel):
@@ -167,6 +171,7 @@ class MimicAgentRuntime:
         memory_service: MemoryServiceLike | None = None,
         session_factory: async_sessionmaker[AsyncSession] | None = None,
         media_uploader: MediaUploader | None = None,
+        send_window: SendWindowTracker | None = None,
     ) -> None:
         self.config = config
         self._telegram_client = telegram_client
@@ -174,6 +179,7 @@ class MimicAgentRuntime:
         self._memory_service = memory_service or RuntimeMemoryService()
         self._session_factory = session_factory
         self._media_uploader = media_uploader
+        self._send_window = send_window
         self._state = AgentRuntimeState.STOPPED
         self._lifecycle_lock = asyncio.Lock()
         self._trigger_lock = asyncio.Lock()
@@ -510,6 +516,34 @@ class MimicAgentRuntime:
                 logger.info("Agent generated empty response, not sending")
                 send_any = False
 
+            if send_any and trigger.require_reply_to and reply_to is None:
+                reply_to = trigger.fallback_reply_to
+                logger.info("Модель не указала reply_to на схлопнутой пачке, ставим %s", reply_to)
+
+            # Между решением и отправкой прошло время генерации: слот мог закрыться.
+            if send_any and self._send_window is not None:
+                window = await self._send_window.check(trigger.peer)
+                now = datetime.now(UTC)
+                if not window.is_open(now):
+                    logger.info(
+                        "Окно отправки в %s закрыто (%s), ответ не уходит",
+                        trigger.peer,
+                        window.reason,
+                    )
+                    await self._record_event(
+                        event_type="message.blocked",
+                        status="failed",
+                        payload={
+                            "turn_id": turn_id,
+                            "peer": trigger.peer,
+                            "reason": window.reason,
+                            "retry_after_seconds": window.retry_after(now),
+                        },
+                        started_at=now,
+                        completed_at=datetime.now(UTC),
+                    )
+                    send_any = False
+
             # Convert stringified numeric peer ID to integer for Telethon compatibility
             peer_id_value: str | int = trigger.peer
             if isinstance(peer_id_value, str):
@@ -556,7 +590,11 @@ class MimicAgentRuntime:
                         reply_to=reply_to,
                     )
                     logger.info(f"Message sent successfully to {peer_id_for_send}")
+                    if self._send_window is not None:
+                        self._send_window.note_sent(trigger.peer)
                 except Exception as e:
+                    if self._send_window is not None:
+                        self._send_window.note_error(trigger.peer, e)
                     # The turn must not crash on a delivery failure, but the
                     # silence must be visible in the dashboard, not only in logs.
                     logger.exception("Failed to send Telegram message to %s", peer_id_for_send)
