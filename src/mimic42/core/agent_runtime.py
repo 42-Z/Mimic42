@@ -15,13 +15,20 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mimic42.core.activity import ActivityRecorder
 from mimic42.core.album_grouper import AlbumGrouper
+from mimic42.core.deferred_inbox import DeferredInbox
 from mimic42.core.media import MAX_MEDIA_BYTES, MediaFile, MediaUploader
 from mimic42.core.memory import MemoryServiceLike, RuntimeMemoryService
 from mimic42.core.model_catalog import DEFAULT_LLM_MODEL
-from mimic42.core.send_window import SendWindowTracker
+from mimic42.core.send_window import SendWindow, SendWindowTracker
 
 logger = logging.getLogger("mimic42.agent_runtime")
 logger.setLevel(logging.INFO)
+
+# Дольше этого ждать открытия окна бессмысленно: сообщения успеют устареть.
+DEFER_LIMIT_SECONDS = 300.0
+# Слив ставится чуть позже открытия окна: иначе округление вниз запускает его
+# раньше времени, и он перепланирует сам себя в плотном цикле.
+DEFER_MARGIN_SECONDS = 0.25
 
 
 class TelegramAuthorizationRequired(RuntimeError):
@@ -189,6 +196,7 @@ class MimicAgentRuntime:
         self._scheduler_task: asyncio.Task[None] | None = None
         self._http_client: Any | None = None
         self._album_grouper = AlbumGrouper(self._flush_album)
+        self._deferred_inbox = DeferredInbox(self._flush_deferred)
         self._activity = ActivityRecorder(session_factory) if session_factory is not None else None
 
     async def _record_event(
@@ -291,6 +299,7 @@ class MimicAgentRuntime:
                     self._scheduler_task = None
 
                 await self._album_grouper.close()
+                await self._deferred_inbox.close()
 
                 if self._http_client is not None:
                     try:
@@ -703,7 +712,7 @@ class MimicAgentRuntime:
         if not isinstance(grouped_id, int):
             # TL: grouped_id — flags.17?long, то есть int или None. Любое другое
             # значение означает «это не элемент альбома».
-            await self._process_incoming([event])
+            await self._dispatch_incoming([event])
             return
         chat_id = getattr(event, "chat_id", None)
         self._album_grouper.add((str(chat_id), str(grouped_id)), event)
@@ -716,7 +725,7 @@ class MimicAgentRuntime:
             getattr(events[0], "chat_id", None),
         )
         try:
-            await self._process_incoming(events)
+            await self._dispatch_incoming(events)
         except Exception:
             logger.exception("Failed to process grouped album")
 
@@ -1048,7 +1057,8 @@ class MimicAgentRuntime:
             msg_date=msg_date,
         )
 
-    async def _process_incoming(self, events: list[TelegramEventLike]) -> None:
+    async def _dispatch_incoming(self, events: list[TelegramEventLike]) -> None:
+        """Решить, идёт ли ход сейчас, позже или не идёт вовсе."""
         event = events[0]
         logger.info("Incoming message event received")
         logger.info(
@@ -1063,7 +1073,100 @@ class MimicAgentRuntime:
             return
         if await self._is_chat_muted(event, peer):
             return
-        await self._process_batch(peer, [events])
+
+        # Окно отправки бывает только у групп. В ЛС ограничений на запись нет, а пост
+        # канала читают, не отвечая в него: комментарий уходит в связанную группу.
+        if self._send_window is None or not getattr(event, "is_group", False):
+            await self._process_batch(peer, [events])
+            return
+
+        chat = None
+        get_chat = getattr(event, "get_chat", None)
+        if callable(get_chat):
+            try:
+                # event.chat бывает пустым: Telegram не всегда шлёт эти данные.
+                chat = await get_chat()
+            except Exception:
+                logger.warning("Не удалось получить чат для проверки окна", exc_info=True)
+
+        now = datetime.now(UTC)
+        window = await self._send_window.check(peer, chat=chat)
+        if window.is_open(now):
+            # Сбрасываем объявление: следующее закрытие снова надо сообщить.
+            self._send_window.announce(peer, "open")
+            await self._process_batch(peer, [events])
+            return
+
+        retry_after = window.retry_after(now)
+        if retry_after is not None and retry_after <= DEFER_LIMIT_SECONDS:
+            self._deferred_inbox.add(peer, list(events), delay=_delay_until(window, now))
+            if self._send_window.announce(peer, window.reason):
+                await self._record_event(
+                    event_type="message.deferred",
+                    status="succeeded",
+                    payload={
+                        "peer": peer,
+                        "reason": window.reason,
+                        "retry_after_seconds": retry_after,
+                    },
+                    started_at=now,
+                    completed_at=datetime.now(UTC),
+                )
+            return
+
+        # Закрыто надолго или бессрочно: копить нечего, сообщения устареют раньше.
+        if self._send_window.announce(peer, window.reason):
+            await self._record_event(
+                event_type="message.write_forbidden",
+                status="failed",
+                payload={
+                    "peer": peer,
+                    "reason": window.reason,
+                    "until": window.open_at.isoformat() if window.open_at else None,
+                },
+                started_at=now,
+                completed_at=datetime.now(UTC),
+            )
+            await self._notify_write_forbidden(peer, window)
+
+    async def _notify_write_forbidden(self, peer: str, window: SendWindow) -> None:
+        """Один служебный ход: агент узнаёт про запрет и может отреагировать иначе."""
+        until = (
+            f" до {window.open_at:%Y-%m-%d %H:%M}"
+            if window.open_at is not None and not window.forever
+            else ""
+        )
+        try:
+            await self.trigger_message(
+                AgentTrigger(
+                    peer=peer,
+                    text=(
+                        "[Системное уведомление]\n"
+                        f"В чате {peer} у тебя забрали право писать{until}. "
+                        "Отправить туда ничего не получится — ни ответом, ни инструментом. "
+                        "Входящие оттуда ты больше не увидишь, пока запрет не снимут."
+                    ),
+                )
+            )
+        except Exception as e:
+            await self._record_incoming_failure(peer, e)
+
+    async def _flush_deferred(self, peer: str, groups: list[list[Any]]) -> None:
+        """Окно должно было открыться: перепроверяем и разбираем накопленное одним ходом."""
+        if self._send_window is not None:
+            now = datetime.now(UTC)
+            window = await self._send_window.check(peer)
+            if not window.is_open(now):
+                retry_after = window.retry_after(now)
+                if retry_after is not None and retry_after <= DEFER_LIMIT_SECONDS:
+                    # Слот успел закрыться снова (свой ответ инструментом, ошибка Telegram).
+                    delay = max(_delay_until(window, now), 1.0)
+                    for group in groups:
+                        self._deferred_inbox.add(peer, group, delay=delay)
+                else:
+                    logger.info("Окно в чате %s закрыто надолго, накопленное отброшено", peer)
+                return
+        await self._process_batch(peer, groups)
 
     async def _process_batch(self, peer: str, groups: list[list[TelegramEventLike]]) -> None:
         """Один ход по нескольким группам входящих (сообщение или альбом)."""
@@ -1079,7 +1182,9 @@ class MimicAgentRuntime:
                 return
 
             last = blocks[-1]
-            text = "\n\n".join(block.text for block in blocks)
+            body = "\n\n".join(block.text for block in blocks)
+            window = await self._send_window.check(peer) if self._send_window else None
+            text = f"{_batch_header(len(blocks), window)}{body}"
             media: list[dict[str, Any]] = []
             for block in blocks:
                 media.extend(m.as_payload() for m in block.media)
@@ -1102,6 +1207,8 @@ class MimicAgentRuntime:
                     media=media,
                     reply_to_message_id=last.reply_to_msg_id,
                     reply_preview=last.reply_preview[:200] if last.reply_preview else None,
+                    require_reply_to=len(blocks) > 1,
+                    fallback_reply_to=last.message_id,
                 )
             )
         except Exception as e:
@@ -1207,6 +1314,31 @@ class MimicAgentRuntime:
                         .values(status=timer.status)
                     )
                     await update_session.commit()
+
+
+def _delay_until(window: SendWindow, now: datetime) -> float:
+    """Секунды до открытия окна с небольшим запасом (см. DEFER_MARGIN_SECONDS)."""
+    if window.open_at is None:
+        return DEFER_MARGIN_SECONDS
+    return max(0.0, (window.open_at - now).total_seconds()) + DEFER_MARGIN_SECONDS
+
+
+def _batch_header(block_count: int, window: SendWindow | None) -> str:
+    """Шапка над входящим: сколько накопилось и сколько стоит ответ."""
+    seconds = window.slowmode_seconds if window is not None else None
+    if block_count <= 1:
+        if seconds is None:
+            return ""
+        return (
+            f"[В чате медленный режим: одно сообщение раз в {seconds} с. "
+            f"Ответишь — следующее сможешь написать не раньше чем через {seconds} с]\n\n"
+        )
+    mode = f" Медленный режим: одно сообщение раз в {seconds} с." if seconds is not None else ""
+    return (
+        f"[Пока ты молчал, в чате накопилось сообщений: {block_count}.{mode}]\n"
+        "Ответить можно только ОДНИМ сообщением — обязательно укажи reply_to, "
+        "иначе будет непонятно, на что ты отвечаешь.\n\n"
+    )
 
 
 def _sticker_file_of(message: Any) -> tuple[str, str]:

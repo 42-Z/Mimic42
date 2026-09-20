@@ -21,6 +21,7 @@ from mimic42.core.agent_runtime import (
 )
 from mimic42.core.media import MediaUploader
 from mimic42.core.memory import RuntimeMemoryService
+from mimic42.core.send_window import SendWindowTracker
 from mimic42.integrations.langchain_agent import build_langchain_agent
 from mimic42.integrations.telegram_tools import (
     TelethonRequestClient,
@@ -264,6 +265,7 @@ class AgentManager:
 
     def _build_runtime_with_memory(self, config: AgentRuntimeConfig) -> MimicAgentRuntime:
         telegram_client = self._telegram_client_factory(config)
+        send_window = SendWindowTracker(telegram_client)
         if self._memory_service_factory is None:
             memory_service = RuntimeMemoryService()
         else:
@@ -284,6 +286,7 @@ class AgentManager:
             memory_service=memory_service,
             session_factory=self.session_factory,
             media_uploader=self.media_uploader,
+            send_window=send_window,
         )
 
     async def _save_status(self, agent_id: UUID, state: AgentRuntimeState) -> None:
@@ -298,6 +301,7 @@ def _build_runtime(
     media_uploader: MediaUploader | None = None,
 ) -> MimicAgentRuntime:
     telegram_client = cast(TelegramClientLike, build_telegram_client(config))
+    send_window = SendWindowTracker(telegram_client)
     return MimicAgentRuntime(
         config=config,
         telegram_client=telegram_client,
@@ -313,6 +317,7 @@ def _build_runtime(
         ),
         session_factory=session_factory,
         media_uploader=media_uploader,
+        send_window=send_window,
     )
 
 
