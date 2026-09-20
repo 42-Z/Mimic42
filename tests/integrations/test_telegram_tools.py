@@ -1542,3 +1542,163 @@ async def test_send_file_without_comment() -> None:
 
     send_file_calls = [c for c in client.calls if c[0] == "send_file"]
     assert send_file_calls[0][1]["kwargs"]["comment_to"] is None
+
+
+class _WindowSpy:
+    """Подмена SendWindowTracker: возвращает заданное окно и записывает вызовы."""
+
+    def __init__(self, window: Any = None) -> None:
+        from mimic42.core.send_window import SendWindow
+
+        self.window = window if window is not None else SendWindow()
+        self.checked: list[str] = []
+        self.sent: list[str] = []
+        self.errors: list[BaseException] = []
+
+    async def check(self, peer: str, chat: object = None) -> Any:
+        self.checked.append(peer)
+        return self.window
+
+    def note_sent(self, peer: str) -> None:
+        self.sent.append(peer)
+
+    def note_error(self, peer: str, exc: BaseException) -> None:
+        self.errors.append(exc)
+
+
+def _closed_slowmode(seconds_left: int = 25) -> Any:
+    from datetime import UTC, timedelta
+
+    from mimic42.core.send_window import SendWindow
+
+    return SendWindow(
+        reason="slowmode",
+        open_at=datetime.now(UTC) + timedelta(seconds=seconds_left),
+        slowmode_seconds=30,
+    )
+
+
+async def test_send_text_message_refuses_while_the_window_is_closed() -> None:
+    spy = _WindowSpy(_closed_slowmode(25))
+    client = FakeTelethonClient()
+    toolbox = TelegramToolbox(cast(Any, client), send_window=cast(Any, spy))
+    result = await toolbox.send_text_message("-100777", "привет")
+
+    assert result["success"] is False
+    assert result["error_code"] == "SendWindowClosed"
+    assert result["reason"] == "slowmode"
+    assert 24 <= result["retry_after_seconds"] <= 25
+    assert client.account.sent == []
+    assert spy.sent == []
+
+
+async def test_forbidden_chat_explains_that_writing_is_not_allowed() -> None:
+    from mimic42.core.send_window import SendWindow
+
+    spy = _WindowSpy(SendWindow(reason="restricted", forever=True))
+    toolbox = TelegramToolbox(cast(Any, FakeTelethonClient()), send_window=cast(Any, spy))
+    result = await toolbox.send_text_message("-100777", "привет")
+
+    assert result["reason"] == "restricted"
+    assert result["retry_after_seconds"] is None
+    assert "нет права писать" in result["error"]
+
+
+async def test_send_text_message_consumes_the_slot_on_success() -> None:
+    spy = _WindowSpy()
+    toolbox = TelegramToolbox(cast(Any, FakeTelethonClient()), send_window=cast(Any, spy))
+    result = await toolbox.send_text_message("-100777", "привет")
+
+    assert result["success"] is True
+    assert spy.sent == ["-100777"]
+
+
+async def test_telegram_error_is_reported_to_the_window() -> None:
+    from telethon import errors
+
+    class FailingClient(FakeTelethonClient):
+        async def send_message(self, entity: Any, message: str, **kwargs: Any) -> Any:
+            raise errors.ChatWriteForbiddenError(request=None)
+
+    spy = _WindowSpy()
+    toolbox = TelegramToolbox(cast(Any, FailingClient()), send_window=cast(Any, spy))
+    result = await toolbox.send_text_message("-100777", "привет")
+
+    assert result["success"] is False
+    assert result["error_code"] == "ChatWriteForbiddenError"
+    assert len(spy.errors) == 1
+    assert spy.sent == []
+
+
+async def test_flood_error_exposes_its_wait_to_the_model() -> None:
+    from telethon import errors
+
+    class SlowClient(FakeTelethonClient):
+        async def send_message(self, entity: Any, message: str, **kwargs: Any) -> Any:
+            raise errors.SlowModeWaitError(request=None, capture=40)
+
+    toolbox = TelegramToolbox(cast(Any, SlowClient()), send_window=cast(Any, _WindowSpy()))
+    result = await toolbox.send_text_message("-100777", "привет")
+
+    assert result["error_code"] == "SlowModeWaitError"
+    assert result["retry_after_seconds"] == 40
+
+
+async def test_comment_bypasses_the_channel_window() -> None:
+    """Комментарий уходит в связанную группу, а не в канал: окно канала ему не указ."""
+    from mimic42.core.send_window import SendWindow
+
+    spy = _WindowSpy(SendWindow(reason="restricted", forever=True))
+    client = FakeTelethonClient()
+    toolbox = TelegramToolbox(cast(Any, client), send_window=cast(Any, spy))
+    result = await toolbox.send_text_message("-100777", "коммент", comment_to_msg_id=5)
+
+    assert result["success"] is True
+    assert spy.checked == []
+    assert spy.sent == []
+
+
+async def test_invalid_sticker_does_not_spend_the_slot() -> None:
+    spy = _WindowSpy()
+    toolbox = TelegramToolbox(cast(Any, FakeTelethonClient()), send_window=cast(Any, spy))
+    result = await toolbox.send_sticker("-100777", "photo:1:2:00:3")
+
+    assert result == {"success": False, "error": "media_id is not a sticker"}
+    assert spy.sent == []
+
+
+async def test_forward_checks_the_destination_not_the_source() -> None:
+    spy = _WindowSpy()
+    toolbox = TelegramToolbox(cast(Any, FakeTelethonClient()), send_window=cast(Any, spy))
+    await toolbox.forward_messages("-100111", "-100222", [1])
+
+    assert spy.checked == ["-100222"]
+
+
+async def test_toolbox_without_a_window_keeps_working() -> None:
+    toolbox = TelegramToolbox(cast(Any, FakeTelethonClient()))
+    result = await toolbox.send_text_message("-100777", "привет")
+    assert result["success"] is True
+
+
+async def test_every_send_tool_is_guarded_by_the_window() -> None:
+    """Список защищённых инструментов зафиксирован: новый send_* не должен обойти окно."""
+    from mimic42.core.send_window import SendWindow
+
+    spy = _WindowSpy(SendWindow(reason="restricted", forever=True))
+    toolbox = TelegramToolbox(cast(Any, FakeTelethonClient()), send_window=cast(Any, spy))
+    calls = {
+        "send_text_message": toolbox.send_text_message("-100777", "x"),
+        "send_file": toolbox.send_file("-100777", "https://example.com/a.png"),
+        "send_voice_note": toolbox.send_voice_note("-100777", "https://example.com/a.ogg"),
+        "send_video_note": toolbox.send_video_note("-100777", "https://example.com/a.mp4"),
+        "send_sticker": toolbox.send_sticker("-100777", "sticker:1:2:00:3"),
+        "send_poll": toolbox.send_poll("-100777", "q", ["a", "b"]),
+        "send_location": toolbox.send_location("-100777", 1.0, 2.0),
+        "send_venue": toolbox.send_venue("-100777", 1.0, 2.0, "t", "a"),
+        "send_inline_bot_result": toolbox.send_inline_bot_result("-100777", 1, "r"),
+        "forward_messages": toolbox.forward_messages("-100111", "-100777", [1]),
+    }
+    for name, call in calls.items():
+        result = await call
+        assert result.get("error_code") == "SendWindowClosed", f"{name} обошёл окно: {result}"
