@@ -51,11 +51,12 @@ testpaths = ["tests"]
 # и браузер, real_tg требует настоящих Telegram-аккаунтов — оба слоя
 # запускаются явно. Явный `-m db` (или e2e/real_tg) с командной строки
 # перекрывает этот addopts и включает нужный слой.
-addopts = ["-m", "not db and not e2e and not real_tg"]
+addopts = ["-m", "not db and not e2e and not real_tg and not real_llm"]
 markers = [
     "db: требует подключения к тестовой базе Mimic42 Dev",
     "e2e: поднимает тестовый сервер и фронт, гоняет браузерные сценарии",
     "real_tg: требует настоящих Telegram-аккаунтов, сети и секретов",
+    "real_llm: ходит в настоящую модель через OpenRouter, тратит токены",
 ]
 
 [tool.ruff]

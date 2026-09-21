@@ -17,8 +17,8 @@ describe('optionsIncluding', () => {
 });
 
 describe('MODEL_OPTIONS', () => {
-  it('contains exactly the five menu models with a non-empty default', () => {
-    expect(MODEL_OPTIONS).toHaveLength(5);
+  it('contains exactly the four menu models with a non-empty default', () => {
+    expect(MODEL_OPTIONS).toHaveLength(4);
     expect(MODEL_OPTIONS.some((o) => o.value === DEFAULT_MODEL)).toBe(true);
   });
 });

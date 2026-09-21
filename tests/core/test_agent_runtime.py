@@ -33,6 +33,10 @@ class FakeLangChainAgent:
         self.structured_response = structured_response
         self.inputs: list[dict[str, object]] = []
         self.contexts: list[object | None] = []
+        self.closed = False
+
+    async def aclose(self) -> None:
+        self.closed = True
 
     async def ainvoke(
         self,
@@ -999,3 +1003,123 @@ async def test_incoming_single_message_is_not_buffered(monkeypatch: pytest.Monke
 
     assert len(runtime._langchain_agent.inputs) == 1  # type: ignore
     await runtime.stop()
+
+
+def _runtime_for_window(
+    *,
+    agent: FakeLangChainAgent,
+    send_window: Any = None,
+) -> tuple[MimicAgentRuntime, FakeTelegramAccount]:
+    account = FakeTelegramAccount()
+    account.authorized = True
+    runtime = MimicAgentRuntime(
+        config=make_config(),
+        telegram_client=cast(Any, FakeTelegramClient(account)),
+        langchain_agent=cast(Any, agent),
+        send_window=send_window,
+    )
+    return runtime, account
+
+
+class _ScriptedSendWindow:
+    """Подмена SendWindowTracker с заданным состоянием окна."""
+
+    def __init__(self, window: Any) -> None:
+        self.window = window
+        self.sent_notes: list[str] = []
+        self.errors: list[BaseException] = []
+
+    async def check(self, peer: str, chat: object = None) -> Any:
+        return self.window
+
+    def note_sent(self, peer: str) -> None:
+        self.sent_notes.append(peer)
+
+    def note_error(self, peer: str, exc: BaseException) -> None:
+        self.errors.append(exc)
+
+    def announce(self, peer: str, reason: str) -> bool:
+        return True
+
+
+async def test_reply_to_falls_back_to_the_last_message_of_the_batch() -> None:
+    """При схлопывании ответ без привязки нечитаем, поэтому реплай обязателен."""
+    agent = FakeLangChainAgent(
+        structured_response={"text": "ответ", "send_any_message": True, "reply_to": None}
+    )
+    runtime, account = _runtime_for_window(agent=agent)
+    await runtime.trigger_message(
+        AgentTrigger(peer="123", text="пачка", require_reply_to=True, fallback_reply_to=555)
+    )
+    assert account.sent[-1].kwargs["reply_to"] == 555
+
+
+async def test_model_reply_to_wins_over_the_fallback() -> None:
+    agent = FakeLangChainAgent(
+        structured_response={"text": "ответ", "send_any_message": True, "reply_to": 42}
+    )
+    runtime, account = _runtime_for_window(agent=agent)
+    await runtime.trigger_message(
+        AgentTrigger(peer="123", text="пачка", require_reply_to=True, fallback_reply_to=555)
+    )
+    assert account.sent[-1].kwargs["reply_to"] == 42
+
+
+async def test_no_fallback_reply_when_not_required() -> None:
+    agent = FakeLangChainAgent(
+        structured_response={"text": "ответ", "send_any_message": True, "reply_to": None}
+    )
+    runtime, account = _runtime_for_window(agent=agent)
+    await runtime.trigger_message(
+        AgentTrigger(peer="123", text="одно сообщение", fallback_reply_to=555)
+    )
+    assert "reply_to" not in account.sent[-1].kwargs
+
+
+async def test_closed_window_cancels_the_send() -> None:
+    """Между решением и отправкой проходит время генерации: слот мог закрыться."""
+    from datetime import UTC, timedelta
+
+    from mimic42.core.send_window import SendWindow
+
+    window = _ScriptedSendWindow(
+        SendWindow(
+            reason="slowmode",
+            open_at=datetime.now(UTC) + timedelta(seconds=25),
+            slowmode_seconds=30,
+        )
+    )
+    runtime, account = _runtime_for_window(agent=FakeLangChainAgent("ответ"), send_window=window)
+    await runtime.trigger_message(AgentTrigger(peer="123", text="привет"))
+    assert account.sent == []
+    assert window.sent_notes == []
+
+
+async def test_successful_send_consumes_the_slot() -> None:
+    from mimic42.core.send_window import SendWindow
+
+    window = _ScriptedSendWindow(SendWindow(slowmode_seconds=30))
+    runtime, account = _runtime_for_window(agent=FakeLangChainAgent("ответ"), send_window=window)
+    await runtime.trigger_message(AgentTrigger(peer="123", text="привет"))
+    assert len(account.sent) == 1
+    assert window.sent_notes == ["123"]
+
+
+async def test_send_failure_is_reported_to_the_window() -> None:
+    """Ошибка Telegram точнее локального расчёта — окно должно о ней узнать."""
+    from mimic42.core.send_window import SendWindow
+
+    class FailingClient(FakeTelegramClient):
+        async def send_message(self, entity: str, message: str, **kwargs: Any) -> object:
+            raise RuntimeError("telegram said no")
+
+    window = _ScriptedSendWindow(SendWindow())
+    runtime = MimicAgentRuntime(
+        config=make_config(),
+        telegram_client=cast(Any, FailingClient()),
+        langchain_agent=cast(Any, FakeLangChainAgent("ответ")),
+        send_window=cast(Any, window),
+    )
+    await runtime.trigger_message(AgentTrigger(peer="123", text="привет"))
+    assert len(window.errors) == 1
+    assert window.sent_notes == []

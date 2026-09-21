@@ -45,3 +45,11 @@ def test_string_session_used_when_present() -> None:
     client = build_telegram_client(_config(payload))
     assert isinstance(client.session, StringSession)
     assert client.session.save() == payload
+
+
+def test_flood_waits_are_not_slept_through_by_telethon() -> None:
+    """По умолчанию Telethon сам засыпает на флуд-ошибках короче 60 с, а
+    SlowModeWaitError — флуд-ошибка. Такой сон прошёл бы внутри send_message
+    под trigger_lock: ждать или нет решает окно отправки, а не библиотека."""
+    client = build_telegram_client(_config(_valid_session_string()))
+    assert client.flood_sleep_threshold == 0

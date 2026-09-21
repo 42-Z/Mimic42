@@ -67,16 +67,31 @@ Generate `SECRET_KEY` with:
 uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
 
-The current backend model is global, not per-agent: `openrouter/free`.
+Each agent picks its model from the catalog in `src/mimic42/core/model_catalog.py` (mirrored in
+`frontend/src/lib/models.ts`): GLM 5.3 Flash (default), DeepSeek V4 Flash, Ling 3.0 Flash VL and
+Nemotron 3.5 Lightning, all through OpenRouter. A catalog model must support tool calling with a
+required tool choice: the agent's structured reply is returned through a tool call, and a model
+that cannot be forced to call it answers in plain text and never finishes the turn.
 
 ## Tests
 
 ```bash
-uv run pytest                  # everything except the database, ~30 seconds
-uv run pytest -m db            # 38 tests against the real Mimic42 Dev database, ~6 minutes
+uv run pytest                  # everything except the layers below, ~45 seconds
+uv run pytest -m db            # 62 tests against the real Mimic42 Dev database
 uv run pytest -m e2e           # browser e2e: test server + frontend + Playwright
+uv run pytest -m real_tg       # live Telegram: checker account talks to a real mimic, ~12 minutes
+uv run pytest -m real_llm      # agent behaviour on a real model through OpenRouter, spends tokens
 cd frontend && bunx tsc --noEmit && bun test
 ```
+
+`real_tg` and `real_llm` never run in the regular CI job. `real_tg` has a manual workflow
+(`Real Telegram Tests`); `real_llm` runs only locally. `real_llm` checks the weakest catalog model
+by default; set `MIMIC_WEAK_MODEL` to another slug to check that one instead.
+
+Live Telegram tests share one checker account and one mimic, so only one run may use them at a
+time. A run takes a Postgres advisory lock in the Dev database and stops immediately if another run
+already holds it; the lock is released when its connection closes, so a crashed run does not block
+anyone.
 
 Tests load `.env` and `.env.test` themselves — no `source` needed. The local `.env` points at the
 **Mimic42 Dev** project; production values live only in `/etc/mimic42.env` on the server and are

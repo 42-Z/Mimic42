@@ -42,7 +42,7 @@ jobs:
         run: uv run ty check --output-format=github
 
       - name: Tests
-        run: uv run pytest -m "not db and not e2e and not real_tg" -W error -q
+        run: uv run pytest -m "not db and not e2e and not real_tg and not real_llm" -W error -q
 
   backend-db:
     name: backend-db

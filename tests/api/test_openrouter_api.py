@@ -22,7 +22,7 @@ async def test_reasoning_endpoint_returns_slim_model_map(
             "default_effort": "max",
             "mandatory": True,
         },
-        "poolside/laguna-s-2.1": {"mandatory": False, "default_enabled": True},
+        "nvidia/nemotron-3.5-lightning": {"mandatory": False},
     }
     monkeypatch.setattr(openrouter_catalog, "fetch_reasoning_by_model", lambda: _async(fake_map))
 

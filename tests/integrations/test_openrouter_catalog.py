@@ -27,7 +27,6 @@ async def test_reasoning_map_extracts_catalog_models_only(monkeypatch: pytest.Mo
             "data": [
                 {"id": "z-ai/glm-5.3-flash", "reasoning": {"supported_efforts": ["max"]}},
                 {"id": "deepseek/deepseek-v4-flash-0731", "reasoning": {"mandatory": False}},
-                {"id": "poolside/laguna-s-2.1", "reasoning": {"mandatory": False}},
                 {"id": "some/other-gateway-model", "reasoning": {"supported_efforts": ["high"]}},
                 {"id": "another/one"},
             ]
@@ -42,11 +41,10 @@ async def test_reasoning_map_extracts_catalog_models_only(monkeypatch: pytest.Mo
         "z-ai/glm-5.3-flash",
         "deepseek/deepseek-v4-flash-0731",
         "inclusionai/ling-3.0-flash-vl",
-        "meituan/longcat-2.0",
-        "poolside/laguna-s-2.1",
+        "nvidia/nemotron-3.5-lightning",
     }
     assert result["z-ai/glm-5.3-flash"] == {"supported_efforts": ["max"]}
-    assert result["meituan/longcat-2.0"] is None
+    assert result["nvidia/nemotron-3.5-lightning"] is None
 
 
 @pytest.mark.asyncio
