@@ -323,6 +323,17 @@ class MimicAgentRuntime:
                 completed_at=datetime.now(UTC),
             )
 
+    async def close(self) -> None:
+        """Stop for good and release what only a restart would need.
+
+        The manager calls this when it drops the runtime (removal, reload,
+        shutdown); a plain stop keeps the agent's HTTP client for a restart.
+        """
+        await self.stop()
+        close_agent = getattr(self._langchain_agent, "aclose", None)
+        if close_agent is not None:
+            await close_agent()
+
     async def _humanized_send(
         self,
         peer: Any,

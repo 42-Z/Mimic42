@@ -219,7 +219,7 @@ class AgentManager:
             # already reads the fresh config from the database.
             return
         was_running = old_runtime.status.state is AgentRuntimeState.RUNNING
-        await old_runtime.stop()
+        await old_runtime.close()
         runtime = await self.get_agent(agent_id)
         if was_running:
             try:
@@ -246,7 +246,7 @@ class AgentManager:
             runtime = self._agents.pop(agent_id, None)
         try:
             if runtime is not None:
-                await runtime.stop()
+                await runtime.close()
         except Exception:
             async with self._lock:
                 self._removed.discard(agent_id)
@@ -261,7 +261,7 @@ class AgentManager:
 
     async def shutdown(self) -> None:
         agents = list(self._agents.values())
-        await asyncio.gather(*(agent.stop() for agent in agents), return_exceptions=True)
+        await asyncio.gather(*(agent.close() for agent in agents), return_exceptions=True)
 
     def _build_runtime_with_memory(self, config: AgentRuntimeConfig) -> MimicAgentRuntime:
         telegram_client = self._telegram_client_factory(config)

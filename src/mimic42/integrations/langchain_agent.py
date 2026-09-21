@@ -29,8 +29,25 @@ MODEL_CALLS_PER_TURN = 20
 
 
 class LangChainGraphAgent:
-    def __init__(self, graph: Any) -> None:
+    def __init__(self, graph: Any, model: str | ChatOpenRouter | None = None) -> None:
         self._graph = graph
+        self._model = model
+
+    async def aclose(self) -> None:
+        """Release the model's HTTP connections.
+
+        ChatOpenRouter hands the OpenRouter SDK its own httpx clients, and the
+        SDK only closes clients it created itself, so nothing else closes them.
+        Called once the runtime is discarded, never on stop: a stopped runtime
+        is started again with the same agent.
+        """
+        if not isinstance(self._model, ChatOpenRouter):
+            return
+        configuration = self._model.client.sdk_configuration
+        if configuration.async_client is not None:
+            await configuration.async_client.aclose()
+        if configuration.client is not None:
+            configuration.client.close()
 
     async def ainvoke(
         self,
@@ -105,5 +122,6 @@ def build_langchain_agent(
             response_format=AgentResponse,
             context_schema=TurnContext,
             middleware=middleware,
-        )
+        ),
+        model=model,
     )

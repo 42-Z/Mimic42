@@ -33,6 +33,10 @@ class FakeLangChainAgent:
         self.structured_response = structured_response
         self.inputs: list[dict[str, object]] = []
         self.contexts: list[object | None] = []
+        self.closed = False
+
+    async def aclose(self) -> None:
+        self.closed = True
 
     async def ainvoke(
         self,

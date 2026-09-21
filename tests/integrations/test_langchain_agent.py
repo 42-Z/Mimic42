@@ -5,12 +5,15 @@ from uuid import uuid4
 
 import pytest
 from langchain.agents.middleware import ModelCallLimitMiddleware
+from langchain_openrouter import ChatOpenRouter
+from pydantic import SecretStr
 
 import mimic42.integrations.langchain_agent as langchain_agent_module
 from mimic42.core.agent_runtime import AgentRuntimeConfig
 from mimic42.integrations.langchain_agent import (
     MODEL_CALLS_PER_TURN,
     REQUEST_TIMEOUT_MS,
+    LangChainGraphAgent,
     build_chat_model,
     build_langchain_agent,
 )
@@ -199,3 +202,13 @@ def test_build_langchain_agent_limits_model_calls_with_session_factory(
 def test_request_timeout_is_two_minutes() -> None:
     # Без таймаута зависший у провайдера запрос держит ход агента бесконечно.
     assert REQUEST_TIMEOUT_MS == 120_000
+
+
+async def test_graph_agent_closes_the_openrouter_http_client() -> None:
+    """ChatOpenRouter отдаёт SDK собственный httpx-клиент, и SDK его не закрывает."""
+    model = ChatOpenRouter(model="vendor/model", api_key=SecretStr("key"))
+    agent = LangChainGraphAgent(graph=object(), model=model)
+
+    await agent.aclose()
+
+    assert model.client.sdk_configuration.async_client.is_closed
