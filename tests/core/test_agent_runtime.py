@@ -152,7 +152,7 @@ async def test_runtime_refuses_unauthorized_userbot_session() -> None:
         langchain_agent=FakeLangChainAgent(),
     )
 
-    with pytest.raises(TelegramAuthorizationRequired):
+    with pytest.raises(TelegramAuthorizationRequired, match="не авторизована"):
         await runtime.start()
 
     assert runtime.state is AgentRuntimeState.ERROR

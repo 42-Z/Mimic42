@@ -428,7 +428,9 @@ def create_app(
         except TelegramPasswordRequiredError as exc:
             raise HTTPException(
                 status_code=status.HTTP_428_PRECONDITION_REQUIRED,
-                detail="Telegram account requires a 2FA password.",
+                detail=(
+                    "Для этого аккаунта включена двухфакторная аутентификация. Введите пароль 2FA."
+                ),
             ) from exc
         except Exception as exc:
             from telethon.errors import (

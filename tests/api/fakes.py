@@ -11,6 +11,7 @@ from mimic42.core.agent_runtime import (
     AgentStatus,
     AgentTrigger,
     AgentTriggerResult,
+    TelegramAuthorizationRequired,
 )
 
 
@@ -21,8 +22,14 @@ class FakeAgentRecord:
 
 
 class FakeAgentManager:
-    def __init__(self, default_owner_id: UUID | None = None) -> None:
+    def __init__(
+        self,
+        default_owner_id: UUID | None = None,
+        *,
+        start_unauthorized: bool = False,
+    ) -> None:
         self._default_owner_id = default_owner_id
+        self._start_unauthorized = start_unauthorized
         self.created: dict[UUID, FakeAgentRecord] = {}
         self.started: list[UUID] = []
         self.stopped: list[UUID] = []
@@ -45,6 +52,10 @@ class FakeAgentManager:
         return self
 
     async def start_agent(self, agent_id: UUID) -> None:
+        if self._start_unauthorized:
+            raise TelegramAuthorizationRequired(
+                "Сессия Telegram не авторизована. Требуется повторная привязка Telegram-аккаунта."
+            )
         self.started.append(agent_id)
         self.created[agent_id].state = AgentRuntimeState.RUNNING
 

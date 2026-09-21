@@ -189,3 +189,36 @@ async def test_delete_agent_returns_404_for_foreign_agent() -> None:
 
     assert response.status_code == 404
     assert manager.removed == []
+
+
+@pytest.mark.asyncio
+async def test_start_agent_reports_unauthorized_session_in_russian() -> None:
+    manager = FakeAgentManager(start_unauthorized=True)
+    owner_id = uuid4()
+    app = create_app(manager=manager, auth_verifier=FakeAuthVerifier(owner_id))
+    agent_id = uuid4()
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        await client.post(
+            "/api/v1/agents",
+            headers=AUTH_HEADERS,
+            json={
+                "agent_id": str(agent_id),
+                "telegram_session_string": "1BQANOTEuMTA4LjUuMLB6LjE",
+                "telegram_api_id": 12345,
+                "telegram_api_hash": "hash",
+                "soul_prompt": "Short replies",
+            },
+        )
+        response = await client.post(
+            f"/api/v1/agents/{agent_id}/start",
+            headers=AUTH_HEADERS,
+        )
+
+    assert response.status_code == 428
+    detail = response.json()["detail"]
+    assert "не авторизована" in detail
+    assert "повторная привязка" in detail

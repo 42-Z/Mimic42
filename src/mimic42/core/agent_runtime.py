@@ -251,7 +251,8 @@ class MimicAgentRuntime:
                 if not await self._telegram_client.is_user_authorized():
                     logger.error("Telegram session not authorized")
                     raise TelegramAuthorizationRequired(
-                        "Telegram user session is not authorized. Complete onboarding first."
+                        "Сессия Telegram не авторизована. "
+                        "Требуется повторная привязка Telegram-аккаунта."
                     )
                 logger.debug("Authorized. Registering message handler...")
                 self._register_message_handler()

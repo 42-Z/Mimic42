@@ -316,7 +316,7 @@ class AgentOnboardingService:
 
 class TelegramAuthorizationIncompleteError(RuntimeError):
     def __init__(self, onboarding_id: UUID) -> None:
-        super().__init__(f"Onboarding session {onboarding_id} is not ready")
+        super().__init__("Онбординг-сессия не готова: завершите авторизацию в Telegram.")
         self.onboarding_id = onboarding_id
 
 
