@@ -51,6 +51,39 @@ async def test_rebind_updates_session_and_keeps_profile() -> None:
     assert config.telegram_session_string == "new-encrypted-session"
     assert config.name == "Mimic"
     assert config.soul_prompt == "Soul"
+    assert config.agent_id == agent_id
+    assert config.owner_id == owner_id
+    agents = await store.list_agents(owner_id=owner_id)
+    assert [agent.name for agent in agents] == ["Mimic"]
+
+
+@pytest.mark.asyncio
+async def test_rebind_rejects_session_without_credentials() -> None:
+    owner_id = uuid4()
+    agent_id = uuid4()
+    store = InMemoryAgentStore()
+    await store.create_from_onboarding(
+        OnboardingSession(
+            onboarding_id=agent_id,
+            owner_id=owner_id,
+            api_id=12345,
+            api_hash_secret="old-encrypted-hash",
+            phone_number="+79990000000",
+            authorization_status=TelegramLoginStatus.AUTHORIZED,
+            session_secret="old-encrypted-session",
+            name="Mimic",
+            soul_prompt="Soul",
+        )
+    )
+    broken = _authorized_session(owner_id, uuid4(), "new-encrypted-session")
+    broken.api_id = None
+
+    with pytest.raises(ValueError):
+        await store.rebind_telegram_session(agent_id, broken)
+
+    config = await store.get_runtime_config(agent_id)
+    assert config.telegram_api_id == 12345
+    assert config.telegram_session_string == "old-encrypted-session"
 
 
 @pytest.mark.asyncio

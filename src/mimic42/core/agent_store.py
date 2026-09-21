@@ -184,8 +184,11 @@ class InMemoryAgentStore:
         """Заменить Telegram-сессию агента, не трогая профиль.
 
         Поля онбординга хранятся зашифрованными и кладутся как есть — так же,
-        как их кладёт create_from_onboarding.
+        как их кладёт create_from_onboarding. Проверка владельца агента —
+        ответственность вызывающего слоя.
         """
+        if session.api_id is None or session.api_hash_secret is None:
+            raise ValueError("Onboarding session is missing Telegram credentials")
         config = self._configs.get(agent_id)
         if config is None:
             raise KeyError(f"Agent {agent_id} does not have a runtime config")
