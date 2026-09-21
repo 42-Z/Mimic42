@@ -238,27 +238,31 @@ class MimicAgentRuntime:
         if self._session_factory is None:
             return
         try:
-            from sqlalchemy import select
+            from sqlalchemy import update
+            from sqlalchemy.engine import CursorResult
 
             from mimic42.integrations.database_models import TelegramSessionModel
 
             async with self._session_factory() as db_session:
-                telegram_session = await db_session.scalar(
-                    select(TelegramSessionModel).where(
-                        TelegramSessionModel.agent_id == self.config.agent_id
-                    )
+                result = await db_session.execute(
+                    update(TelegramSessionModel)
+                    .where(TelegramSessionModel.agent_id == self.config.agent_id)
+                    .values(authorization_status="revoked", last_error=error)
                 )
-                if telegram_session is None:
+                await db_session.commit()
+                # execute() статически возвращает Result, а rowcount есть только
+                # у буферизованного CursorResult, который и приходит для UPDATE.
+                if cast(CursorResult[Any], result).rowcount == 0:
                     logger.warning(
                         "No telegram_sessions row for agent %s, cannot mark revoked",
                         self.config.agent_id,
                     )
-                    return
-                telegram_session.authorization_status = "revoked"
-                telegram_session.last_error = error
-                await db_session.commit()
         except Exception:
-            logger.warning("Failed to mark telegram session revoked", exc_info=True)
+            logger.warning(
+                "Failed to mark telegram session revoked for agent %s",
+                self.config.agent_id,
+                exc_info=True,
+            )
 
     @property
     def state(self) -> AgentRuntimeState:
