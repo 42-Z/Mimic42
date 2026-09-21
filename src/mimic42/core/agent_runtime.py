@@ -1175,6 +1175,11 @@ class MimicAgentRuntime:
     ) -> None:
         """Окно должно было открыться: перепроверяем и разбираем накопленное одним ходом."""
         async with self._dispatch_lock:
+            # Слив в полёте stop() не отменяет, а trigger_message на остановленном
+            # рантайме запустил бы его заново и ответил бы в чат после остановки.
+            if self._state is not AgentRuntimeState.RUNNING:
+                logger.info("Рантайм остановлен, отложенное из чата %s отброшено", peer)
+                return
             if self._send_window is not None:
                 now = datetime.now(UTC)
                 window = await self._send_window.check(peer)

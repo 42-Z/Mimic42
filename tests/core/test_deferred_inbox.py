@@ -131,6 +131,25 @@ async def test_requeued_group_keeps_its_original_age() -> None:
     assert len(recorder.flushed) == 1
 
 
+async def test_requeued_older_group_goes_before_newer_ones() -> None:
+    clock, recorder = FakeClock(), Recorder()
+    inbox = inbox_with(clock, recorder)
+    inbox.add("-100777", ["new"], delay=30.0)
+    inbox.add("-100777", ["old"], delay=30.0, added_at=-5.0)
+    await clock.advance(30)
+    assert recorder.flushed == [("-100777", [["old"], ["new"]])]
+
+
+async def test_older_requeued_group_does_not_evict_newer_ones() -> None:
+    clock, recorder = FakeClock(), Recorder()
+    inbox = inbox_with(clock, recorder, max_groups=2)
+    inbox.add("-100777", ["n1"], delay=30.0)
+    inbox.add("-100777", ["n2"], delay=30.0)
+    inbox.add("-100777", ["old"], delay=30.0, added_at=-5.0)
+    await clock.advance(30)
+    assert recorder.flushed == [("-100777", [["n1"], ["n2"]])]
+
+
 async def test_close_cancels_pending_buffers() -> None:
     clock, recorder = FakeClock(), Recorder()
     inbox = inbox_with(clock, recorder)

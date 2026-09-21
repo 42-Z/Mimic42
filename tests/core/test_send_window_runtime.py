@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from uuid import uuid4
 
-from mimic42.core.agent_runtime import AgentRuntimeConfig, MimicAgentRuntime
+from mimic42.core.agent_runtime import AgentRuntimeConfig, AgentRuntimeState, MimicAgentRuntime
 from mimic42.core.send_window import SendWindow, SendWindowTracker
 from mimic42.testing.telegram import FakeTelegramAccount, FakeTelegramClient
 
@@ -105,12 +105,27 @@ def build(window: SendWindow) -> tuple[MimicAgentRuntime, RecordingAgent, Script
 
 async def dispatch(runtime: MimicAgentRuntime, *events: FakeEvent) -> None:
     """FakeEvent повторяет форму события Telethon, но не объявляет протокол целиком."""
+    if runtime._state is AgentRuntimeState.STOPPED:
+        # Настоящие события приходят только у запущенного рантайма.
+        await runtime.start()
     await runtime._dispatch_incoming(cast(Any, list(events)))
 
 
 async def finish(runtime: MimicAgentRuntime) -> None:
     await runtime._deferred_inbox.close()
     await runtime.stop()
+
+
+async def test_flush_in_flight_after_stop_does_not_restart_the_runtime() -> None:
+    runtime, agent, _ = build(SendWindow())
+    await dispatch(runtime, FakeEvent(1, "привет"))
+    await finish(runtime)
+    agent.texts.clear()
+
+    await runtime._flush_deferred(PEER, [[FakeEvent(2, "запоздало")]], [0.0])
+
+    assert agent.texts == []
+    assert runtime._state is AgentRuntimeState.STOPPED
 
 
 async def test_open_window_runs_the_turn_immediately() -> None:
@@ -250,7 +265,9 @@ async def test_deferral_is_recorded_once_per_closure() -> None:
     events = _capture_events(runtime)
     await dispatch(runtime, FakeEvent(1, "первое"))
     await dispatch(runtime, FakeEvent(2, "второе"))
-    assert events == [("message.deferred", "succeeded")]
+    assert [event for event in events if event[0] != "agent.started"] == [
+        ("message.deferred", "succeeded")
+    ]
     await finish(runtime)
 
 

@@ -61,6 +61,9 @@ class DeferredInbox:
         now = self._now()
         entries = self._groups.setdefault(peer, [])
         entries.append((now if added_at is None else added_at, group))
+        # Пока слив ждал замок хода, в буфер мог лечь новый чат-трафик: возвращённая
+        # старая группа должна встать по возрасту, а не вытеснять более новые.
+        entries.sort(key=lambda entry: entry[0])
         if len(entries) > self._max_groups:
             dropped = len(entries) - self._max_groups
             del entries[:dropped]
