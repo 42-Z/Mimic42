@@ -17,6 +17,10 @@ from mimic42.integrations.activity_middleware import ActivityMiddleware
 from mimic42.integrations.agent_response_schema import AgentResponse
 from mimic42.integrations.token_usage_middleware import TokenUsageMiddleware
 
+# A request stuck at the provider otherwise holds the agent's turn forever; the
+# client retries a timed-out request itself (max_retries).
+REQUEST_TIMEOUT_MS = 120_000
+
 
 class LangChainGraphAgent:
     def __init__(self, graph: Any) -> None:
@@ -61,7 +65,7 @@ def build_chat_model(
     ignored = ignored_providers(config.llm_model)
     if ignored:
         options["openrouter_provider"] = {"ignore": ignored}
-    return ChatOpenRouter(model=primary, api_key=api_key, **options)
+    return ChatOpenRouter(model=primary, api_key=api_key, timeout=REQUEST_TIMEOUT_MS, **options)
 
 
 def build_langchain_agent(

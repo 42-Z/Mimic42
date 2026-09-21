@@ -7,7 +7,11 @@ import pytest
 
 import mimic42.integrations.langchain_agent as langchain_agent_module
 from mimic42.core.agent_runtime import AgentRuntimeConfig
-from mimic42.integrations.langchain_agent import build_chat_model, build_langchain_agent
+from mimic42.integrations.langchain_agent import (
+    REQUEST_TIMEOUT_MS,
+    build_chat_model,
+    build_langchain_agent,
+)
 from mimic42.integrations.token_usage_middleware import TokenUsageMiddleware
 
 
@@ -42,14 +46,17 @@ def recorded(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
 
 
 def test_model_with_free_variant_builds_fallback_chain(recorded: list[dict[str, Any]]) -> None:
-    build_chat_model(_config("poolside/laguna-s-2.1"))
+    build_chat_model(_config("inclusionai/ling-3.0-flash-vl"))
 
     assert recorded == [
         {
-            "model": "poolside/laguna-s-2.1:free",
+            "model": "inclusionai/ling-3.0-flash-vl:free",
             "api_key": None,
+            "timeout": REQUEST_TIMEOUT_MS,
             "reasoning": {"effort": "high"},
-            "model_kwargs": {"models": ["poolside/laguna-s-2.1:free", "poolside/laguna-s-2.1"]},
+            "model_kwargs": {
+                "models": ["inclusionai/ling-3.0-flash-vl:free", "inclusionai/ling-3.0-flash-vl"]
+            },
         }
     ]
 
@@ -61,6 +68,7 @@ def test_paid_only_model_gets_single_slug(recorded: list[dict[str, Any]]) -> Non
         {
             "model": "deepseek/deepseek-v4-flash-0731",
             "api_key": None,
+            "timeout": REQUEST_TIMEOUT_MS,
             "reasoning": {"effort": "high"},
             "model_kwargs": {},
         }
@@ -74,6 +82,7 @@ def test_ignored_providers_are_excluded_from_routing(recorded: list[dict[str, An
         {
             "model": "z-ai/glm-5.3-flash",
             "api_key": None,
+            "timeout": REQUEST_TIMEOUT_MS,
             "reasoning": {"effort": "high"},
             "model_kwargs": {},
             "openrouter_provider": {"ignore": ["morph"]},
@@ -88,6 +97,7 @@ def test_ignored_providers_apply_without_reasoning(recorded: list[dict[str, Any]
         {
             "model": "z-ai/glm-5.3-flash",
             "api_key": None,
+            "timeout": REQUEST_TIMEOUT_MS,
             "model_kwargs": {},
             "openrouter_provider": {"ignore": ["morph"]},
         }
@@ -101,6 +111,7 @@ def test_unknown_slash_slug_passes_through(recorded: list[dict[str, Any]]) -> No
         {
             "model": "vendor/legacy-model",
             "api_key": None,
+            "timeout": REQUEST_TIMEOUT_MS,
             "reasoning": {"effort": "high"},
             "model_kwargs": {},
         }
@@ -110,7 +121,14 @@ def test_unknown_slash_slug_passes_through(recorded: list[dict[str, Any]]) -> No
 def test_openrouter_free_stays_special(recorded: list[dict[str, Any]]) -> None:
     build_chat_model(_config("openrouter/free", reasoning_effort="none"))
 
-    assert recorded == [{"model": "openrouter/free", "api_key": None, "model_kwargs": {}}]
+    assert recorded == [
+        {
+            "model": "openrouter/free",
+            "api_key": None,
+            "timeout": REQUEST_TIMEOUT_MS,
+            "model_kwargs": {},
+        }
+    ]
 
 
 def test_plain_name_without_slash_is_returned_as_string() -> None:
@@ -151,3 +169,8 @@ def test_build_langchain_agent_has_no_middleware_without_session_factory(
     build_langchain_agent(_config("mistral-small"))
 
     assert captured["middleware"] == []
+
+
+def test_request_timeout_is_two_minutes() -> None:
+    # Без таймаута зависший у провайдера запрос держит ход агента бесконечно.
+    assert REQUEST_TIMEOUT_MS == 120_000
