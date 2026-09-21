@@ -42,15 +42,18 @@
 
 ---
 
-### Task 1: Русификация ошибок авторизации
+### Task 1: Русификация ошибок авторизации ✅ (коммиты `cc592e6`, `83a043e`, `4fb150d`)
 
 **Files:**
-- Modify: `src/mimic42/core/agent_runtime.py:253-255`
+- Modify: `src/mimic42/core/agent_runtime.py:253-255` (плюс константа `UNAUTHORIZED_SESSION_MESSAGE`)
+- Modify: `src/mimic42/integrations/telethon_client.py` (текст при отсутствии session string + warning с agent_id)
 - Modify: `src/mimic42/core/onboarding.py:317-320`
 - Modify: `src/mimic42/api/app.py:428-432`
 - Modify: `tests/api/fakes.py`
 - Modify: `tests/api/test_agents_api.py`
+- Modify: `tests/api/test_onboarding_api.py` (тесты 428 и 409)
 - Modify: `tests/core/test_agent_runtime.py:147-158`
+- Modify: `tests/integrations/test_telethon_client.py`
 
 - [ ] **Step 1: Расширить FakeAgentManager флагом start_unauthorized**
 
@@ -1245,7 +1248,23 @@ export interface AgentDetails {
 Run (в каталоге `frontend`): `bun run typecheck`
 Expected: без ошибок
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Пробрасывать русский detail для 428 и 409**
+
+Код-ревью Task 1 нашёл: интерцептор `frontend/src/lib/api.ts:83-84` жёстко подменяет `detail` на «Требуется 2FA пароль.» — локализованные тексты не доходят до пользователя. Также 409 («Конфликт: ресурс уже существует.») скрывает русский detail rebind-конфликта. Заменить кейсы 409/428:
+
+```ts
+      case 409:
+        message = (typeof detail === 'string' && detail) || 'Конфликт: ресурс уже существует.';
+        break;
+      case 422:
+        message = formatValidationError(detail);
+        break;
+      case 428:
+        message = (typeof detail === 'string' && detail) || 'Требуется 2FA пароль.';
+        break;
+```
+
+- [ ] **Step 6: Commit**
 
 ```bash
 git add frontend/src/lib/telegram.ts frontend/src/lib/api.ts frontend/src/hooks/useTelegramSession.ts
