@@ -1170,7 +1170,9 @@ class MimicAgentRuntime:
         except Exception as e:
             await self._record_incoming_failure(peer, e)
 
-    async def _flush_deferred(self, peer: str, groups: list[list[Any]]) -> None:
+    async def _flush_deferred(
+        self, peer: str, groups: list[list[Any]], arrived: list[float]
+    ) -> None:
         """Окно должно было открыться: перепроверяем и разбираем накопленное одним ходом."""
         async with self._dispatch_lock:
             if self._send_window is not None:
@@ -1181,8 +1183,8 @@ class MimicAgentRuntime:
                     if retry_after is not None and retry_after <= DEFER_LIMIT_SECONDS:
                         # Слот успел закрыться снова (свой ответ инструментом, ошибка Telegram).
                         delay = max(_delay_until(window, now), 1.0)
-                        for group in groups:
-                            self._deferred_inbox.add(peer, group, delay=delay)
+                        for added_at, group in zip(arrived, groups, strict=True):
+                            self._deferred_inbox.add(peer, group, delay=delay, added_at=added_at)
                     else:
                         logger.info("Окно в чате %s закрыто надолго, накопленное отброшено", peer)
                     return

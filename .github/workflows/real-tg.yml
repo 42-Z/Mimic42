@@ -47,7 +47,7 @@ jobs:
     # Слои делят сессии проверяющего и мимика: параллельно второй упрётся
     # в замок живых тестов (mimic42.testing.real_tg.lock).
     needs: backend-real
-    if: ${{ !cancelled() }}
+    if: ${{ needs.backend-real.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:

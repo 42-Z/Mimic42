@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import random
 import threading
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, cast
@@ -152,13 +153,20 @@ class Checker:
         channel = cast(Any, created).chats[0]
         peer_id = int(utils.get_peer_id(channel))
         if members:
-            users = [await self.client.get_input_entity(phone) for phone in members]
-            invited = await self.client(
-                InviteToChannelRequest(channel=channel, users=cast(Any, users))
-            )
-            missing = list(getattr(invited, "missing_invitees", None) or [])
-            if missing:
-                raise RuntimeError(f"Не удалось пригласить в группу: {missing}")
+            try:
+                users = [await self.client.get_input_entity(phone) for phone in members]
+                invited = await self.client(
+                    InviteToChannelRequest(channel=channel, users=cast(Any, users))
+                )
+                missing = list(getattr(invited, "missing_invitees", None) or [])
+                if missing:
+                    raise RuntimeError(f"Не удалось пригласить в группу: {missing}")
+            except BaseException:
+                # Без peer_id вызывающий не сможет удалить группу: убираем её здесь,
+                # иначе каждый неудачный прогон оставлял бы её на настоящем аккаунте.
+                with suppress(Exception):
+                    await self.delete_group(peer_id)
+                raise
         return peer_id
 
     async def delete_group(self, peer_id: int) -> None:

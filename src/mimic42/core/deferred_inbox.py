@@ -27,7 +27,7 @@ class DeferredInbox:
 
     def __init__(
         self,
-        flush: Callable[[str, list[list[Any]]], Awaitable[None]],
+        flush: Callable[[str, list[list[Any]], list[float]], Awaitable[None]],
         *,
         max_groups: int | None = None,
         max_age: float | None = None,
@@ -50,11 +50,17 @@ class DeferredInbox:
     def _loop_time() -> float:
         return asyncio.get_running_loop().time()
 
-    def add(self, peer: str, group: list[Any], delay: float) -> None:
-        """Положить группу в буфер; первая группа планирует слив."""
+    def add(
+        self, peer: str, group: list[Any], delay: float, *, added_at: float | None = None
+    ) -> None:
+        """Положить группу в буфер; первая группа планирует слив.
+
+        added_at — время прибытия, если группа кладётся повторно: возраст считается
+        от первого появления, иначе повторные закрытия окна растягивали бы жизнь
+        группы дольше MAX_AGE."""
         now = self._now()
         entries = self._groups.setdefault(peer, [])
-        entries.append((now, group))
+        entries.append((now if added_at is None else added_at, group))
         if len(entries) > self._max_groups:
             dropped = len(entries) - self._max_groups
             del entries[:dropped]
@@ -96,7 +102,9 @@ class DeferredInbox:
         self._tasks.pop(peer, None)
 
         now = self._now()
-        fresh = [group for added_at, group in entries if now - added_at <= self._max_age]
+        fresh_entries = [(at, group) for at, group in entries if now - at <= self._max_age]
+        fresh = [group for _, group in fresh_entries]
+        arrived = [at for at, _ in fresh_entries]
         stale = len(entries) - len(fresh)
         if stale:
             logger.info("Отброшено %d протухших групп в чате %s", stale, peer)
@@ -108,7 +116,7 @@ class DeferredInbox:
         if task is not None:
             self._flushing.add(task)
         try:
-            await self._flush(peer, fresh)
+            await self._flush(peer, fresh, arrived)
         except Exception:
             logger.exception("Слив отложенных сообщений чата %s упал", peer)
         finally:

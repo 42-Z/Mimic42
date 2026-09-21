@@ -46,11 +46,13 @@ def test_lost_connection_frees_the_lock(test_dsn: str, key: int) -> None:
     async def kill() -> None:
         connection = await asyncpg.connect(plain_dsn(test_dsn))
         try:
-            await connection.execute(
-                "select pg_terminate_backend(pid) from pg_stat_activity "
+            # Ненулевой таймаут: функция ждёт, пока процесс действительно завершится.
+            terminated = await connection.fetchval(
+                "select pg_terminate_backend(pid, 5000) from pg_stat_activity "
                 "where application_name = $1",
                 f"{APPLICATION_NAME}:{holder}",
             )
+            assert terminated is True
         finally:
             await connection.close()
 

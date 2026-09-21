@@ -9,9 +9,11 @@ from mimic42.core.deferred_inbox import DeferredInbox
 class Recorder:
     def __init__(self) -> None:
         self.flushed: list[tuple[str, list[list[Any]]]] = []
+        self.arrived: list[list[float]] = []
 
-    async def flush(self, peer: str, groups: list[list[Any]]) -> None:
+    async def flush(self, peer: str, groups: list[list[Any]], arrived: list[float]) -> None:
         self.flushed.append((peer, groups))
+        self.arrived.append(arrived)
 
 
 class FakeClock:
@@ -105,6 +107,28 @@ async def test_everything_stale_flushes_nothing() -> None:
     inbox.add("-100777", ["old"], delay=100.0)
     await clock.advance(100)
     assert recorder.flushed == []
+
+
+async def test_flush_reports_when_each_group_arrived() -> None:
+    clock, recorder = FakeClock(), Recorder()
+    inbox = inbox_with(clock, recorder)
+    inbox.add("-100777", ["a"], delay=30.0)
+    await clock.advance(10)
+    inbox.add("-100777", ["b"], delay=20.0)
+    await clock.advance(20)
+    assert recorder.arrived == [[0.0, 10.0]]
+
+
+async def test_requeued_group_keeps_its_original_age() -> None:
+    clock, recorder = FakeClock(), Recorder()
+    inbox = inbox_with(clock, recorder, max_age=60.0)
+    inbox.add("-100777", ["old"], delay=50.0)
+    await clock.advance(50)
+    assert len(recorder.flushed) == 1
+    # Слот закрылся снова: рантайм кладёт группу обратно с прежним временем прибытия.
+    inbox.add("-100777", ["old"], delay=20.0, added_at=recorder.arrived[0][0])
+    await clock.advance(20)
+    assert len(recorder.flushed) == 1
 
 
 async def test_close_cancels_pending_buffers() -> None:
