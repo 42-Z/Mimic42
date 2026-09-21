@@ -11,8 +11,7 @@ from mimic42.core.agent_runtime import AgentRuntimeConfig, TelegramAuthorization
 def build_telegram_client(config: AgentRuntimeConfig) -> TelegramClient:
     if not config.telegram_session_string:
         raise TelegramAuthorizationRequired(
-            f"Agent {config.agent_id} has no stored Telegram session string — "
-            "complete onboarding first"
+            "Сессия Telegram не привязана. Требуется привязка Telegram-аккаунта."
         )
     client = TelegramClient(
         StringSession(config.telegram_session_string),
