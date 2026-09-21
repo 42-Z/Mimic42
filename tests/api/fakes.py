@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from uuid import UUID
 
 from mimic42.core.agent_runtime import (
+    UNAUTHORIZED_SESSION_MESSAGE,
     AgentRuntimeConfig,
     AgentRuntimeState,
     AgentStatus,
@@ -53,9 +54,7 @@ class FakeAgentManager:
 
     async def start_agent(self, agent_id: UUID) -> None:
         if self._start_unauthorized:
-            raise TelegramAuthorizationRequired(
-                "Сессия Telegram не авторизована. Требуется повторная привязка Telegram-аккаунта."
-            )
+            raise TelegramAuthorizationRequired(UNAUTHORIZED_SESSION_MESSAGE)
         self.started.append(agent_id)
         self.created[agent_id].state = AgentRuntimeState.RUNNING
 

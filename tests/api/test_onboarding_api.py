@@ -7,7 +7,14 @@ from httpx import ASGITransport, AsyncClient
 
 from mimic42.api.app import create_app
 from mimic42.config import Settings
-from mimic42.core.onboarding import AgentOnboardingService, InMemoryOnboardingRepository
+from mimic42.core.onboarding import (
+    AgentOnboardingService,
+    InMemoryOnboardingRepository,
+    OnboardingPublicStatus,
+    OnboardingSession,
+    TelegramLoginStatus,
+    TelegramPasswordRequiredError,
+)
 from mimic42.testing.telegram import FakeTelegramAccount, FakeTelegramAuthClientFactory
 from tests.api.auth_helpers import AUTH_HEADERS, FakeAuthVerifier
 
@@ -172,3 +179,77 @@ async def test_verify_code_reports_phone_without_telegram_account() -> None:
 
     assert verify_response.status_code == 400
     assert verify_response.json()["detail"] == "Пользователя с таким номером нет в Telegram."
+
+
+class PasswordRequiredOnboardingService(AgentOnboardingService):
+    """Стаб сервиса: код принят, но Telethon требует пароль 2FA."""
+
+    def __init__(self, owner_id: UUID) -> None:
+        self._owner_id = owner_id
+
+    async def get_status(self, onboarding_id: UUID) -> OnboardingPublicStatus:
+        return OnboardingPublicStatus(
+            onboarding_id=onboarding_id,
+            owner_id=self._owner_id,
+            authorization_status=TelegramLoginStatus.CODE_REQUESTED,
+            phone_number="+79990000000",
+        )
+
+    async def verify_telegram_code(
+        self, onboarding_id: UUID, verification: object
+    ) -> OnboardingPublicStatus:
+        raise TelegramPasswordRequiredError
+
+
+@pytest.mark.asyncio
+async def test_verify_code_reports_2fa_requirement_in_russian() -> None:
+    owner_id = uuid4()
+    app = create_app(
+        onboarding_service=PasswordRequiredOnboardingService(owner_id),
+        auth_verifier=FakeAuthVerifier(owner_id),
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        response = await client.post(
+            f"/api/v1/onboarding/{uuid4()}/telegram/code",
+            headers=AUTH_HEADERS,
+            json={"code": "12345"},
+        )
+
+    assert response.status_code == 428
+    assert "двухфакторная" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_finalize_agent_reports_incomplete_authorization_in_russian() -> None:
+    owner_id = uuid4()
+    onboarding_id = uuid4()
+    repository = InMemoryOnboardingRepository()
+    await repository.save(
+        OnboardingSession(
+            onboarding_id=onboarding_id,
+            owner_id=owner_id,
+            authorization_status=TelegramLoginStatus.NOT_STARTED,
+        )
+    )
+    service = AgentOnboardingService(
+        repository=repository,
+        telegram_factory=FakeTelegramAuthClientFactory(FakeTelegramAccount()),
+    )
+    app = create_app(onboarding_service=service, auth_verifier=FakeAuthVerifier(owner_id))
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        response = await client.post(
+            f"/api/v1/onboarding/{onboarding_id}/agent",
+            headers=AUTH_HEADERS,
+            json={"name": "Mimic", "soul_prompt": "Short replies"},
+        )
+
+    assert response.status_code == 409
+    assert "авторизац" in response.json()["detail"].lower()

@@ -202,7 +202,7 @@ async def test_start_agent_reports_unauthorized_session_in_russian() -> None:
         transport=ASGITransport(app=app),
         base_url="http://testserver",
     ) as client:
-        await client.post(
+        create_response = await client.post(
             "/api/v1/agents",
             headers=AUTH_HEADERS,
             json={
@@ -218,7 +218,9 @@ async def test_start_agent_reports_unauthorized_session_in_russian() -> None:
             headers=AUTH_HEADERS,
         )
 
+    assert create_response.status_code == 201
     assert response.status_code == 428
     detail = response.json()["detail"]
     assert "не авторизована" in detail
     assert "повторная привязка" in detail
+    assert manager.started == []

@@ -35,6 +35,11 @@ class TelegramAuthorizationRequired(RuntimeError):
     """Raised when a Telethon user session is connected but not authorized."""
 
 
+UNAUTHORIZED_SESSION_MESSAGE = (
+    "Сессия Telegram не авторизована. Требуется повторная привязка Telegram-аккаунта."
+)
+
+
 class AgentRuntimeState(StrEnum):
     STOPPED = "stopped"
     STARTING = "starting"
@@ -250,10 +255,7 @@ class MimicAgentRuntime:
                 logger.debug("Connected. Checking authorization...")
                 if not await self._telegram_client.is_user_authorized():
                     logger.error("Telegram session not authorized")
-                    raise TelegramAuthorizationRequired(
-                        "Сессия Telegram не авторизована. "
-                        "Требуется повторная привязка Telegram-аккаунта."
-                    )
+                    raise TelegramAuthorizationRequired(UNAUTHORIZED_SESSION_MESSAGE)
                 logger.debug("Authorized. Registering message handler...")
                 self._register_message_handler()
                 logger.info("Message handler registered")
