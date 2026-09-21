@@ -211,7 +211,7 @@ git commit -m "feat: report unauthorized telegram session in russian for users"
 
 ---
 
-### Task 2: Рантайм помечает telegram_sessions как revoked
+### Task 2: Рантайм помечает telegram_sessions как revoked ✅ (коммиты `5547894`, `61c824c`)
 
 Telethon-контекст: `TelegramClient.connect()` succeeds даже для неавторизованной сессии (auth key есть), а `is_user_authorized()` возвращает `False` (https://docs.telethon.dev/en/stable/quick-references/client-reference.html, Users → is_user_authorized). Именно эту точку рантайм уже ловит — теперь она должна быть видна дэшборду.
 
