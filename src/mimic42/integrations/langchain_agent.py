@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from mimic42.config import Settings
 from mimic42.core.activity import ActivityRecorder
 from mimic42.core.agent_runtime import AgentRuntimeConfig, LangChainAgentLike, TurnContext
-from mimic42.core.model_catalog import resolve_model_chain
+from mimic42.core.model_catalog import ignored_providers, resolve_model_chain
 from mimic42.core.token_usage import TokenUsageRecorder
 from mimic42.integrations.activity_middleware import ActivityMiddleware
 from mimic42.integrations.agent_response_schema import AgentResponse
@@ -54,14 +54,14 @@ def build_chat_model(
         SecretStr(settings.openrouter_api_key) if settings.openrouter_api_key is not None else None
     )
     model_kwargs: dict[str, Any] = {"models": chain} if len(chain) > 1 else {}
+    options: dict[str, Any] = {}
     if config.reasoning_effort != "none":
-        return ChatOpenRouter(
-            model=primary,
-            api_key=api_key,
-            reasoning={"effort": config.reasoning_effort},
-            model_kwargs=model_kwargs,
-        )
-    return ChatOpenRouter(model=primary, api_key=api_key, model_kwargs=model_kwargs)
+        options["reasoning"] = {"effort": config.reasoning_effort}
+    options["model_kwargs"] = model_kwargs
+    ignored = ignored_providers(config.llm_model)
+    if ignored:
+        options["openrouter_provider"] = {"ignore": ignored}
+    return ChatOpenRouter(model=primary, api_key=api_key, **options)
 
 
 def build_langchain_agent(

@@ -55,6 +55,19 @@ def test_model_with_free_variant_builds_fallback_chain(recorded: list[dict[str, 
 
 
 def test_paid_only_model_gets_single_slug(recorded: list[dict[str, Any]]) -> None:
+    build_chat_model(_config("deepseek/deepseek-v4-flash-0731"))
+
+    assert recorded == [
+        {
+            "model": "deepseek/deepseek-v4-flash-0731",
+            "api_key": None,
+            "reasoning": {"effort": "high"},
+            "model_kwargs": {},
+        }
+    ]
+
+
+def test_ignored_providers_are_excluded_from_routing(recorded: list[dict[str, Any]]) -> None:
     build_chat_model(_config("z-ai/glm-5.3-flash"))
 
     assert recorded == [
@@ -63,6 +76,20 @@ def test_paid_only_model_gets_single_slug(recorded: list[dict[str, Any]]) -> Non
             "api_key": None,
             "reasoning": {"effort": "high"},
             "model_kwargs": {},
+            "openrouter_provider": {"ignore": ["morph"]},
+        }
+    ]
+
+
+def test_ignored_providers_apply_without_reasoning(recorded: list[dict[str, Any]]) -> None:
+    build_chat_model(_config("z-ai/glm-5.3-flash", reasoning_effort="none"))
+
+    assert recorded == [
+        {
+            "model": "z-ai/glm-5.3-flash",
+            "api_key": None,
+            "model_kwargs": {},
+            "openrouter_provider": {"ignore": ["morph"]},
         }
     ]
 

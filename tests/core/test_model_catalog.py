@@ -3,6 +3,7 @@ from __future__ import annotations
 from mimic42.core.model_catalog import (
     DEFAULT_LLM_MODEL,
     MODEL_CATALOG,
+    ignored_providers,
     resolve_model_chain,
 )
 
@@ -42,3 +43,9 @@ def test_models_without_free_variant_resolve_to_single_slug() -> None:
 
 def test_unknown_slug_passes_through() -> None:
     assert resolve_model_chain("google/gemini-3.1-flash-lite") == ["google/gemini-3.1-flash-lite"]
+
+
+def test_ignored_providers_come_from_the_catalog() -> None:
+    assert ignored_providers("z-ai/glm-5.3-flash") == ["morph"]
+    assert ignored_providers("deepseek/deepseek-v4-flash-0731") == []
+    assert ignored_providers("google/gemini-3.1-flash-lite") == []
