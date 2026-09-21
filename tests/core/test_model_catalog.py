@@ -14,7 +14,6 @@ def test_catalog_contains_exactly_menu_models() -> None:
         "deepseek/deepseek-v4-flash-0731",
         "inclusionai/ling-3.0-flash-vl",
         "meituan/longcat-2.0",
-        "poolside/laguna-s-2.1",
     }
 
 
@@ -23,10 +22,6 @@ def test_default_model_is_in_catalog() -> None:
 
 
 def test_free_chain_is_free_then_paid() -> None:
-    assert resolve_model_chain("poolside/laguna-s-2.1") == [
-        "poolside/laguna-s-2.1:free",
-        "poolside/laguna-s-2.1",
-    ]
     assert resolve_model_chain("inclusionai/ling-3.0-flash-vl") == [
         "inclusionai/ling-3.0-flash-vl:free",
         "inclusionai/ling-3.0-flash-vl",

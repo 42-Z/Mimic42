@@ -22,7 +22,7 @@ async def test_reasoning_endpoint_returns_slim_model_map(
             "default_effort": "max",
             "mandatory": True,
         },
-        "poolside/laguna-s-2.1": {"mandatory": False, "default_enabled": True},
+        "meituan/longcat-2.0": None,
     }
     monkeypatch.setattr(openrouter_catalog, "fetch_reasoning_by_model", lambda: _async(fake_map))
 

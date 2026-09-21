@@ -35,11 +35,6 @@ MODEL_CATALOG: dict[str, ModelSpec] = {
             free_slug="inclusionai/ling-3.0-flash-vl:free",
         ),
         ModelSpec(slug="meituan/longcat-2.0", name="Longcat 2.0"),
-        ModelSpec(
-            slug="poolside/laguna-s-2.1",
-            name="Laguna S 2.1",
-            free_slug="poolside/laguna-s-2.1:free",
-        ),
     )
 }
 
