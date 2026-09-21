@@ -229,6 +229,37 @@ class MimicAgentRuntime:
             completed_at=completed_at,
         )
 
+    async def _mark_telegram_session_revoked(self, *, error: str) -> None:
+        """Пометить telegram_sessions revoked: дэшборд предложит перепривязку.
+
+        Ошибка записи не мешает основному исключению: статус агента и события
+        фиксируются отдельно.
+        """
+        if self._session_factory is None:
+            return
+        try:
+            from sqlalchemy import select
+
+            from mimic42.integrations.database_models import TelegramSessionModel
+
+            async with self._session_factory() as db_session:
+                telegram_session = await db_session.scalar(
+                    select(TelegramSessionModel).where(
+                        TelegramSessionModel.agent_id == self.config.agent_id
+                    )
+                )
+                if telegram_session is None:
+                    logger.warning(
+                        "No telegram_sessions row for agent %s, cannot mark revoked",
+                        self.config.agent_id,
+                    )
+                    return
+                telegram_session.authorization_status = "revoked"
+                telegram_session.last_error = error
+                await db_session.commit()
+        except Exception:
+            logger.warning("Failed to mark telegram session revoked", exc_info=True)
+
     @property
     def state(self) -> AgentRuntimeState:
         return self._state
@@ -265,6 +296,8 @@ class MimicAgentRuntime:
                 reason = (
                     "unauthorized" if isinstance(e, TelegramAuthorizationRequired) else "exception"
                 )
+                if isinstance(e, TelegramAuthorizationRequired):
+                    await self._mark_telegram_session_revoked(error=str(e))
                 await self._record_event(
                     event_type="agent.start_failed",
                     status="failed",
