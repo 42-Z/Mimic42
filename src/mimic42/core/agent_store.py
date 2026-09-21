@@ -89,6 +89,8 @@ class ConversationPage(BaseModel):
 class AgentStore(Protocol):
     async def create_from_onboarding(self, session: OnboardingSession) -> AgentRecord: ...
 
+    async def rebind_telegram_session(self, agent_id: UUID, session: OnboardingSession) -> None: ...
+
     async def get_runtime_config(self, agent_id: UUID) -> AgentRuntimeConfig: ...
 
     async def list_agents(self, *, owner_id: UUID | None = None) -> list[AgentRecord]: ...
@@ -177,6 +179,23 @@ class InMemoryAgentStore:
             name=session.name or "AI",
         )
         return record
+
+    async def rebind_telegram_session(self, agent_id: UUID, session: OnboardingSession) -> None:
+        """Заменить Telegram-сессию агента, не трогая профиль.
+
+        Поля онбординга хранятся зашифрованными и кладутся как есть — так же,
+        как их кладёт create_from_onboarding.
+        """
+        config = self._configs.get(agent_id)
+        if config is None:
+            raise KeyError(f"Agent {agent_id} does not have a runtime config")
+        self._configs[agent_id] = config.model_copy(
+            update={
+                "telegram_api_id": session.api_id,
+                "telegram_api_hash": session.api_hash_secret,
+                "telegram_session_string": session.session_secret,
+            }
+        )
 
     async def get_runtime_config(self, agent_id: UUID) -> AgentRuntimeConfig:
         try:
