@@ -34,7 +34,13 @@ MODEL_CATALOG: dict[str, ModelSpec] = {
             name="Ling 3.0 Flash VL",
             free_slug="inclusionai/ling-3.0-flash-vl:free",
         ),
-        ModelSpec(slug="meituan/longcat-2.0", name="Longcat 2.0"),
+        ModelSpec(
+            slug="nvidia/nemotron-3.5-lightning",
+            name="Nemotron 3.5 Lightning",
+            # DeepInfra does not support a required tool choice, which the
+            # agent's structured response relies on (2026-09-21).
+            ignored_providers=("deepinfra",),
+        ),
     )
 }
 

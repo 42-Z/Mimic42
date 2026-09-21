@@ -13,7 +13,7 @@ def test_catalog_contains_exactly_menu_models() -> None:
         "z-ai/glm-5.3-flash",
         "deepseek/deepseek-v4-flash-0731",
         "inclusionai/ling-3.0-flash-vl",
-        "meituan/longcat-2.0",
+        "nvidia/nemotron-3.5-lightning",
     }
 
 
@@ -33,7 +33,7 @@ def test_models_without_free_variant_resolve_to_single_slug() -> None:
     assert resolve_model_chain("deepseek/deepseek-v4-flash-0731") == [
         "deepseek/deepseek-v4-flash-0731"
     ]
-    assert resolve_model_chain("meituan/longcat-2.0") == ["meituan/longcat-2.0"]
+    assert resolve_model_chain("nvidia/nemotron-3.5-lightning") == ["nvidia/nemotron-3.5-lightning"]
 
 
 def test_unknown_slug_passes_through() -> None:
@@ -42,5 +42,6 @@ def test_unknown_slug_passes_through() -> None:
 
 def test_ignored_providers_come_from_the_catalog() -> None:
     assert ignored_providers("z-ai/glm-5.3-flash") == ["morph"]
+    assert ignored_providers("nvidia/nemotron-3.5-lightning") == ["deepinfra"]
     assert ignored_providers("deepseek/deepseek-v4-flash-0731") == []
     assert ignored_providers("google/gemini-3.1-flash-lite") == []
