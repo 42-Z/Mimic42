@@ -4,10 +4,12 @@ from typing import Any
 from uuid import uuid4
 
 import pytest
+from langchain.agents.middleware import ModelCallLimitMiddleware
 
 import mimic42.integrations.langchain_agent as langchain_agent_module
 from mimic42.core.agent_runtime import AgentRuntimeConfig
 from mimic42.integrations.langchain_agent import (
+    MODEL_CALLS_PER_TURN,
     REQUEST_TIMEOUT_MS,
     build_chat_model,
     build_langchain_agent,
@@ -155,7 +157,7 @@ def test_build_langchain_agent_registers_token_usage_middleware(
     assert any(isinstance(m, TokenUsageMiddleware) for m in middleware)
 
 
-def test_build_langchain_agent_has_no_middleware_without_session_factory(
+def test_build_langchain_agent_limits_model_calls_without_session_factory(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict[str, Any] = {}
@@ -168,7 +170,30 @@ def test_build_langchain_agent_has_no_middleware_without_session_factory(
 
     build_langchain_agent(_config("mistral-small"))
 
-    assert captured["middleware"] == []
+    [limit] = captured["middleware"]
+    assert isinstance(limit, ModelCallLimitMiddleware)
+    assert limit.run_limit == MODEL_CALLS_PER_TURN
+    # "end" would let the runtime send LangChain's limit notice to the chat.
+    assert limit.exit_behavior == "error"
+
+
+def test_build_langchain_agent_limits_model_calls_with_session_factory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_create_agent(**kwargs: Any) -> str:
+        captured.update(kwargs)
+        return "graph"
+
+    monkeypatch.setattr(langchain_agent_module, "create_agent", fake_create_agent)
+
+    build_langchain_agent(
+        _config("mistral-small"),
+        session_factory=object(),  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
+    )
+
+    assert any(isinstance(m, ModelCallLimitMiddleware) for m in captured["middleware"])
 
 
 def test_request_timeout_is_two_minutes() -> None:

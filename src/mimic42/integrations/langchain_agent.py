@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from langchain.agents import create_agent
+from langchain.agents.middleware import ModelCallLimitMiddleware
 from langchain_core.tools import BaseTool
 from langchain_openrouter import ChatOpenRouter
 from pydantic import SecretStr
@@ -20,6 +21,11 @@ from mimic42.integrations.token_usage_middleware import TokenUsageMiddleware
 # A request stuck at the provider otherwise holds the agent's turn forever; the
 # client retries a timed-out request itself (max_retries).
 REQUEST_TIMEOUT_MS = 120_000
+
+# Model calls allowed in one turn. Real turns take up to ~7 (six tool calls
+# plus the answer); a model that keeps ignoring the required response tool
+# would otherwise be re-asked until LangGraph's 1000-step recursion limit.
+MODEL_CALLS_PER_TURN = 20
 
 
 class LangChainGraphAgent:
@@ -76,7 +82,11 @@ def build_langchain_agent(
 ) -> LangChainAgentLike:
     model = build_chat_model(config)
 
-    middleware: list[Any] = []
+    # "error", not "end": on "end" the runtime would find no structured response
+    # and send LangChain's limit notice to the chat as the reply.
+    middleware: list[Any] = [
+        ModelCallLimitMiddleware(run_limit=MODEL_CALLS_PER_TURN, exit_behavior="error")
+    ]
     if session_factory is not None:
         recorder = ActivityRecorder(session_factory)
         middleware.append(ActivityMiddleware(agent_id=config.agent_id, recorder=recorder))
