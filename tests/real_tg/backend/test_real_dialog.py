@@ -45,7 +45,7 @@ async def test_trigger_message_arrives_in_telegram(
     checker: Checker,
     started_mimics: list[tuple[str, str]],
 ) -> None:
-    agent_id, phone = started_mimics[1]
+    agent_id, phone = started_mimics[0]
     _, client = real_app
     token = await jwt()
     await checker.import_contact(phone)
