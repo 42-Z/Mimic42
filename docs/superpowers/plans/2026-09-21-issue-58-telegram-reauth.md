@@ -513,7 +513,7 @@ git commit -m "feat(store): rebind_telegram_session protocol and in-memory imple
 
 ---
 
-### Task 4: DatabaseAgentStore.rebind_telegram_session
+### Task 4: DatabaseAgentStore.rebind_telegram_session ✅ (коммиты `c72fdf5`, `f6764f3`)
 
 **Files:**
 - Modify: `src/mimic42/integrations/database_agent_store.py`
