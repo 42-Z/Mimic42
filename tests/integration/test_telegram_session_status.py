@@ -1,14 +1,16 @@
 from __future__ import annotations
 
-from typing import cast
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from telethon import errors
 
 from mimic42.core.agent_runtime import (
-    UNAUTHORIZED_SESSION_MESSAGE,
+    REVOKED_SESSION_MESSAGE,
+    AgentTrigger,
     MimicAgentRuntime,
     TelegramAuthorizationRequired,
 )
@@ -69,7 +71,7 @@ async def test_unauthorized_start_marks_session_revoked(
         )
     assert row is not None
     assert row.authorization_status == "revoked"
-    assert row.last_error == UNAUTHORIZED_SESSION_MESSAGE
+    assert row.last_error == REVOKED_SESSION_MESSAGE
 
 
 async def test_authorized_start_keeps_session_status_untouched(
@@ -97,6 +99,90 @@ async def test_authorized_start_keeps_session_status_untouched(
     assert row is not None
     assert row.authorization_status == "authorized"
     assert row.last_error is None
+
+
+class FailingConnectClient(FakeTelegramClient):
+    """Клиент, у которого падает именно подключение, а не проверка авторизации."""
+
+    def __init__(self, error: BaseException) -> None:
+        super().__init__()
+        self._error = error
+
+    async def connect(self) -> None:
+        raise self._error
+
+
+@pytest.mark.parametrize(
+    "connect_error",
+    [
+        errors.AuthKeyDuplicatedError(request=None),
+        errors.UnauthorizedError(request=None, message="401: Unauthorized"),
+    ],
+    ids=["auth_key_duplicated", "unauthorized"],
+)
+async def test_dead_session_error_on_connect_marks_session_revoked(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+    connect_error: Exception,
+) -> None:
+    owner_id = clean_slot.persona("flow").user_id
+    agent_id = uuid4()
+    await _seed_agent_with_session(db_session_factory, agent_id=agent_id, owner_id=owner_id)
+
+    runtime = MimicAgentRuntime(
+        config=make_config(agent_id, owner_id),
+        telegram_client=FailingConnectClient(connect_error),
+        langchain_agent=FakeLangChainAgent(),
+        session_factory=db_session_factory,
+    )
+
+    with pytest.raises(type(connect_error)):
+        await runtime.start()
+
+    async with db_session_factory() as session:
+        row = await session.scalar(
+            select(TelegramSessionModel).where(TelegramSessionModel.agent_id == agent_id)
+        )
+    assert row is not None
+    assert row.authorization_status == "revoked"
+    assert row.last_error == REVOKED_SESSION_MESSAGE
+
+
+class FailingSendClient(FakeTelegramClient):
+    """Клиент, который теряет авторизацию уже во время отправки."""
+
+    async def send_message(self, entity: str, message: str, **kwargs: Any) -> object:
+        raise errors.UnauthorizedError(request=None, message="401: Unauthorized")
+
+
+async def test_dead_session_error_on_send_marks_session_revoked(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    owner_id = clean_slot.persona("flow").user_id
+    agent_id = uuid4()
+    await _seed_agent_with_session(db_session_factory, agent_id=agent_id, owner_id=owner_id)
+
+    runtime = MimicAgentRuntime(
+        config=make_config(agent_id, owner_id),
+        telegram_client=FailingSendClient(),
+        langchain_agent=FakeLangChainAgent(response="reply"),
+        session_factory=db_session_factory,
+    )
+
+    result = await runtime.trigger_message(AgentTrigger(peer="me", text="hi"))
+    await runtime.stop()
+
+    # Доставка сорвалась, но ход не падает наружу: сессия просто помечается мёртвой.
+    assert result.response_text == "reply"
+
+    async with db_session_factory() as session:
+        row = await session.scalar(
+            select(TelegramSessionModel).where(TelegramSessionModel.agent_id == agent_id)
+        )
+    assert row is not None
+    assert row.authorization_status == "revoked"
+    assert row.last_error == REVOKED_SESSION_MESSAGE
 
 
 class BrokenSessionFactory:

@@ -39,6 +39,22 @@ UNAUTHORIZED_SESSION_MESSAGE = (
     "Сессия Telegram не авторизована. Требуется повторная привязка Telegram-аккаунта."
 )
 
+REVOKED_SESSION_MESSAGE = (
+    "Сессия Telegram недействительна. Требуется повторная привязка Telegram-аккаунта."
+)
+
+
+def _is_dead_session_error(exc: BaseException) -> bool:
+    """Мёртвая сессия: нужен повторный вход, рантайм сам не восстановится.
+
+    Telegram отдаёт это и как AuthKeyError (406, AUTH_KEY_DUPLICATED — обычная
+    причина: одну сессию использовали с двух IP), и как UnauthorizedError
+    (401: revoked/expired/unregistered/deactivated).
+    """
+    from telethon.errors import AuthKeyError, UnauthorizedError
+
+    return isinstance(exc, (TelegramAuthorizationRequired, AuthKeyError, UnauthorizedError))
+
 
 class AgentRuntimeState(StrEnum):
     STOPPED = "stopped"
@@ -297,16 +313,15 @@ class MimicAgentRuntime:
             except Exception as e:
                 logger.error(f"Failed to start agent {self.config.agent_id}: {e}", exc_info=True)
                 self._state = AgentRuntimeState.ERROR
-                reason = (
-                    "unauthorized" if isinstance(e, TelegramAuthorizationRequired) else "exception"
-                )
-                if isinstance(e, TelegramAuthorizationRequired):
-                    await self._mark_telegram_session_revoked(error=str(e))
+                dead_session = _is_dead_session_error(e)
+                reason = "unauthorized" if dead_session else "exception"
+                if dead_session:
+                    await self._mark_telegram_session_revoked(error=REVOKED_SESSION_MESSAGE)
                 await self._record_event(
                     event_type="agent.start_failed",
                     status="failed",
                     payload={"reason": reason, "error_code": type(e).__name__},
-                    error=str(e),
+                    error=REVOKED_SESSION_MESSAGE if dead_session else str(e),
                     started_at=datetime.now(UTC),
                     completed_at=datetime.now(UTC),
                 )
@@ -661,6 +676,9 @@ class MimicAgentRuntime:
                     # The turn must not crash on a delivery failure, but the
                     # silence must be visible in the dashboard, not only in logs.
                     logger.exception("Failed to send Telegram message to %s", peer_id_for_send)
+                    dead_session = _is_dead_session_error(e)
+                    if dead_session:
+                        await self._mark_telegram_session_revoked(error=REVOKED_SESSION_MESSAGE)
                     await self._record_event(
                         event_type="message.send_failed",
                         status="failed",
@@ -669,7 +687,7 @@ class MimicAgentRuntime:
                             "peer": trigger.peer,
                             "error_code": type(e).__name__,
                         },
-                        error=str(e),
+                        error=REVOKED_SESSION_MESSAGE if dead_session else str(e),
                         started_at=datetime.now(UTC),
                         completed_at=datetime.now(UTC),
                     )

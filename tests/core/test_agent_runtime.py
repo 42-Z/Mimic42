@@ -6,6 +6,7 @@ from typing import Any, cast
 from uuid import UUID, uuid4
 
 import pytest
+from telethon import errors
 
 from mimic42.core.agent_runtime import (
     AgentRuntimeConfig,
@@ -153,6 +154,34 @@ async def test_runtime_refuses_unauthorized_userbot_session() -> None:
     )
 
     with pytest.raises(TelegramAuthorizationRequired, match="не авторизована"):
+        await runtime.start()
+
+    assert runtime.state is AgentRuntimeState.ERROR
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "connect_error",
+    [
+        errors.AuthKeyDuplicatedError(request=None),
+        errors.UnauthorizedError(request=None, message="401: Unauthorized"),
+    ],
+    ids=["auth_key_duplicated", "unauthorized"],
+)
+async def test_dead_session_error_on_connect_moves_runtime_to_error(
+    connect_error: Exception,
+) -> None:
+    class FailingConnectClient(FakeTelegramClient):
+        async def connect(self) -> None:
+            raise connect_error
+
+    runtime = MimicAgentRuntime(
+        config=make_config(),
+        telegram_client=FailingConnectClient(),
+        langchain_agent=FakeLangChainAgent(),
+    )
+
+    with pytest.raises(type(connect_error)):
         await runtime.start()
 
     assert runtime.state is AgentRuntimeState.ERROR
