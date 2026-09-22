@@ -242,9 +242,9 @@ function AgentCard({ agent, details }: { agent: AgentRecord; details?: AgentDeta
 
       <div className="flex items-center gap-2 pt-1">
         {rebind ? (
-          <Link href={`/agent/${agent.agent_id}/rebind`} className="flex-1">
+          <Link href={`/agent/${agent.agent_id}/rebind`} aria-label="Перепривязать Telegram">
             <Button
-              variant="outline" size="sm" className="w-full"
+              variant="outline" size="sm"
               leftIcon={<Link2 className="h-3.5 w-3.5" />}
             >
               Перепривязать
@@ -261,17 +261,15 @@ function AgentCard({ agent, details }: { agent: AgentRecord; details?: AgentDeta
             Запустить
           </Button>
         )}
-        {!rebind && (
-          <Button
-            variant="danger" size="sm"
-            onClick={handleStop}
-            disabled={!canStop}
-            isLoading={stopping}
-            leftIcon={<Square className="h-3.5 w-3.5" />}
-          >
-            Стоп
-          </Button>
-        )}
+        <Button
+          variant="danger" size="sm"
+          onClick={handleStop}
+          disabled={!canStop}
+          isLoading={stopping}
+          leftIcon={<Square className="h-3.5 w-3.5" />}
+        >
+          Стоп
+        </Button>
         <div className="flex-1" />
         <Link href={`/agent/${agent.agent_id}`} aria-label="Настройки агента">
           <Button variant="ghost" size="sm" className="px-2">

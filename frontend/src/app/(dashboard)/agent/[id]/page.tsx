@@ -143,31 +143,27 @@ function AgentControls({ agentId, state }: { agentId: string; state?: string }) 
 
   const rebind = needsRebind(telegramSession?.authorization_status);
 
-  if (rebind) {
-    return (
-      <div className="flex items-center gap-2">
-        <Link href={`/agent/${agentId}/rebind`}>
+  return (
+    <div className="flex items-center gap-2">
+      {rebind ? (
+        <Link href={`/agent/${agentId}/rebind`} aria-label="Перепривязать Telegram">
           <Button variant="outline" size="sm" leftIcon={<Link2 className="h-3.5 w-3.5" />}>
             Перепривязать
           </Button>
         </Link>
-      </div>
-    );
-  }
-
-  return (
-    <div className="flex items-center gap-2">
-      <Button variant="success" size="sm"
-        onClick={() => start(agentId, {
-          onSuccess: () => toast('Агент запускается', 'success'),
-          onError: (e: unknown) => toast((e as ApiError).message, 'error'),
-        })}
-        disabled={state === 'running' || state === 'starting'}
-        isLoading={starting}
-        leftIcon={<Play className="h-3.5 w-3.5" />}
-      >
-        Запустить
-      </Button>
+      ) : (
+        <Button variant="success" size="sm"
+          onClick={() => start(agentId, {
+            onSuccess: () => toast('Агент запускается', 'success'),
+            onError: (e: unknown) => toast((e as ApiError).message, 'error'),
+          })}
+          disabled={state === 'running' || state === 'starting'}
+          isLoading={starting}
+          leftIcon={<Play className="h-3.5 w-3.5" />}
+        >
+          Запустить
+        </Button>
+      )}
 
       <Button variant="danger" size="sm"
         onClick={() => setStopConfirm(true)}
@@ -448,12 +444,12 @@ function TabTelegram({ agentId }: { agentId: string }) {
       {needsRebind(session.authorization_status) && (
         <div className="p-4 rounded-sm bg-amber-950/20 border border-amber-900/50 flex items-center justify-between gap-4">
           <div>
-            <p className="font-mono text-sm text-amber-400 font-medium">Требуется переподключение</p>
+            <p className="font-mono text-sm text-amber-400 font-medium">Требуется перепривязка Telegram</p>
             <p className="font-mono text-xs text-amber-600 mt-0.5">
               Сессия истекла или была отозвана
             </p>
           </div>
-          <Link href={`/agent/${agentId}/rebind`}>
+          <Link href={`/agent/${agentId}/rebind`} aria-label="Перепривязать Telegram">
             <Button variant="outline" size="sm" leftIcon={<RefreshCw className="h-3.5 w-3.5" />}>
               Перепривязать
             </Button>
