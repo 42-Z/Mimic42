@@ -97,6 +97,33 @@ class DatabaseAgentStore:
             await db_session.commit()
             return _agent_record(agent)
 
+    async def rebind_telegram_session(self, agent_id: UUID, session: OnboardingSession) -> None:
+        """Заменить Telegram-сессию агента после перепривязки.
+
+        Профиль (имя, характер, настройки, память) не трогается: обновляется
+        только строка telegram_sessions. Строковая блокировка защищает от
+        гонки с параллельным финалом онбординга того же агента.
+        """
+        if session.api_id is None or session.api_hash_secret is None:
+            raise ValueError("Onboarding session is missing Telegram credentials")
+
+        async with self._session_factory() as db_session:
+            telegram_session = await db_session.scalar(
+                select(TelegramSessionModel)
+                .where(TelegramSessionModel.agent_id == agent_id)
+                .with_for_update()
+            )
+            if telegram_session is None:
+                raise KeyError(f"Agent {agent_id} does not have a telegram session")
+            telegram_session.phone_number = session.phone_number
+            telegram_session.api_id = session.api_id
+            telegram_session.api_hash_ciphertext = session.api_hash_secret
+            telegram_session.session_ciphertext = session.session_secret
+            telegram_session.authorization_status = "authorized"
+            telegram_session.last_authorized_at = _now()
+            telegram_session.last_error = None
+            await db_session.commit()
+
     async def get_runtime_config(self, agent_id: UUID) -> AgentRuntimeConfig:
         async with self._session_factory() as db_session:
             row = await db_session.execute(

@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
+import pytest
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -32,6 +33,58 @@ def _make_session(owner_id: UUID, onboarding_id: UUID, name: str) -> OnboardingS
         name=name,
         soul_prompt="Soul",
     )
+
+
+def _make_rebind_session(owner_id: UUID) -> OnboardingSession:
+    return OnboardingSession(
+        onboarding_id=uuid4(),
+        owner_id=owner_id,
+        api_id=777,
+        api_hash_secret="new-encrypted-hash",
+        phone_number="+79990000001",
+        authorization_status=TelegramLoginStatus.AUTHORIZED,
+        session_secret="new-encrypted-session",
+    )
+
+
+async def test_rebind_telegram_session_updates_session_and_keeps_profile(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    owner_id = clean_slot.persona("full").user_id
+    agent_id = uuid4()
+
+    store = DatabaseAgentStore(db_session_factory)
+    await store.create_from_onboarding(_make_session(owner_id, agent_id, "Mimic"))
+    await store.rebind_telegram_session(agent_id, _make_rebind_session(owner_id))
+
+    config = await store.get_runtime_config(agent_id)
+    assert config.telegram_api_id == 777
+    assert config.telegram_api_hash == "new-encrypted-hash"
+    assert config.telegram_session_string == "new-encrypted-session"
+    agents = await store.list_agents(owner_id=owner_id)
+    assert [agent.name for agent in agents if agent.agent_id == agent_id] == ["Mimic"]
+
+    async with db_session_factory() as session:
+        row = await session.scalar(
+            select(TelegramSessionModel).where(TelegramSessionModel.agent_id == agent_id)
+        )
+    assert row is not None
+    assert row.authorization_status == "authorized"
+    assert row.last_authorized_at is not None
+    assert row.last_error is None
+
+
+async def test_rebind_telegram_session_unknown_agent_raises_key_error(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    store = DatabaseAgentStore(db_session_factory)
+
+    with pytest.raises(KeyError):
+        await store.rebind_telegram_session(
+            uuid4(), _make_rebind_session(clean_slot.persona("empty").user_id)
+        )
 
 
 async def test_database_agent_store_creates_agent_session_and_runtime_config(
