@@ -193,6 +193,7 @@ class AgentOnboardingService:
         credentials: TelegramCredentials,
         *,
         onboarding_id: UUID | None = None,
+        completed_agent_id: UUID | None = None,
     ) -> OnboardingPublicStatus:
         if onboarding_id is not None:
             existing = await self._repository.get(onboarding_id)
@@ -207,7 +208,8 @@ class AgentOnboardingService:
             onboarding_id = uuid4()
             name = None
             soul_prompt = None
-            completed_agent_id = None
+            # Переданная метка сразу прячет новую строку от мастера онбординга:
+            # rebind-черновик не должен попадать в список незавершённых.
 
         client = self._telegram_factory.build(
             api_id=credentials.api_id,
@@ -247,16 +249,18 @@ class AgentOnboardingService:
         Переиспользуется онбординг-строка агента (строка мастера с
         completed_agent_id == agent_id): мастер онбординга её не видит, а
         повторная перепривязка не плодит черновики. Для агентов без такой
-        строки заводится новая, сразу помеченная completed_agent_id.
+        строки новая сразу помечается completed_agent_id в той же записи и
+        потому никогда не видна мастеру.
         """
         try:
             existing = await self._repository.get_for_agent(agent_id)
         except OnboardingNotFoundError:
-            status = await self.request_telegram_code(credentials)
-            session = await self._repository.get(status.onboarding_id)
-            session.completed_agent_id = agent_id
-            await self._repository.save(session)
-            return _public_status(session)
+            return await self.request_telegram_code(credentials, completed_agent_id=agent_id)
+        if existing.completed_agent_id is None:
+            # Строка нашлась по id, но без метки: доставляем метку, чтобы строка
+            # не стала видимой мастеру онбординга.
+            existing.completed_agent_id = agent_id
+            await self._repository.save(existing)
         return await self.request_telegram_code(
             credentials,
             onboarding_id=existing.onboarding_id,

@@ -210,6 +210,43 @@ async def test_start_rebind_creates_hidden_row_for_agent_without_session() -> No
 
 
 @pytest.mark.asyncio
+async def test_start_rebind_marks_row_found_by_id_without_marker() -> None:
+    owner_id = uuid4()
+    agent_id = uuid4()
+    repository = InMemoryOnboardingRepository()
+    # Строка с id агента, но без метки: так выглядит окно, если финализация
+    # успела создать агента, а метку записать не успела.
+    await repository.save(
+        OnboardingSession(
+            onboarding_id=agent_id,
+            owner_id=owner_id,
+            authorization_status=TelegramLoginStatus.AUTHORIZED,
+            name="Mimic",
+            soul_prompt="Short calm replies",
+        )
+    )
+    service = AgentOnboardingService(
+        repository=repository,
+        telegram_factory=_fake_telegram_factory(),
+    )
+
+    status = await service.start_rebind(
+        agent_id,
+        TelegramCredentials(
+            owner_id=owner_id,
+            api_id=12345,
+            api_hash="api-hash",
+            phone_number="+79990000001",
+        ),
+    )
+
+    assert status.onboarding_id == agent_id
+    session = await repository.get(agent_id)
+    assert session.completed_agent_id == agent_id
+    assert session.authorization_status is TelegramLoginStatus.CODE_REQUESTED
+
+
+@pytest.mark.asyncio
 async def test_start_rebind_rejects_foreign_owner() -> None:
     owner_id = uuid4()
     other_id = uuid4()

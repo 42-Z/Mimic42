@@ -640,3 +640,74 @@ async def test_rebind_confirm_succeeds_when_runtime_stop_or_reload_fails(
     assert manager.calls[-2:] == [("stop", agent_id), ("reload", agent_id)]
     assert manager.stopped == ([] if stop_error else [agent_id])
     assert manager.reloaded == ([] if reload_error else [agent_id])
+
+
+@pytest.mark.asyncio
+async def test_rebind_confirm_is_idempotent_for_consumed_session() -> None:
+    owner_id = uuid4()
+    agent_id = uuid4()
+    manager = FakeAgentManager()
+    store = InMemoryAgentStore()
+    repository = InMemoryOnboardingRepository()
+    await repository.save(
+        OnboardingSession(
+            onboarding_id=agent_id,
+            owner_id=owner_id,
+            api_id=12345,
+            api_hash_secret="old-hash",
+            phone_number="+79990000000",
+            authorization_status=TelegramLoginStatus.AUTHORIZED,
+            session_secret="old-session",
+            name="Mimic",
+            soul_prompt="Short replies",
+            completed_agent_id=agent_id,
+        )
+    )
+    app = create_app(
+        manager=manager,
+        onboarding_service=AgentOnboardingService(
+            repository=repository,
+            telegram_factory=FakeTelegramAuthClientFactory(FakeTelegramAccount()),
+            agent_store=store,
+        ),
+        agent_store=store,
+        auth_verifier=FakeAuthVerifier(owner_id),
+        settings=Settings(telegram_api_id=777, telegram_api_hash="deployment-hash"),
+    )
+    await store.create_from_onboarding(
+        OnboardingSession(
+            onboarding_id=agent_id,
+            owner_id=owner_id,
+            api_id=12345,
+            api_hash_secret="old-hash",
+            phone_number="+79990000000",
+            authorization_status=TelegramLoginStatus.AUTHORIZED,
+            session_secret="old-session",
+            name="Mimic",
+            soul_prompt="Short replies",
+        )
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        first_response = await client.post(
+            f"/api/v1/agents/{agent_id}/telegram/rebind/confirm",
+            headers=AUTH_HEADERS,
+            json={"onboarding_id": str(agent_id)},
+        )
+        second_response = await client.post(
+            f"/api/v1/agents/{agent_id}/telegram/rebind/confirm",
+            headers=AUTH_HEADERS,
+            json={"onboarding_id": str(agent_id)},
+        )
+
+    # Строка не удаляется после confirm, поэтому повторный вызов не падает.
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    assert first_response.json()["state"] == "stopped"
+    assert second_response.json()["state"] == "stopped"
+    assert manager.reloaded == [agent_id, agent_id]
+    saved = await repository.get(agent_id)
+    assert saved.completed_agent_id == agent_id
