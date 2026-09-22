@@ -630,11 +630,22 @@ git commit -m "feat(store): rebind telegram session rows in the database agent s
 
 ---
 
-### Task 5: Онбординг-сервис rebind_to_agent
+### Task 5: Онбординг-сервис rebind_to_agent ✅ (коммиты `b46de14`, `1151305`)
+
+> **Поправка после ревью (важно):** финальный дизайн отличается от сниппетов ниже.
+> `completed_agent_id` у агента уже занят строкой мастера (UNIQUE,
+> `20260519224500_agent_base.sql:82`), поэтому израсходованная rebind-сессия
+> **удаляется** через новый `OnboardingRepository.delete`, а не помечается.
+> `rebind_to_agent` принимает `owner_id` (keyword-only) и проверяет владельца.
+> Финальные тесты: happy-path с `OnboardingNotFoundError` после rebind, foreign
+> owner, отсутствие стора, неизвестный агент (сессия остаётся) + db-регресс
+> `tests/integration/test_rebind_flow.py` (мастер → finalize → rebind).
 
 **Files:**
-- Modify: `src/mimic42/core/onboarding.py` (метод сервиса)
+- Modify: `src/mimic42/core/onboarding.py` (метод сервиса + `OnboardingRepository.delete`)
+- Modify: `src/mimic42/integrations/database_onboarding.py` (`delete`)
 - Modify: `tests/core/test_onboarding_linkage.py`
+- Create: `tests/integration/test_rebind_flow.py`
 
 - [ ] **Step 1: Написать failing-тесты**
 
@@ -1134,18 +1145,30 @@ def _telegram_login_http_error(exc: Exception) -> HTTPException | None:
             raise _onboarding_not_found(payload.onboarding_id) from None
         try:
             result = await _get_onboarding_service(app).rebind_to_agent(
-                payload.onboarding_id, agent_id
+                payload.onboarding_id,
+                agent_id,
+                owner_id=current_user.user_id,
             )
+        except OnboardingOwnershipError as exc:
+            raise _onboarding_not_found(payload.onboarding_id) from exc
         except TelegramAuthorizationIncompleteError as exc:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Авторизация Telegram не завершена. Введите код подтверждения.",
             ) from exc
+        manager = _get_agent_manager(app)
+        # Останавливаем до пересборки: reload_agent перезапускает RUNNING-агента,
+        # а по решению из issue агент остаётся остановленным.
         try:
-            await _get_agent_manager(app).reload_agent(agent_id)
+            await manager.stop_agent(agent_id)
         except Exception:
-            # Перепривязка уже применена в базе; пересборка рантайма случится
-            # при следующем get_agent/start из свежего конфига.
+            logger.exception("Failed to stop agent %s before rebind reload", agent_id)
+        try:
+            await manager.reload_agent(agent_id)
+        except Exception:
+            # Перепривязка уже применена в базе; reload_agent вынимает старый
+            # рантайм из реестра до close, так что следующий start соберётся
+            # из свежего конфига.
             logger.exception("Failed to reload agent %s after rebind", agent_id)
         return result
 ```
