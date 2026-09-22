@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { useQueryClient } from '@tanstack/react-query';
 import { agentIdSchema } from '@/lib/validators';
@@ -39,14 +39,21 @@ function RebindPageContent({ agentId }: { agentId: string }) {
   const { toast } = useToast();
   const { data: session, isLoading } = useTelegramSession(agentId);
 
+  const knownPhone = session?.phone_number ?? null;
+
   const [step, setStep] = useState<RebindStep>('phone');
   const [phoneNumber, setPhoneNumber] = useState('');
+  const [editingPhone, setEditingPhone] = useState(false);
   const [code, setCode] = useState('');
   const [password, setPassword] = useState('');
   const [onboardingId, setOnboardingId] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [isPending, setIsPending] = useState(false);
   const [isResending, setIsResending] = useState(false);
+
+  useEffect(() => {
+    if (knownPhone) setPhoneNumber(knownPhone);
+  }, [knownPhone]);
 
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: queryKeys.telegram.byAgent(agentId) });
@@ -201,19 +208,56 @@ function RebindPageContent({ agentId }: { agentId: string }) {
       {step === 'phone' && (
         <form onSubmit={handlePhone} className="space-y-6">
           <StepBadge step="1" label="Номер телефона" icon={Bot} />
-          <Input
-            label="Номер телефона"
-            type="tel"
-            placeholder="+79991234567"
-            value={phoneNumber}
-            onChange={(e) => setPhoneNumber(e.target.value)}
-            error={error}
-            hint={session?.phone_number ? `Текущий номер: ${maskPhoneNumber(session.phone_number)}` : 'В формате E.164 с кодом страны'}
-            autoFocus
-          />
-          <Button type="submit" isLoading={isPending} size="lg" className="w-full">
-            Получить код →
-          </Button>
+          {knownPhone && !editingPhone ? (
+            <>
+              <div className="rounded-sm border border-void-700 bg-void-800/40 px-4 py-3">
+                <p className="font-mono text-sm text-void-200">
+                  Номер: {maskPhoneNumber(knownPhone)}
+                </p>
+              </div>
+              <Button type="submit" isLoading={isPending} size="lg" className="w-full">
+                Получить код →
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => setEditingPhone(true)}
+                disabled={isPending}
+                className="w-full"
+              >
+                Изменить номер
+              </Button>
+            </>
+          ) : (
+            <>
+              <Input
+                label="Номер телефона"
+                type="tel"
+                placeholder="+79991234567"
+                value={phoneNumber}
+                onChange={(e) => setPhoneNumber(e.target.value)}
+                error={error}
+                hint={knownPhone ? `Текущий номер: ${maskPhoneNumber(knownPhone)}` : 'В формате E.164 с кодом страны'}
+                autoFocus
+              />
+              <Button type="submit" isLoading={isPending} size="lg" className="w-full">
+                Получить код →
+              </Button>
+              {knownPhone && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => { setEditingPhone(false); setPhoneNumber(knownPhone); }}
+                  disabled={isPending}
+                  className="w-full"
+                >
+                  Оставить текущий номер
+                </Button>
+              )}
+            </>
+          )}
         </form>
       )}
 
