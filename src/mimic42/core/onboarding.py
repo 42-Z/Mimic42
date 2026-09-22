@@ -193,7 +193,6 @@ class AgentOnboardingService:
         credentials: TelegramCredentials,
         *,
         onboarding_id: UUID | None = None,
-        completed_agent_id: UUID | None = None,
     ) -> OnboardingPublicStatus:
         phone_number = credentials.phone_number
         if onboarding_id is not None:
@@ -209,8 +208,7 @@ class AgentOnboardingService:
             onboarding_id = uuid4()
             name = None
             soul_prompt = None
-            # Переданная метка сразу прячет новую строку от мастера онбординга:
-            # rebind-черновик не должен попадать в список незавершённых.
+            completed_agent_id = None
 
         client = self._telegram_factory.build(
             api_id=credentials.api_id,
