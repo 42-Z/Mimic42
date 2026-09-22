@@ -353,6 +353,10 @@ class AgentOnboardingService:
         session = await self._repository.get(onboarding_id)
         if session.owner_id != owner_id:
             raise OnboardingOwnershipError(onboarding_id)
+        if session.completed_agent_id != agent_id:
+            # start_rebind всегда привязывает сессию к агенту, поэтому
+            # расхождение означает, что сессия выдана для другого агента.
+            raise OnboardingOwnershipError(onboarding_id)
         if session.authorization_status is not TelegramLoginStatus.AUTHORIZED:
             raise TelegramAuthorizationIncompleteError(onboarding_id)
         if self._agent_store is None:

@@ -103,6 +103,7 @@ async def test_rebind_to_agent_updates_store_and_keeps_session() -> None:
             phone_number="+79990000000",
             authorization_status=TelegramLoginStatus.AUTHORIZED,
             session_secret="new-session-string",
+            completed_agent_id=agent_id,
         )
     )
     store = InMemoryAgentStore()
@@ -284,6 +285,7 @@ async def test_start_rebind_rejects_foreign_owner() -> None:
 @pytest.mark.asyncio
 async def test_rebind_to_agent_requires_authorized_session() -> None:
     owner_id = uuid4()
+    agent_id = uuid4()
     onboarding_id = uuid4()
     repository = InMemoryOnboardingRepository()
     await repository.save(
@@ -291,6 +293,7 @@ async def test_rebind_to_agent_requires_authorized_session() -> None:
             onboarding_id=onboarding_id,
             owner_id=owner_id,
             authorization_status=TelegramLoginStatus.CODE_REQUESTED,
+            completed_agent_id=agent_id,
         )
     )
     service = AgentOnboardingService(
@@ -300,7 +303,7 @@ async def test_rebind_to_agent_requires_authorized_session() -> None:
     )
 
     with pytest.raises(TelegramAuthorizationIncompleteError):
-        await service.rebind_to_agent(onboarding_id, uuid4(), owner_id=owner_id)
+        await service.rebind_to_agent(onboarding_id, agent_id, owner_id=owner_id)
 
 
 @pytest.mark.asyncio
@@ -354,6 +357,7 @@ async def test_rebind_to_agent_rejects_foreign_owner() -> None:
 @pytest.mark.asyncio
 async def test_rebind_to_agent_requires_agent_store() -> None:
     owner_id = uuid4()
+    agent_id = uuid4()
     onboarding_id = uuid4()
     repository = InMemoryOnboardingRepository()
     await repository.save(
@@ -365,6 +369,7 @@ async def test_rebind_to_agent_requires_agent_store() -> None:
             phone_number="+79990000000",
             authorization_status=TelegramLoginStatus.AUTHORIZED,
             session_secret="new-session-string",
+            completed_agent_id=agent_id,
         )
     )
     service = AgentOnboardingService(
@@ -373,12 +378,13 @@ async def test_rebind_to_agent_requires_agent_store() -> None:
     )
 
     with pytest.raises(RuntimeError):
-        await service.rebind_to_agent(onboarding_id, uuid4(), owner_id=owner_id)
+        await service.rebind_to_agent(onboarding_id, agent_id, owner_id=owner_id)
 
 
 @pytest.mark.asyncio
 async def test_rebind_to_agent_keeps_session_on_unknown_agent() -> None:
     owner_id = uuid4()
+    agent_id = uuid4()
     onboarding_id = uuid4()
     repository = InMemoryOnboardingRepository()
     await repository.save(
@@ -390,6 +396,7 @@ async def test_rebind_to_agent_keeps_session_on_unknown_agent() -> None:
             phone_number="+79990000000",
             authorization_status=TelegramLoginStatus.AUTHORIZED,
             session_secret="new-session-string",
+            completed_agent_id=agent_id,
         )
     )
     service = AgentOnboardingService(
@@ -399,7 +406,53 @@ async def test_rebind_to_agent_keeps_session_on_unknown_agent() -> None:
     )
 
     with pytest.raises(KeyError):
-        await service.rebind_to_agent(onboarding_id, uuid4(), owner_id=owner_id)
+        await service.rebind_to_agent(onboarding_id, agent_id, owner_id=owner_id)
 
     saved = await repository.get(onboarding_id)
-    assert saved.completed_agent_id is None
+    assert saved.completed_agent_id == agent_id
+
+
+@pytest.mark.asyncio
+async def test_rebind_to_agent_rejects_session_bound_to_another_agent() -> None:
+    owner_id = uuid4()
+    agent_id = uuid4()
+    onboarding_id = uuid4()
+    repository = InMemoryOnboardingRepository()
+    await repository.save(
+        OnboardingSession(
+            onboarding_id=onboarding_id,
+            owner_id=owner_id,
+            api_id=12345,
+            api_hash_secret="hash",
+            phone_number="+79990000000",
+            authorization_status=TelegramLoginStatus.AUTHORIZED,
+            session_secret="session",
+            completed_agent_id=uuid4(),  # привязана к другому агенту
+        )
+    )
+    store = InMemoryAgentStore()
+    await store.create_from_onboarding(
+        OnboardingSession(
+            onboarding_id=agent_id,
+            owner_id=owner_id,
+            api_id=12345,
+            api_hash_secret="old-hash",
+            phone_number="+79990000000",
+            authorization_status=TelegramLoginStatus.AUTHORIZED,
+            session_secret="old-session",
+            name="Mimic",
+            soul_prompt="Short replies",
+        )
+    )
+    service = AgentOnboardingService(
+        repository=repository,
+        telegram_factory=_fake_telegram_factory(),
+        agent_store=store,
+    )
+
+    with pytest.raises(OnboardingOwnershipError):
+        await service.rebind_to_agent(onboarding_id, agent_id, owner_id=owner_id)
+
+    config = await store.get_runtime_config(agent_id)
+    assert config.telegram_session_string == "old-session"
+    assert config.telegram_api_hash == "old-hash"
