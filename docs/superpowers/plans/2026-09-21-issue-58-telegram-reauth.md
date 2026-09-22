@@ -630,16 +630,24 @@ git commit -m "feat(store): rebind telegram session rows in the database agent s
 
 ---
 
-### Task 5: Онбординг-сервис rebind_to_agent ✅ (коммиты `b46de14`, `1151305`)
+### Task 5: Онбординг-сервис rebind_to_agent ✅ (коммиты `b46de14`, `1151305`, `dfe69e2`, `e609970`)
 
-> **Поправка после ревью (важно):** финальный дизайн отличается от сниппетов ниже.
-> `completed_agent_id` у агента уже занят строкой мастера (UNIQUE,
-> `20260519224500_agent_base.sql:82`), поэтому израсходованная rebind-сессия
-> **удаляется** через новый `OnboardingRepository.delete`, а не помечается.
-> `rebind_to_agent` принимает `owner_id` (keyword-only) и проверяет владельца.
-> Финальные тесты: happy-path с `OnboardingNotFoundError` после rebind, foreign
-> owner, отсутствие стора, неизвестный агент (сессия остаётся) + db-регресс
-> `tests/integration/test_rebind_flow.py` (мастер → finalize → rebind).
+> **Поправка после ревью (финальный дизайн):** сниппеты ниже описывают
+> промежуточные варианты. Итог:
+> - `completed_agent_id` у агента уже занят строкой мастера (UNIQUE,
+>   `20260519224500_agent_base.sql:82`), поэтому rebind-сессия не создаётся
+>   заново, а **переиспользуется онбординг-строка самого агента**
+>   (`OnboardingRepository.get_for_agent`: `id == agent_id` OR
+>   `completed_agent_id == agent_id`). Для агентов без строки заводится новая
+>   и сразу (одним save) помечается `completed_agent_id = agent_id` — мастер
+>   онбординга никогда не видит черновиков перепривязки.
+> - `AgentOnboardingService.start_rebind(agent_id, credentials)` — старт
+>   перепривязки; `request_telegram_code` принимает keyword
+>   `completed_agent_id` и сохраняет метку при обновлении существующей строки.
+> - `rebind_to_agent(...)` **не удаляет** строку (повторная перепривязка
+>   переиспользует её, confirm идемпотентен), проверяет owner → AUTHORIZED →
+>   store и вызывает `rebind_telegram_session`.
+> - `OnboardingRepository.delete` из промежуточного дизайна удалён.
 
 **Files:**
 - Modify: `src/mimic42/core/onboarding.py` (метод сервиса + `OnboardingRepository.delete`)
@@ -780,7 +788,13 @@ git commit -m "feat(onboarding): rebind an authorized session onto an existing a
 
 ---
 
-### Task 6: API-эндпоинты перепривязки ✅ (коммит `fa35c05`)
+### Task 6: API-эндпоинты перепривязки ✅ (коммиты `fa35c05`, `dfe69e2`, `e609970`)
+
+> **Поправка после ревью:** старт перепривязки вызывает
+> `onboarding_service.start_rebind(agent_id, credentials)` (переиспользует
+> строку агента, см. Task 5), а не `request_telegram_code`. Оба эндпоинта
+> возвращают 503 с русским detail, если `agent_store` не настроен. Confirm
+> идемпотентен: строка не удаляется. ✅ (коммит `fa35c05`)
 
 **Files:**
 - Modify: `src/mimic42/api/app.py`
