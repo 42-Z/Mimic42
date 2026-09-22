@@ -1201,7 +1201,7 @@ git commit -m "feat(api): rebind endpoints to replace an agent's telegram sessio
 
 ---
 
-### Task 7: Фронт — API-клиент, хук деталей, needsRebind
+### Task 7: Фронт — API-клиент, хук деталей, needsRebind ✅ (коммиты `b3fae28`, `3b32049`)
 
 **Files:**
 - Create: `frontend/src/lib/telegram.ts`
