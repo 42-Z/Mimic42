@@ -17,7 +17,7 @@ import type { ApiError } from '@/types';
 import { CheckCircle2, Link2, MessageSquare, ShieldCheck } from 'lucide-react';
 import Link from 'next/link';
 
-type RebindStep = 'starting' | 'code' | '2fa' | 'done';
+type RebindStep = 'starting' | 'code' | '2fa' | 'confirm-failed' | 'done';
 
 export default function RebindPage() {
   const params = useParams();
@@ -76,14 +76,21 @@ function RebindPageContent({ agentId }: { agentId: string }) {
 
   const finishRebind = async () => {
     if (!onboardingId) return;
+    setIsPending(true);
+    setError('');
     try {
       await agentsApi.confirmRebind(agentId, { onboarding_id: onboardingId });
       invalidate();
       setStep('done');
     } catch (err: unknown) {
+      // Код уже израсходован, повторный submitCode его не примет: даём
+      // повторить именно подтверждение — оно идемпотентно на сервере.
       const message = (err as ApiError).message ?? 'Не удалось завершить перепривязку';
       setError(message);
       toast(message, 'error');
+      setStep('confirm-failed');
+    } finally {
+      setIsPending(false);
     }
   };
 
@@ -254,6 +261,25 @@ function RebindPageContent({ agentId }: { agentId: string }) {
             Подтвердить →
           </Button>
         </form>
+      )}
+
+      {step === 'confirm-failed' && (
+        <Card variant="glass" padding="lg" className="flex flex-col items-center gap-4 text-center">
+          <p className="font-mono text-sm text-crimson-400">
+            {error || 'Не удалось завершить перепривязку'}
+          </p>
+          <p className="font-mono text-xs text-void-500">
+            Telegram уже привязан — осталось пересобрать агента.
+          </p>
+          <Button
+            onClick={() => void finishRebind()}
+            isLoading={isPending}
+            size="lg"
+            className="w-full"
+          >
+            Повторить
+          </Button>
+        </Card>
       )}
 
       {step === 'done' && (

@@ -90,7 +90,7 @@ apiClient.interceptors.response.use(
         message = 'Внутренняя ошибка сервера.';
         break;
       case 503:
-        message = 'Сервер временно недоступен.';
+        message = (typeof detail === 'string' && detail) || 'Сервер временно недоступен.';
         break;
       default:
         if (!error.response) {
