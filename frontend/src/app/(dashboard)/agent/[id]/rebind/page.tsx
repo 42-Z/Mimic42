@@ -102,6 +102,7 @@ function RebindPageContent({ agentId }: { agentId: string }) {
         phone_number: result.data.phone_number,
       });
       setOnboardingId(status.onboarding_id);
+      setCode('');
       toast('Код отправлен повторно', 'success');
     } catch (err: unknown) {
       toast((err as ApiError).message ?? 'Не удалось отправить код', 'error');
@@ -245,7 +246,7 @@ function RebindPageContent({ agentId }: { agentId: string }) {
               type="button"
               variant="ghost"
               size="sm"
-              onClick={() => setStep('phone')}
+              onClick={() => { setError(''); setCode(''); setStep('phone'); }}
               disabled={isPending || isResending}
             >
               ← Изменить номер
