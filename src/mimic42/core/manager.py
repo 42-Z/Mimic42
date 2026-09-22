@@ -116,7 +116,13 @@ class AgentManager:
         async with self._lock:
             runtime = self._register_locked(config)
         if start:
-            await runtime.start()
+            try:
+                await runtime.start()
+            except Exception:
+                # Как и в start_agent: без этого БД хранит устаревший статус
+                # (например, running после рестарта), и дэшборд врёт.
+                await self._save_status(config.agent_id, AgentRuntimeState.ERROR)
+                raise
         return runtime
 
     def _register_locked(self, config: AgentRuntimeConfig) -> MimicAgentRuntime:
