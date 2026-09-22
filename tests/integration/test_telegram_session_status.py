@@ -136,7 +136,7 @@ async def test_dead_session_error_on_connect_marks_session_revoked(
         session_factory=db_session_factory,
     )
 
-    with pytest.raises(type(connect_error)):
+    with pytest.raises(TelegramAuthorizationRequired):
         await runtime.start()
 
     async with db_session_factory() as session:

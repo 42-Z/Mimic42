@@ -325,6 +325,11 @@ class MimicAgentRuntime:
                     started_at=datetime.now(UTC),
                     completed_at=datetime.now(UTC),
                 )
+                if dead_session and not isinstance(e, TelegramAuthorizationRequired):
+                    # Унифицируем для вызывающего слоя: API отдаёт 428 с понятным
+                    # русским текстом вместо 500. Исходное исключение остаётся
+                    # в логе и в payload.error_code.
+                    raise TelegramAuthorizationRequired(REVOKED_SESSION_MESSAGE) from e
                 raise
 
             self._state = AgentRuntimeState.RUNNING

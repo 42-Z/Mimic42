@@ -181,7 +181,7 @@ async def test_dead_session_error_on_connect_moves_runtime_to_error(
         langchain_agent=FakeLangChainAgent(),
     )
 
-    with pytest.raises(type(connect_error)):
+    with pytest.raises(TelegramAuthorizationRequired):
         await runtime.start()
 
     assert runtime.state is AgentRuntimeState.ERROR
