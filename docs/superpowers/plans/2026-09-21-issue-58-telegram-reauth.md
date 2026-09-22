@@ -780,7 +780,7 @@ git commit -m "feat(onboarding): rebind an authorized session onto an existing a
 
 ---
 
-### Task 6: API-эндпоинты перепривязки
+### Task 6: API-эндпоинты перепривязки ✅ (коммит `fa35c05`)
 
 **Files:**
 - Modify: `src/mimic42/api/app.py`
