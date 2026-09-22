@@ -277,6 +277,8 @@ async def test_start_rebind_rejects_foreign_owner() -> None:
 
     saved = await repository.get(agent_id)
     assert saved.owner_id == other_id
+    # Владелец проверяется до «лечения»: чужой строке метку не ставим.
+    assert saved.completed_agent_id is None
 
 
 @pytest.mark.asyncio

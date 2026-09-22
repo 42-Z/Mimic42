@@ -256,6 +256,8 @@ class AgentOnboardingService:
             existing = await self._repository.get_for_agent(agent_id)
         except OnboardingNotFoundError:
             return await self.request_telegram_code(credentials, completed_agent_id=agent_id)
+        if existing.owner_id != credentials.owner_id:
+            raise OnboardingOwnershipError(existing.onboarding_id)
         if existing.completed_agent_id is None:
             # Строка нашлась по id, но без метки: доставляем метку, чтобы строка
             # не стала видимой мастеру онбординга.
