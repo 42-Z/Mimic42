@@ -157,6 +157,12 @@ export const agentsApi = {
   remove: (id: string) =>
     apiClient.delete<void>(`/agents/${id}`).then(() => undefined),
 
+  /** POST /api/v1/agents/:id/context/reset — the agent forgets recent conversations */
+  resetContext: (id: string) =>
+    apiClient
+      .post<{ context_reset_at: string }>(`/agents/${id}/context/reset`)
+      .then((r) => r.data),
+
   /** GET /api/v1/agents/:id/conversation — cursor page, newest first */
   getConversation: (id: string, limit = 50, before?: string | null, beforeId?: string | null) =>
     apiClient

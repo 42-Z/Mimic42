@@ -130,6 +130,10 @@ class TriggerMessageRequest(BaseModel):
         return AgentTrigger(peer=self.peer, text=self.text, raw_text=self.text)
 
 
+class ContextResetResult(BaseModel):
+    context_reset_at: datetime
+
+
 class TelegramLoginRequest(BaseModel):
     api_id: int | None = Field(default=None, gt=0)
     api_hash: str | None = Field(default=None, min_length=1)
@@ -744,6 +748,32 @@ def create_app(
         except AgentNotFoundError as exc:
             raise _not_found(exc.agent_id) from exc
         return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+    @app.post(
+        "/api/v1/agents/{agent_id}/context/reset",
+        response_model=ContextResetResult,
+    )
+    async def reset_agent_context(
+        agent_id: UUID,
+        current_user: CurrentUserDep,
+    ) -> ContextResetResult:
+        """Make the agent start every chat without the recent conversation.
+
+        Only the short-term context is reset: message history stays on the
+        dashboard and long-term memory (Mem0) is untouched.
+        """
+        store = _get_agent_store(app)
+        if store is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Хранилище агентов недоступно.",
+            )
+        await _ensure_agent_owner(store, agent_id=agent_id, user_id=current_user.user_id)
+        try:
+            reset_at = await store.reset_context(agent_id, actor_user_id=current_user.user_id)
+        except KeyError as exc:
+            raise _not_found(agent_id) from exc
+        return ContextResetResult(context_reset_at=reset_at)
 
     @app.get("/api/v1/openrouter/reasoning")
     async def openrouter_reasoning(current_user: CurrentUserDep) -> dict[str, Any]:

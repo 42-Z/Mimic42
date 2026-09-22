@@ -8,8 +8,11 @@ import { useAgentStatusRealtime } from '@/hooks/useRealtimeFeed';
 import { TabActivity } from '@/components/activity/TabActivity';
 import { TabAnalytics } from '@/components/agent/TabAnalytics';
 import { TabSettings } from '@/components/agent/TabSettings';
+import { ResetContextDialog } from '@/components/agent/ResetContextDialog';
 import { useTelegramSession } from '@/hooks/useTelegramSession';
-import { useStartAgent, useStopAgent, useTriggerMessage, useDeleteAgent } from '@/hooks/useAgents';
+import {
+  useStartAgent, useStopAgent, useTriggerMessage, useDeleteAgent,
+} from '@/hooks/useAgents';
 import { useAgentMemories, useAgentMemoryHistory } from '@/hooks/useMemory';
 import { useToast } from '@/components/ui/toast';
 import { AgentStatusBadge } from '@/components/agents/AgentStatusBadge';
@@ -22,7 +25,7 @@ import { triggerMessageSchema, type TriggerMessageValues } from '@/lib/validator
 import {
   Settings, Activity, Zap, MessageSquare, BarChart2, Brain,
   Play, Square, Send, AlertTriangle, RefreshCw,
-  Bot, Clock, Search, Trash2,
+  Bot, Clock, Search, Trash2, RotateCcw,
 } from 'lucide-react';
 import { formatDistanceToNow, format } from 'date-fns';
 import { ru } from 'date-fns/locale';
@@ -188,7 +191,9 @@ function TabActions({ agentId }: { agentId: string }) {
   const { mutate: stop,  isPending: stopping }  = useStopAgent();
   const { mutate: remove, isPending: deleting } = useDeleteAgent();
   const trigger = useTriggerMessage(agentId);
+  const { data: details } = useAgentDetails(agentId);
   const [stopConfirm, setStopConfirm] = useState(false);
+  const [resetConfirm, setResetConfirm] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState(false);
   const [triggerModal, setTriggerModal] = useState(false);
   const [triggerValues, setTriggerValues] = useState<TriggerMessageValues>({ peer: '', text: '' });
@@ -256,6 +261,20 @@ function TabActions({ agentId }: { agentId: string }) {
       destructive: false,
     },
     {
+      title: 'Сбросить контекст',
+      desc: details?.context_reset_at
+        ? `Агент забудет недавние переписки. Последний сброс ${formatDistanceToNow(new Date(details.context_reset_at), { addSuffix: true, locale: ru })}`
+        : 'Агент забудет недавние переписки и начнёт диалоги с чистого листа',
+      icon: RotateCcw,
+      color: 'text-amber-400',
+      bg: 'bg-amber-950/40 border-amber-900',
+      action: () => setResetConfirm(true),
+      loading: false,
+      label: 'Сбросить',
+      variant: 'outline' as const,
+      destructive: true,
+    },
+    {
       title: 'Удалить агента',
       desc: 'Полностью удалить агента, его историю и Telegram-сессию',
       icon: Trash2,
@@ -302,6 +321,13 @@ function TabActions({ agentId }: { agentId: string }) {
         description="Агент перестанет отвечать. Можно перезапустить в любой момент."
         confirmLabel="Остановить"
         variant="danger"
+      />
+
+      <ResetContextDialog
+        agentId={agentId}
+        agentName={details?.name}
+        isOpen={resetConfirm}
+        onClose={() => setResetConfirm(false)}
       />
 
       <ConfirmDialog

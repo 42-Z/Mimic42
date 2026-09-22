@@ -90,6 +90,8 @@ class AgentModel(Base):
     settings: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     last_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_stopped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Short-term context only includes messages saved after this moment.
+    context_reset_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

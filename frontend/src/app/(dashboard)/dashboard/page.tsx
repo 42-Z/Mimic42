@@ -5,6 +5,7 @@ import { useAllAgentsKPIs, useAgentsDetails } from '@/hooks/useTelegramSession';
 import { useMultiAgentRealtimeFeed, useAllAgentsStatusRealtime } from '@/hooks/useRealtimeFeed';
 import { useToast } from '@/components/ui/toast';
 import { AgentStatusBadge } from '@/components/agents/AgentStatusBadge';
+import { ResetContextDialog } from '@/components/agent/ResetContextDialog';
 import { Card, Skeleton } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
@@ -14,9 +15,10 @@ import { formatDistanceToNow } from 'date-fns';
 import { ru } from 'date-fns/locale';
 import {
   MessageSquare, Activity, AlertTriangle, Users,
-  Play, Square, RefreshCw, Wifi, WifiOff, Bot, Plus, Settings,
+  Play, Square, RefreshCw, Wifi, WifiOff, Bot, Plus, Settings, RotateCcw,
 } from 'lucide-react';
 import Link from 'next/link';
+import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { AgentRecord } from '@/types';
 import { incomingBody, type ActivityItem } from '@/lib/activity/normalize';
@@ -195,6 +197,7 @@ function AgentCard({ agent, details }: { agent: AgentRecord; details?: { phone_n
   const { mutate: start, isPending: starting } = useStartAgent();
   const { mutate: stop, isPending: stopping } = useStopAgent();
   const { toast } = useToast();
+  const [resetConfirm, setResetConfirm] = useState(false);
 
   const canStart = agent.state === 'stopped' || agent.state === 'error';
   const canStop = agent.state === 'running';
@@ -214,57 +217,76 @@ function AgentCard({ agent, details }: { agent: AgentRecord; details?: { phone_n
   };
 
   return (
-    <Card variant="glass" padding="md" className="space-y-3" data-testid={`agent-card-${agent.agent_id}`}>
-      <div className="flex items-start justify-between gap-2">
-        <div className="flex items-center gap-3 min-w-0">
-          <div className="h-9 w-9 rounded-sm bg-void-800 border border-void-600 flex items-center justify-center shrink-0">
-            <Bot className="h-4 w-4 text-plasma-400" />
+    <>
+      <Card variant="glass" padding="md" className="space-y-3" data-testid={`agent-card-${agent.agent_id}`}>
+        <div className="flex items-start justify-between gap-2">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="h-9 w-9 rounded-sm bg-void-800 border border-void-600 flex items-center justify-center shrink-0">
+              <Bot className="h-4 w-4 text-plasma-400" />
+            </div>
+            <div className="min-w-0">
+              <p className="font-display text-sm font-bold text-void-100 truncate">
+                {sanitizeText(agent.name)}
+              </p>
+              <p className="font-mono text-xs text-void-500 truncate">
+                {details?.phone_number ? maskPhoneNumber(details.phone_number) : 'Telegram не подключён'}
+              </p>
+            </div>
           </div>
-          <div className="min-w-0">
-            <p className="font-display text-sm font-bold text-void-100 truncate">
-              {sanitizeText(agent.name)}
-            </p>
-            <p className="font-mono text-xs text-void-500 truncate">
-              {details?.phone_number ? maskPhoneNumber(details.phone_number) : 'Telegram не подключён'}
-            </p>
-          </div>
+          <AgentStatusBadge state={agent.state} />
         </div>
-        <AgentStatusBadge state={agent.state} />
-      </div>
 
-      <p className="font-mono text-[10px] text-void-600">
-        {details?.last_started_at
-          ? `Запускался ${formatDistanceToNow(new Date(details.last_started_at), { addSuffix: true, locale: ru })}`
-          : 'Ещё не запускался'}
-      </p>
+        <p className="font-mono text-[10px] text-void-600">
+          {details?.last_started_at
+            ? `Запускался ${formatDistanceToNow(new Date(details.last_started_at), { addSuffix: true, locale: ru })}`
+            : 'Ещё не запускался'}
+        </p>
 
-      <div className="flex items-center gap-2 pt-1">
-        <Button
-          variant="success" size="sm"
-          onClick={handleStart}
-          disabled={!canStart}
-          isLoading={starting}
-          leftIcon={<Play className="h-3.5 w-3.5" />}
-        >
-          Запустить
-        </Button>
-        <Button
-          variant="danger" size="sm"
-          onClick={handleStop}
-          disabled={!canStop}
-          isLoading={stopping}
-          leftIcon={<Square className="h-3.5 w-3.5" />}
-        >
-          Стоп
-        </Button>
-        <div className="flex-1" />
-        <Link href={`/agent/${agent.agent_id}`} aria-label="Настройки агента">
-          <Button variant="ghost" size="sm" className="px-2">
-            <Settings className="h-4 w-4" />
+        <div className="flex items-center gap-2 pt-1">
+          <Button
+            variant="success" size="sm"
+            onClick={handleStart}
+            disabled={!canStart}
+            isLoading={starting}
+            leftIcon={<Play className="h-3.5 w-3.5" />}
+          >
+            Запустить
           </Button>
-        </Link>
-      </div>
-    </Card>
+          <Button
+            variant="danger" size="sm"
+            onClick={handleStop}
+            disabled={!canStop}
+            isLoading={stopping}
+            leftIcon={<Square className="h-3.5 w-3.5" />}
+          >
+            Стоп
+          </Button>
+          <div className="flex-1" />
+          <Button
+            variant="ghost" size="sm" className="px-2"
+            onClick={() => setResetConfirm(true)}
+            aria-label="Сбросить контекст"
+            title="Сбросить контекст"
+            data-testid={`agent-reset-context-${agent.agent_id}`}
+          >
+            <RotateCcw className="h-4 w-4" />
+          </Button>
+          <Link href={`/agent/${agent.agent_id}`} aria-label="Настройки агента">
+            <Button variant="ghost" size="sm" className="px-2">
+              <Settings className="h-4 w-4" />
+            </Button>
+          </Link>
+        </div>
+      </Card>
+
+      {/* Outside the card: its backdrop-blur would trap the fixed modal inside it. */}
+      <ResetContextDialog
+        agentId={agent.agent_id}
+        agentName={agent.name}
+        isOpen={resetConfirm}
+        onClose={() => setResetConfirm(false)}
+      />
+    </>
   );
 }
 

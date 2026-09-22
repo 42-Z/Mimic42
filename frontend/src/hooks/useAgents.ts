@@ -117,6 +117,22 @@ export function useDeleteAgent() {
 }
 
 /**
+ * Hook for resetting the agent's short-term context.
+ * History stays in the feed; the reset itself shows up there as an event.
+ */
+export function useResetContext(agentId: string) {
+  const qc = useQueryClient();
+
+  return useMutation({
+    mutationFn: () => agentsApi.resetContext(agentId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.agents.detail(agentId) });
+      qc.invalidateQueries({ queryKey: queryKeys.conversation.byAgent(agentId) });
+    },
+  });
+}
+
+/**
  * Hook for triggering a message to a peer via the agent.
  */
 export function useTriggerMessage(agentId: string) {
