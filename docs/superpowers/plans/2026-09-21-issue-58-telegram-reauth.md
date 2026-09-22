@@ -388,7 +388,7 @@ git commit -m "feat(agent): mark telegram session revoked when userbot start fin
 
 ---
 
-### Task 3: AgentStore.rebind_telegram_session — протокол и InMemory
+### Task 3: AgentStore.rebind_telegram_session — протокол и InMemory ✅ (коммиты `e71e034`, `c3422c6`)
 
 **Files:**
 - Modify: `src/mimic42/core/agent_store.py` (Protocol + `InMemoryAgentStore`)
