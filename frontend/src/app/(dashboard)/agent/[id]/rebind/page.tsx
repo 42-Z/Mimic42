@@ -261,11 +261,6 @@ function RebindPageContent({ agentId }: { agentId: string }) {
               Отправить код ещё раз
             </Button>
           </div>
-          {error && (
-            <p role="alert" className="font-mono text-xs text-crimson-400 text-center">
-              {error}
-            </p>
-          )}
         </form>
       )}
 
@@ -289,11 +284,6 @@ function RebindPageContent({ agentId }: { agentId: string }) {
           <Button type="submit" isLoading={isPending} size="lg" className="w-full">
             Подтвердить →
           </Button>
-          {error && (
-            <p role="alert" className="font-mono text-xs text-crimson-400 text-center">
-              {error}
-            </p>
-          )}
         </form>
       )}
 
