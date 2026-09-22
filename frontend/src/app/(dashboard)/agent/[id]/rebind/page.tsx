@@ -7,7 +7,6 @@ import { agentIdSchema } from '@/lib/validators';
 import { useTelegramSession } from '@/hooks/useTelegramSession';
 import { agentsApi, onboardingApi } from '@/lib/api';
 import { queryKeys } from '@/lib/queryClient';
-import { needsRebind } from '@/lib/telegram';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, Spinner } from '@/components/ui/card';
@@ -47,6 +46,7 @@ function RebindPageContent({ agentId }: { agentId: string }) {
   const [onboardingId, setOnboardingId] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [isPending, setIsPending] = useState(false);
+  const [isResending, setIsResending] = useState(false);
 
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: queryKeys.telegram.byAgent(agentId) });
@@ -60,7 +60,9 @@ function RebindPageContent({ agentId }: { agentId: string }) {
       invalidate();
       setStep('done');
     } catch (err: unknown) {
-      toast((err as ApiError).message ?? 'Не удалось завершить перепривязку', 'error');
+      const message = (err as ApiError).message ?? 'Не удалось завершить перепривязку';
+      setError(message);
+      toast(message, 'error');
     }
   };
 
@@ -87,6 +89,28 @@ function RebindPageContent({ agentId }: { agentId: string }) {
     }
   };
 
+  const resendCode = async () => {
+    const result = telegramCredentialsSchema.safeParse({ phone_number: phoneNumber });
+    if (!result.success) {
+      setError(result.error.issues[0]?.message ?? 'Ошибка');
+      return;
+    }
+    setError('');
+    setIsResending(true);
+    try {
+      const status = await agentsApi.rebindTelegram(agentId, {
+        phone_number: result.data.phone_number,
+      });
+      setOnboardingId(status.onboarding_id);
+      toast('Код отправлен повторно', 'success');
+    } catch (err: unknown) {
+      toast((err as ApiError).message ?? 'Не удалось отправить код', 'error');
+      setError((err as ApiError).message ?? '');
+    } finally {
+      setIsResending(false);
+    }
+  };
+
   const handleCode = async (e: React.FormEvent) => {
     e.preventDefault();
     const result = telegramCodeSchema.safeParse({ code });
@@ -101,6 +125,11 @@ function RebindPageContent({ agentId }: { agentId: string }) {
       const status = await onboardingApi.submitCode(onboardingId, { code });
       if (status.authorization_status === 'password_required') {
         setStep('2fa');
+        return;
+      }
+      if (status.authorization_status !== 'authorized') {
+        setError('Не удалось подтвердить код. Попробуйте ещё раз.');
+        toast('Не удалось подтвердить код', 'error');
         return;
       }
       await finishRebind();
@@ -155,12 +184,12 @@ function RebindPageContent({ agentId }: { agentId: string }) {
         <div>
           <h1 className="font-display text-xl font-bold text-void-100">Перепривязка Telegram</h1>
           <p className="font-mono text-xs text-void-500 mt-0.5">
-            Сессия недействительна — введите код заново. Имя, память и настройки сохранятся.
+            Введите номер и код из Telegram. Имя, память и настройки сохранятся.
           </p>
         </div>
       </div>
 
-      {!needsRebind(session?.authorization_status) && session && (
+      {session?.authorization_status === 'authorized' && step !== 'done' && (
         <Card variant="glass" padding="md" className="border-neon-900">
           <p className="font-mono text-xs text-neon-400">
             Сессия уже авторизована. Перепривязка не требуется — можно запустить агента.
@@ -202,9 +231,41 @@ function RebindPageContent({ agentId }: { agentId: string }) {
             autoFocus
             className="text-center text-xl tracking-[0.5em]"
           />
-          <Button type="submit" isLoading={isPending} size="lg" className="w-full">
+          <Button
+            type="submit"
+            isLoading={isPending}
+            disabled={isResending}
+            size="lg"
+            className="w-full"
+          >
             Подтвердить →
           </Button>
+          <div className="flex items-center justify-between gap-2">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => setStep('phone')}
+              disabled={isPending || isResending}
+            >
+              ← Изменить номер
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={resendCode}
+              isLoading={isResending}
+              disabled={isPending}
+            >
+              Отправить код ещё раз
+            </Button>
+          </div>
+          {error && (
+            <p role="alert" className="font-mono text-xs text-crimson-400 text-center">
+              {error}
+            </p>
+          )}
         </form>
       )}
 
@@ -228,6 +289,11 @@ function RebindPageContent({ agentId }: { agentId: string }) {
           <Button type="submit" isLoading={isPending} size="lg" className="w-full">
             Подтвердить →
           </Button>
+          {error && (
+            <p role="alert" className="font-mono text-xs text-crimson-400 text-center">
+              {error}
+            </p>
+          )}
         </form>
       )}
 
