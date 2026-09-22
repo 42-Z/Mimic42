@@ -9,7 +9,6 @@ from mimic42.core.agent_store import InMemoryAgentStore
 from mimic42.core.onboarding import (
     AgentOnboardingService,
     InMemoryOnboardingRepository,
-    OnboardingNotFoundError,
     OnboardingOwnershipError,
     OnboardingSession,
     TelegramAuthorizationIncompleteError,
@@ -90,7 +89,7 @@ async def test_request_code_rejects_cross_owner_onboarding_id() -> None:
 
 
 @pytest.mark.asyncio
-async def test_rebind_to_agent_updates_store_and_deletes_session() -> None:
+async def test_rebind_to_agent_updates_store_and_keeps_session() -> None:
     owner_id = uuid4()
     agent_id = uuid4()
     onboarding_id = uuid4()
@@ -135,8 +134,112 @@ async def test_rebind_to_agent_updates_store_and_deletes_session() -> None:
     assert config.telegram_api_hash == "new-hash"
     assert config.name == "Mimic"
     assert config.soul_prompt == "Short calm replies"
-    with pytest.raises(OnboardingNotFoundError):
-        await repository.get(onboarding_id)
+    # Строка не удаляется: она же будет переиспользована при следующей привязке.
+    saved = await repository.get(onboarding_id)
+    assert saved.authorization_status is TelegramLoginStatus.AUTHORIZED
+    assert saved.session_secret == "new-session-string"
+
+
+@pytest.mark.asyncio
+async def test_start_rebind_reuses_agent_session_row() -> None:
+    owner_id = uuid4()
+    agent_id = uuid4()
+    repository = InMemoryOnboardingRepository()
+    await repository.save(
+        OnboardingSession(
+            onboarding_id=agent_id,
+            owner_id=owner_id,
+            api_id=111,
+            api_hash_secret="old-hash",
+            phone_number="+79990000000",
+            authorization_status=TelegramLoginStatus.AUTHORIZED,
+            session_secret="old-session",
+            name="Mimic",
+            soul_prompt="Short calm replies",
+            completed_agent_id=agent_id,
+        )
+    )
+    service = AgentOnboardingService(
+        repository=repository,
+        telegram_factory=_fake_telegram_factory(),
+    )
+
+    status = await service.start_rebind(
+        agent_id,
+        TelegramCredentials(
+            owner_id=owner_id,
+            api_id=12345,
+            api_hash="api-hash",
+            phone_number="+79990000001",
+        ),
+    )
+
+    assert status.onboarding_id == agent_id
+    assert status.authorization_status is TelegramLoginStatus.CODE_REQUESTED
+    session = await repository.get(agent_id)
+    assert session.name == "Mimic"
+    assert session.soul_prompt == "Short calm replies"
+    assert session.api_id == 12345
+    # Строка остаётся скрытой от мастера онбординга.
+    assert session.completed_agent_id == agent_id
+
+
+@pytest.mark.asyncio
+async def test_start_rebind_creates_hidden_row_for_agent_without_session() -> None:
+    owner_id = uuid4()
+    agent_id = uuid4()
+    repository = InMemoryOnboardingRepository()
+    service = AgentOnboardingService(
+        repository=repository,
+        telegram_factory=_fake_telegram_factory(),
+    )
+
+    status = await service.start_rebind(
+        agent_id,
+        TelegramCredentials(
+            owner_id=owner_id,
+            api_id=12345,
+            api_hash="api-hash",
+            phone_number="+79990000001",
+        ),
+    )
+
+    assert status.onboarding_id != agent_id
+    session = await repository.get(status.onboarding_id)
+    assert session.completed_agent_id == agent_id
+
+
+@pytest.mark.asyncio
+async def test_start_rebind_rejects_foreign_owner() -> None:
+    owner_id = uuid4()
+    other_id = uuid4()
+    agent_id = uuid4()
+    repository = InMemoryOnboardingRepository()
+    await repository.save(
+        OnboardingSession(
+            onboarding_id=agent_id,
+            owner_id=other_id,
+            authorization_status=TelegramLoginStatus.NOT_STARTED,
+        )
+    )
+    service = AgentOnboardingService(
+        repository=repository,
+        telegram_factory=_fake_telegram_factory(),
+    )
+
+    with pytest.raises(OnboardingOwnershipError):
+        await service.start_rebind(
+            agent_id,
+            TelegramCredentials(
+                owner_id=owner_id,
+                api_id=12345,
+                api_hash="api-hash",
+                phone_number="+79990000001",
+            ),
+        )
+
+    saved = await repository.get(agent_id)
+    assert saved.owner_id == other_id
 
 
 @pytest.mark.asyncio

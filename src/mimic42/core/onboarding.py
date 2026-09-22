@@ -105,7 +105,7 @@ class OnboardingRepository(Protocol):
 
     async def get(self, onboarding_id: UUID) -> OnboardingSession: ...
 
-    async def delete(self, onboarding_id: UUID) -> None: ...
+    async def get_for_agent(self, agent_id: UUID) -> OnboardingSession: ...
 
 
 class InMemoryOnboardingRepository:
@@ -121,8 +121,11 @@ class InMemoryOnboardingRepository:
         except KeyError as exc:
             raise OnboardingNotFoundError(onboarding_id) from exc
 
-    async def delete(self, onboarding_id: UUID) -> None:
-        self._sessions.pop(onboarding_id, None)
+    async def get_for_agent(self, agent_id: UUID) -> OnboardingSession:
+        for session in self._sessions.values():
+            if session.onboarding_id == agent_id or session.completed_agent_id == agent_id:
+                return session.model_copy(deep=True)
+        raise OnboardingNotFoundError(agent_id)
 
 
 class OnboardingNotFoundError(KeyError):
@@ -197,10 +200,14 @@ class AgentOnboardingService:
                 raise OnboardingOwnershipError(onboarding_id)
             name = existing.name
             soul_prompt = existing.soul_prompt
+            # Метка завершения переживает перезапись строки: иначе rebind-сессия
+            # агента снова стала бы черновиком мастера онбординга.
+            completed_agent_id = existing.completed_agent_id
         else:
             onboarding_id = uuid4()
             name = None
             soul_prompt = None
+            completed_agent_id = None
 
         client = self._telegram_factory.build(
             api_id=credentials.api_id,
@@ -225,9 +232,35 @@ class AgentOnboardingService:
             session_secret=self._cipher.encrypt(session_string),
             name=name,
             soul_prompt=soul_prompt,
+            completed_agent_id=completed_agent_id,
         )
         await self._repository.save(session)
         return _public_status(session)
+
+    async def start_rebind(
+        self,
+        agent_id: UUID,
+        credentials: TelegramCredentials,
+    ) -> OnboardingPublicStatus:
+        """Начать перепривязку Telegram к существующему агенту.
+
+        Переиспользуется онбординг-строка агента (строка мастера с
+        completed_agent_id == agent_id): мастер онбординга её не видит, а
+        повторная перепривязка не плодит черновики. Для агентов без такой
+        строки заводится новая, сразу помеченная completed_agent_id.
+        """
+        try:
+            existing = await self._repository.get_for_agent(agent_id)
+        except OnboardingNotFoundError:
+            status = await self.request_telegram_code(credentials)
+            session = await self._repository.get(status.onboarding_id)
+            session.completed_agent_id = agent_id
+            await self._repository.save(session)
+            return _public_status(session)
+        return await self.request_telegram_code(
+            credentials,
+            onboarding_id=existing.onboarding_id,
+        )
 
     async def verify_telegram_code(
         self,
@@ -307,9 +340,9 @@ class AgentOnboardingService:
         """Перенести авторизованную онбординг-сессию на существующего агента.
 
         Флоу перепривязки: Telegram-сессия обновляется, а имя, характер,
-        память и настройки агента остаются прежними. Израсходованная
-        rebind-сессия удаляется: completed_agent_id у агента уже занят строкой
-        мастера (UNIQUE), а удаление заодно убирает из базы её секреты.
+        память и настройки агента остаются прежними. Строка онбординга
+        остаётся помеченной completed_agent_id и невидимой мастеру: она же
+        будет переиспользована при следующей перепривязке.
         """
         session = await self._repository.get(onboarding_id)
         if session.owner_id != owner_id:
@@ -319,7 +352,6 @@ class AgentOnboardingService:
         if self._agent_store is None:
             raise RuntimeError("Хранилище агентов не настроено")
         await self._agent_store.rebind_telegram_session(agent_id, session)
-        await self._repository.delete(onboarding_id)
         return AgentStatus(
             agent_id=agent_id,
             owner_id=session.owner_id,

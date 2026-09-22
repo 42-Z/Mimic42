@@ -28,15 +28,21 @@ class FakeAgentManager:
         default_owner_id: UUID | None = None,
         *,
         start_unauthorized: bool = False,
+        stop_error: bool = False,
+        reload_error: bool = False,
     ) -> None:
         self._default_owner_id = default_owner_id
         self._start_unauthorized = start_unauthorized
+        self.stop_error = stop_error
+        self.reload_error = reload_error
         self.created: dict[UUID, FakeAgentRecord] = {}
         self.started: list[UUID] = []
         self.stopped: list[UUID] = []
         self.removed: list[UUID] = []
         self.reloaded: list[UUID] = []
         self.triggers: list[tuple[UUID, str, str]] = []
+        # Порядок вызовов runtime-методов: reload после stop важен для rebind.
+        self.calls: list[tuple[str, UUID]] = []
 
     async def create_agent(
         self,
@@ -53,12 +59,16 @@ class FakeAgentManager:
         return self
 
     async def start_agent(self, agent_id: UUID) -> None:
+        self.calls.append(("start", agent_id))
         if self._start_unauthorized:
             raise TelegramAuthorizationRequired(UNAUTHORIZED_SESSION_MESSAGE)
         self.started.append(agent_id)
         self.created[agent_id].state = AgentRuntimeState.RUNNING
 
     async def stop_agent(self, agent_id: UUID) -> None:
+        self.calls.append(("stop", agent_id))
+        if self.stop_error:
+            raise RuntimeError("stop boom")
         self.stopped.append(agent_id)
         record = self.created.get(agent_id)
         if record is not None:
@@ -68,6 +78,9 @@ class FakeAgentManager:
         self.removed.append(agent_id)
 
     async def reload_agent(self, agent_id: UUID) -> None:
+        self.calls.append(("reload", agent_id))
+        if self.reload_error:
+            raise RuntimeError("reload boom")
         self.reloaded.append(agent_id)
 
     async def get_agent_status(self, agent_id: UUID) -> AgentStatus:

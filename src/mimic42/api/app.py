@@ -672,9 +672,16 @@ def create_app(
     ) -> OnboardingPublicStatus:
         """Начать перепривязку: запросить код Telegram для существующего агента.
 
-        Онбординг-сессия создаётся новая: код/2FA идут по стандартным
+        Онбординг-сессия агента переиспользуется: код/2FA идут по стандартным
         onboarding-эндпоинтам, а на confirm сессия переносится на агента.
+        Используется серверное Telegram-приложение: api_id/hash агента
+        заменяются деплойментными.
         """
+        if _get_agent_store(app) is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Перепривязка недоступна: хранилище агентов не настроено.",
+            )
         try:
             await _ensure_runtime_owner(app, agent_id=agent_id, user_id=current_user.user_id)
         except AgentNotFoundError as exc:
@@ -687,7 +694,9 @@ def create_app(
             phone_number=payload.phone_number,
         )
         try:
-            return await _get_onboarding_service(app).request_telegram_code(credentials)
+            return await _get_onboarding_service(app).start_rebind(agent_id, credentials)
+        except OnboardingOwnershipError as exc:
+            raise _not_found(agent_id) from exc
         except Exception as exc:
             translated = _telegram_login_http_error(exc)
             if translated is not None:
@@ -708,6 +717,11 @@ def create_app(
         Имя, характер, память и настройки не меняются. Рантайм пересобирается
         из свежего конфига: старый держал сломанную сессию в памяти.
         """
+        if _get_agent_store(app) is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Перепривязка недоступна: хранилище агентов не настроено.",
+            )
         try:
             await _ensure_runtime_owner(app, agent_id=agent_id, user_id=current_user.user_id)
         except AgentNotFoundError as exc:

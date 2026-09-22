@@ -235,13 +235,29 @@ async def test_start_agent_reports_unauthorized_session_in_russian() -> None:
 
 
 @pytest.mark.asyncio
-async def test_rebind_flow_replaces_session_and_keeps_agent_profile() -> None:
+async def test_rebind_flow_reuses_agent_session_and_keeps_agent_profile() -> None:
     owner_id = uuid4()
     agent_id = uuid4()
     manager = FakeAgentManager()
     store = InMemoryAgentStore()
+    repository = InMemoryOnboardingRepository()
+    # Строка мастера после finalize: id == agent_id, метка занята.
+    await repository.save(
+        OnboardingSession(
+            onboarding_id=agent_id,
+            owner_id=owner_id,
+            api_id=12345,
+            api_hash_secret="old-hash",
+            phone_number="+79990000000",
+            authorization_status=TelegramLoginStatus.AUTHORIZED,
+            session_secret="old-session",
+            name="Mimic",
+            soul_prompt="Short replies",
+            completed_agent_id=agent_id,
+        )
+    )
     onboarding_service = AgentOnboardingService(
-        repository=InMemoryOnboardingRepository(),
+        repository=repository,
         telegram_factory=FakeTelegramAuthClientFactory(FakeTelegramAccount()),
         agent_store=store,
     )
@@ -275,6 +291,8 @@ async def test_rebind_flow_replaces_session_and_keeps_agent_profile() -> None:
             headers=AUTH_HEADERS,
             json={"phone_number": "+79990000000"},
         )
+        assert start_response.status_code == 201
+        assert start_response.json()["onboarding_id"] == str(agent_id)
         onboarding_id = UUID(start_response.json()["onboarding_id"])
 
         verify_response = await client.post(
@@ -289,7 +307,6 @@ async def test_rebind_flow_replaces_session_and_keeps_agent_profile() -> None:
             json={"onboarding_id": str(onboarding_id)},
         )
 
-    assert start_response.status_code == 201
     assert start_response.json()["authorization_status"] == "code_requested"
     assert verify_response.status_code == 200
     assert verify_response.json()["authorization_status"] == "authorized"
@@ -300,14 +317,20 @@ async def test_rebind_flow_replaces_session_and_keeps_agent_profile() -> None:
         "owner_id": str(owner_id),
         "state": "stopped",
     }
+    assert manager.calls[-2:] == [("stop", agent_id), ("reload", agent_id)]
     assert manager.stopped == [agent_id]
     assert manager.reloaded == [agent_id]
 
     config = await store.get_runtime_config(agent_id)
+    assert config.telegram_api_id == 777
     assert config.telegram_api_hash == "deployment-hash"
-    assert config.telegram_session_string != "old-session"
+    assert config.telegram_session_string == "fake-session:+79990000000"
     assert config.name == "Mimic"
     assert config.soul_prompt == "Short replies"
+
+    saved = await repository.get(agent_id)
+    assert saved.completed_agent_id == agent_id
+    assert saved.authorization_status is TelegramLoginStatus.AUTHORIZED
 
 
 @pytest.mark.asyncio
@@ -368,7 +391,76 @@ async def test_rebind_confirm_rejects_foreign_onboarding_session() -> None:
 async def test_rebind_confirm_requires_completed_authorization() -> None:
     owner_id = uuid4()
     agent_id = uuid4()
-    onboarding_id = uuid4()
+    manager = FakeAgentManager()
+    store = InMemoryAgentStore()
+    repository = InMemoryOnboardingRepository()
+    await repository.save(
+        OnboardingSession(
+            onboarding_id=agent_id,
+            owner_id=owner_id,
+            api_id=12345,
+            api_hash_secret="old-hash",
+            phone_number="+79990000000",
+            authorization_status=TelegramLoginStatus.AUTHORIZED,
+            session_secret="old-session",
+            name="Mimic",
+            soul_prompt="Short replies",
+            completed_agent_id=agent_id,
+        )
+    )
+    app = create_app(
+        manager=manager,
+        onboarding_service=AgentOnboardingService(
+            repository=repository,
+            telegram_factory=FakeTelegramAuthClientFactory(FakeTelegramAccount()),
+            agent_store=store,
+        ),
+        agent_store=store,
+        auth_verifier=FakeAuthVerifier(owner_id),
+        settings=Settings(telegram_api_id=777, telegram_api_hash="deployment-hash"),
+    )
+    await store.create_from_onboarding(
+        OnboardingSession(
+            onboarding_id=agent_id,
+            owner_id=owner_id,
+            api_id=12345,
+            api_hash_secret="old-hash",
+            phone_number="+79990000000",
+            authorization_status=TelegramLoginStatus.AUTHORIZED,
+            session_secret="old-session",
+            name="Mimic",
+            soul_prompt="Short replies",
+        )
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        start_response = await client.post(
+            f"/api/v1/agents/{agent_id}/telegram/rebind",
+            headers=AUTH_HEADERS,
+            json={"phone_number": "+79990000000"},
+        )
+        assert start_response.status_code == 201
+        assert start_response.json()["onboarding_id"] == str(agent_id)
+
+        # Код не вводили — сессия осталась неавторизованной.
+        response = await client.post(
+            f"/api/v1/agents/{agent_id}/telegram/rebind/confirm",
+            headers=AUTH_HEADERS,
+            json={"onboarding_id": str(agent_id)},
+        )
+
+    assert response.status_code == 409
+    assert "авторизация" in response.json()["detail"].lower()
+    assert manager.stopped == []
+
+
+@pytest.mark.asyncio
+async def test_rebind_confirm_returns_404_for_unknown_onboarding_session() -> None:
+    owner_id = uuid4()
+    agent_id = uuid4()
     store = InMemoryAgentStore()
     await store.create_from_onboarding(
         OnboardingSession(
@@ -383,18 +475,10 @@ async def test_rebind_confirm_requires_completed_authorization() -> None:
             soul_prompt="Short replies",
         )
     )
-    repository = InMemoryOnboardingRepository()
-    await repository.save(
-        OnboardingSession(
-            onboarding_id=onboarding_id,
-            owner_id=owner_id,
-            authorization_status=TelegramLoginStatus.CODE_REQUESTED,
-        )
-    )
     app = create_app(
         manager=FakeAgentManager(),
         onboarding_service=AgentOnboardingService(
-            repository=repository,
+            repository=InMemoryOnboardingRepository(),
             telegram_factory=FakeTelegramAuthClientFactory(FakeTelegramAccount()),
             agent_store=store,
         ),
@@ -410,8 +494,149 @@ async def test_rebind_confirm_requires_completed_authorization() -> None:
         response = await client.post(
             f"/api/v1/agents/{agent_id}/telegram/rebind/confirm",
             headers=AUTH_HEADERS,
-            json={"onboarding_id": str(onboarding_id)},
+            json={"onboarding_id": str(uuid4())},
         )
 
-    assert response.status_code == 409
-    assert "авторизация" in response.json()["detail"].lower()
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_rebind_start_returns_404_for_unknown_agent() -> None:
+    owner_id = uuid4()
+    store = InMemoryAgentStore()
+    app = create_app(
+        manager=FakeAgentManager(),
+        onboarding_service=AgentOnboardingService(
+            repository=InMemoryOnboardingRepository(),
+            telegram_factory=FakeTelegramAuthClientFactory(FakeTelegramAccount()),
+            agent_store=store,
+        ),
+        agent_store=store,
+        auth_verifier=FakeAuthVerifier(owner_id),
+        settings=Settings(telegram_api_id=777, telegram_api_hash="deployment-hash"),
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        response = await client.post(
+            f"/api/v1/agents/{uuid4()}/telegram/rebind",
+            headers=AUTH_HEADERS,
+            json={"phone_number": "+79990000000"},
+        )
+
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_rebind_requires_agent_store() -> None:
+    owner_id = uuid4()
+    manager = FakeAgentManager(default_owner_id=owner_id)
+    app = create_app(
+        manager=manager,
+        auth_verifier=FakeAuthVerifier(owner_id),
+        settings=Settings(telegram_api_id=777, telegram_api_hash="deployment-hash"),
+    )
+    agent_id = uuid4()
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        start_response = await client.post(
+            f"/api/v1/agents/{agent_id}/telegram/rebind",
+            headers=AUTH_HEADERS,
+            json={"phone_number": "+79990000000"},
+        )
+        confirm_response = await client.post(
+            f"/api/v1/agents/{agent_id}/telegram/rebind/confirm",
+            headers=AUTH_HEADERS,
+            json={"onboarding_id": str(uuid4())},
+        )
+
+    assert start_response.status_code == 503
+    assert confirm_response.status_code == 503
+    assert "хранилище агентов" in start_response.json()["detail"]
+
+
+@pytest.mark.parametrize(
+    ("stop_error", "reload_error"),
+    [(True, False), (False, True), (True, True)],
+)
+@pytest.mark.asyncio
+async def test_rebind_confirm_succeeds_when_runtime_stop_or_reload_fails(
+    stop_error: bool,
+    reload_error: bool,
+) -> None:
+    owner_id = uuid4()
+    agent_id = uuid4()
+    manager = FakeAgentManager(stop_error=stop_error, reload_error=reload_error)
+    store = InMemoryAgentStore()
+    repository = InMemoryOnboardingRepository()
+    await repository.save(
+        OnboardingSession(
+            onboarding_id=agent_id,
+            owner_id=owner_id,
+            api_id=12345,
+            api_hash_secret="old-hash",
+            phone_number="+79990000000",
+            authorization_status=TelegramLoginStatus.AUTHORIZED,
+            session_secret="old-session",
+            name="Mimic",
+            soul_prompt="Short replies",
+            completed_agent_id=agent_id,
+        )
+    )
+    app = create_app(
+        manager=manager,
+        onboarding_service=AgentOnboardingService(
+            repository=repository,
+            telegram_factory=FakeTelegramAuthClientFactory(FakeTelegramAccount()),
+            agent_store=store,
+        ),
+        agent_store=store,
+        auth_verifier=FakeAuthVerifier(owner_id),
+        settings=Settings(telegram_api_id=777, telegram_api_hash="deployment-hash"),
+    )
+    await store.create_from_onboarding(
+        OnboardingSession(
+            onboarding_id=agent_id,
+            owner_id=owner_id,
+            api_id=12345,
+            api_hash_secret="old-hash",
+            phone_number="+79990000000",
+            authorization_status=TelegramLoginStatus.AUTHORIZED,
+            session_secret="old-session",
+            name="Mimic",
+            soul_prompt="Short replies",
+        )
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        start_response = await client.post(
+            f"/api/v1/agents/{agent_id}/telegram/rebind",
+            headers=AUTH_HEADERS,
+            json={"phone_number": "+79990000000"},
+        )
+        assert start_response.status_code == 201
+
+        await client.post(
+            f"/api/v1/onboarding/{agent_id}/telegram/code",
+            headers=AUTH_HEADERS,
+            json={"code": "12345"},
+        )
+        confirm_response = await client.post(
+            f"/api/v1/agents/{agent_id}/telegram/rebind/confirm",
+            headers=AUTH_HEADERS,
+            json={"onboarding_id": str(agent_id)},
+        )
+
+    # Перепривязка уже применена в базе: сбой рантайма не отменяет confirm.
+    assert confirm_response.status_code == 200
+    assert manager.calls[-2:] == [("stop", agent_id), ("reload", agent_id)]
+    assert manager.stopped == ([] if stop_error else [agent_id])
+    assert manager.reloaded == ([] if reload_error else [agent_id])
