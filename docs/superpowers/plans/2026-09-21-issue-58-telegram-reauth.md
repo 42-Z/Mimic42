@@ -1613,7 +1613,7 @@ git commit -m "feat(frontend): rebind wizard page for expired telegram sessions"
 
 ---
 
-### Task 9: Фронт — кнопка «Перепривязать» в UI агента
+### Task 9: Фронт — кнопка «Перепривязать» в UI агента ✅ (коммиты `cf27727`, `7ef9ad4`, `461bb6b`)
 
 **Files:**
 - Modify: `frontend/src/app/(dashboard)/dashboard/page.tsx`
