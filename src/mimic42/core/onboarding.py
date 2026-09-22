@@ -296,6 +296,28 @@ class AgentOnboardingService:
             state=AgentRuntimeState.STOPPED,
         )
 
+    async def rebind_to_agent(self, onboarding_id: UUID, agent_id: UUID) -> AgentStatus:
+        """Перенести авторизованную онбординг-сессию на существующего агента.
+
+        Флоу перепривязки: Telegram-сессия обновляется, а имя, характер,
+        память и настройки агента остаются прежними. completed_agent_id прячет
+        использованную rebind-сессию от мастера онбординга (тот фильтрует
+        черновики по is(completed_agent_id, null)).
+        """
+        session = await self._repository.get(onboarding_id)
+        if session.authorization_status is not TelegramLoginStatus.AUTHORIZED:
+            raise TelegramAuthorizationIncompleteError(onboarding_id)
+        if self._agent_store is None:
+            raise RuntimeError("Agent store is not configured")
+        await self._agent_store.rebind_telegram_session(agent_id, session)
+        session.completed_agent_id = agent_id
+        await self._repository.save(session)
+        return AgentStatus(
+            agent_id=agent_id,
+            owner_id=session.owner_id,
+            state=AgentRuntimeState.STOPPED,
+        )
+
     async def build_runtime_config(self, onboarding_id: UUID) -> AgentRuntimeConfig:
         session = await self._repository.get(onboarding_id)
         if not session.soul_prompt or session.api_id is None or session.api_hash_secret is None:

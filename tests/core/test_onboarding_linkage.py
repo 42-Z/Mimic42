@@ -4,11 +4,14 @@ from uuid import uuid4
 
 import pytest
 
+from mimic42.core.agent_runtime import AgentRuntimeState
+from mimic42.core.agent_store import InMemoryAgentStore
 from mimic42.core.onboarding import (
     AgentOnboardingService,
     InMemoryOnboardingRepository,
     OnboardingOwnershipError,
     OnboardingSession,
+    TelegramAuthorizationIncompleteError,
     TelegramCredentials,
     TelegramLoginStatus,
 )
@@ -83,3 +86,75 @@ async def test_request_code_rejects_cross_owner_onboarding_id() -> None:
             ),
             onboarding_id=onboarding_id,
         )
+
+
+@pytest.mark.asyncio
+async def test_rebind_to_agent_updates_store_and_marks_session_completed() -> None:
+    owner_id = uuid4()
+    agent_id = uuid4()
+    onboarding_id = uuid4()
+    repository = InMemoryOnboardingRepository()
+    await repository.save(
+        OnboardingSession(
+            onboarding_id=onboarding_id,
+            owner_id=owner_id,
+            api_id=12345,
+            api_hash_secret="new-hash",
+            phone_number="+79990000000",
+            authorization_status=TelegramLoginStatus.AUTHORIZED,
+            session_secret="new-session-string",
+        )
+    )
+    store = InMemoryAgentStore()
+    await store.create_from_onboarding(
+        OnboardingSession(
+            onboarding_id=agent_id,
+            owner_id=owner_id,
+            api_id=12345,
+            api_hash_secret="old-hash",
+            phone_number="+79990000000",
+            authorization_status=TelegramLoginStatus.AUTHORIZED,
+            session_secret="old-session-string",
+            name="Mimic",
+            soul_prompt="Short calm replies",
+        )
+    )
+    service = AgentOnboardingService(
+        repository=repository,
+        telegram_factory=_fake_telegram_factory(),
+        agent_store=store,
+    )
+
+    result = await service.rebind_to_agent(onboarding_id, agent_id)
+
+    assert result.agent_id == agent_id
+    assert result.state is AgentRuntimeState.STOPPED
+    config = await store.get_runtime_config(agent_id)
+    assert config.telegram_session_string == "new-session-string"
+    assert config.telegram_api_hash == "new-hash"
+    assert config.name == "Mimic"
+    assert config.soul_prompt == "Short calm replies"
+    saved = await repository.get(onboarding_id)
+    assert saved.completed_agent_id == agent_id
+
+
+@pytest.mark.asyncio
+async def test_rebind_to_agent_requires_authorized_session() -> None:
+    owner_id = uuid4()
+    onboarding_id = uuid4()
+    repository = InMemoryOnboardingRepository()
+    await repository.save(
+        OnboardingSession(
+            onboarding_id=onboarding_id,
+            owner_id=owner_id,
+            authorization_status=TelegramLoginStatus.CODE_REQUESTED,
+        )
+    )
+    service = AgentOnboardingService(
+        repository=repository,
+        telegram_factory=_fake_telegram_factory(),
+        agent_store=InMemoryAgentStore(),
+    )
+
+    with pytest.raises(TelegramAuthorizationIncompleteError):
+        await service.rebind_to_agent(onboarding_id, uuid4())
