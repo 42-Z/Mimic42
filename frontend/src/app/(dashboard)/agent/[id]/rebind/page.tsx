@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { useQueryClient } from '@tanstack/react-query';
 import { agentIdSchema } from '@/lib/validators';
@@ -12,16 +12,12 @@ import { Input } from '@/components/ui/input';
 import { Card, Spinner } from '@/components/ui/card';
 import { useToast } from '@/components/ui/toast';
 import { maskPhoneNumber } from '@/lib/sanitize';
-import {
-  telegramCredentialsSchema,
-  telegramCodeSchema,
-  telegram2FASchema,
-} from '@/lib/validators';
+import { telegramCodeSchema, telegram2FASchema } from '@/lib/validators';
 import type { ApiError } from '@/types';
-import { Bot, CheckCircle2, Link2, MessageSquare, ShieldCheck } from 'lucide-react';
+import { CheckCircle2, Link2, MessageSquare, ShieldCheck } from 'lucide-react';
 import Link from 'next/link';
 
-type RebindStep = 'phone' | 'code' | '2fa' | 'done';
+type RebindStep = 'starting' | 'code' | '2fa' | 'done';
 
 export default function RebindPage() {
   const params = useParams();
@@ -37,13 +33,11 @@ function RebindPageContent({ agentId }: { agentId: string }) {
   const router = useRouter();
   const qc = useQueryClient();
   const { toast } = useToast();
-  const { data: session, isLoading } = useTelegramSession(agentId);
+  const { data: session } = useTelegramSession(agentId);
 
   const knownPhone = session?.phone_number ?? null;
 
-  const [step, setStep] = useState<RebindStep>('phone');
-  const [phoneNumber, setPhoneNumber] = useState('');
-  const [editingPhone, setEditingPhone] = useState(false);
+  const [step, setStep] = useState<RebindStep>('starting');
   const [code, setCode] = useState('');
   const [password, setPassword] = useState('');
   const [onboardingId, setOnboardingId] = useState<string | null>(null);
@@ -51,9 +45,29 @@ function RebindPageContent({ agentId }: { agentId: string }) {
   const [isPending, setIsPending] = useState(false);
   const [isResending, setIsResending] = useState(false);
 
+  const requestedRef = useRef(false);
+
+  const requestCode = useCallback(async () => {
+    setError('');
+    setIsPending(true);
+    try {
+      const status = await agentsApi.rebindTelegram(agentId);
+      setOnboardingId(status.onboarding_id);
+      setStep('code');
+    } catch (err: unknown) {
+      const message = (err as ApiError).message ?? 'Не удалось отправить код';
+      setError(message);
+      toast(message, 'error');
+    } finally {
+      setIsPending(false);
+    }
+  }, [agentId, toast]);
+
   useEffect(() => {
-    if (knownPhone) setPhoneNumber(knownPhone);
-  }, [knownPhone]);
+    if (requestedRef.current) return;
+    requestedRef.current = true;
+    void requestCode();
+  }, [requestCode]);
 
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: queryKeys.telegram.byAgent(agentId) });
@@ -73,47 +87,18 @@ function RebindPageContent({ agentId }: { agentId: string }) {
     }
   };
 
-  const handlePhone = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const result = telegramCredentialsSchema.safeParse({ phone_number: phoneNumber });
-    if (!result.success) {
-      setError(result.error.issues[0]?.message ?? 'Ошибка');
-      return;
-    }
-    setError('');
-    setIsPending(true);
-    try {
-      const status = await agentsApi.rebindTelegram(agentId, {
-        phone_number: result.data.phone_number,
-      });
-      setOnboardingId(status.onboarding_id);
-      setStep('code');
-    } catch (err: unknown) {
-      toast((err as ApiError).message ?? 'Не удалось отправить код', 'error');
-      setError((err as ApiError).message ?? '');
-    } finally {
-      setIsPending(false);
-    }
-  };
-
   const resendCode = async () => {
-    const result = telegramCredentialsSchema.safeParse({ phone_number: phoneNumber });
-    if (!result.success) {
-      setError(result.error.issues[0]?.message ?? 'Ошибка');
-      return;
-    }
     setError('');
     setIsResending(true);
     try {
-      const status = await agentsApi.rebindTelegram(agentId, {
-        phone_number: result.data.phone_number,
-      });
+      const status = await agentsApi.rebindTelegram(agentId);
       setOnboardingId(status.onboarding_id);
       setCode('');
       toast('Код отправлен повторно', 'success');
     } catch (err: unknown) {
-      toast((err as ApiError).message ?? 'Не удалось отправить код', 'error');
-      setError((err as ApiError).message ?? '');
+      const message = (err as ApiError).message ?? 'Не удалось отправить код';
+      setError(message);
+      toast(message, 'error');
     } finally {
       setIsResending(false);
     }
@@ -175,14 +160,6 @@ function RebindPageContent({ agentId }: { agentId: string }) {
     }
   };
 
-  if (isLoading) {
-    return (
-      <div className="min-h-[60vh] flex items-center justify-center">
-        <Spinner size="lg" />
-      </div>
-    );
-  }
-
   return (
     <div className="max-w-xl mx-auto space-y-6 animate-fade-in">
       <div className="flex items-center gap-4">
@@ -192,78 +169,34 @@ function RebindPageContent({ agentId }: { agentId: string }) {
         <div>
           <h1 className="font-display text-xl font-bold text-void-100">Перепривязка Telegram</h1>
           <p className="font-mono text-xs text-void-500 mt-0.5">
-            Введите номер и код из Telegram. Имя, память и настройки сохранятся.
+            Введите код из Telegram. Имя, память и настройки сохранятся.
           </p>
         </div>
       </div>
 
-      {session?.authorization_status === 'authorized' && step !== 'done' && (
-        <Card variant="glass" padding="md" className="border-neon-900">
-          <p className="font-mono text-xs text-neon-400">
-            Сессия уже авторизована. Перепривязка не требуется — можно запустить агента.
-          </p>
-        </Card>
-      )}
-
-      {step === 'phone' && (
-        <form onSubmit={handlePhone} className="space-y-6">
-          <StepBadge step="1" label="Номер телефона" icon={Bot} />
-          {knownPhone && !editingPhone ? (
+      {step === 'starting' && (
+        <Card variant="glass" padding="lg" className="flex flex-col items-center gap-4 text-center">
+          {isPending ? (
             <>
-              <div className="rounded-sm border border-void-700 bg-void-800/40 px-4 py-3">
-                <p className="font-mono text-sm text-void-200">
-                  Номер: {maskPhoneNumber(knownPhone)}
-                </p>
-              </div>
-              <Button type="submit" isLoading={isPending} size="lg" className="w-full">
-                Получить код →
-              </Button>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                onClick={() => setEditingPhone(true)}
-                disabled={isPending}
-                className="w-full"
-              >
-                Изменить номер
-              </Button>
+              <Spinner size="lg" />
+              <p className="font-mono text-sm text-void-400">Отправляем код в Telegram…</p>
             </>
           ) : (
             <>
-              <Input
-                label="Номер телефона"
-                type="tel"
-                placeholder="+79991234567"
-                value={phoneNumber}
-                onChange={(e) => setPhoneNumber(e.target.value)}
-                error={error}
-                hint={knownPhone ? `Текущий номер: ${maskPhoneNumber(knownPhone)}` : 'В формате E.164 с кодом страны'}
-                autoFocus
-              />
-              <Button type="submit" isLoading={isPending} size="lg" className="w-full">
-                Получить код →
+              <p className="font-mono text-sm text-crimson-400">
+                {error || 'Не удалось отправить код'}
+              </p>
+              <Button onClick={() => void requestCode()} size="lg" className="w-full">
+                Повторить
               </Button>
-              {knownPhone && (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => { setEditingPhone(false); setPhoneNumber(knownPhone); }}
-                  disabled={isPending}
-                  className="w-full"
-                >
-                  Оставить текущий номер
-                </Button>
-              )}
             </>
           )}
-        </form>
+        </Card>
       )}
 
       {step === 'code' && (
         <form onSubmit={handleCode} className="space-y-6">
-          <StepBadge step="2" label="Код из Telegram" icon={MessageSquare} />
+          <StepBadge step="1" label="Код из Telegram" icon={MessageSquare} />
           <Input
             label="Код подтверждения"
             type="text"
@@ -273,6 +206,7 @@ function RebindPageContent({ agentId }: { agentId: string }) {
             value={code}
             onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))}
             error={error}
+            hint={knownPhone ? `Код придёт в Telegram на ${maskPhoneNumber(knownPhone)}` : undefined}
             autoFocus
             className="text-center text-xl tracking-[0.5em]"
           />
@@ -285,33 +219,23 @@ function RebindPageContent({ agentId }: { agentId: string }) {
           >
             Подтвердить →
           </Button>
-          <div className="flex items-center justify-between gap-2">
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={() => { setError(''); setCode(''); setStep('phone'); }}
-              disabled={isPending || isResending}
-            >
-              ← Изменить номер
-            </Button>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={resendCode}
-              isLoading={isResending}
-              disabled={isPending}
-            >
-              Отправить код ещё раз
-            </Button>
-          </div>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={resendCode}
+            isLoading={isResending}
+            disabled={isPending}
+            className="w-full"
+          >
+            Отправить код ещё раз
+          </Button>
         </form>
       )}
 
       {step === '2fa' && (
         <form onSubmit={handle2FA} className="space-y-6">
-          <StepBadge step="3" label="Пароль 2FA" icon={ShieldCheck} />
+          <StepBadge step="2" label="Пароль 2FA" icon={ShieldCheck} />
           <div className="p-4 rounded-sm bg-amber-950/20 border border-amber-900/50">
             <p className="font-mono text-xs text-amber-400">
               Это пароль 2FA от Telegram, а не от вашего устройства

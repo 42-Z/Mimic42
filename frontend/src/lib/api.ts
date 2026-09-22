@@ -153,10 +153,10 @@ export const agentsApi = {
   reload: (id: string) =>
     apiClient.post<void>(`/agents/${id}/reload`).then(() => undefined),
 
-  /** POST /api/v1/agents/:id/telegram/rebind — запросить код для перепривязки */
-  rebindTelegram: (id: string, body: { phone_number: string }) =>
+  /** POST /api/v1/agents/:id/telegram/rebind — запросить код входа */
+  rebindTelegram: (id: string) =>
     apiClient
-      .post<OnboardingPublicStatus>(`/agents/${id}/telegram/rebind`, body)
+      .post<OnboardingPublicStatus>(`/agents/${id}/telegram/rebind`)
       .then((r) => r.data),
 
   /** POST /api/v1/agents/:id/telegram/rebind/confirm — применить новую сессию */
