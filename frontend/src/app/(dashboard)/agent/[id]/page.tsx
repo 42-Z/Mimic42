@@ -18,12 +18,14 @@ import { Input, Textarea } from '@/components/ui/input';
 import { Card, Skeleton, Spinner, Divider } from '@/components/ui/card';
 import { ConfirmDialog, Modal } from '@/components/ui/modal';
 import { sanitizeText, maskPhoneNumber } from '@/lib/sanitize';
+import { needsRebind } from '@/lib/telegram';
 import { triggerMessageSchema, type TriggerMessageValues } from '@/lib/validators';
 import {
   Settings, Activity, Zap, MessageSquare, BarChart2, Brain,
-  Play, Square, Send, AlertTriangle, RefreshCw,
+  Play, Square, Send, AlertTriangle, RefreshCw, Link2,
   Bot, Clock, Search, Trash2,
 } from 'lucide-react';
+import Link from 'next/link';
 import { formatDistanceToNow, format } from 'date-fns';
 import { ru } from 'date-fns/locale';
 import { cn } from '@/lib/utils';
@@ -136,7 +138,22 @@ function AgentControls({ agentId, state }: { agentId: string; state?: string }) 
   const { toast } = useToast();
   const { mutate: start, isPending: starting } = useStartAgent();
   const { mutate: stop,  isPending: stopping } = useStopAgent();
+  const { data: telegramSession } = useTelegramSession(agentId);
   const [stopConfirm, setStopConfirm] = useState(false);
+
+  const rebind = needsRebind(telegramSession?.authorization_status);
+
+  if (rebind) {
+    return (
+      <div className="flex items-center gap-2">
+        <Link href={`/agent/${agentId}/rebind`}>
+          <Button variant="outline" size="sm" leftIcon={<Link2 className="h-3.5 w-3.5" />}>
+            Перепривязать
+          </Button>
+        </Link>
+      </div>
+    );
+  }
 
   return (
     <div className="flex items-center gap-2">
@@ -188,6 +205,8 @@ function TabActions({ agentId }: { agentId: string }) {
   const { mutate: stop,  isPending: stopping }  = useStopAgent();
   const { mutate: remove, isPending: deleting } = useDeleteAgent();
   const trigger = useTriggerMessage(agentId);
+  const { data: telegramSession } = useTelegramSession(agentId);
+  const rebind = needsRebind(telegramSession?.authorization_status);
   const [stopConfirm, setStopConfirm] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState(false);
   const [triggerModal, setTriggerModal] = useState(false);
@@ -215,22 +234,37 @@ function TabActions({ agentId }: { agentId: string }) {
     }
   };
 
+  const startAction = rebind
+    ? {
+        title: 'Перепривязать Telegram',
+        desc: 'Сессия недействительна. Введите код заново — память и настройки сохранятся',
+        icon: Link2,
+        color: 'text-amber-400',
+        bg: 'bg-amber-950/40 border-amber-900',
+        action: () => router.push(`/agent/${agentId}/rebind`),
+        loading: false,
+        label: 'Перепривязать',
+        variant: 'default' as const,
+        destructive: false,
+      }
+    : {
+        title: 'Запустить агента',
+        desc: 'Агент начнёт получать и отвечать на сообщения в Telegram',
+        icon: Play,
+        color: 'text-neon-400',
+        bg: 'bg-neon-950/40 border-neon-900',
+        action: () => start(agentId, {
+          onSuccess: () => toast('Агент запускается', 'success'),
+          onError: (e: unknown) => toast((e as ApiError).message, 'error'),
+        }),
+        loading: starting,
+        label: 'Запустить',
+        variant: 'success' as const,
+        destructive: false,
+      };
+
   const actions = [
-    {
-      title: 'Запустить агента',
-      desc: 'Агент начнёт получать и отвечать на сообщения в Telegram',
-      icon: Play,
-      color: 'text-neon-400',
-      bg: 'bg-neon-950/40 border-neon-900',
-      action: () => start(agentId, {
-        onSuccess: () => toast('Агент запускается', 'success'),
-        onError: (e: unknown) => toast((e as ApiError).message, 'error'),
-      }),
-      loading: starting,
-      label: 'Запустить',
-      variant: 'success' as const,
-      destructive: false,
-    },
+    startAction,
     {
       title: 'Остановить агента',
       desc: 'Агент перестанет обрабатывать входящие сообщения',
@@ -411,7 +445,7 @@ function TabTelegram({ agentId }: { agentId: string }) {
         ))}
       </Card>
 
-      {(session.authorization_status === 'error' || session.authorization_status === 'revoked') && (
+      {needsRebind(session.authorization_status) && (
         <div className="p-4 rounded-sm bg-amber-950/20 border border-amber-900/50 flex items-center justify-between gap-4">
           <div>
             <p className="font-mono text-sm text-amber-400 font-medium">Требуется переподключение</p>
@@ -419,9 +453,11 @@ function TabTelegram({ agentId }: { agentId: string }) {
               Сессия истекла или была отозвана
             </p>
           </div>
-          <Button variant="outline" size="sm" leftIcon={<RefreshCw className="h-3.5 w-3.5" />}>
-            Переподключить
-          </Button>
+          <Link href={`/agent/${agentId}/rebind`}>
+            <Button variant="outline" size="sm" leftIcon={<RefreshCw className="h-3.5 w-3.5" />}>
+              Перепривязать
+            </Button>
+          </Link>
         </div>
       )}
     </div>

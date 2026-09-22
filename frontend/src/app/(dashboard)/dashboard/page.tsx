@@ -1,7 +1,7 @@
 'use client';
 
 import { useAgents, useStartAgent, useStopAgent } from '@/hooks/useAgents';
-import { useAllAgentsKPIs, useAgentsDetails } from '@/hooks/useTelegramSession';
+import { useAllAgentsKPIs, useAgentsDetails, type AgentDetails } from '@/hooks/useTelegramSession';
 import { useMultiAgentRealtimeFeed, useAllAgentsStatusRealtime } from '@/hooks/useRealtimeFeed';
 import { useToast } from '@/components/ui/toast';
 import { AgentStatusBadge } from '@/components/agents/AgentStatusBadge';
@@ -9,12 +9,13 @@ import { Card, Skeleton } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { maskPhoneNumber, sanitizeText, truncate } from '@/lib/sanitize';
+import { needsRebind } from '@/lib/telegram';
 import { getSupabaseClient } from '@/lib/supabase/client';
 import { formatDistanceToNow } from 'date-fns';
 import { ru } from 'date-fns/locale';
 import {
   MessageSquare, Activity, AlertTriangle, Users,
-  Play, Square, RefreshCw, Wifi, WifiOff, Bot, Plus, Settings,
+  Play, Square, RefreshCw, Wifi, WifiOff, Bot, Plus, Settings, Link2,
 } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
@@ -191,13 +192,14 @@ function AgentsGrid({ agents }: { agents: AgentRecord[] }) {
   );
 }
 
-function AgentCard({ agent, details }: { agent: AgentRecord; details?: { phone_number: string | null; last_started_at: string | null } }) {
+function AgentCard({ agent, details }: { agent: AgentRecord; details?: AgentDetails }) {
   const { mutate: start, isPending: starting } = useStartAgent();
   const { mutate: stop, isPending: stopping } = useStopAgent();
   const { toast } = useToast();
 
   const canStart = agent.state === 'stopped' || agent.state === 'error';
   const canStop = agent.state === 'running';
+  const rebind = needsRebind(details?.authorization_status);
 
   const handleStart = () => {
     start(agent.agent_id, {
@@ -239,24 +241,37 @@ function AgentCard({ agent, details }: { agent: AgentRecord; details?: { phone_n
       </p>
 
       <div className="flex items-center gap-2 pt-1">
-        <Button
-          variant="success" size="sm"
-          onClick={handleStart}
-          disabled={!canStart}
-          isLoading={starting}
-          leftIcon={<Play className="h-3.5 w-3.5" />}
-        >
-          Запустить
-        </Button>
-        <Button
-          variant="danger" size="sm"
-          onClick={handleStop}
-          disabled={!canStop}
-          isLoading={stopping}
-          leftIcon={<Square className="h-3.5 w-3.5" />}
-        >
-          Стоп
-        </Button>
+        {rebind ? (
+          <Link href={`/agent/${agent.agent_id}/rebind`} className="flex-1">
+            <Button
+              variant="outline" size="sm" className="w-full"
+              leftIcon={<Link2 className="h-3.5 w-3.5" />}
+            >
+              Перепривязать
+            </Button>
+          </Link>
+        ) : (
+          <Button
+            variant="success" size="sm"
+            onClick={handleStart}
+            disabled={!canStart}
+            isLoading={starting}
+            leftIcon={<Play className="h-3.5 w-3.5" />}
+          >
+            Запустить
+          </Button>
+        )}
+        {!rebind && (
+          <Button
+            variant="danger" size="sm"
+            onClick={handleStop}
+            disabled={!canStop}
+            isLoading={stopping}
+            leftIcon={<Square className="h-3.5 w-3.5" />}
+          >
+            Стоп
+          </Button>
+        )}
         <div className="flex-1" />
         <Link href={`/agent/${agent.agent_id}`} aria-label="Настройки агента">
           <Button variant="ghost" size="sm" className="px-2">
