@@ -745,15 +745,25 @@ def create_app(
         # а по решению из issue агент остаётся остановленным.
         try:
             await manager.stop_agent(agent_id)
-        except Exception:
+        except Exception as exc:
+            # Не пересобираем поверх живого рантайма: reload_agent вынимает
+            # старый из реестра до close, и новый клиент поднялся бы со свежей
+            # сессией, пока старый ещё держит старую (AuthKeyDuplicated).
             logger.exception("Failed to stop agent %s before rebind reload", agent_id)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Не удалось остановить агента перед перепривязкой. Повторите подтверждение.",
+            ) from exc
         try:
             await manager.reload_agent(agent_id)
-        except Exception:
-            # Перепривязка уже применена в базе; reload_agent вынимает старый
-            # рантайм из реестра до close, так что следующий start соберётся
-            # из свежего конфига.
+        except Exception as exc:
+            # Перепривязка уже применена в базе: повторное подтверждение
+            # идемпотентно и доведёт пересборку до конца.
             logger.exception("Failed to reload agent %s after rebind", agent_id)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Не удалось пересобрать агента после перепривязки. Повторите подтверждение.",
+            ) from exc
         return result
 
     @app.get("/api/v1/agents/{agent_id}", response_model=AgentStatus)

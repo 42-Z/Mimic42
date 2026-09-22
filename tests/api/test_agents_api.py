@@ -619,10 +619,11 @@ async def test_rebind_requires_agent_store() -> None:
 
 @pytest.mark.parametrize(
     ("stop_error", "reload_error"),
-    [(True, False), (False, True), (True, True)],
+    [(True, False), (False, True)],
+    ids=["stop_fails", "reload_fails"],
 )
 @pytest.mark.asyncio
-async def test_rebind_confirm_succeeds_when_runtime_stop_or_reload_fails(
+async def test_rebind_confirm_returns_503_when_runtime_lifecycle_fails(
     stop_error: bool,
     reload_error: bool,
 ) -> None:
@@ -691,11 +692,17 @@ async def test_rebind_confirm_succeeds_when_runtime_stop_or_reload_fails(
             json={"onboarding_id": str(agent_id)},
         )
 
-    # Перепривязка уже применена в базе: сбой рантайма не отменяет confirm.
-    assert confirm_response.status_code == 200
-    assert manager.calls[-2:] == [("stop", agent_id), ("reload", agent_id)]
-    assert manager.stopped == ([] if stop_error else [agent_id])
-    assert manager.reloaded == ([] if reload_error else [agent_id])
+    # Сбой lifecycle не выдаём за успех: клиент получает 503 и может повторить
+    # подтверждение (перепривязка в базе идемпотентна).
+    assert confirm_response.status_code == 503
+    assert "Повторите подтверждение" in confirm_response.json()["detail"]
+    if stop_error:
+        # Живой рантайм не пересобираем: reload_agent вынимает старый из реестра
+        # до close, и новый клиент поднялся бы со свежей сессией, пока старый
+        # ещё держит старую.
+        assert ("reload", agent_id) not in manager.calls
+    else:
+        assert manager.calls[-2:] == [("stop", agent_id), ("reload", agent_id)]
 
 
 @pytest.mark.asyncio

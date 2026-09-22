@@ -215,6 +215,9 @@ class MimicAgentRuntime:
         # хода, проходят гейт при ещё открытом окне и упираются в закрытое на отправке.
         self._dispatch_lock = asyncio.Lock()
         self._message_handler_registered = False
+        # Мёртвая сессия не чинится перезапуском: рантайм с ней больше не
+        # поднимаем до перепривязки (reload_agent создаёт новый объект).
+        self._session_revoked = False
         self._member_tag_cache: dict[tuple[int, int], tuple[str | None, float]] = {}
         self._chat_mute_cache: dict[str, tuple[bool, float]] = {}
         self._scheduler_task: asyncio.Task[None] | None = None
@@ -280,6 +283,24 @@ class MimicAgentRuntime:
                 exc_info=True,
             )
 
+    async def _revoke_dead_session(self) -> None:
+        """Мёртвая сессия: помечаем revoked и гасим рантайм вместе с клиентом.
+
+        Из задачи планировщика нельзя звать ``stop()``: он ожидает завершения
+        этой же задачи. Достаточно перевести состояние в ``ERROR`` и отключить
+        клиент — цикл планировщика выйдет на проверке состояния.
+        """
+        self._session_revoked = True
+        await self._mark_telegram_session_revoked(error=REVOKED_SESSION_MESSAGE)
+        self._state = AgentRuntimeState.ERROR
+        try:
+            await self._telegram_client.disconnect()
+        except Exception:
+            logger.exception(
+                "Failed to disconnect revoked Telegram client for agent %s",
+                self.config.agent_id,
+            )
+
     @property
     def state(self) -> AgentRuntimeState:
         return self._state
@@ -316,7 +337,14 @@ class MimicAgentRuntime:
                 dead_session = _is_dead_session_error(e)
                 reason = "unauthorized" if dead_session else "exception"
                 if dead_session:
+                    self._session_revoked = True
                     await self._mark_telegram_session_revoked(error=REVOKED_SESSION_MESSAGE)
+                # connect() мог пройти до падения: не оставляем полуживое
+                # соединение висеть до следующего старта.
+                try:
+                    await self._telegram_client.disconnect()
+                except Exception:
+                    logger.exception("Failed to disconnect Telegram client after start failure")
                 await self._record_event(
                     event_type="agent.start_failed",
                     status="failed",
@@ -515,6 +543,10 @@ class MimicAgentRuntime:
             trigger.peer,
             trigger.text[:50],
         )
+        if self._session_revoked:
+            # Перезапуск поднимет тот же мёртвый ключ и снова упадёт: ждём
+            # перепривязки, а не долбим Telegram на каждом входящем.
+            raise TelegramAuthorizationRequired(REVOKED_SESSION_MESSAGE)
         if self._state is not AgentRuntimeState.RUNNING:
             logger.info(f"Agent not running (state={self._state}), starting...")
             await self.start()
@@ -683,7 +715,7 @@ class MimicAgentRuntime:
                     logger.exception("Failed to send Telegram message to %s", peer_id_for_send)
                     dead_session = _is_dead_session_error(e)
                     if dead_session:
-                        await self._mark_telegram_session_revoked(error=REVOKED_SESSION_MESSAGE)
+                        await self._revoke_dead_session()
                     await self._record_event(
                         event_type="message.send_failed",
                         status="failed",

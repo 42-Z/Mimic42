@@ -188,6 +188,33 @@ async def test_dead_session_error_on_connect_moves_runtime_to_error(
 
 
 @pytest.mark.asyncio
+async def test_dead_session_on_send_stops_runtime_and_blocks_restart() -> None:
+    class RevokedSendClient(FakeTelegramClient):
+        async def send_message(self, entity: str, message: str, **kwargs: Any) -> object:
+            raise errors.AuthKeyDuplicatedError(request=None)
+
+    telegram = RevokedSendClient()
+    runtime = MimicAgentRuntime(
+        config=make_config(),
+        telegram_client=telegram,
+        langchain_agent=FakeLangChainAgent(response="reply"),
+    )
+
+    await runtime.start()
+    await runtime.trigger_message(AgentTrigger(peer="me", text="Ping"))
+
+    # Сессия мертва: рантайм погашен и клиент отключён, а не остался RUNNING.
+    assert runtime.state is AgentRuntimeState.ERROR
+    assert telegram.connected is False
+    assert telegram.disconnect_calls == 1
+
+    # Следующее входящее не поднимает тот же мёртвый ключ заново.
+    with pytest.raises(TelegramAuthorizationRequired):
+        await runtime.trigger_message(AgentTrigger(peer="me", text="Ping again"))
+    assert telegram.connect_calls == 1
+
+
+@pytest.mark.asyncio
 async def test_trigger_invokes_agent_and_sends_response_through_telegram() -> None:
     telegram = FakeTelegramClient()
     agent = FakeLangChainAgent(response="reply from llm")
