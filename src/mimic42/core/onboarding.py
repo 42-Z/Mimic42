@@ -105,6 +105,8 @@ class OnboardingRepository(Protocol):
 
     async def get(self, onboarding_id: UUID) -> OnboardingSession: ...
 
+    async def delete(self, onboarding_id: UUID) -> None: ...
+
 
 class InMemoryOnboardingRepository:
     def __init__(self) -> None:
@@ -118,6 +120,9 @@ class InMemoryOnboardingRepository:
             return self._sessions[onboarding_id].model_copy(deep=True)
         except KeyError as exc:
             raise OnboardingNotFoundError(onboarding_id) from exc
+
+    async def delete(self, onboarding_id: UUID) -> None:
+        self._sessions.pop(onboarding_id, None)
 
 
 class OnboardingNotFoundError(KeyError):
@@ -296,22 +301,25 @@ class AgentOnboardingService:
             state=AgentRuntimeState.STOPPED,
         )
 
-    async def rebind_to_agent(self, onboarding_id: UUID, agent_id: UUID) -> AgentStatus:
+    async def rebind_to_agent(
+        self, onboarding_id: UUID, agent_id: UUID, *, owner_id: UUID
+    ) -> AgentStatus:
         """Перенести авторизованную онбординг-сессию на существующего агента.
 
         Флоу перепривязки: Telegram-сессия обновляется, а имя, характер,
-        память и настройки агента остаются прежними. completed_agent_id прячет
-        использованную rebind-сессию от мастера онбординга (тот фильтрует
-        черновики по is(completed_agent_id, null)).
+        память и настройки агента остаются прежними. Израсходованная
+        rebind-сессия удаляется: completed_agent_id у агента уже занят строкой
+        мастера (UNIQUE), а удаление заодно убирает из базы её секреты.
         """
         session = await self._repository.get(onboarding_id)
+        if session.owner_id != owner_id:
+            raise OnboardingOwnershipError(onboarding_id)
         if session.authorization_status is not TelegramLoginStatus.AUTHORIZED:
             raise TelegramAuthorizationIncompleteError(onboarding_id)
         if self._agent_store is None:
-            raise RuntimeError("Agent store is not configured")
+            raise RuntimeError("Хранилище агентов не настроено")
         await self._agent_store.rebind_telegram_session(agent_id, session)
-        session.completed_agent_id = agent_id
-        await self._repository.save(session)
+        await self._repository.delete(onboarding_id)
         return AgentStatus(
             agent_id=agent_id,
             owner_id=session.owner_id,

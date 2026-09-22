@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mimic42.core.onboarding import (
@@ -46,6 +46,15 @@ class DatabaseOnboardingRepository:
             if model is None:
                 raise OnboardingNotFoundError(onboarding_id)
             return _model_to_session(model)
+
+    async def delete(self, onboarding_id: UUID) -> None:
+        async with self._session_factory() as db_session:
+            await db_session.execute(
+                delete(AgentOnboardingSessionModel).where(
+                    AgentOnboardingSessionModel.id == onboarding_id
+                )
+            )
+            await db_session.commit()
 
 
 def _model_to_session(model: AgentOnboardingSessionModel) -> OnboardingSession:
