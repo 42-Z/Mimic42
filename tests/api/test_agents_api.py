@@ -334,6 +334,67 @@ async def test_rebind_flow_reuses_agent_session_and_keeps_agent_profile() -> Non
 
 
 @pytest.mark.asyncio
+async def test_rebind_start_reuses_stored_phone_without_payload() -> None:
+    owner_id = uuid4()
+    agent_id = uuid4()
+    store = InMemoryAgentStore()
+    repository = InMemoryOnboardingRepository()
+    await repository.save(
+        OnboardingSession(
+            onboarding_id=agent_id,
+            owner_id=owner_id,
+            api_id=12345,
+            api_hash_secret="old-hash",
+            phone_number="+79990000000",
+            authorization_status=TelegramLoginStatus.AUTHORIZED,
+            session_secret="old-session",
+            name="Mimic",
+            soul_prompt="Short replies",
+            completed_agent_id=agent_id,
+        )
+    )
+    onboarding_service = AgentOnboardingService(
+        repository=repository,
+        telegram_factory=FakeTelegramAuthClientFactory(FakeTelegramAccount()),
+        agent_store=store,
+    )
+    app = create_app(
+        manager=FakeAgentManager(),
+        onboarding_service=onboarding_service,
+        agent_store=store,
+        auth_verifier=FakeAuthVerifier(owner_id),
+        settings=Settings(telegram_api_id=777, telegram_api_hash="deployment-hash"),
+    )
+    await store.create_from_onboarding(
+        OnboardingSession(
+            onboarding_id=agent_id,
+            owner_id=owner_id,
+            api_id=12345,
+            api_hash_secret="old-hash",
+            phone_number="+79990000000",
+            authorization_status=TelegramLoginStatus.AUTHORIZED,
+            session_secret="old-session",
+            name="Mimic",
+            soul_prompt="Short replies",
+        )
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        response = await client.post(
+            f"/api/v1/agents/{agent_id}/telegram/rebind",
+            headers=AUTH_HEADERS,
+            json={},
+        )
+
+    assert response.status_code == 201
+    assert response.json()["authorization_status"] == "code_requested"
+    assert response.json()["phone_number"] == "+79990000000"
+
+
+@pytest.mark.asyncio
 async def test_rebind_confirm_rejects_foreign_onboarding_session() -> None:
     owner_id = uuid4()
     foreign_owner = uuid4()

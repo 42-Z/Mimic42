@@ -89,6 +89,98 @@ async def test_request_code_rejects_cross_owner_onboarding_id() -> None:
 
 
 @pytest.mark.asyncio
+async def test_start_rebind_reuses_stored_phone_when_not_provided() -> None:
+    owner_id = uuid4()
+    agent_id = uuid4()
+    account = FakeTelegramAccount()
+    repository = InMemoryOnboardingRepository()
+    await repository.save(
+        OnboardingSession(
+            onboarding_id=agent_id,
+            owner_id=owner_id,
+            api_id=111,
+            api_hash_secret="old-hash",
+            phone_number="+79990000000",
+            authorization_status=TelegramLoginStatus.AUTHORIZED,
+            session_secret="old-session",
+            name="Mimic",
+            soul_prompt="Short calm replies",
+            completed_agent_id=agent_id,
+        )
+    )
+    service = AgentOnboardingService(
+        repository=repository,
+        telegram_factory=FakeTelegramAuthClientFactory(account),
+    )
+
+    status = await service.start_rebind(
+        agent_id,
+        TelegramCredentials(
+            owner_id=owner_id,
+            api_id=12345,
+            api_hash="api-hash",
+            phone_number=None,
+        ),
+    )
+
+    assert status.authorization_status is TelegramLoginStatus.CODE_REQUESTED
+    assert status.phone_number == "+79990000000"
+    assert account.phone == "+79990000000"
+
+
+@pytest.mark.asyncio
+async def test_start_rebind_requires_phone_without_stored_session() -> None:
+    owner_id = uuid4()
+    agent_id = uuid4()
+    repository = InMemoryOnboardingRepository()
+    service = AgentOnboardingService(
+        repository=repository,
+        telegram_factory=_fake_telegram_factory(),
+    )
+
+    with pytest.raises(ValueError):
+        await service.start_rebind(
+            agent_id,
+            TelegramCredentials(
+                owner_id=owner_id,
+                api_id=12345,
+                api_hash="api-hash",
+                phone_number=None,
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_start_rebind_requires_phone_when_row_has_none() -> None:
+    owner_id = uuid4()
+    agent_id = uuid4()
+    repository = InMemoryOnboardingRepository()
+    await repository.save(
+        OnboardingSession(
+            onboarding_id=agent_id,
+            owner_id=owner_id,
+            authorization_status=TelegramLoginStatus.NOT_STARTED,
+            completed_agent_id=agent_id,
+        )
+    )
+    service = AgentOnboardingService(
+        repository=repository,
+        telegram_factory=_fake_telegram_factory(),
+    )
+
+    with pytest.raises(ValueError):
+        await service.start_rebind(
+            agent_id,
+            TelegramCredentials(
+                owner_id=owner_id,
+                api_id=12345,
+                api_hash="api-hash",
+                phone_number=None,
+            ),
+        )
+
+
+@pytest.mark.asyncio
 async def test_rebind_to_agent_updates_store_and_keeps_session() -> None:
     owner_id = uuid4()
     agent_id = uuid4()

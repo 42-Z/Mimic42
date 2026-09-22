@@ -1900,7 +1900,7 @@ async def _extract_incoming_peer(event: object) -> str:
     peer_id = getattr(event, "peer_id", None)
     if peer_id is not None:
         return str(peer_id)
-    raise ValueError("Incoming Telegram event does not include a peer")
+    raise ValueError("Входящее событие Telegram не содержит получателя")
 
 
 def _extract_incoming_message_id(event: object) -> int | None:

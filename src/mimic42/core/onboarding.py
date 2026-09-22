@@ -49,7 +49,7 @@ class TelegramCredentials(BaseModel):
     owner_id: UUID
     api_id: int = Field(gt=0)
     api_hash: str = Field(min_length=1)
-    phone_number: str = Field(min_length=5)
+    phone_number: str | None = Field(default=None, min_length=5)
     onboarding_id: UUID | None = Field(default=None)
 
 
@@ -130,13 +130,13 @@ class InMemoryOnboardingRepository:
 
 class OnboardingNotFoundError(KeyError):
     def __init__(self, onboarding_id: UUID) -> None:
-        super().__init__(f"Onboarding session {onboarding_id} does not exist")
+        super().__init__("Сессия онбординга не найдена")
         self.onboarding_id = onboarding_id
 
 
 class OnboardingOwnershipError(PermissionError):
     def __init__(self, onboarding_id: UUID) -> None:
-        super().__init__(f"Onboarding session {onboarding_id} belongs to another user")
+        super().__init__("Сессия онбординга принадлежит другому пользователю")
         self.onboarding_id = onboarding_id
 
 
@@ -195,6 +195,9 @@ class AgentOnboardingService:
         onboarding_id: UUID | None = None,
         completed_agent_id: UUID | None = None,
     ) -> OnboardingPublicStatus:
+        phone_number = credentials.phone_number
+        if phone_number is None:
+            raise ValueError("Не указан номер телефона")
         if onboarding_id is not None:
             existing = await self._repository.get(onboarding_id)
             if existing.owner_id != credentials.owner_id:
@@ -217,7 +220,7 @@ class AgentOnboardingService:
         )
         await client.connect()
         try:
-            sent_code = await client.send_code_request(credentials.phone_number)
+            sent_code = await client.send_code_request(phone_number)
             session_string = client.save_session()
         finally:
             await client.disconnect()
@@ -228,7 +231,7 @@ class AgentOnboardingService:
             owner_id=credentials.owner_id,
             api_id=credentials.api_id,
             api_hash_secret=self._cipher.encrypt(credentials.api_hash),
-            phone_number=credentials.phone_number,
+            phone_number=phone_number,
             authorization_status=TelegramLoginStatus.CODE_REQUESTED,
             phone_code_hash_secret=self._cipher.encrypt(phone_code_hash),
             session_secret=self._cipher.encrypt(session_string),
@@ -251,6 +254,9 @@ class AgentOnboardingService:
         повторная перепривязка не плодит черновики. Для агентов без такой
         строки новая сразу помечается completed_agent_id в той же записи и
         потому никогда не видна мастеру.
+
+        Номер телефона обязателен только для агента без сохранённой строки: у
+        остальных он берётся из неё, чтобы пользователь не вводил его заново.
         """
         try:
             existing = await self._repository.get_for_agent(agent_id)
@@ -263,8 +269,12 @@ class AgentOnboardingService:
             # не стала видимой мастеру онбординга.
             existing.completed_agent_id = agent_id
             await self._repository.save(existing)
+        # Номер уже известен: пользователь не должен вводить его заново.
+        phone_number = credentials.phone_number or existing.phone_number
+        if phone_number is None:
+            raise ValueError("Укажите номер телефона для перепривязки")
         return await self.request_telegram_code(
-            credentials,
+            credentials.model_copy(update={"phone_number": phone_number}),
             onboarding_id=existing.onboarding_id,
         )
 
@@ -408,7 +418,7 @@ def _read_attr(value: object, name: str) -> str:
     else:
         result = getattr(value, name, None)
     if not isinstance(result, str) or not result:
-        raise ValueError(f"Telegram response does not include {name}")
+        raise ValueError("Telegram не вернул нужные данные. Попробуйте ещё раз.")
     return result
 
 

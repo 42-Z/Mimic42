@@ -56,6 +56,13 @@ async def test_rebind_telegram_session_updates_session_and_keeps_profile(
 
     store = DatabaseAgentStore(db_session_factory)
     await store.create_from_onboarding(_make_session(owner_id, agent_id, "Mimic"))
+    async with db_session_factory() as session:
+        await session.execute(
+            update(AgentModel)
+            .where(AgentModel.id == agent_id)
+            .values(settings={"model": "custom/model"})
+        )
+        await session.commit()
     await store.rebind_telegram_session(agent_id, _make_rebind_session(owner_id))
 
     config = await store.get_runtime_config(agent_id)
@@ -63,6 +70,8 @@ async def test_rebind_telegram_session_updates_session_and_keeps_profile(
     assert config.telegram_api_hash == "new-encrypted-hash"
     assert config.telegram_session_string == "new-encrypted-session"
     assert config.soul_prompt == "Soul"
+    # Настройки агента (выбранная модель) переживают перепривязку.
+    assert config.llm_model == "custom/model"
     agents = await store.list_agents(owner_id=owner_id)
     assert [agent.name for agent in agents if agent.agent_id == agent_id] == ["Mimic"]
 

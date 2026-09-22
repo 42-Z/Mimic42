@@ -138,7 +138,7 @@ class TelegramLoginRequest(BaseModel):
 
 
 class TelegramRebindRequest(BaseModel):
-    phone_number: str = Field(min_length=5)
+    phone_number: str | None = Field(default=None, min_length=5)
 
 
 class TelegramRebindConfirmRequest(BaseModel):
@@ -213,9 +213,10 @@ def _telegram_login_http_error(exc: Exception) -> HTTPException | None:
             detail=f"Слишком много попыток. Telegram просит подождать {exc.seconds} сек.",
         )
     if isinstance(exc, RPCError):
+        logger.warning("Telegram RPC error: %s", exc.message)
         return HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Ошибка Telegram: {exc.message}",
+            detail="Telegram отклонил запрос. Проверьте данные и попробуйте снова.",
         )
     if isinstance(exc, ValueError):
         return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
@@ -413,7 +414,7 @@ def create_app(
         except OnboardingOwnershipError as exc:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Onboarding session belongs to another user",
+                detail="Сессия онбординга принадлежит другому пользователю",
             ) from exc
         except Exception as exc:
             translated = _telegram_login_http_error(exc)
@@ -482,9 +483,10 @@ def create_app(
                     detail="Неверный пароль двухфакторной аутентификации (2FA).",
                 ) from exc
             if isinstance(exc, RPCError):
+                logger.warning("Telegram RPC error: %s", exc.message)
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Ошибка Telegram: {exc.message}",
+                    detail="Telegram отклонил запрос. Проверьте данные и попробуйте снова.",
                 ) from exc
             raise exc
 
@@ -965,7 +967,7 @@ def create_app(
             )
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Memory service unavailable",
+                detail="Сервис памяти недоступен",
             ) from None
         owned_ids = {
             str(item.get("id"))
@@ -975,7 +977,7 @@ def create_app(
         if not owned_ids or memory_id not in owned_ids:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Memory {memory_id} does not exist",
+                detail="Воспоминание не найдено",
             )
 
         try:
@@ -992,14 +994,14 @@ def create_app(
 def _not_found(agent_id: UUID) -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
-        detail=f"Agent {agent_id} does not exist",
+        detail="Агент не найден",
     )
 
 
 def _onboarding_not_found(onboarding_id: UUID) -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
-        detail=f"Onboarding session {onboarding_id} does not exist",
+        detail="Сессия онбординга не найдена",
     )
 
 
@@ -1023,7 +1025,7 @@ def _ensure_owner(owner_id: UUID, user_id: UUID) -> None:
     if owner_id != user_id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Agent does not belong to the authenticated user",
+            detail="Агент не принадлежит этому пользователю",
         )
 
 
@@ -1032,7 +1034,7 @@ async def _ensure_agent_owner(store: AgentStore, *, agent_id: UUID, user_id: UUI
     if not any(agent.agent_id == agent_id for agent in owned_agents):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Agent {agent_id} does not exist",
+            detail="Агент не найден",
         )
 
 
