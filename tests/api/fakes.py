@@ -60,7 +60,9 @@ class FakeAgentManager:
 
     async def stop_agent(self, agent_id: UUID) -> None:
         self.stopped.append(agent_id)
-        self.created[agent_id].state = AgentRuntimeState.STOPPED
+        record = self.created.get(agent_id)
+        if record is not None:
+            record.state = AgentRuntimeState.STOPPED
 
     async def remove_agent(self, agent_id: UUID) -> None:
         self.removed.append(agent_id)

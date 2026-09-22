@@ -137,6 +137,14 @@ class TelegramLoginRequest(BaseModel):
     onboarding_id: UUID | None = None
 
 
+class TelegramRebindRequest(BaseModel):
+    phone_number: str = Field(min_length=5)
+
+
+class TelegramRebindConfirmRequest(BaseModel):
+    onboarding_id: UUID
+
+
 def _resolve_telegram_app(
     settings: Settings,
     api_id: int | None,
@@ -154,6 +162,64 @@ def _resolve_telegram_app(
             ),
         )
     return resolved_id, resolved_hash
+
+
+def _telegram_login_http_error(exc: Exception) -> HTTPException | None:
+    """Перевести ошибку Telegram-логина в понятный пользователю ответ.
+
+    Возвращает None для незнакомых исключений — эндпоинт пробрасывает их как есть.
+    """
+    from telethon.errors import (
+        ApiIdInvalidError,
+        ApiIdPublishedFloodError,
+        FloodWaitError,
+        PhoneNumberBannedError,
+        PhoneNumberInvalidError,
+        RPCError,
+    )
+
+    if isinstance(exc, ApiIdInvalidError):
+        return HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Telegram отклонил приложение сервера: "
+                "неверная комбинация TELEGRAM_API_ID и TELEGRAM_API_HASH."
+            ),
+        )
+    if isinstance(exc, ApiIdPublishedFloodError):
+        return HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "Telegram заблокировал приложение сервера как опубликованное. "
+                "Замените TELEGRAM_API_ID и TELEGRAM_API_HASH."
+            ),
+        )
+    if isinstance(exc, PhoneNumberBannedError):
+        return HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Этот номер заблокирован в Telegram.",
+        )
+    if isinstance(exc, PhoneNumberInvalidError):
+        return HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Неверный формат номера телефона. "
+                "Используйте международный формат (например, +79991234567)."
+            ),
+        )
+    if isinstance(exc, FloodWaitError):
+        return HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Слишком много попыток. Telegram просит подождать {exc.seconds} сек.",
+        )
+    if isinstance(exc, RPCError):
+        return HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Ошибка Telegram: {exc.message}",
+        )
+    if isinstance(exc, ValueError):
+        return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    return None
 
 
 def create_app(
@@ -350,58 +416,9 @@ def create_app(
                 detail="Onboarding session belongs to another user",
             ) from exc
         except Exception as exc:
-            from telethon.errors import (
-                ApiIdInvalidError,
-                ApiIdPublishedFloodError,
-                FloodWaitError,
-                PhoneNumberBannedError,
-                PhoneNumberInvalidError,
-                RPCError,
-            )
-
-            if isinstance(exc, ApiIdInvalidError):
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=(
-                        "Telegram отклонил приложение сервера: "
-                        "неверная комбинация TELEGRAM_API_ID и TELEGRAM_API_HASH."
-                    ),
-                ) from exc
-            if isinstance(exc, ApiIdPublishedFloodError):
-                raise HTTPException(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail=(
-                        "Telegram заблокировал приложение сервера как опубликованное. "
-                        "Замените TELEGRAM_API_ID и TELEGRAM_API_HASH."
-                    ),
-                ) from exc
-            if isinstance(exc, PhoneNumberBannedError):
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Этот номер заблокирован в Telegram.",
-                ) from exc
-            if isinstance(exc, PhoneNumberInvalidError):
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=(
-                        "Неверный формат номера телефона. "
-                        "Используйте международный формат (например, +79991234567)."
-                    ),
-                ) from exc
-            if isinstance(exc, FloodWaitError):
-                raise HTTPException(
-                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                    detail=f"Слишком много попыток. Telegram просит подождать {exc.seconds} сек.",
-                ) from exc
-            if isinstance(exc, RPCError):
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Ошибка Telegram: {exc.message}",
-                ) from exc
-            if isinstance(exc, ValueError):
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
-                ) from exc
+            translated = _telegram_login_http_error(exc)
+            if translated is not None:
+                raise translated from exc
             raise exc
 
     @app.post(
@@ -642,6 +659,96 @@ def create_app(
                 detail=str(exc),
             ) from exc
         return await _get_agent_manager(app).get_agent_status(payload.agent_id)
+
+    @app.post(
+        "/api/v1/agents/{agent_id}/telegram/rebind",
+        response_model=OnboardingPublicStatus,
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def rebind_agent_telegram(
+        agent_id: UUID,
+        payload: TelegramRebindRequest,
+        current_user: CurrentUserDep,
+    ) -> OnboardingPublicStatus:
+        """Начать перепривязку: запросить код Telegram для существующего агента.
+
+        Онбординг-сессия создаётся новая: код/2FA идут по стандартным
+        onboarding-эндпоинтам, а на confirm сессия переносится на агента.
+        """
+        try:
+            await _ensure_runtime_owner(app, agent_id=agent_id, user_id=current_user.user_id)
+        except AgentNotFoundError as exc:
+            raise _not_found(exc.agent_id) from exc
+        api_id, api_hash = _resolve_telegram_app(app_settings, None, None)
+        credentials = TelegramCredentials(
+            owner_id=current_user.user_id,
+            api_id=api_id,
+            api_hash=api_hash,
+            phone_number=payload.phone_number,
+        )
+        try:
+            return await _get_onboarding_service(app).request_telegram_code(credentials)
+        except Exception as exc:
+            translated = _telegram_login_http_error(exc)
+            if translated is not None:
+                raise translated from exc
+            raise exc
+
+    @app.post(
+        "/api/v1/agents/{agent_id}/telegram/rebind/confirm",
+        response_model=AgentStatus,
+    )
+    async def confirm_agent_telegram_rebind(
+        agent_id: UUID,
+        payload: TelegramRebindConfirmRequest,
+        current_user: CurrentUserDep,
+    ) -> AgentStatus:
+        """Завершить перепривязку: применить новую сессию к существующему агенту.
+
+        Имя, характер, память и настройки не меняются. Рантайм пересобирается
+        из свежего конфига: старый держал сломанную сессию в памяти.
+        """
+        try:
+            await _ensure_runtime_owner(app, agent_id=agent_id, user_id=current_user.user_id)
+        except AgentNotFoundError as exc:
+            raise _not_found(exc.agent_id) from exc
+        try:
+            status_result = await _get_onboarding_service(app).get_status(payload.onboarding_id)
+        except OnboardingNotFoundError as exc:
+            raise _onboarding_not_found(payload.onboarding_id) from exc
+        # Единый 404 — не раскрываем существование чужой сессии.
+        try:
+            _ensure_owner(status_result.owner_id, current_user.user_id)
+        except HTTPException:
+            raise _onboarding_not_found(payload.onboarding_id) from None
+        try:
+            result = await _get_onboarding_service(app).rebind_to_agent(
+                payload.onboarding_id,
+                agent_id,
+                owner_id=current_user.user_id,
+            )
+        except OnboardingOwnershipError as exc:
+            raise _onboarding_not_found(payload.onboarding_id) from exc
+        except TelegramAuthorizationIncompleteError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Авторизация Telegram не завершена. Введите код подтверждения.",
+            ) from exc
+        manager = _get_agent_manager(app)
+        # Останавливаем до пересборки: reload_agent перезапускает RUNNING-агента,
+        # а по решению из issue агент остаётся остановленным.
+        try:
+            await manager.stop_agent(agent_id)
+        except Exception:
+            logger.exception("Failed to stop agent %s before rebind reload", agent_id)
+        try:
+            await manager.reload_agent(agent_id)
+        except Exception:
+            # Перепривязка уже применена в базе; reload_agent вынимает старый
+            # рантайм из реестра до close, так что следующий start соберётся
+            # из свежего конфига.
+            logger.exception("Failed to reload agent %s after rebind", agent_id)
+        return result
 
     @app.get("/api/v1/agents/{agent_id}", response_model=AgentStatus)
     async def get_agent(
