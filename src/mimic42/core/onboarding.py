@@ -49,7 +49,7 @@ class TelegramCredentials(BaseModel):
     owner_id: UUID
     api_id: int = Field(gt=0)
     api_hash: str = Field(min_length=1)
-    phone_number: str | None = Field(default=None, min_length=5)
+    phone_number: str = Field(min_length=5)
     onboarding_id: UUID | None = Field(default=None)
 
 
@@ -196,8 +196,6 @@ class AgentOnboardingService:
         completed_agent_id: UUID | None = None,
     ) -> OnboardingPublicStatus:
         phone_number = credentials.phone_number
-        if phone_number is None:
-            raise ValueError("Не указан номер телефона")
         if onboarding_id is not None:
             existing = await self._repository.get(onboarding_id)
             if existing.owner_id != credentials.owner_id:
@@ -242,41 +240,36 @@ class AgentOnboardingService:
         await self._repository.save(session)
         return _public_status(session)
 
-    async def start_rebind(
-        self,
-        agent_id: UUID,
-        credentials: TelegramCredentials,
-    ) -> OnboardingPublicStatus:
-        """Начать перепривязку Telegram к существующему агенту.
+    async def start_rebind(self, agent_id: UUID, *, owner_id: UUID) -> OnboardingPublicStatus:
+        """Начать повторный вход того же Telegram-аккаунта.
 
-        Переиспользуется онбординг-строка агента (строка мастера с
-        completed_agent_id == agent_id): мастер онбординга её не видит, а
-        повторная перепривязка не плодит черновики. Для агентов без такой
-        строки новая сразу помечается completed_agent_id в той же записи и
-        потому никогда не видна мастеру.
-
-        Номер телефона обязателен только для агента без сохранённой строки: у
-        остальных он берётся из неё, чтобы пользователь не вводил его заново.
+        Данные агента не меняются: номер и Telegram-приложение берутся из его
+        сохранённой строки, новой сессии нужен только код подтверждения.
         """
         try:
             existing = await self._repository.get_for_agent(agent_id)
         except OnboardingNotFoundError:
-            return await self.request_telegram_code(credentials, completed_agent_id=agent_id)
-        if existing.owner_id != credentials.owner_id:
+            raise ValueError(
+                "У агента нет сохранённой Telegram-сессии — перепривязка недоступна"
+            ) from None
+        if existing.owner_id != owner_id:
             raise OnboardingOwnershipError(existing.onboarding_id)
         if existing.completed_agent_id is None:
-            # Строка нашлась по id, но без метки: доставляем метку, чтобы строка
-            # не стала видимой мастеру онбординга.
             existing.completed_agent_id = agent_id
             await self._repository.save(existing)
-        # Номер уже известен: пользователь не должен вводить его заново.
-        phone_number = credentials.phone_number or existing.phone_number
-        if phone_number is None:
-            raise ValueError("Укажите номер телефона для перепривязки")
-        return await self.request_telegram_code(
-            credentials.model_copy(update={"phone_number": phone_number}),
-            onboarding_id=existing.onboarding_id,
+        if (
+            existing.phone_number is None
+            or existing.api_id is None
+            or existing.api_hash_secret is None
+        ):
+            raise ValueError("У агента нет данных Telegram-сессии — перепривязка недоступна")
+        credentials = TelegramCredentials(
+            owner_id=owner_id,
+            api_id=existing.api_id,
+            api_hash=self._cipher.decrypt(existing.api_hash_secret),
+            phone_number=existing.phone_number,
         )
+        return await self.request_telegram_code(credentials, onboarding_id=existing.onboarding_id)
 
     async def verify_telegram_code(
         self,

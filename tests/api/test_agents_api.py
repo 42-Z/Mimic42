@@ -289,7 +289,6 @@ async def test_rebind_flow_reuses_agent_session_and_keeps_agent_profile() -> Non
         start_response = await client.post(
             f"/api/v1/agents/{agent_id}/telegram/rebind",
             headers=AUTH_HEADERS,
-            json={"phone_number": "+79990000000"},
         )
         assert start_response.status_code == 201
         assert start_response.json()["onboarding_id"] == str(agent_id)
@@ -322,8 +321,9 @@ async def test_rebind_flow_reuses_agent_session_and_keeps_agent_profile() -> Non
     assert manager.reloaded == [agent_id]
 
     config = await store.get_runtime_config(agent_id)
-    assert config.telegram_api_id == 777
-    assert config.telegram_api_hash == "deployment-hash"
+    # Номер и приложение агента не меняются — обновляется только сессия.
+    assert config.telegram_api_id == 12345
+    assert config.telegram_api_hash == "old-hash"
     assert config.telegram_session_string == "fake-session:+79990000000"
     assert config.name == "Mimic"
     assert config.soul_prompt == "Short replies"
@@ -386,7 +386,6 @@ async def test_rebind_start_reuses_stored_phone_without_payload() -> None:
         response = await client.post(
             f"/api/v1/agents/{agent_id}/telegram/rebind",
             headers=AUTH_HEADERS,
-            json={},
         )
 
     assert response.status_code == 201
@@ -501,7 +500,6 @@ async def test_rebind_confirm_requires_completed_authorization() -> None:
         start_response = await client.post(
             f"/api/v1/agents/{agent_id}/telegram/rebind",
             headers=AUTH_HEADERS,
-            json={"phone_number": "+79990000000"},
         )
         assert start_response.status_code == 201
         assert start_response.json()["onboarding_id"] == str(agent_id)
@@ -584,7 +582,6 @@ async def test_rebind_start_returns_404_for_unknown_agent() -> None:
         response = await client.post(
             f"/api/v1/agents/{uuid4()}/telegram/rebind",
             headers=AUTH_HEADERS,
-            json={"phone_number": "+79990000000"},
         )
 
     assert response.status_code == 404
@@ -608,7 +605,6 @@ async def test_rebind_requires_agent_store() -> None:
         start_response = await client.post(
             f"/api/v1/agents/{agent_id}/telegram/rebind",
             headers=AUTH_HEADERS,
-            json={"phone_number": "+79990000000"},
         )
         confirm_response = await client.post(
             f"/api/v1/agents/{agent_id}/telegram/rebind/confirm",
@@ -681,7 +677,6 @@ async def test_rebind_confirm_succeeds_when_runtime_stop_or_reload_fails(
         start_response = await client.post(
             f"/api/v1/agents/{agent_id}/telegram/rebind",
             headers=AUTH_HEADERS,
-            json={"phone_number": "+79990000000"},
         )
         assert start_response.status_code == 201
 

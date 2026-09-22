@@ -46,8 +46,9 @@ async def test_rebind_updates_session_and_keeps_profile() -> None:
     )
 
     config = await store.get_runtime_config(agent_id)
-    assert config.telegram_api_id == 777
-    assert config.telegram_api_hash == "new-encrypted-hash"
+    # Обновляется только строка сессии: номер/приложение остаются прежними.
+    assert config.telegram_api_id == 12345
+    assert config.telegram_api_hash == "old-encrypted-hash"
     assert config.telegram_session_string == "new-encrypted-session"
     assert config.name == "Mimic"
     assert config.soul_prompt == "Soul"

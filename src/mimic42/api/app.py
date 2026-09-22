@@ -137,10 +137,6 @@ class TelegramLoginRequest(BaseModel):
     onboarding_id: UUID | None = None
 
 
-class TelegramRebindRequest(BaseModel):
-    phone_number: str | None = Field(default=None, min_length=5)
-
-
 class TelegramRebindConfirmRequest(BaseModel):
     onboarding_id: UUID
 
@@ -669,15 +665,14 @@ def create_app(
     )
     async def rebind_agent_telegram(
         agent_id: UUID,
-        payload: TelegramRebindRequest,
         current_user: CurrentUserDep,
     ) -> OnboardingPublicStatus:
-        """Начать перепривязку: запросить код Telegram для существующего агента.
+        """Начать перепривязку: запросить код Telegram для того же аккаунта.
 
+        Номер и Telegram-приложение берутся из сохранённой строки агента:
+        данные агента не меняются, новой сессии нужен только код.
         Онбординг-сессия агента переиспользуется: код/2FA идут по стандартным
         onboarding-эндпоинтам, а на confirm сессия переносится на агента.
-        Используется серверное Telegram-приложение: api_id/hash агента
-        заменяются деплойментными.
         """
         if _get_agent_store(app) is None:
             raise HTTPException(
@@ -688,15 +683,10 @@ def create_app(
             await _ensure_runtime_owner(app, agent_id=agent_id, user_id=current_user.user_id)
         except AgentNotFoundError as exc:
             raise _not_found(exc.agent_id) from exc
-        api_id, api_hash = _resolve_telegram_app(app_settings, None, None)
-        credentials = TelegramCredentials(
-            owner_id=current_user.user_id,
-            api_id=api_id,
-            api_hash=api_hash,
-            phone_number=payload.phone_number,
-        )
         try:
-            return await _get_onboarding_service(app).start_rebind(agent_id, credentials)
+            return await _get_onboarding_service(app).start_rebind(
+                agent_id, owner_id=current_user.user_id
+            )
         except OnboardingOwnershipError as exc:
             raise _not_found(agent_id) from exc
         except Exception as exc:

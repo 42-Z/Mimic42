@@ -98,11 +98,11 @@ class DatabaseAgentStore:
             return _agent_record(agent)
 
     async def rebind_telegram_session(self, agent_id: UUID, session: OnboardingSession) -> None:
-        """Заменить Telegram-сессию агента после перепривязки.
+        """Обновляется только авторизация (auth key).
 
-        Профиль (имя, характер, настройки, память) не трогается: обновляется
-        только строка telegram_sessions. Строковая блокировка защищает от
-        гонки с параллельным финалом онбординга того же агента.
+        Номер, приложение и остальные данные агента не меняются. Строковая
+        блокировка защищает от гонки с параллельным финалом онбординга того же
+        агента.
         """
         if (
             session.api_id is None
@@ -119,9 +119,6 @@ class DatabaseAgentStore:
             )
             if telegram_session is None:
                 raise KeyError(f"Agent {agent_id} does not have a telegram session")
-            telegram_session.phone_number = session.phone_number
-            telegram_session.api_id = session.api_id
-            telegram_session.api_hash_ciphertext = session.api_hash_secret
             telegram_session.session_ciphertext = session.session_secret
             telegram_session.authorization_status = "authorized"
             telegram_session.last_authorized_at = _now()

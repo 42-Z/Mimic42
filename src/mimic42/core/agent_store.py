@@ -181,11 +181,10 @@ class InMemoryAgentStore:
         return record
 
     async def rebind_telegram_session(self, agent_id: UUID, session: OnboardingSession) -> None:
-        """Заменить Telegram-сессию агента, не трогая профиль.
+        """Обновить только Telegram-сессию агента, не трогая профиль.
 
-        Поля онбординга хранятся зашифрованными и кладутся как есть — так же,
-        как их кладёт create_from_onboarding. Проверка владельца агента —
-        ответственность вызывающего слоя.
+        Меняется лишь строка сессии (auth key): номер и приложение остаются
+        прежними. Проверка владельца агента — ответственность вызывающего слоя.
         """
         if (
             session.api_id is None
@@ -197,11 +196,7 @@ class InMemoryAgentStore:
         if config is None:
             raise KeyError(f"Agent {agent_id} does not have a runtime config")
         self._configs[agent_id] = config.model_copy(
-            update={
-                "telegram_api_id": session.api_id,
-                "telegram_api_hash": session.api_hash_secret,
-                "telegram_session_string": session.session_secret,
-            }
+            update={"telegram_session_string": session.session_secret}
         )
 
     async def get_runtime_config(self, agent_id: UUID) -> AgentRuntimeConfig:

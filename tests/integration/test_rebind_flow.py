@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from uuid import uuid4
 
+import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mimic42.core.agent_runtime import AgentRuntimeState
@@ -10,10 +12,10 @@ from mimic42.core.onboarding import (
     AgentProfileInput,
     OnboardingSession,
     TelegramCodeVerification,
-    TelegramCredentials,
     TelegramLoginStatus,
 )
 from mimic42.integrations.database_agent_store import DatabaseAgentStore
+from mimic42.integrations.database_models import TelegramSessionModel
 from mimic42.integrations.database_onboarding import DatabaseOnboardingRepository
 from mimic42.testing.slots import Slot
 from mimic42.testing.telegram import FakeTelegramAccount, FakeTelegramAuthClientFactory
@@ -50,15 +52,7 @@ async def test_rebind_reuses_wizard_row_and_does_not_conflict_with_unique_marker
     await service.finalize_agent(agent_id, AgentProfileInput(name="Mimic", soul_prompt="Soul"))
 
     # Перепривязка переиспользует строку мастера — UNIQUE-конфликта нет
-    status = await service.start_rebind(
-        agent_id,
-        TelegramCredentials(
-            owner_id=owner_id,
-            api_id=777,
-            api_hash="new-hash",
-            phone_number="+79990000001",
-        ),
-    )
+    status = await service.start_rebind(agent_id, owner_id=owner_id)
     assert status.onboarding_id == agent_id
     assert status.authorization_status is TelegramLoginStatus.CODE_REQUESTED
 
@@ -69,8 +63,8 @@ async def test_rebind_reuses_wizard_row_and_does_not_conflict_with_unique_marker
     assert result.state is AgentRuntimeState.STOPPED
 
     config = await store.get_runtime_config(agent_id)
-    assert config.telegram_api_id == 777
-    assert config.telegram_session_string == "fake-session:+79990000001"
+    assert config.telegram_api_id == 12345
+    assert config.telegram_session_string == "fake-session:+79990000000"
     assert config.name == "Mimic"
     assert config.soul_prompt == "Soul"
 
@@ -78,9 +72,19 @@ async def test_rebind_reuses_wizard_row_and_does_not_conflict_with_unique_marker
     wizard_row = await repository.get(agent_id)
     assert wizard_row.completed_agent_id == agent_id
     assert wizard_row.authorization_status is TelegramLoginStatus.AUTHORIZED
+    assert wizard_row.phone_number == "+79990000000"
+
+    # Номер в telegram_sessions тоже не подменился новой сессией.
+    async with db_session_factory() as db_session:
+        telegram_row = await db_session.scalar(
+            select(TelegramSessionModel).where(TelegramSessionModel.agent_id == agent_id)
+        )
+    assert telegram_row is not None
+    assert telegram_row.phone_number == "+79990000000"
+    assert telegram_row.api_id == 12345
 
 
-async def test_start_rebind_hides_new_row_for_agent_without_onboarding_session(
+async def test_start_rebind_without_onboarding_row_raises(
     db_session_factory: async_sessionmaker[AsyncSession],
     clean_slot: Slot,
 ) -> None:
@@ -94,7 +98,8 @@ async def test_start_rebind_hides_new_row_for_agent_without_onboarding_session(
         agent_store=store,
     )
 
-    # Агент создан через API: онбординг-строки у него нет
+    # Агент создан через API: онбординг-строки у него нет, поэтому номер и
+    # приложение взять неоткуда — перепривязка недоступна.
     await store.create_from_onboarding(
         OnboardingSession(
             onboarding_id=agent_id,
@@ -108,20 +113,6 @@ async def test_start_rebind_hides_new_row_for_agent_without_onboarding_session(
             soul_prompt="Soul",
         )
     )
-    credentials = TelegramCredentials(
-        owner_id=owner_id,
-        api_id=777,
-        api_hash="new-hash",
-        phone_number="+79990000001",
-    )
 
-    first = await service.start_rebind(agent_id, credentials)
-
-    assert first.onboarding_id != agent_id
-    row = await repository.get(first.onboarding_id)
-    assert row.completed_agent_id == agent_id
-
-    # Повторный старт переиспользует скрытую строку, а не заводит вторую
-    second = await service.start_rebind(agent_id, credentials)
-
-    assert second.onboarding_id == first.onboarding_id
+    with pytest.raises(ValueError):
+        await service.start_rebind(agent_id, owner_id=owner_id)

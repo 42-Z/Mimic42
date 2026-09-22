@@ -66,8 +66,9 @@ async def test_rebind_telegram_session_updates_session_and_keeps_profile(
     await store.rebind_telegram_session(agent_id, _make_rebind_session(owner_id))
 
     config = await store.get_runtime_config(agent_id)
-    assert config.telegram_api_id == 777
-    assert config.telegram_api_hash == "new-encrypted-hash"
+    # Номер и приложение агента не меняются — обновляется только сессия.
+    assert config.telegram_api_id == 12345
+    assert config.telegram_api_hash == "encrypted-hash"
     assert config.telegram_session_string == "new-encrypted-session"
     assert config.soul_prompt == "Soul"
     # Настройки агента (выбранная модель) переживают перепривязку.
@@ -80,7 +81,10 @@ async def test_rebind_telegram_session_updates_session_and_keeps_profile(
             select(TelegramSessionModel).where(TelegramSessionModel.agent_id == agent_id)
         )
     assert row is not None
-    assert row.phone_number == "+79990000001"
+    assert row.session_name == agent_id.hex
+    assert row.phone_number == "+79990000000"
+    assert row.api_id == 12345
+    assert row.api_hash_ciphertext == "encrypted-hash"
     assert row.authorization_status == "authorized"
     assert row.last_authorized_at is not None
     assert row.last_error is None
