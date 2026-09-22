@@ -122,7 +122,7 @@ class AgentManager:
     def _register_locked(self, config: AgentRuntimeConfig) -> MimicAgentRuntime:
         """Собрать и положить рантайм в реестр. Вызывать только под ``_lock``."""
         if config.agent_id in self._agents:
-            raise ValueError(f"Agent {config.agent_id} already exists")
+            raise ValueError("Агент с этим ID уже существует")
         runtime = self._build_runtime_for(config)
         self._agents[config.agent_id] = runtime
         self._removed.discard(config.agent_id)

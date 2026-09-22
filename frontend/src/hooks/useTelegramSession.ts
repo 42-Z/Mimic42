@@ -182,7 +182,8 @@ export interface AgentDetails {
 }
 
 /**
- * Fetch Telegram phone numbers and last start times for several agents.
+ * Fetch Telegram phone numbers, session authorization status and last start
+ * times for several agents.
  */
 export function useAgentsDetails(agentIds: string[]) {
   const isValid = agentIds.length > 0;
