@@ -187,7 +187,11 @@ class InMemoryAgentStore:
         как их кладёт create_from_onboarding. Проверка владельца агента —
         ответственность вызывающего слоя.
         """
-        if session.api_id is None or session.api_hash_secret is None:
+        if (
+            session.api_id is None
+            or session.api_hash_secret is None
+            or session.session_secret is None
+        ):
             raise ValueError("Onboarding session is missing Telegram credentials")
         config = self._configs.get(agent_id)
         if config is None:

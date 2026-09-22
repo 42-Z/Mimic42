@@ -104,7 +104,11 @@ class DatabaseAgentStore:
         только строка telegram_sessions. Строковая блокировка защищает от
         гонки с параллельным финалом онбординга того же агента.
         """
-        if session.api_id is None or session.api_hash_secret is None:
+        if (
+            session.api_id is None
+            or session.api_hash_secret is None
+            or session.session_secret is None
+        ):
             raise ValueError("Onboarding session is missing Telegram credentials")
 
         async with self._session_factory() as db_session:

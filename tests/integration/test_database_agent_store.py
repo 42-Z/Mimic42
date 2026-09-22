@@ -62,6 +62,7 @@ async def test_rebind_telegram_session_updates_session_and_keeps_profile(
     assert config.telegram_api_id == 777
     assert config.telegram_api_hash == "new-encrypted-hash"
     assert config.telegram_session_string == "new-encrypted-session"
+    assert config.soul_prompt == "Soul"
     agents = await store.list_agents(owner_id=owner_id)
     assert [agent.name for agent in agents if agent.agent_id == agent_id] == ["Mimic"]
 
@@ -70,8 +71,73 @@ async def test_rebind_telegram_session_updates_session_and_keeps_profile(
             select(TelegramSessionModel).where(TelegramSessionModel.agent_id == agent_id)
         )
     assert row is not None
+    assert row.phone_number == "+79990000001"
     assert row.authorization_status == "authorized"
     assert row.last_authorized_at is not None
+    assert row.last_error is None
+
+
+async def test_rebind_telegram_session_clears_revoked_state(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    owner_id = clean_slot.persona("full").user_id
+    agent_id = uuid4()
+
+    store = DatabaseAgentStore(db_session_factory)
+    await store.create_from_onboarding(_make_session(owner_id, agent_id, "Mimic"))
+    async with db_session_factory() as session:
+        await session.execute(
+            update(TelegramSessionModel)
+            .where(TelegramSessionModel.agent_id == agent_id)
+            .values(
+                authorization_status="revoked",
+                last_error="Сессия Telegram не авторизована",
+            )
+        )
+        await session.commit()
+
+    await store.rebind_telegram_session(agent_id, _make_rebind_session(owner_id))
+
+    async with db_session_factory() as session:
+        row = await session.scalar(
+            select(TelegramSessionModel).where(TelegramSessionModel.agent_id == agent_id)
+        )
+    assert row is not None
+    assert row.authorization_status == "authorized"
+    assert row.last_error is None
+
+
+@pytest.mark.parametrize("missing_field", ["api_id", "api_hash_secret", "session_secret"])
+async def test_rebind_telegram_session_rejects_missing_credentials(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+    missing_field: str,
+) -> None:
+    owner_id = clean_slot.persona("full").user_id
+    agent_id = uuid4()
+
+    store = DatabaseAgentStore(db_session_factory)
+    await store.create_from_onboarding(_make_session(owner_id, agent_id, "Mimic"))
+
+    broken = _make_rebind_session(owner_id)
+    setattr(broken, missing_field, None)
+
+    with pytest.raises(ValueError):
+        await store.rebind_telegram_session(agent_id, broken)
+
+    config = await store.get_runtime_config(agent_id)
+    assert config.telegram_api_id == 12345
+    assert config.telegram_api_hash == "encrypted-hash"
+    assert config.telegram_session_string == "encrypted-session"
+
+    async with db_session_factory() as session:
+        row = await session.scalar(
+            select(TelegramSessionModel).where(TelegramSessionModel.agent_id == agent_id)
+        )
+    assert row is not None
+    assert row.phone_number == "+79990000000"
+    assert row.authorization_status == "authorized"
     assert row.last_error is None
 
 
