@@ -48,13 +48,16 @@ REVOKED_SESSION_MESSAGE = (
 def _is_dead_session_error(exc: BaseException) -> bool:
     """Мёртвая сессия: нужен повторный вход, рантайм сам не восстановится.
 
-    Telegram отдаёт это и как AuthKeyError (406, AUTH_KEY_DUPLICATED — обычная
+    Telegram отдаёт это как AuthKeyDuplicatedError (406 — обычная
     причина: одну сессию использовали с двух IP), и как UnauthorizedError
     (401: revoked/expired/unregistered/deactivated).
     """
-    from telethon.errors import AuthKeyError, UnauthorizedError
+    from telethon.errors import AuthKeyDuplicatedError, UnauthorizedError
 
-    return isinstance(exc, (TelegramAuthorizationRequired, AuthKeyError, UnauthorizedError))
+    return isinstance(
+        exc,
+        (TelegramAuthorizationRequired, AuthKeyDuplicatedError, UnauthorizedError),
+    )
 
 
 class AgentRuntimeState(StrEnum):

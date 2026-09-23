@@ -301,6 +301,13 @@ class AgentOnboardingService:
             api_hash=self._cipher.decrypt(existing.api_hash_secret),
             phone_number=existing.phone_number,
         )
+        # Старый AUTHORIZED нельзя оставлять пригодным для confirm, пока новый
+        # код ещё запрашивается. Если Telegram недоступен, повторная попытка
+        # начнёт flow заново, но применить прежнюю session string уже нельзя.
+        existing.authorization_status = TelegramLoginStatus.NOT_STARTED
+        existing.phone_code_hash_secret = None
+        existing.session_secret = None
+        await self._repository.save(existing)
         return await self.request_telegram_code(
             credentials,
             onboarding_id=existing.onboarding_id,

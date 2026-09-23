@@ -188,6 +188,27 @@ async def test_dead_session_error_on_connect_moves_runtime_to_error(
 
 
 @pytest.mark.asyncio
+async def test_update_app_error_is_not_rewritten_as_revoked_session() -> None:
+    error = errors.UpdateAppToLoginError(request=None)
+
+    class FailingConnectClient(FakeTelegramClient):
+        async def connect(self) -> None:
+            raise error
+
+    runtime = MimicAgentRuntime(
+        config=make_config(),
+        telegram_client=FailingConnectClient(),
+        langchain_agent=FakeLangChainAgent(),
+    )
+
+    with pytest.raises(errors.UpdateAppToLoginError) as caught:
+        await runtime.start()
+
+    assert caught.value is error
+    assert runtime.state is AgentRuntimeState.ERROR
+
+
+@pytest.mark.asyncio
 async def test_dead_session_on_send_stops_runtime_and_blocks_restart() -> None:
     class RevokedSendClient(FakeTelegramClient):
         async def send_message(self, entity: str, message: str, **kwargs: Any) -> object:

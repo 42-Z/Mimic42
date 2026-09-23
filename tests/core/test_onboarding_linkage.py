@@ -16,7 +16,11 @@ from mimic42.core.onboarding import (
     TelegramLoginStatus,
     TelegramRebindUnavailableError,
 )
-from mimic42.testing.telegram import FakeTelegramAccount, FakeTelegramAuthClientFactory
+from mimic42.testing.telegram import (
+    FakeTelegramAccount,
+    FakeTelegramAuthClient,
+    FakeTelegramAuthClientFactory,
+)
 
 
 def _fake_telegram_factory() -> FakeTelegramAuthClientFactory:
@@ -167,6 +171,54 @@ async def test_start_rebind_reuses_stored_account() -> None:
     assert session.soul_prompt == "Short calm replies"
     # Строка остаётся скрытой от мастера онбординга.
     assert session.completed_agent_id == agent_id
+
+
+@pytest.mark.asyncio
+async def test_start_rebind_invalidates_old_authorization_before_requesting_code() -> None:
+    owner_id = uuid4()
+    agent_id = uuid4()
+    repository = InMemoryOnboardingRepository()
+    await repository.save(
+        OnboardingSession(
+            onboarding_id=agent_id,
+            owner_id=owner_id,
+            api_id=111,
+            api_hash_secret="old-hash",
+            phone_number="+79990000000",
+            authorization_status=TelegramLoginStatus.AUTHORIZED,
+            phone_code_hash_secret="old-code-hash",
+            session_secret="old-session",
+            completed_agent_id=agent_id,
+        )
+    )
+
+    class FailingCodeClient(FakeTelegramAuthClient):
+        async def send_code_request(self, phone: str) -> object:
+            raise RuntimeError("Telegram unavailable")
+
+    class FailingCodeFactory(FakeTelegramAuthClientFactory):
+        def build(
+            self,
+            *,
+            api_id: int,
+            api_hash: str,
+            session_string: str | None = None,
+        ) -> FakeTelegramAuthClient:
+            return FailingCodeClient(FakeTelegramAccount())
+
+    service = AgentOnboardingService(
+        repository=repository,
+        telegram_factory=FailingCodeFactory(FakeTelegramAccount()),
+    )
+
+    with pytest.raises(RuntimeError, match="Telegram unavailable"):
+        await service.start_rebind(agent_id, owner_id=owner_id)
+
+    invalidated = await repository.get(agent_id)
+    assert invalidated.authorization_status is TelegramLoginStatus.NOT_STARTED
+    assert invalidated.phone_code_hash_secret is None
+    assert invalidated.session_secret is None
+    assert invalidated.completed_agent_id == agent_id
 
 
 @pytest.mark.asyncio
