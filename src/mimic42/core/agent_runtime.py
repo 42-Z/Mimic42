@@ -589,6 +589,9 @@ class MimicAgentRuntime:
         # Контексты выходят в обратном порядке: сначала снимается trigger lock,
         # затем finally отключает revoked-клиент даже при ошибке сохранения хода.
         async with self._disconnect_revoked_client_after_turn(), self._trigger_lock:
+            # Вызов мог ждать lock, пока предыдущий ход отозвал сессию.
+            if self._session_revoked:
+                raise TelegramAuthorizationRequired(REVOKED_SESSION_MESSAGE)
             logger.debug(f"Processing message from {trigger.peer}: {trigger.text[:100]}")
             turn_id = str(uuid4())
             turn_context = TurnContext(turn_id=turn_id, peer=trigger.peer)

@@ -256,6 +256,31 @@ async def test_dead_session_disconnects_after_failed_turn_persistence() -> None:
 
 
 @pytest.mark.asyncio
+async def test_waiting_trigger_rechecks_revoked_session_inside_lock() -> None:
+    telegram = FakeTelegramClient()
+    agent = FakeLangChainAgent(response="reply")
+    runtime = MimicAgentRuntime(
+        config=make_config(),
+        telegram_client=telegram,
+        langchain_agent=agent,
+    )
+    await runtime.start()
+
+    await runtime._trigger_lock.acquire()
+    waiting = asyncio.create_task(runtime.trigger_message(AgentTrigger(peer="me", text="queued")))
+    await asyncio.sleep(0)
+    runtime._session_revoked = True
+    runtime._state = AgentRuntimeState.ERROR
+    runtime._trigger_lock.release()
+
+    with pytest.raises(TelegramAuthorizationRequired):
+        await waiting
+
+    assert agent.inputs == []
+    assert telegram.connected is False
+
+
+@pytest.mark.asyncio
 async def test_trigger_invokes_agent_and_sends_response_through_telegram() -> None:
     telegram = FakeTelegramClient()
     agent = FakeLangChainAgent(response="reply from llm")

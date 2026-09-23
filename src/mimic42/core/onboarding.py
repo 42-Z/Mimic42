@@ -260,9 +260,28 @@ class AgentOnboardingService:
         try:
             existing = await self._repository.get_for_agent(agent_id)
         except OnboardingNotFoundError:
-            raise TelegramRebindUnavailableError(
-                "У агента нет сохранённой Telegram-сессии — перепривязка недоступна"
-            ) from None
+            if self._agent_store is None:
+                raise TelegramRebindUnavailableError(
+                    "У агента нет сохранённой Telegram-сессии — перепривязка недоступна"
+                ) from None
+            try:
+                stored = await self._agent_store.get_telegram_rebind_credentials(agent_id)
+            except (KeyError, ValueError):
+                raise TelegramRebindUnavailableError(
+                    "У агента нет сохранённой Telegram-сессии — перепривязка недоступна"
+                ) from None
+            if stored.owner_id != owner_id:
+                raise OnboardingOwnershipError(agent_id) from None
+            existing = OnboardingSession(
+                onboarding_id=agent_id,
+                owner_id=stored.owner_id,
+                api_id=stored.api_id,
+                api_hash_secret=stored.api_hash_secret,
+                phone_number=stored.phone_number,
+                authorization_status=TelegramLoginStatus.AUTHORIZED,
+                completed_agent_id=agent_id,
+            )
+            await self._repository.save(existing)
         if existing.owner_id != owner_id:
             raise OnboardingOwnershipError(existing.onboarding_id)
         if existing.completed_agent_id is None:

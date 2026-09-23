@@ -21,6 +21,15 @@ class AgentRecord(BaseModel):
     restore_on_start: bool = Field(default=True, exclude=True)
 
 
+class TelegramRebindCredentials(BaseModel):
+    """Внутренние сохранённые реквизиты Telegram для повторной авторизации."""
+
+    owner_id: UUID
+    api_id: int
+    api_hash_secret: str = Field(repr=False)
+    phone_number: str
+
+
 class AgentMessageRecord(BaseModel):
     id: UUID = Field(default_factory=uuid4)
     agent_id: UUID
@@ -92,6 +101,10 @@ class AgentStore(Protocol):
     async def rebind_telegram_session(self, agent_id: UUID, session: OnboardingSession) -> None: ...
 
     async def get_runtime_config(self, agent_id: UUID) -> AgentRuntimeConfig: ...
+
+    async def get_telegram_rebind_credentials(
+        self, agent_id: UUID
+    ) -> TelegramRebindCredentials: ...
 
     async def list_agents(self, *, owner_id: UUID | None = None) -> list[AgentRecord]: ...
 
@@ -225,6 +238,21 @@ class InMemoryAgentStore:
             return self._configs[agent_id]
         except KeyError as exc:
             raise KeyError(f"Agent {agent_id} does not have a runtime config") from exc
+
+    async def get_telegram_rebind_credentials(self, agent_id: UUID) -> TelegramRebindCredentials:
+        record = self._agents.get(agent_id)
+        account = self._telegram_accounts.get(agent_id)
+        if record is None or account is None:
+            raise KeyError(f"Agent {agent_id} does not have saved Telegram credentials")
+        api_id, api_hash_secret, phone_number = account
+        if phone_number is None:
+            raise KeyError(f"Agent {agent_id} does not have saved Telegram credentials")
+        return TelegramRebindCredentials(
+            owner_id=record.owner_id,
+            api_id=api_id,
+            api_hash_secret=api_hash_secret,
+            phone_number=phone_number,
+        )
 
     async def list_agents(self, *, owner_id: UUID | None = None) -> list[AgentRecord]:
         records = list(self._agents.values())

@@ -16,6 +16,7 @@ from mimic42.core.agent_store import (
     ConversationPage,
     ConversationTurn,
     TelegramAccountMismatchError,
+    TelegramRebindCredentials,
     ToolCallRecord,
     reply_target_of,
 )
@@ -179,6 +180,30 @@ class DatabaseAgentStore:
                 system_prompt=load_default_system_prompt(),
                 soul_prompt=agent.soul_prompt,
                 name=agent.name,
+            )
+
+    async def get_telegram_rebind_credentials(self, agent_id: UUID) -> TelegramRebindCredentials:
+        async with self._session_factory() as db_session:
+            row = await db_session.execute(
+                select(AgentModel, TelegramSessionModel)
+                .join(TelegramSessionModel, TelegramSessionModel.agent_id == AgentModel.id)
+                .where(AgentModel.id == agent_id)
+            )
+            item = row.first()
+            if item is None:
+                raise KeyError(f"Agent {agent_id} does not have saved Telegram credentials")
+            agent, telegram_session = item
+            if (
+                telegram_session.api_id is None
+                or telegram_session.api_hash_ciphertext is None
+                or telegram_session.phone_number is None
+            ):
+                raise KeyError(f"Agent {agent_id} does not have saved Telegram credentials")
+            return TelegramRebindCredentials(
+                owner_id=agent.owner_id,
+                api_id=telegram_session.api_id,
+                api_hash_secret=telegram_session.api_hash_ciphertext,
+                phone_number=telegram_session.phone_number,
             )
 
     async def list_agents(self, *, owner_id: UUID | None = None) -> list[AgentRecord]:

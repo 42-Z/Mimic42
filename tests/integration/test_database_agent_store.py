@@ -49,6 +49,23 @@ def _make_rebind_session(owner_id: UUID) -> OnboardingSession:
     )
 
 
+async def test_get_telegram_rebind_credentials_returns_stored_secret(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    owner_id = clean_slot.persona("full").user_id
+    agent_id = uuid4()
+    store = DatabaseAgentStore(db_session_factory)
+    await store.create_from_onboarding(_make_session(owner_id, agent_id, "Mimic"))
+
+    credentials = await store.get_telegram_rebind_credentials(agent_id)
+
+    assert credentials.owner_id == owner_id
+    assert credentials.api_id == 12345
+    assert credentials.api_hash_secret == "encrypted-hash"
+    assert credentials.phone_number == "+79990000000"
+
+
 async def test_rebind_telegram_session_updates_session_and_keeps_profile(
     db_session_factory: async_sessionmaker[AsyncSession],
     clean_slot: Slot,
