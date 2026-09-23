@@ -5,7 +5,7 @@ from uuid import UUID, uuid4
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from mimic42.api.app import create_app
+from mimic42.api.app import _telegram_login_http_error, create_app
 from mimic42.config import Settings
 from mimic42.core.onboarding import (
     AgentOnboardingService,
@@ -17,6 +17,19 @@ from mimic42.core.onboarding import (
 )
 from mimic42.testing.telegram import FakeTelegramAccount, FakeTelegramAuthClientFactory
 from tests.api.auth_helpers import AUTH_HEADERS, FakeAuthVerifier
+
+
+def test_telegram_login_value_error_does_not_expose_internal_message() -> None:
+    internal_message = "Cannot find any entity corresponding to the current user"
+
+    translated = _telegram_login_http_error(ValueError(internal_message))
+
+    assert translated is not None
+    assert translated.status_code == 400
+    assert translated.detail == (
+        "Не удалось обработать данные Telegram. Проверьте их и попробуйте снова."
+    )
+    assert internal_message not in str(translated.detail)
 
 
 @pytest.mark.asyncio

@@ -13,7 +13,7 @@ import { useStartAgent, useStopAgent, useTriggerMessage, useDeleteAgent } from '
 import { useAgentMemories, useAgentMemoryHistory } from '@/hooks/useMemory';
 import { useToast } from '@/components/ui/toast';
 import { AgentStatusBadge } from '@/components/agents/AgentStatusBadge';
-import { Button } from '@/components/ui/button';
+import { Button, buttonVariants } from '@/components/ui/button';
 import { Input, Textarea } from '@/components/ui/input';
 import { Card, Skeleton, Spinner, Divider } from '@/components/ui/card';
 import { ConfirmDialog, Modal } from '@/components/ui/modal';
@@ -146,10 +146,13 @@ function AgentControls({ agentId, state }: { agentId: string; state?: string }) 
   return (
     <div className="flex items-center gap-2">
       {rebind ? (
-        <Link href={`/agent/${agentId}/rebind`} aria-label="Перепривязать Telegram">
-          <Button variant="outline" size="sm" leftIcon={<Link2 className="h-3.5 w-3.5" />}>
-            Перепривязать
-          </Button>
+        <Link
+          href={`/agent/${agentId}/rebind`}
+          aria-label="Перепривязать Telegram"
+          className={buttonVariants({ variant: 'outline', size: 'sm' })}
+        >
+          <Link2 className="h-3.5 w-3.5" />
+          Перепривязать
         </Link>
       ) : (
         <Button variant="success" size="sm"
@@ -449,10 +452,13 @@ function TabTelegram({ agentId }: { agentId: string }) {
               Сессия истекла или была отозвана
             </p>
           </div>
-          <Link href={`/agent/${agentId}/rebind`} aria-label="Перепривязать Telegram">
-            <Button variant="outline" size="sm" leftIcon={<RefreshCw className="h-3.5 w-3.5" />}>
-              Перепривязать
-            </Button>
+          <Link
+            href={`/agent/${agentId}/rebind`}
+            aria-label="Перепривязать Telegram"
+            className={buttonVariants({ variant: 'outline', size: 'sm' })}
+          >
+            <RefreshCw className="h-3.5 w-3.5" />
+            Перепривязать
           </Link>
         </div>
       )}

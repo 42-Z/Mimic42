@@ -380,6 +380,7 @@ class AgentOnboardingService:
             telegram_api_id=session.api_id,
             telegram_api_hash=self._cipher.decrypt(session.api_hash_secret),
             telegram_session_string=_decrypt_optional(self._cipher, session.session_secret),
+            telegram_session_token=session.session_secret,
             llm_model=self._llm_model,
             system_prompt=load_default_system_prompt(),
             soul_prompt=session.soul_prompt,

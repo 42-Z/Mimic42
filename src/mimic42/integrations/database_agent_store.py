@@ -152,6 +152,7 @@ class DatabaseAgentStore:
                     if self._cipher and telegram_session.session_ciphertext
                     else telegram_session.session_ciphertext
                 ),
+                telegram_session_token=telegram_session.session_ciphertext,
                 llm_model=(
                     agent.settings.get("model", self._llm_model)
                     if agent.settings

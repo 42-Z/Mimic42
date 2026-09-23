@@ -174,6 +174,7 @@ class InMemoryAgentStore:
             telegram_api_id=session.api_id,
             telegram_api_hash=session.api_hash_secret,
             telegram_session_string=session.session_secret,
+            telegram_session_token=session.session_secret,
             system_prompt=load_default_system_prompt(),
             soul_prompt=session.soul_prompt,
             name=session.name or "AI",
@@ -196,7 +197,10 @@ class InMemoryAgentStore:
         if config is None:
             raise KeyError(f"Agent {agent_id} does not have a runtime config")
         self._configs[agent_id] = config.model_copy(
-            update={"telegram_session_string": session.session_secret}
+            update={
+                "telegram_session_string": session.session_secret,
+                "telegram_session_token": session.session_secret,
+            }
         )
 
     async def get_runtime_config(self, agent_id: UUID) -> AgentRuntimeConfig:

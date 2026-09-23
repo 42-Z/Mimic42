@@ -14,6 +14,8 @@ from mimic42.core.agent_runtime import (
     MimicAgentRuntime,
     TelegramAuthorizationRequired,
 )
+from mimic42.core.onboarding import OnboardingSession, TelegramLoginStatus
+from mimic42.integrations.database_agent_store import DatabaseAgentStore
 from mimic42.integrations.database_models import AgentModel, TelegramSessionModel
 from mimic42.testing.slots import Slot
 from mimic42.testing.telegram import FakeTelegramAccount
@@ -41,6 +43,7 @@ async def _seed_agent_with_session(
             TelegramSessionModel(
                 agent_id=agent_id,
                 session_name=agent_id.hex,
+                session_ciphertext="old-session",
                 authorization_status="authorized",
             )
         )
@@ -56,7 +59,9 @@ async def test_unauthorized_start_marks_session_revoked(
     await _seed_agent_with_session(db_session_factory, agent_id=agent_id, owner_id=owner_id)
 
     runtime = MimicAgentRuntime(
-        config=make_config(agent_id, owner_id),
+        config=make_config(agent_id, owner_id).model_copy(
+            update={"telegram_session_token": "old-session"}
+        ),
         telegram_client=FakeTelegramClient(FakeTelegramAccount()),
         langchain_agent=FakeLangChainAgent(),
         session_factory=db_session_factory,
@@ -83,7 +88,9 @@ async def test_authorized_start_keeps_session_status_untouched(
     await _seed_agent_with_session(db_session_factory, agent_id=agent_id, owner_id=owner_id)
 
     runtime = MimicAgentRuntime(
-        config=make_config(agent_id, owner_id),
+        config=make_config(agent_id, owner_id).model_copy(
+            update={"telegram_session_token": "old-session"}
+        ),
         telegram_client=FakeTelegramClient(),
         langchain_agent=FakeLangChainAgent(),
         session_factory=db_session_factory,
@@ -130,7 +137,9 @@ async def test_dead_session_error_on_connect_marks_session_revoked(
     await _seed_agent_with_session(db_session_factory, agent_id=agent_id, owner_id=owner_id)
 
     runtime = MimicAgentRuntime(
-        config=make_config(agent_id, owner_id),
+        config=make_config(agent_id, owner_id).model_copy(
+            update={"telegram_session_token": "old-session"}
+        ),
         telegram_client=FailingConnectClient(connect_error),
         langchain_agent=FakeLangChainAgent(),
         session_factory=db_session_factory,
@@ -164,7 +173,9 @@ async def test_dead_session_error_on_send_marks_session_revoked(
     await _seed_agent_with_session(db_session_factory, agent_id=agent_id, owner_id=owner_id)
 
     runtime = MimicAgentRuntime(
-        config=make_config(agent_id, owner_id),
+        config=make_config(agent_id, owner_id).model_copy(
+            update={"telegram_session_token": "old-session"}
+        ),
         telegram_client=FailingSendClient(),
         langchain_agent=FakeLangChainAgent(response="reply"),
         session_factory=db_session_factory,
@@ -185,6 +196,47 @@ async def test_dead_session_error_on_send_marks_session_revoked(
     assert row.last_error == REVOKED_SESSION_MESSAGE
 
 
+async def test_old_runtime_cannot_revoke_newly_rebound_session(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    owner_id = clean_slot.persona("flow").user_id
+    agent_id = uuid4()
+    await _seed_agent_with_session(db_session_factory, agent_id=agent_id, owner_id=owner_id)
+
+    old_runtime = MimicAgentRuntime(
+        config=make_config(agent_id, owner_id).model_copy(
+            update={"telegram_session_token": "old-session"}
+        ),
+        telegram_client=FailingSendClient(),
+        langchain_agent=FakeLangChainAgent(),
+        session_factory=db_session_factory,
+    )
+    store = DatabaseAgentStore(db_session_factory)
+    await store.rebind_telegram_session(
+        agent_id,
+        OnboardingSession(
+            onboarding_id=agent_id,
+            owner_id=owner_id,
+            api_id=12345,
+            api_hash_secret="new-hash",
+            session_secret="new-session",
+            authorization_status=TelegramLoginStatus.AUTHORIZED,
+        ),
+    )
+
+    await old_runtime._mark_telegram_session_revoked(error=REVOKED_SESSION_MESSAGE)
+
+    async with db_session_factory() as session:
+        row = await session.scalar(
+            select(TelegramSessionModel).where(TelegramSessionModel.agent_id == agent_id)
+        )
+    assert row is not None
+    assert row.session_ciphertext == "new-session"
+    assert row.authorization_status == "authorized"
+    assert row.last_error is None
+
+
 class BrokenSessionFactory:
     """Фабрика сессий, у которой падает даже вызов."""
 
@@ -194,7 +246,9 @@ class BrokenSessionFactory:
 
 async def test_broken_database_does_not_replace_authorization_error() -> None:
     runtime = MimicAgentRuntime(
-        config=make_config(uuid4(), uuid4()),
+        config=make_config(uuid4(), uuid4()).model_copy(
+            update={"telegram_session_token": "old-session"}
+        ),
         telegram_client=FakeTelegramClient(FakeTelegramAccount()),
         langchain_agent=FakeLangChainAgent(),
         session_factory=cast(async_sessionmaker[AsyncSession], BrokenSessionFactory()),
@@ -216,7 +270,9 @@ async def test_missing_session_row_does_not_replace_authorization_error(
         await session.commit()
 
     runtime = MimicAgentRuntime(
-        config=make_config(agent_id, owner_id),
+        config=make_config(agent_id, owner_id).model_copy(
+            update={"telegram_session_token": "old-session"}
+        ),
         telegram_client=FakeTelegramClient(FakeTelegramAccount()),
         langchain_agent=FakeLangChainAgent(),
         session_factory=db_session_factory,
@@ -226,4 +282,4 @@ async def test_missing_session_row_does_not_replace_authorization_error(
         with pytest.raises(TelegramAuthorizationRequired):
             await runtime.start()
 
-    assert any("No telegram_sessions row" in record.message for record in caplog.records)
+    assert any("changed or is missing" in record.message for record in caplog.records)

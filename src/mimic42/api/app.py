@@ -215,7 +215,11 @@ def _telegram_login_http_error(exc: Exception) -> HTTPException | None:
             detail="Telegram отклонил запрос. Проверьте данные и попробуйте снова.",
         )
     if isinstance(exc, ValueError):
-        return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+        logger.warning("Telegram login data error: %s", exc)
+        return HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Не удалось обработать данные Telegram. Проверьте их и попробуйте снова.",
+        )
     return None
 
 

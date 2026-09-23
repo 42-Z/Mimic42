@@ -70,6 +70,9 @@ class AgentRuntimeConfig(BaseModel):
     telegram_api_id: int = Field(gt=0)
     telegram_api_hash: str = Field(min_length=1)
     telegram_session_string: str | None = Field(default=None, min_length=1)
+    # Opaque identity of the persisted session ciphertext. It is deliberately
+    # separate from the decrypted Telethon string and must never be serialized.
+    telegram_session_token: str | None = Field(default=None, exclude=True, repr=False)
     llm_model: str = Field(default=DEFAULT_LLM_MODEL, min_length=1)
     reasoning_effort: str = Field(default="high")
     system_prompt: str = Field(min_length=1)
@@ -256,6 +259,12 @@ class MimicAgentRuntime:
         """
         if self._session_factory is None:
             return
+        if self.config.telegram_session_token is None:
+            logger.warning(
+                "Telegram session token is missing for agent %s, refusing unsafe revoke",
+                self.config.agent_id,
+            )
+            return
         try:
             from sqlalchemy import update
             from sqlalchemy.engine import CursorResult
@@ -265,7 +274,11 @@ class MimicAgentRuntime:
             async with self._session_factory() as db_session:
                 result = await db_session.execute(
                     update(TelegramSessionModel)
-                    .where(TelegramSessionModel.agent_id == self.config.agent_id)
+                    .where(
+                        TelegramSessionModel.agent_id == self.config.agent_id,
+                        TelegramSessionModel.session_ciphertext
+                        == self.config.telegram_session_token,
+                    )
                     .values(authorization_status="revoked", last_error=error)
                 )
                 await db_session.commit()
@@ -273,7 +286,8 @@ class MimicAgentRuntime:
                 # у буферизованного CursorResult, который и приходит для UPDATE.
                 if cast(CursorResult[Any], result).rowcount == 0:
                     logger.warning(
-                        "No telegram_sessions row for agent %s, cannot mark revoked",
+                        "Telegram session changed or is missing for agent %s; "
+                        "stale runtime did not mark it revoked",
                         self.config.agent_id,
                     )
         except Exception:

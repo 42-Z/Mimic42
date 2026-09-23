@@ -6,7 +6,7 @@ import { useMultiAgentRealtimeFeed, useAllAgentsStatusRealtime } from '@/hooks/u
 import { useToast } from '@/components/ui/toast';
 import { AgentStatusBadge } from '@/components/agents/AgentStatusBadge';
 import { Card, Skeleton } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
+import { Button, buttonVariants } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { maskPhoneNumber, sanitizeText, truncate } from '@/lib/sanitize';
 import { needsRebind } from '@/lib/telegram';
@@ -242,13 +242,13 @@ function AgentCard({ agent, details }: { agent: AgentRecord; details?: AgentDeta
 
       <div className="flex items-center gap-2 pt-1">
         {rebind ? (
-          <Link href={`/agent/${agent.agent_id}/rebind`} aria-label="Перепривязать Telegram">
-            <Button
-              variant="outline" size="sm"
-              leftIcon={<Link2 className="h-3.5 w-3.5" />}
-            >
-              Перепривязать
-            </Button>
+          <Link
+            href={`/agent/${agent.agent_id}/rebind`}
+            aria-label="Перепривязать Telegram"
+            className={buttonVariants({ variant: 'outline', size: 'sm' })}
+          >
+            <Link2 className="h-3.5 w-3.5" />
+            Перепривязать
           </Link>
         ) : (
           <Button
