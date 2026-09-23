@@ -77,9 +77,12 @@ async def test_unauthorized_start_marks_session_revoked(
         row = await session.scalar(
             select(TelegramSessionModel).where(TelegramSessionModel.agent_id == agent_id)
         )
+        agent = await session.get(AgentModel, agent_id)
     assert row is not None
     assert row.authorization_status == "revoked"
     assert row.last_error == REVOKED_SESSION_MESSAGE
+    assert agent is not None
+    assert agent.status == "error"
 
 
 async def test_authorized_start_keeps_session_status_untouched(
@@ -155,9 +158,12 @@ async def test_dead_session_error_on_connect_marks_session_revoked(
         row = await session.scalar(
             select(TelegramSessionModel).where(TelegramSessionModel.agent_id == agent_id)
         )
+        agent = await session.get(AgentModel, agent_id)
     assert row is not None
     assert row.authorization_status == "revoked"
     assert row.last_error == REVOKED_SESSION_MESSAGE
+    assert agent is not None
+    assert agent.status == "error"
 
 
 class FailingSendClient(FakeTelegramClient):
@@ -235,10 +241,13 @@ async def test_old_runtime_cannot_revoke_newly_rebound_session(
         row = await session.scalar(
             select(TelegramSessionModel).where(TelegramSessionModel.agent_id == agent_id)
         )
+        agent = await session.get(AgentModel, agent_id)
     assert row is not None
     assert row.session_ciphertext == "new-session"
     assert row.authorization_status == "authorized"
     assert row.last_error is None
+    assert agent is not None
+    assert agent.status == "draft"
 
 
 class BrokenSessionFactory:

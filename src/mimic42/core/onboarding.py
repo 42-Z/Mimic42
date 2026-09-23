@@ -146,6 +146,10 @@ class OnboardingAlreadyCompletedError(ValueError):
         self.onboarding_id = onboarding_id
 
 
+class TelegramRebindUnavailableError(ValueError):
+    """Сохранённых данных недостаточно для повторной авторизации Telegram."""
+
+
 class TelegramPasswordRequiredError(RuntimeError):
     pass
 
@@ -256,7 +260,7 @@ class AgentOnboardingService:
         try:
             existing = await self._repository.get_for_agent(agent_id)
         except OnboardingNotFoundError:
-            raise ValueError(
+            raise TelegramRebindUnavailableError(
                 "У агента нет сохранённой Telegram-сессии — перепривязка недоступна"
             ) from None
         if existing.owner_id != owner_id:
@@ -269,7 +273,9 @@ class AgentOnboardingService:
             or existing.api_id is None
             or existing.api_hash_secret is None
         ):
-            raise ValueError("У агента нет данных Telegram-сессии — перепривязка недоступна")
+            raise TelegramRebindUnavailableError(
+                "У агента нет данных Telegram-сессии — перепривязка недоступна"
+            )
         credentials = TelegramCredentials(
             owner_id=owner_id,
             api_id=existing.api_id,

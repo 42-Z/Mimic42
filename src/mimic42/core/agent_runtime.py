@@ -270,7 +270,7 @@ class MimicAgentRuntime:
             from sqlalchemy import update
             from sqlalchemy.engine import CursorResult
 
-            from mimic42.integrations.database_models import TelegramSessionModel
+            from mimic42.integrations.database_models import AgentModel, TelegramSessionModel
 
             async with self._session_factory() as db_session:
                 result = await db_session.execute(
@@ -282,7 +282,6 @@ class MimicAgentRuntime:
                     )
                     .values(authorization_status="revoked", last_error=error)
                 )
-                await db_session.commit()
                 # execute() статически возвращает Result, а rowcount есть только
                 # у буферизованного CursorResult, который и приходит для UPDATE.
                 if cast(CursorResult[Any], result).rowcount == 0:
@@ -291,6 +290,13 @@ class MimicAgentRuntime:
                         "stale runtime did not mark it revoked",
                         self.config.agent_id,
                     )
+                else:
+                    await db_session.execute(
+                        update(AgentModel)
+                        .where(AgentModel.id == self.config.agent_id)
+                        .values(status=AgentRuntimeState.ERROR.value)
+                    )
+                await db_session.commit()
         except Exception:
             logger.warning(
                 "Failed to mark telegram session revoked for agent %s",

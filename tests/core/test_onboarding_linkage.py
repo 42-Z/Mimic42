@@ -14,6 +14,7 @@ from mimic42.core.onboarding import (
     TelegramAuthorizationIncompleteError,
     TelegramCredentials,
     TelegramLoginStatus,
+    TelegramRebindUnavailableError,
 )
 from mimic42.testing.telegram import FakeTelegramAccount, FakeTelegramAuthClientFactory
 
@@ -177,7 +178,7 @@ async def test_start_rebind_without_stored_session_raises() -> None:
         telegram_factory=_fake_telegram_factory(),
     )
 
-    with pytest.raises(ValueError):
+    with pytest.raises(TelegramRebindUnavailableError):
         await service.start_rebind(agent_id, owner_id=owner_id)
 
 
@@ -199,7 +200,7 @@ async def test_start_rebind_row_without_telegram_data_raises() -> None:
         telegram_factory=_fake_telegram_factory(),
     )
 
-    with pytest.raises(ValueError):
+    with pytest.raises(TelegramRebindUnavailableError):
         await service.start_rebind(agent_id, owner_id=owner_id)
 
 

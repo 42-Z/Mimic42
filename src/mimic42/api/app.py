@@ -50,6 +50,7 @@ from mimic42.core.onboarding import (
     TelegramCodeVerification,
     TelegramCredentials,
     TelegramPasswordRequiredError,
+    TelegramRebindUnavailableError,
 )
 from mimic42.integrations import openrouter_catalog
 from mimic42.integrations.database_agent_store import DatabaseAgentStore
@@ -700,6 +701,11 @@ def create_app(
             )
         except OnboardingOwnershipError as exc:
             raise _not_found(agent_id) from exc
+        except TelegramRebindUnavailableError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(exc),
+            ) from exc
         except Exception as exc:
             translated = _telegram_login_http_error(exc)
             if translated is not None:

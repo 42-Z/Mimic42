@@ -588,6 +588,51 @@ async def test_rebind_start_returns_404_for_unknown_agent() -> None:
 
 
 @pytest.mark.asyncio
+async def test_rebind_start_returns_409_without_saved_onboarding_credentials() -> None:
+    owner_id = uuid4()
+    agent_id = uuid4()
+    store = InMemoryAgentStore()
+    await store.create_from_onboarding(
+        OnboardingSession(
+            onboarding_id=agent_id,
+            owner_id=owner_id,
+            api_id=12345,
+            api_hash_secret="hash",
+            phone_number="+79990000000",
+            authorization_status=TelegramLoginStatus.AUTHORIZED,
+            session_secret="session",
+            name="Mimic",
+            soul_prompt="Short replies",
+        )
+    )
+    app = create_app(
+        manager=FakeAgentManager(),
+        onboarding_service=AgentOnboardingService(
+            repository=InMemoryOnboardingRepository(),
+            telegram_factory=FakeTelegramAuthClientFactory(FakeTelegramAccount()),
+            agent_store=store,
+        ),
+        agent_store=store,
+        auth_verifier=FakeAuthVerifier(owner_id),
+        settings=Settings(telegram_api_id=777, telegram_api_hash="deployment-hash"),
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        response = await client.post(
+            f"/api/v1/agents/{agent_id}/telegram/rebind",
+            headers=AUTH_HEADERS,
+        )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == (
+        "У агента нет сохранённой Telegram-сессии — перепривязка недоступна"
+    )
+
+
+@pytest.mark.asyncio
 async def test_rebind_requires_agent_store() -> None:
     owner_id = uuid4()
     manager = FakeAgentManager(default_owner_id=owner_id)
