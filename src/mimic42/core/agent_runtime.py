@@ -3,7 +3,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -320,6 +321,15 @@ class MimicAgentRuntime:
                 self.config.agent_id,
             )
 
+    @asynccontextmanager
+    async def _disconnect_revoked_client_after_turn(self) -> AsyncIterator[None]:
+        """Гарантированно отключить revoked-клиент после снятия trigger lock."""
+        try:
+            yield
+        finally:
+            if self._session_revoked:
+                await self._disconnect_revoked_client()
+
     @property
     def state(self) -> AgentRuntimeState:
         return self._state
@@ -570,8 +580,9 @@ class MimicAgentRuntime:
             logger.info(f"Agent not running (state={self._state}), starting...")
             await self.start()
 
-        disconnect_revoked_client = False
-        async with self._trigger_lock:
+        # Контексты выходят в обратном порядке: сначала снимается trigger lock,
+        # затем finally отключает revoked-клиент даже при ошибке сохранения хода.
+        async with self._disconnect_revoked_client_after_turn(), self._trigger_lock:
             logger.debug(f"Processing message from {trigger.peer}: {trigger.text[:100]}")
             turn_id = str(uuid4())
             turn_context = TurnContext(turn_id=turn_id, peer=trigger.peer)
@@ -736,7 +747,6 @@ class MimicAgentRuntime:
                     dead_session = _is_dead_session_error(e)
                     if dead_session:
                         await self._revoke_dead_session()
-                        disconnect_revoked_client = True
                     await self._record_event(
                         event_type="message.send_failed",
                         status="failed",
@@ -766,9 +776,6 @@ class MimicAgentRuntime:
                 media=trigger.media or None,
                 reply=reply_payload,
             )
-
-        if disconnect_revoked_client:
-            await self._disconnect_revoked_client()
 
         return AgentTriggerResult(
             agent_id=self.config.agent_id,

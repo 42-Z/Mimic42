@@ -226,6 +226,36 @@ async def test_dead_session_on_send_stops_runtime_and_blocks_restart() -> None:
 
 
 @pytest.mark.asyncio
+async def test_dead_session_disconnects_after_failed_turn_persistence() -> None:
+    class RevokedSendClient(FakeTelegramClient):
+        async def send_message(self, entity: str, message: str, **kwargs: Any) -> object:
+            raise errors.AuthKeyDuplicatedError(request=None)
+
+    telegram = RevokedSendClient()
+
+    class FailingMemory(FakeRuntimeMemoryService):
+        async def save_messages(self, **kwargs: Any) -> None:
+            assert telegram.connected is True
+            raise RuntimeError("storage unavailable")
+
+    runtime = MimicAgentRuntime(
+        config=make_config(),
+        telegram_client=telegram,
+        langchain_agent=FakeLangChainAgent(response="reply"),
+        memory_service=FailingMemory(),
+    )
+
+    await runtime.start()
+    with pytest.raises(RuntimeError, match="storage unavailable"):
+        await runtime.trigger_message(AgentTrigger(peer="me", text="Ping"))
+
+    assert runtime.state is AgentRuntimeState.ERROR
+    assert telegram.connected is False
+    assert telegram.disconnect_calls == 1
+    assert runtime._trigger_lock.locked() is False
+
+
+@pytest.mark.asyncio
 async def test_trigger_invokes_agent_and_sends_response_through_telegram() -> None:
     telegram = FakeTelegramClient()
     agent = FakeLangChainAgent(response="reply from llm")
