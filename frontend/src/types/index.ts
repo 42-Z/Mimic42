@@ -109,7 +109,7 @@ export type TelegramAuthorizationStatus = OnboardingAuthorizationStatus | 'revok
 export interface OnboardingPublicStatus {
   onboarding_id: string;
   owner_id: string;
-  phone_number: string;
+  phone_number: string | null;
   authorization_status: OnboardingAuthorizationStatus;
 }
 

@@ -48,7 +48,7 @@ class SupabaseJWTVerifier:
         except jwt.PyJWTError as exc:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid authentication token",
+                detail="Недействительный токен аутентификации",
             ) from exc
 
         user_id = _extract_user_id(payload)
@@ -59,7 +59,7 @@ class DisabledAuthVerifier:
     async def verify(self, token: str) -> CurrentUser:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Authentication is not configured",
+            detail="Аутентификация не настроена",
         )
 
 
@@ -83,7 +83,7 @@ def _extract_access_token(request: Request) -> str:
         if scheme.lower() != "bearer" or not token:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid Authorization header",
+                detail="Некорректный заголовок Authorization",
             )
         return token
 
@@ -94,7 +94,7 @@ def _extract_access_token(request: Request) -> str:
 
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Missing access token",
+        detail="Отсутствует токен доступа",
     )
 
 
@@ -103,12 +103,12 @@ def _extract_user_id(payload: dict[str, Any]) -> UUID:
     if not isinstance(subject, str):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication token does not contain a user id",
+            detail="Токен аутентификации не содержит идентификатор пользователя",
         )
     try:
         return UUID(subject)
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentication token contains an invalid user id",
+            detail="Токен аутентификации содержит некорректный идентификатор пользователя",
         ) from exc

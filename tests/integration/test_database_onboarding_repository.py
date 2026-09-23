@@ -47,3 +47,47 @@ async def test_database_onboarding_repository_raises_when_missing(
 
     with pytest.raises(OnboardingNotFoundError):
         await repository.get(uuid4())
+
+
+async def test_database_onboarding_repository_finds_session_for_agent(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    repository = DatabaseOnboardingRepository(db_session_factory)
+    owner_id = clean_slot.persona("full").user_id
+    agent_id = uuid4()
+    # Агент существует (FK completed_agent_id → agents.id), но его
+    # онбординг-строка — отдельная, скрытая меткой.
+    await DatabaseAgentStore(db_session_factory).create_from_onboarding(
+        OnboardingSession(
+            onboarding_id=agent_id,
+            owner_id=owner_id,
+            api_id=12345,
+            api_hash_secret="encrypted-hash",
+            phone_number="+79990000000",
+            authorization_status=TelegramLoginStatus.AUTHORIZED,
+            session_secret="encrypted-session",
+            name="Mimic",
+            soul_prompt="Short replies",
+        )
+    )
+    session = OnboardingSession(
+        onboarding_id=uuid4(),
+        owner_id=owner_id,
+        api_id=12345,
+        api_hash_secret="encrypted-hash",
+        phone_number="+79990000000",
+        authorization_status=TelegramLoginStatus.AUTHORIZED,
+        session_secret="encrypted-session",
+        name="Mimic",
+        soul_prompt="Short replies",
+        completed_agent_id=agent_id,
+    )
+    await repository.save(session)
+
+    loaded = await repository.get_for_agent(agent_id)
+
+    assert loaded.onboarding_id == session.onboarding_id
+    assert loaded.completed_agent_id == agent_id
+    with pytest.raises(OnboardingNotFoundError):
+        await repository.get_for_agent(uuid4())

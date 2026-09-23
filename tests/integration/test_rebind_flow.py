@@ -1,0 +1,124 @@
+from __future__ import annotations
+
+from uuid import uuid4
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from mimic42.core.agent_runtime import AgentRuntimeState
+from mimic42.core.onboarding import (
+    AgentOnboardingService,
+    AgentProfileInput,
+    OnboardingSession,
+    TelegramCodeVerification,
+    TelegramLoginStatus,
+)
+from mimic42.integrations.database_agent_store import DatabaseAgentStore
+from mimic42.integrations.database_models import TelegramSessionModel
+from mimic42.integrations.database_onboarding import DatabaseOnboardingRepository
+from mimic42.testing.slots import Slot
+from mimic42.testing.telegram import FakeTelegramAccount, FakeTelegramAuthClientFactory
+
+
+async def test_rebind_reuses_wizard_row_and_does_not_conflict_with_unique_marker(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    owner_id = clean_slot.persona("flow").user_id
+    agent_id = uuid4()
+    repository = DatabaseOnboardingRepository(db_session_factory)
+    store = DatabaseAgentStore(db_session_factory)
+    service = AgentOnboardingService(
+        repository=repository,
+        telegram_factory=FakeTelegramAuthClientFactory(FakeTelegramAccount()),
+        agent_store=store,
+    )
+
+    # Мастер: черновик с id == agent_id, финализация ставит completed_agent_id = agent_id
+    await repository.save(
+        OnboardingSession(
+            onboarding_id=agent_id,
+            owner_id=owner_id,
+            api_id=12345,
+            api_hash_secret="wizard-hash",
+            phone_number="+79990000000",
+            authorization_status=TelegramLoginStatus.AUTHORIZED,
+            session_secret="wizard-session",
+            name="Mimic",
+            soul_prompt="Soul",
+        )
+    )
+    await service.finalize_agent(agent_id, AgentProfileInput(name="Mimic", soul_prompt="Soul"))
+
+    # Перепривязка переиспользует строку мастера — UNIQUE-конфликта нет
+    status = await service.start_rebind(agent_id, owner_id=owner_id)
+    assert status.onboarding_id == agent_id
+    assert status.authorization_status is TelegramLoginStatus.CODE_REQUESTED
+
+    verified = await service.verify_telegram_code(agent_id, TelegramCodeVerification(code="12345"))
+    assert verified.authorization_status is TelegramLoginStatus.AUTHORIZED
+
+    result = await service.rebind_to_agent(agent_id, agent_id, owner_id=owner_id)
+    assert result.state is AgentRuntimeState.STOPPED
+
+    config = await store.get_runtime_config(agent_id)
+    assert config.telegram_api_id == 12345
+    assert config.telegram_session_string == "fake-session:+79990000000"
+    assert config.name == "Mimic"
+    assert config.soul_prompt == "Soul"
+
+    # Строка мастера осталась на месте и по-прежнему скрыта от мастера
+    wizard_row = await repository.get(agent_id)
+    assert wizard_row.completed_agent_id == agent_id
+    assert wizard_row.authorization_status is TelegramLoginStatus.AUTHORIZED
+    assert wizard_row.phone_number == "+79990000000"
+
+    # Номер в telegram_sessions тоже не подменился новой сессией.
+    async with db_session_factory() as db_session:
+        telegram_row = await db_session.scalar(
+            select(TelegramSessionModel).where(TelegramSessionModel.agent_id == agent_id)
+        )
+    assert telegram_row is not None
+    assert telegram_row.phone_number == "+79990000000"
+    assert telegram_row.api_id == 12345
+
+
+async def test_start_rebind_recovers_missing_onboarding_row_from_agent_store(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    owner_id = clean_slot.persona("code").user_id
+    agent_id = uuid4()
+    repository = DatabaseOnboardingRepository(db_session_factory)
+    store = DatabaseAgentStore(db_session_factory)
+    account = FakeTelegramAccount()
+    service = AgentOnboardingService(
+        repository=repository,
+        telegram_factory=FakeTelegramAuthClientFactory(account),
+        agent_store=store,
+    )
+
+    # У старого/API-агента нет onboarding-строки, но telegram_sessions хранит
+    # номер и приложение, поэтому сервис восстанавливает внутреннюю строку.
+    await store.create_from_onboarding(
+        OnboardingSession(
+            onboarding_id=agent_id,
+            owner_id=owner_id,
+            api_id=12345,
+            api_hash_secret="api-hash",
+            phone_number="+79990000000",
+            authorization_status=TelegramLoginStatus.AUTHORIZED,
+            session_secret="api-session",
+            name="Mimic",
+            soul_prompt="Soul",
+        )
+    )
+
+    status = await service.start_rebind(agent_id, owner_id=owner_id)
+
+    assert status.authorization_status is TelegramLoginStatus.CODE_REQUESTED
+    assert account.phone == "+79990000000"
+    restored = await repository.get(agent_id)
+    assert restored.completed_agent_id == agent_id
+    assert restored.api_id == 12345
+    assert restored.api_hash_secret == "api-hash"

@@ -3,7 +3,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -35,6 +36,30 @@ class TelegramAuthorizationRequired(RuntimeError):
     """Raised when a Telethon user session is connected but not authorized."""
 
 
+UNAUTHORIZED_SESSION_MESSAGE = (
+    "Сессия Telegram не авторизована. Требуется повторная привязка Telegram-аккаунта."
+)
+
+REVOKED_SESSION_MESSAGE = (
+    "Сессия Telegram недействительна. Требуется повторная привязка Telegram-аккаунта."
+)
+
+
+def _is_dead_session_error(exc: BaseException) -> bool:
+    """Мёртвая сессия: нужен повторный вход, рантайм сам не восстановится.
+
+    Telegram отдаёт это как AuthKeyDuplicatedError (406 — обычная
+    причина: одну сессию использовали с двух IP), и как UnauthorizedError
+    (401: revoked/expired/unregistered/deactivated).
+    """
+    from telethon.errors import AuthKeyDuplicatedError, UnauthorizedError
+
+    return isinstance(
+        exc,
+        (TelegramAuthorizationRequired, AuthKeyDuplicatedError, UnauthorizedError),
+    )
+
+
 class AgentRuntimeState(StrEnum):
     STOPPED = "stopped"
     STARTING = "starting"
@@ -49,6 +74,9 @@ class AgentRuntimeConfig(BaseModel):
     telegram_api_id: int = Field(gt=0)
     telegram_api_hash: str = Field(min_length=1)
     telegram_session_string: str | None = Field(default=None, min_length=1)
+    # Opaque identity of the persisted session ciphertext. It is deliberately
+    # separate from the decrypted Telethon string and must never be serialized.
+    telegram_session_token: str | None = Field(default=None, exclude=True, repr=False)
     llm_model: str = Field(default=DEFAULT_LLM_MODEL, min_length=1)
     reasoning_effort: str = Field(default="high")
     system_prompt: str = Field(min_length=1)
@@ -194,6 +222,9 @@ class MimicAgentRuntime:
         # хода, проходят гейт при ещё открытом окне и упираются в закрытое на отправке.
         self._dispatch_lock = asyncio.Lock()
         self._message_handler_registered = False
+        # Мёртвая сессия не чинится перезапуском: рантайм с ней больше не
+        # поднимаем до перепривязки (reload_agent создаёт новый объект).
+        self._session_revoked = False
         self._member_tag_cache: dict[tuple[int, int], tuple[str | None, float]] = {}
         self._chat_mute_cache: dict[str, tuple[bool, float]] = {}
         self._scheduler_task: asyncio.Task[None] | None = None
@@ -224,6 +255,90 @@ class MimicAgentRuntime:
             completed_at=completed_at,
         )
 
+    async def _mark_telegram_session_revoked(self, *, error: str) -> None:
+        """Пометить telegram_sessions revoked: дэшборд предложит перепривязку.
+
+        Ошибка записи не мешает основному исключению: статус агента и события
+        фиксируются отдельно.
+        """
+        if self._session_factory is None:
+            return
+        if self.config.telegram_session_token is None:
+            logger.warning(
+                "Telegram session token is missing for agent %s, refusing unsafe revoke",
+                self.config.agent_id,
+            )
+            return
+        try:
+            from sqlalchemy import update
+            from sqlalchemy.engine import CursorResult
+
+            from mimic42.integrations.database_models import AgentModel, TelegramSessionModel
+
+            async with self._session_factory() as db_session:
+                result = await db_session.execute(
+                    update(TelegramSessionModel)
+                    .where(
+                        TelegramSessionModel.agent_id == self.config.agent_id,
+                        TelegramSessionModel.session_ciphertext
+                        == self.config.telegram_session_token,
+                    )
+                    .values(authorization_status="revoked", last_error=error)
+                )
+                # execute() статически возвращает Result, а rowcount есть только
+                # у буферизованного CursorResult, который и приходит для UPDATE.
+                if cast(CursorResult[Any], result).rowcount == 0:
+                    logger.warning(
+                        "Telegram session changed or is missing for agent %s; "
+                        "stale runtime did not mark it revoked",
+                        self.config.agent_id,
+                    )
+                else:
+                    await db_session.execute(
+                        update(AgentModel)
+                        .where(AgentModel.id == self.config.agent_id)
+                        .values(status=AgentRuntimeState.ERROR.value)
+                    )
+                await db_session.commit()
+        except Exception:
+            logger.warning(
+                "Failed to mark telegram session revoked for agent %s",
+                self.config.agent_id,
+                exc_info=True,
+            )
+
+    async def _revoke_dead_session(self) -> None:
+        """Пометить мёртвую сессию и запретить дальнейшую работу рантайма.
+
+        Из задачи планировщика нельзя звать ``stop()``: он ожидает завершения
+        этой же задачи. Состояния ``ERROR`` достаточно, чтобы цикл планировщика
+        вышел на следующей проверке. Клиент отключается вызывающим кодом только
+        после завершения текущего хода, иначе Telethon может отменить активный
+        обработчик входящего сообщения до сохранения истории.
+        """
+        self._session_revoked = True
+        await self._mark_telegram_session_revoked(error=REVOKED_SESSION_MESSAGE)
+        self._state = AgentRuntimeState.ERROR
+
+    async def _disconnect_revoked_client(self) -> None:
+        """Отключить клиент уже после завершения активного хода."""
+        try:
+            await self._telegram_client.disconnect()
+        except Exception:
+            logger.exception(
+                "Failed to disconnect revoked Telegram client for agent %s",
+                self.config.agent_id,
+            )
+
+    @asynccontextmanager
+    async def _disconnect_revoked_client_after_turn(self) -> AsyncIterator[None]:
+        """Гарантированно отключить revoked-клиент после снятия trigger lock."""
+        try:
+            yield
+        finally:
+            if self._session_revoked:
+                await self._disconnect_revoked_client()
+
     @property
     def state(self) -> AgentRuntimeState:
         return self._state
@@ -250,26 +365,37 @@ class MimicAgentRuntime:
                 logger.debug("Connected. Checking authorization...")
                 if not await self._telegram_client.is_user_authorized():
                     logger.error("Telegram session not authorized")
-                    raise TelegramAuthorizationRequired(
-                        "Telegram user session is not authorized. Complete onboarding first."
-                    )
+                    raise TelegramAuthorizationRequired(UNAUTHORIZED_SESSION_MESSAGE)
                 logger.debug("Authorized. Registering message handler...")
                 self._register_message_handler()
                 logger.info("Message handler registered")
             except Exception as e:
                 logger.error(f"Failed to start agent {self.config.agent_id}: {e}", exc_info=True)
                 self._state = AgentRuntimeState.ERROR
-                reason = (
-                    "unauthorized" if isinstance(e, TelegramAuthorizationRequired) else "exception"
-                )
+                dead_session = _is_dead_session_error(e)
+                reason = "unauthorized" if dead_session else "exception"
+                if dead_session:
+                    self._session_revoked = True
+                    await self._mark_telegram_session_revoked(error=REVOKED_SESSION_MESSAGE)
+                # connect() мог пройти до падения: не оставляем полуживое
+                # соединение висеть до следующего старта.
+                try:
+                    await self._telegram_client.disconnect()
+                except Exception:
+                    logger.exception("Failed to disconnect Telegram client after start failure")
                 await self._record_event(
                     event_type="agent.start_failed",
                     status="failed",
                     payload={"reason": reason, "error_code": type(e).__name__},
-                    error=str(e),
+                    error=REVOKED_SESSION_MESSAGE if dead_session else str(e),
                     started_at=datetime.now(UTC),
                     completed_at=datetime.now(UTC),
                 )
+                if dead_session and not isinstance(e, TelegramAuthorizationRequired):
+                    # Унифицируем для вызывающего слоя: API отдаёт 428 с понятным
+                    # русским текстом вместо 500. Исходное исключение остаётся
+                    # в логе и в payload.error_code.
+                    raise TelegramAuthorizationRequired(REVOKED_SESSION_MESSAGE) from e
                 raise
 
             self._state = AgentRuntimeState.RUNNING
@@ -455,11 +581,20 @@ class MimicAgentRuntime:
             trigger.peer,
             trigger.text[:50],
         )
+        if self._session_revoked:
+            # Перезапуск поднимет тот же мёртвый ключ и снова упадёт: ждём
+            # перепривязки, а не долбим Telegram на каждом входящем.
+            raise TelegramAuthorizationRequired(REVOKED_SESSION_MESSAGE)
         if self._state is not AgentRuntimeState.RUNNING:
             logger.info(f"Agent not running (state={self._state}), starting...")
             await self.start()
 
-        async with self._trigger_lock:
+        # Контексты выходят в обратном порядке: сначала снимается trigger lock,
+        # затем finally отключает revoked-клиент даже при ошибке сохранения хода.
+        async with self._disconnect_revoked_client_after_turn(), self._trigger_lock:
+            # Вызов мог ждать lock, пока предыдущий ход отозвал сессию.
+            if self._session_revoked:
+                raise TelegramAuthorizationRequired(REVOKED_SESSION_MESSAGE)
             logger.debug(f"Processing message from {trigger.peer}: {trigger.text[:100]}")
             turn_id = str(uuid4())
             turn_context = TurnContext(turn_id=turn_id, peer=trigger.peer)
@@ -621,6 +756,9 @@ class MimicAgentRuntime:
                     # The turn must not crash on a delivery failure, but the
                     # silence must be visible in the dashboard, not only in logs.
                     logger.exception("Failed to send Telegram message to %s", peer_id_for_send)
+                    dead_session = _is_dead_session_error(e)
+                    if dead_session:
+                        await self._revoke_dead_session()
                     await self._record_event(
                         event_type="message.send_failed",
                         status="failed",
@@ -629,7 +767,7 @@ class MimicAgentRuntime:
                             "peer": trigger.peer,
                             "error_code": type(e).__name__,
                         },
-                        error=str(e),
+                        error=REVOKED_SESSION_MESSAGE if dead_session else str(e),
                         started_at=datetime.now(UTC),
                         completed_at=datetime.now(UTC),
                     )
@@ -1837,7 +1975,7 @@ async def _extract_incoming_peer(event: object) -> str:
     peer_id = getattr(event, "peer_id", None)
     if peer_id is not None:
         return str(peer_id)
-    raise ValueError("Incoming Telegram event does not include a peer")
+    raise ValueError("Входящее событие Telegram не содержит получателя")
 
 
 def _extract_incoming_message_id(event: object) -> int | None:

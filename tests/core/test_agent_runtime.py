@@ -6,6 +6,7 @@ from typing import Any, cast
 from uuid import UUID, uuid4
 
 import pytest
+from telethon import errors
 
 from mimic42.core.agent_runtime import (
     AgentRuntimeConfig,
@@ -152,10 +153,152 @@ async def test_runtime_refuses_unauthorized_userbot_session() -> None:
         langchain_agent=FakeLangChainAgent(),
     )
 
+    with pytest.raises(TelegramAuthorizationRequired, match="не авторизована"):
+        await runtime.start()
+
+    assert runtime.state is AgentRuntimeState.ERROR
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "connect_error",
+    [
+        errors.AuthKeyDuplicatedError(request=None),
+        errors.UnauthorizedError(request=None, message="401: Unauthorized"),
+    ],
+    ids=["auth_key_duplicated", "unauthorized"],
+)
+async def test_dead_session_error_on_connect_moves_runtime_to_error(
+    connect_error: Exception,
+) -> None:
+    class FailingConnectClient(FakeTelegramClient):
+        async def connect(self) -> None:
+            raise connect_error
+
+    runtime = MimicAgentRuntime(
+        config=make_config(),
+        telegram_client=FailingConnectClient(),
+        langchain_agent=FakeLangChainAgent(),
+    )
+
     with pytest.raises(TelegramAuthorizationRequired):
         await runtime.start()
 
     assert runtime.state is AgentRuntimeState.ERROR
+
+
+@pytest.mark.asyncio
+async def test_update_app_error_is_not_rewritten_as_revoked_session() -> None:
+    error = errors.UpdateAppToLoginError(request=None)
+
+    class FailingConnectClient(FakeTelegramClient):
+        async def connect(self) -> None:
+            raise error
+
+    runtime = MimicAgentRuntime(
+        config=make_config(),
+        telegram_client=FailingConnectClient(),
+        langchain_agent=FakeLangChainAgent(),
+    )
+
+    with pytest.raises(errors.UpdateAppToLoginError) as caught:
+        await runtime.start()
+
+    assert caught.value is error
+    assert runtime.state is AgentRuntimeState.ERROR
+
+
+@pytest.mark.asyncio
+async def test_dead_session_on_send_stops_runtime_and_blocks_restart() -> None:
+    class RevokedSendClient(FakeTelegramClient):
+        async def send_message(self, entity: str, message: str, **kwargs: Any) -> object:
+            raise errors.AuthKeyDuplicatedError(request=None)
+
+    telegram = RevokedSendClient()
+
+    class DisconnectAwareMemory(FakeRuntimeMemoryService):
+        async def save_messages(self, **kwargs: Any) -> None:
+            # Disconnecting Telethon from inside its incoming handler can cancel
+            # that handler. Persist the completed turn before closing the client.
+            assert telegram.connected is True
+            await super().save_messages(**kwargs)
+
+    memory = DisconnectAwareMemory()
+    runtime = MimicAgentRuntime(
+        config=make_config(),
+        telegram_client=telegram,
+        langchain_agent=FakeLangChainAgent(response="reply"),
+        memory_service=memory,
+    )
+
+    await runtime.start()
+    await runtime.trigger_message(AgentTrigger(peer="me", text="Ping"))
+
+    # Сессия мертва: рантайм погашен и клиент отключён, а не остался RUNNING.
+    assert runtime.state is AgentRuntimeState.ERROR
+    assert telegram.connected is False
+    assert telegram.disconnect_calls == 1
+    assert len(memory.saved_messages) == 1
+
+    # Следующее входящее не поднимает тот же мёртвый ключ заново.
+    with pytest.raises(TelegramAuthorizationRequired):
+        await runtime.trigger_message(AgentTrigger(peer="me", text="Ping again"))
+    assert telegram.connect_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_dead_session_disconnects_after_failed_turn_persistence() -> None:
+    class RevokedSendClient(FakeTelegramClient):
+        async def send_message(self, entity: str, message: str, **kwargs: Any) -> object:
+            raise errors.AuthKeyDuplicatedError(request=None)
+
+    telegram = RevokedSendClient()
+
+    class FailingMemory(FakeRuntimeMemoryService):
+        async def save_messages(self, **kwargs: Any) -> None:
+            assert telegram.connected is True
+            raise RuntimeError("storage unavailable")
+
+    runtime = MimicAgentRuntime(
+        config=make_config(),
+        telegram_client=telegram,
+        langchain_agent=FakeLangChainAgent(response="reply"),
+        memory_service=FailingMemory(),
+    )
+
+    await runtime.start()
+    with pytest.raises(RuntimeError, match="storage unavailable"):
+        await runtime.trigger_message(AgentTrigger(peer="me", text="Ping"))
+
+    assert runtime.state is AgentRuntimeState.ERROR
+    assert telegram.connected is False
+    assert telegram.disconnect_calls == 1
+    assert runtime._trigger_lock.locked() is False
+
+
+@pytest.mark.asyncio
+async def test_waiting_trigger_rechecks_revoked_session_inside_lock() -> None:
+    telegram = FakeTelegramClient()
+    agent = FakeLangChainAgent(response="reply")
+    runtime = MimicAgentRuntime(
+        config=make_config(),
+        telegram_client=telegram,
+        langchain_agent=agent,
+    )
+    await runtime.start()
+
+    await runtime._trigger_lock.acquire()
+    waiting = asyncio.create_task(runtime.trigger_message(AgentTrigger(peer="me", text="queued")))
+    await asyncio.sleep(0)
+    runtime._session_revoked = True
+    runtime._state = AgentRuntimeState.ERROR
+    runtime._trigger_lock.release()
+
+    with pytest.raises(TelegramAuthorizationRequired):
+        await waiting
+
+    assert agent.inputs == []
+    assert telegram.connected is False
 
 
 @pytest.mark.asyncio
