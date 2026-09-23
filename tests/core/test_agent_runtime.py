@@ -194,10 +194,20 @@ async def test_dead_session_on_send_stops_runtime_and_blocks_restart() -> None:
             raise errors.AuthKeyDuplicatedError(request=None)
 
     telegram = RevokedSendClient()
+
+    class DisconnectAwareMemory(FakeRuntimeMemoryService):
+        async def save_messages(self, **kwargs: Any) -> None:
+            # Disconnecting Telethon from inside its incoming handler can cancel
+            # that handler. Persist the completed turn before closing the client.
+            assert telegram.connected is True
+            await super().save_messages(**kwargs)
+
+    memory = DisconnectAwareMemory()
     runtime = MimicAgentRuntime(
         config=make_config(),
         telegram_client=telegram,
         langchain_agent=FakeLangChainAgent(response="reply"),
+        memory_service=memory,
     )
 
     await runtime.start()
@@ -207,6 +217,7 @@ async def test_dead_session_on_send_stops_runtime_and_blocks_restart() -> None:
     assert runtime.state is AgentRuntimeState.ERROR
     assert telegram.connected is False
     assert telegram.disconnect_calls == 1
+    assert len(memory.saved_messages) == 1
 
     # Следующее входящее не поднимает тот же мёртвый ключ заново.
     with pytest.raises(TelegramAuthorizationRequired):

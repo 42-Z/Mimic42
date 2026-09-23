@@ -298,15 +298,20 @@ class MimicAgentRuntime:
             )
 
     async def _revoke_dead_session(self) -> None:
-        """Мёртвая сессия: помечаем revoked и гасим рантайм вместе с клиентом.
+        """Пометить мёртвую сессию и запретить дальнейшую работу рантайма.
 
         Из задачи планировщика нельзя звать ``stop()``: он ожидает завершения
-        этой же задачи. Достаточно перевести состояние в ``ERROR`` и отключить
-        клиент — цикл планировщика выйдет на проверке состояния.
+        этой же задачи. Состояния ``ERROR`` достаточно, чтобы цикл планировщика
+        вышел на следующей проверке. Клиент отключается вызывающим кодом только
+        после завершения текущего хода, иначе Telethon может отменить активный
+        обработчик входящего сообщения до сохранения истории.
         """
         self._session_revoked = True
         await self._mark_telegram_session_revoked(error=REVOKED_SESSION_MESSAGE)
         self._state = AgentRuntimeState.ERROR
+
+    async def _disconnect_revoked_client(self) -> None:
+        """Отключить клиент уже после завершения активного хода."""
         try:
             await self._telegram_client.disconnect()
         except Exception:
@@ -565,6 +570,7 @@ class MimicAgentRuntime:
             logger.info(f"Agent not running (state={self._state}), starting...")
             await self.start()
 
+        disconnect_revoked_client = False
         async with self._trigger_lock:
             logger.debug(f"Processing message from {trigger.peer}: {trigger.text[:100]}")
             turn_id = str(uuid4())
@@ -730,6 +736,7 @@ class MimicAgentRuntime:
                     dead_session = _is_dead_session_error(e)
                     if dead_session:
                         await self._revoke_dead_session()
+                        disconnect_revoked_client = True
                     await self._record_event(
                         event_type="message.send_failed",
                         status="failed",
@@ -759,6 +766,9 @@ class MimicAgentRuntime:
                 media=trigger.media or None,
                 reply=reply_payload,
             )
+
+        if disconnect_revoked_client:
+            await self._disconnect_revoked_client()
 
         return AgentTriggerResult(
             agent_id=self.config.agent_id,
