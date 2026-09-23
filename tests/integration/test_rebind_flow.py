@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from uuid import uuid4
 
-import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -84,7 +83,7 @@ async def test_rebind_reuses_wizard_row_and_does_not_conflict_with_unique_marker
     assert telegram_row.api_id == 12345
 
 
-async def test_start_rebind_without_onboarding_row_raises(
+async def test_start_rebind_recovers_missing_onboarding_row_from_agent_store(
     db_session_factory: async_sessionmaker[AsyncSession],
     clean_slot: Slot,
 ) -> None:
@@ -92,14 +91,15 @@ async def test_start_rebind_without_onboarding_row_raises(
     agent_id = uuid4()
     repository = DatabaseOnboardingRepository(db_session_factory)
     store = DatabaseAgentStore(db_session_factory)
+    account = FakeTelegramAccount()
     service = AgentOnboardingService(
         repository=repository,
-        telegram_factory=FakeTelegramAuthClientFactory(FakeTelegramAccount()),
+        telegram_factory=FakeTelegramAuthClientFactory(account),
         agent_store=store,
     )
 
-    # Агент создан через API: онбординг-строки у него нет, поэтому номер и
-    # приложение взять неоткуда — перепривязка недоступна.
+    # У старого/API-агента нет onboarding-строки, но telegram_sessions хранит
+    # номер и приложение, поэтому сервис восстанавливает внутреннюю строку.
     await store.create_from_onboarding(
         OnboardingSession(
             onboarding_id=agent_id,
@@ -114,5 +114,11 @@ async def test_start_rebind_without_onboarding_row_raises(
         )
     )
 
-    with pytest.raises(ValueError):
-        await service.start_rebind(agent_id, owner_id=owner_id)
+    status = await service.start_rebind(agent_id, owner_id=owner_id)
+
+    assert status.authorization_status is TelegramLoginStatus.CODE_REQUESTED
+    assert account.phone == "+79990000000"
+    restored = await repository.get(agent_id)
+    assert restored.completed_agent_id == agent_id
+    assert restored.api_id == 12345
+    assert restored.api_hash_secret == "api-hash"
