@@ -107,9 +107,21 @@ export function RebindWizard({
       onInvalidate();
       setStep('done');
     } catch (err: unknown) {
+      const apiError = err as ApiError;
+      const message = apiError.message ?? 'Не удалось завершить перепривязку';
+      if (apiError.status === 404) {
+        onToast(message, 'error');
+        await requestCode();
+        return;
+      }
+      if (apiError.status !== undefined && apiError.status < 500) {
+        setError(message);
+        onToast(message, 'error');
+        setStep('code');
+        return;
+      }
       // Код уже израсходован, повторный submitCode его не примет: даём
-      // повторить именно подтверждение — оно идемпотентно на сервере.
-      const message = (err as ApiError).message ?? 'Не удалось завершить перепривязку';
+      // повторить именно подтверждение только при сетевом/5xx-сбое.
       setError(message);
       onToast(message, 'error');
       setStep('confirm-failed');

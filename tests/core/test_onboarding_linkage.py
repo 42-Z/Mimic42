@@ -89,6 +89,45 @@ async def test_request_code_rejects_cross_owner_onboarding_id() -> None:
 
 
 @pytest.mark.asyncio
+async def test_request_code_rejects_completed_onboarding_id() -> None:
+    owner_id = uuid4()
+    agent_id = uuid4()
+    repository = InMemoryOnboardingRepository()
+    await repository.save(
+        OnboardingSession(
+            onboarding_id=agent_id,
+            owner_id=owner_id,
+            api_id=12345,
+            api_hash_secret="old-hash",
+            phone_number="+79990000000",
+            authorization_status=TelegramLoginStatus.AUTHORIZED,
+            session_secret="old-session",
+            completed_agent_id=agent_id,
+        )
+    )
+    service = AgentOnboardingService(
+        repository=repository,
+        telegram_factory=_fake_telegram_factory(),
+    )
+
+    with pytest.raises(ValueError, match="завершен"):
+        await service.request_telegram_code(
+            TelegramCredentials(
+                owner_id=owner_id,
+                api_id=777,
+                api_hash="different-hash",
+                phone_number="+79991111111",
+            ),
+            onboarding_id=agent_id,
+        )
+
+    unchanged = await repository.get(agent_id)
+    assert unchanged.phone_number == "+79990000000"
+    assert unchanged.api_id == 12345
+    assert unchanged.session_secret == "old-session"
+
+
+@pytest.mark.asyncio
 async def test_start_rebind_reuses_stored_account() -> None:
     owner_id = uuid4()
     agent_id = uuid4()
@@ -175,7 +214,7 @@ async def test_rebind_to_agent_updates_only_session_string() -> None:
             onboarding_id=onboarding_id,
             owner_id=owner_id,
             api_id=12345,
-            api_hash_secret="new-hash",
+            api_hash_secret="old-hash",
             phone_number="+79990000000",
             authorization_status=TelegramLoginStatus.AUTHORIZED,
             session_secret="new-session-string",

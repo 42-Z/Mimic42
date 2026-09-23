@@ -15,6 +15,7 @@ from mimic42.core.agent_store import (
     AgentRecord,
     ConversationPage,
     ConversationTurn,
+    TelegramAccountMismatchError,
     ToolCallRecord,
     reply_target_of,
 )
@@ -108,6 +109,7 @@ class DatabaseAgentStore:
             session.api_id is None
             or session.api_hash_secret is None
             or session.session_secret is None
+            or session.phone_number is None
         ):
             raise ValueError("Onboarding session is missing Telegram credentials")
 
@@ -119,6 +121,19 @@ class DatabaseAgentStore:
             )
             if telegram_session is None:
                 raise KeyError(f"Agent {agent_id} does not have a telegram session")
+            stored_api_hash = telegram_session.api_hash_ciphertext or ""
+            rebound_api_hash = session.api_hash_secret
+            if self._cipher is not None:
+                stored_api_hash = self._cipher.decrypt(stored_api_hash)
+                rebound_api_hash = self._cipher.decrypt(rebound_api_hash)
+            if (
+                telegram_session.phone_number != session.phone_number
+                or telegram_session.api_id != session.api_id
+                or stored_api_hash != rebound_api_hash
+            ):
+                raise TelegramAccountMismatchError(
+                    "Rebind session belongs to a different Telegram account or application"
+                )
             telegram_session.session_ciphertext = session.session_secret
             telegram_session.authorization_status = "authorized"
             telegram_session.last_authorized_at = _now()

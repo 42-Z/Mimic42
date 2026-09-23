@@ -140,6 +140,12 @@ class OnboardingOwnershipError(PermissionError):
         self.onboarding_id = onboarding_id
 
 
+class OnboardingAlreadyCompletedError(ValueError):
+    def __init__(self, onboarding_id: UUID) -> None:
+        super().__init__("Онбординг уже завершен; используйте перепривязку Telegram")
+        self.onboarding_id = onboarding_id
+
+
 class TelegramPasswordRequiredError(RuntimeError):
     pass
 
@@ -193,12 +199,15 @@ class AgentOnboardingService:
         credentials: TelegramCredentials,
         *,
         onboarding_id: UUID | None = None,
+        allow_completed: bool = False,
     ) -> OnboardingPublicStatus:
         phone_number = credentials.phone_number
         if onboarding_id is not None:
             existing = await self._repository.get(onboarding_id)
             if existing.owner_id != credentials.owner_id:
                 raise OnboardingOwnershipError(onboarding_id)
+            if existing.completed_agent_id is not None and not allow_completed:
+                raise OnboardingAlreadyCompletedError(onboarding_id)
             name = existing.name
             soul_prompt = existing.soul_prompt
             # Метка завершения переживает перезапись строки: иначе rebind-сессия
@@ -267,7 +276,11 @@ class AgentOnboardingService:
             api_hash=self._cipher.decrypt(existing.api_hash_secret),
             phone_number=existing.phone_number,
         )
-        return await self.request_telegram_code(credentials, onboarding_id=existing.onboarding_id)
+        return await self.request_telegram_code(
+            credentials,
+            onboarding_id=existing.onboarding_id,
+            allow_completed=True,
+        )
 
     async def verify_telegram_code(
         self,
@@ -351,6 +364,25 @@ class AgentOnboardingService:
         остаётся помеченной completed_agent_id и невидимой мастеру: она же
         будет переиспользована при следующей перепривязке.
         """
+        session = await self._validated_rebind_session(onboarding_id, agent_id, owner_id=owner_id)
+        if self._agent_store is None:
+            raise RuntimeError("Хранилище агентов не настроено")
+        await self._agent_store.rebind_telegram_session(agent_id, session)
+        return AgentStatus(
+            agent_id=agent_id,
+            owner_id=session.owner_id,
+            state=AgentRuntimeState.STOPPED,
+        )
+
+    async def validate_rebind_to_agent(
+        self, onboarding_id: UUID, agent_id: UUID, *, owner_id: UUID
+    ) -> None:
+        """Validate a rebind before stopping the current runtime."""
+        await self._validated_rebind_session(onboarding_id, agent_id, owner_id=owner_id)
+
+    async def _validated_rebind_session(
+        self, onboarding_id: UUID, agent_id: UUID, *, owner_id: UUID
+    ) -> OnboardingSession:
         session = await self._repository.get(onboarding_id)
         if session.owner_id != owner_id:
             raise OnboardingOwnershipError(onboarding_id)
@@ -360,14 +392,7 @@ class AgentOnboardingService:
             raise OnboardingOwnershipError(onboarding_id)
         if session.authorization_status is not TelegramLoginStatus.AUTHORIZED:
             raise TelegramAuthorizationIncompleteError(onboarding_id)
-        if self._agent_store is None:
-            raise RuntimeError("Хранилище агентов не настроено")
-        await self._agent_store.rebind_telegram_session(agent_id, session)
-        return AgentStatus(
-            agent_id=agent_id,
-            owner_id=session.owner_id,
-            state=AgentRuntimeState.STOPPED,
-        )
+        return session
 
     async def build_runtime_config(self, onboarding_id: UUID) -> AgentRuntimeConfig:
         session = await self._repository.get(onboarding_id)

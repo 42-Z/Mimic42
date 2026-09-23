@@ -4,10 +4,12 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
+from cryptography.fernet import Fernet
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mimic42.core.agent_runtime import AgentRuntimeState
+from mimic42.core.crypto import FernetSecretCipher
 from mimic42.core.model_catalog import DEFAULT_LLM_MODEL
 from mimic42.core.onboarding import OnboardingSession, TelegramLoginStatus
 from mimic42.integrations.database_agent_store import DatabaseAgentStore
@@ -39,9 +41,9 @@ def _make_rebind_session(owner_id: UUID) -> OnboardingSession:
     return OnboardingSession(
         onboarding_id=uuid4(),
         owner_id=owner_id,
-        api_id=777,
-        api_hash_secret="new-encrypted-hash",
-        phone_number="+79990000001",
+        api_id=12345,
+        api_hash_secret="encrypted-hash",
+        phone_number="+79990000000",
         authorization_status=TelegramLoginStatus.AUTHORIZED,
         session_secret="new-encrypted-session",
     )
@@ -121,7 +123,32 @@ async def test_rebind_telegram_session_clears_revoked_state(
     assert row.last_error is None
 
 
-@pytest.mark.parametrize("missing_field", ["api_id", "api_hash_secret", "session_secret"])
+async def test_rebind_accepts_fresh_ciphertexts_for_the_same_account(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    owner_id = clean_slot.persona("full").user_id
+    agent_id = uuid4()
+    cipher = FernetSecretCipher(Fernet.generate_key().decode())
+    store = DatabaseAgentStore(db_session_factory, cipher=cipher)
+    initial = _make_session(owner_id, agent_id, "Mimic")
+    initial.api_hash_secret = cipher.encrypt("api-hash")
+    initial.session_secret = cipher.encrypt("old-session")
+    await store.create_from_onboarding(initial)
+    rebound = _make_rebind_session(owner_id)
+    rebound.api_hash_secret = cipher.encrypt("api-hash")
+    rebound.session_secret = cipher.encrypt("new-session")
+
+    await store.rebind_telegram_session(agent_id, rebound)
+
+    config = await store.get_runtime_config(agent_id)
+    assert config.telegram_api_hash == "api-hash"
+    assert config.telegram_session_string == "new-session"
+
+
+@pytest.mark.parametrize(
+    "missing_field", ["api_id", "api_hash_secret", "session_secret", "phone_number"]
+)
 async def test_rebind_telegram_session_rejects_missing_credentials(
     db_session_factory: async_sessionmaker[AsyncSession],
     clean_slot: Slot,

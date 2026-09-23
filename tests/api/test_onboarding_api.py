@@ -143,6 +143,53 @@ async def test_onboarding_fails_when_no_telegram_app_configured() -> None:
 
 
 @pytest.mark.asyncio
+async def test_onboarding_cannot_replace_a_completed_agents_telegram_account() -> None:
+    owner_id = uuid4()
+    agent_id = uuid4()
+    repository = InMemoryOnboardingRepository()
+    await repository.save(
+        OnboardingSession(
+            onboarding_id=agent_id,
+            owner_id=owner_id,
+            api_id=12345,
+            api_hash_secret="old-hash",
+            phone_number="+79990000000",
+            authorization_status=TelegramLoginStatus.AUTHORIZED,
+            session_secret="old-session",
+            completed_agent_id=agent_id,
+        )
+    )
+    service = AgentOnboardingService(
+        repository=repository,
+        telegram_factory=FakeTelegramAuthClientFactory(FakeTelegramAccount()),
+    )
+    app = create_app(
+        onboarding_service=service,
+        auth_verifier=FakeAuthVerifier(owner_id),
+        settings=Settings(telegram_api_id=777, telegram_api_hash="deployment-hash"),
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        response = await client.post(
+            "/api/v1/onboarding/telegram",
+            headers=AUTH_HEADERS,
+            json={
+                "onboarding_id": str(agent_id),
+                "phone_number": "+79991111111",
+            },
+        )
+
+    assert response.status_code == 409
+    assert "перепривязк" in response.json()["detail"].lower()
+    unchanged = await repository.get(agent_id)
+    assert unchanged.phone_number == "+79990000000"
+    assert unchanged.session_secret == "old-session"
+
+
+@pytest.mark.asyncio
 async def test_verify_code_reports_phone_without_telegram_account() -> None:
     from telethon.errors import PhoneNumberUnoccupiedError
 

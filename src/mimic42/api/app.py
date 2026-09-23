@@ -27,6 +27,7 @@ from mimic42.core.agent_store import (
     AgentRecord,
     AgentStore,
     ConversationPage,
+    TelegramAccountMismatchError,
 )
 from mimic42.core.crypto import FernetSecretCipher
 from mimic42.core.manager import (
@@ -40,6 +41,7 @@ from mimic42.core.memory import LongTermMemoryLike, RuntimeMemoryService
 from mimic42.core.onboarding import (
     AgentOnboardingService,
     AgentProfileInput,
+    OnboardingAlreadyCompletedError,
     OnboardingNotFoundError,
     OnboardingOwnershipError,
     OnboardingPublicStatus,
@@ -416,6 +418,11 @@ def create_app(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Сессия онбординга принадлежит другому пользователю",
             ) from exc
+        except OnboardingAlreadyCompletedError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Онбординг уже завершён. Используйте перепривязку Telegram.",
+            ) from exc
         except Exception as exc:
             translated = _telegram_login_http_error(exc)
             if translated is not None:
@@ -732,7 +739,7 @@ def create_app(
         except HTTPException:
             raise _onboarding_not_found(payload.onboarding_id) from None
         try:
-            result = await _get_onboarding_service(app).rebind_to_agent(
+            await _get_onboarding_service(app).validate_rebind_to_agent(
                 payload.onboarding_id,
                 agent_id,
                 owner_id=current_user.user_id,
@@ -757,6 +764,24 @@ def create_app(
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Не удалось остановить агента перед перепривязкой. Повторите подтверждение.",
+            ) from exc
+        try:
+            result = await _get_onboarding_service(app).rebind_to_agent(
+                payload.onboarding_id,
+                agent_id,
+                owner_id=current_user.user_id,
+            )
+        except OnboardingOwnershipError as exc:
+            raise _onboarding_not_found(payload.onboarding_id) from exc
+        except TelegramAuthorizationIncompleteError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Авторизация Telegram не завершена. Запросите новый код.",
+            ) from exc
+        except TelegramAccountMismatchError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Новая сессия принадлежит другому Telegram-аккаунту.",
             ) from exc
         try:
             await manager.reload_agent(agent_id)

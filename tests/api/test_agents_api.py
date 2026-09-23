@@ -696,13 +696,16 @@ async def test_rebind_confirm_returns_503_when_runtime_lifecycle_fails(
     # подтверждение (перепривязка в базе идемпотентна).
     assert confirm_response.status_code == 503
     assert "Повторите подтверждение" in confirm_response.json()["detail"]
+    config = await store.get_runtime_config(agent_id)
     if stop_error:
         # Живой рантайм не пересобираем: reload_agent вынимает старый из реестра
         # до close, и новый клиент поднялся бы со свежей сессией, пока старый
         # ещё держит старую.
         assert ("reload", agent_id) not in manager.calls
+        assert config.telegram_session_string == "old-session"
     else:
         assert manager.calls[-2:] == [("stop", agent_id), ("reload", agent_id)]
+        assert config.telegram_session_string == "fake-session:+79990000000"
 
 
 @pytest.mark.asyncio

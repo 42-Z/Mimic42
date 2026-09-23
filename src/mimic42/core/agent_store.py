@@ -121,6 +121,10 @@ class AgentStore(Protocol):
     ) -> ConversationPage: ...
 
 
+class TelegramAccountMismatchError(ValueError):
+    """A rebind session belongs to a different Telegram account or app."""
+
+
 def reply_target_of(payload: dict[str, Any]) -> int | None:
     """Reply target of an answer row: structured response `reply_to`.
 
@@ -146,6 +150,7 @@ class InMemoryAgentStore:
     ) -> None:
         self._agents = {agent.agent_id: agent for agent in agents or []}
         self._configs: dict[UUID, AgentRuntimeConfig] = {}
+        self._telegram_accounts: dict[UUID, tuple[int, str, str | None]] = {}
         self._messages = messages or []
         self._activities = activities or []
 
@@ -179,6 +184,11 @@ class InMemoryAgentStore:
             soul_prompt=session.soul_prompt,
             name=session.name or "AI",
         )
+        self._telegram_accounts[record.agent_id] = (
+            session.api_id,
+            session.api_hash_secret,
+            session.phone_number,
+        )
         return record
 
     async def rebind_telegram_session(self, agent_id: UUID, session: OnboardingSession) -> None:
@@ -191,11 +201,18 @@ class InMemoryAgentStore:
             session.api_id is None
             or session.api_hash_secret is None
             or session.session_secret is None
+            or session.phone_number is None
         ):
             raise ValueError("Onboarding session is missing Telegram credentials")
         config = self._configs.get(agent_id)
         if config is None:
             raise KeyError(f"Agent {agent_id} does not have a runtime config")
+        expected_account = self._telegram_accounts.get(agent_id)
+        rebound_account = (session.api_id, session.api_hash_secret, session.phone_number)
+        if expected_account != rebound_account:
+            raise TelegramAccountMismatchError(
+                "Rebind session belongs to a different Telegram account or application"
+            )
         self._configs[agent_id] = config.model_copy(
             update={
                 "telegram_session_string": session.session_secret,
@@ -222,6 +239,7 @@ class InMemoryAgentStore:
     async def delete_agent(self, agent_id: UUID) -> None:
         self._agents.pop(agent_id, None)
         self._configs.pop(agent_id, None)
+        self._telegram_accounts.pop(agent_id, None)
 
     async def list_messages(
         self, *, agent_id: UUID, limit: int = 50, offset: int = 0

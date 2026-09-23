@@ -91,4 +91,33 @@ describe('RebindWizard', () => {
     expect(submitCode).toHaveBeenCalledTimes(1);
     expect(confirm).toHaveBeenCalledTimes(2);
   });
+
+  test('returns to code entry instead of claiming success after a 409', async () => {
+    spyOn(agentsApi, 'rebindTelegram').mockResolvedValue({
+      onboarding_id: ONBOARDING_ID,
+      owner_id: AGENT_ID,
+      authorization_status: 'code_requested',
+      phone_number: '+79991234567',
+    });
+    spyOn(onboardingApi, 'submitCode').mockResolvedValue({
+      onboarding_id: ONBOARDING_ID,
+      owner_id: AGENT_ID,
+      authorization_status: 'authorized',
+      phone_number: '+79991234567',
+    });
+    spyOn(agentsApi, 'confirmRebind').mockRejectedValue({
+      status: 409,
+      message: 'Авторизация Telegram не завершена',
+    });
+    const user = userEvent.setup();
+    renderWizard();
+
+    await screen.findByLabelText('Код подтверждения');
+    await user.type(screen.getByLabelText('Код подтверждения'), '12345');
+    await user.click(screen.getByRole('button', { name: 'Подтвердить →' }));
+
+    expect(await screen.findByLabelText('Код подтверждения')).toBeTruthy();
+    expect(screen.queryByText(/Telegram уже привязан/)).toBeNull();
+    expect(screen.getByText('Авторизация Telegram не завершена')).toBeTruthy();
+  });
 });
