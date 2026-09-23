@@ -43,6 +43,9 @@ async def _seed_agent_with_session(
             TelegramSessionModel(
                 agent_id=agent_id,
                 session_name=agent_id.hex,
+                phone_number="+10000000000",
+                api_id=12345,
+                api_hash_ciphertext="new-hash",
                 session_ciphertext="old-session",
                 authorization_status="authorized",
             )
@@ -220,6 +223,7 @@ async def test_old_runtime_cannot_revoke_newly_rebound_session(
             owner_id=owner_id,
             api_id=12345,
             api_hash_secret="new-hash",
+            phone_number="+10000000000",
             session_secret="new-session",
             authorization_status=TelegramLoginStatus.AUTHORIZED,
         ),
