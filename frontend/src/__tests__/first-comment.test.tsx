@@ -22,7 +22,7 @@ function variant(text: string, key = text): FirstCommentDraftVariant {
 }
 
 /** Секция с настоящим состоянием: обновления-функции применяются как в форме. */
-function renderSection(initial: FirstCommentDraft) {
+function renderSection(initial: FirstCommentDraft, error?: string) {
   const seen: { current: FirstCommentDraft } = { current: initial };
   function Harness() {
     const [value, setValue] = useState(initial);
@@ -32,6 +32,7 @@ function renderSection(initial: FirstCommentDraft) {
         agentId={AGENT_ID}
         value={value}
         onChange={(update) => setValue((prev) => update(prev))}
+        error={error}
       />
     );
   }
@@ -203,6 +204,26 @@ describe('FirstCommentSettingsSection', () => {
 
   test('пустой вариант подсвечивается до сохранения', () => {
     renderSection({ enabled: true, variants: [variant('  ')] });
+
+    expect(
+      screen.getByText('Добавьте текст или картинку — иначе вариант не отправится'),
+    ).toBeTruthy();
+  });
+
+  test('новый вариант не ругается, пока в поле не начинали вводить', async () => {
+    renderSection({ enabled: true, variants: [] });
+    const empty = 'Добавьте текст или картинку — иначе вариант не отправится';
+
+    await userEvent.click(screen.getByRole('button', { name: 'Добавить вариант' }));
+    expect(screen.queryByText(empty)).toBeNull();
+
+    await userEvent.click(screen.getByLabelText('Текст варианта 1'));
+    await userEvent.tab();
+    expect(screen.getByText(empty)).toBeTruthy();
+  });
+
+  test('после неудачного сохранения пустой вариант подсвечен сразу', () => {
+    renderSection({ enabled: true, variants: [variant('')] }, 'Нужен текст или картинка');
 
     expect(
       screen.getByText('Добавьте текст или картинку — иначе вариант не отправится'),

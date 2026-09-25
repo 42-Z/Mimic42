@@ -136,7 +136,7 @@ export function FirstCommentSettingsSection({
           <h3 className="font-mono text-sm font-medium text-void-200 uppercase tracking-wider">
             Первый комментарий
           </h3>
-          <p className="font-mono text-xs text-void-500 max-w-prose">
+          <p className="font-mono text-xs text-void-300 max-w-prose">
             Под новым постом канала с открытыми комментариями агент сразу оставляет комментарий —
             без задержки и без ИИ. Если вариантов несколько, для каждого поста берётся случайный.
           </p>
@@ -151,7 +151,7 @@ export function FirstCommentSettingsSection({
       {value.enabled && (
         <div className="space-y-3">
           {value.variants.length === 0 && (
-            <p className="font-mono text-xs text-void-500">
+            <p className="font-mono text-xs text-void-300">
               Пока ни одного варианта — комментировать нечем.
             </p>
           )}
@@ -162,6 +162,7 @@ export function FirstCommentSettingsSection({
               agentId={agentId}
               index={index}
               variant={variant}
+              showErrors={Boolean(error)}
               onPatch={(patch) => patchVariant(variant.key, patch)}
               onRemove={() => removeVariant(variant.key)}
             />
@@ -172,7 +173,7 @@ export function FirstCommentSettingsSection({
             Добавить вариант
           </Button>
           {atLimit && (
-            <p className="font-mono text-xs text-void-500">
+            <p className="font-mono text-xs text-void-300">
               Больше {FIRST_COMMENT_MAX_VARIANTS} вариантов не сохранить.
             </p>
           )}
@@ -195,14 +196,22 @@ interface VariantRowProps {
   agentId: string;
   index: number;
   variant: FirstCommentDraftVariant;
+  /** Сохранение не прошло проверку — пустой вариант подсвечивается сразу. */
+  showErrors: boolean;
   onPatch: (patch: Partial<FirstCommentVariant>) => void;
   onRemove: () => void;
 }
 
-function VariantRow({ agentId, index, variant, onPatch, onRemove }: VariantRowProps) {
+function VariantRow({ agentId, index, variant, showErrors, onPatch, onRemove }: VariantRowProps) {
   const fileInput = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  // Только что добавленный вариант пуст по определению: ругать его, пока в
+  // поле ничего не начинали вводить, рано. Пустой вариант из сохранённых
+  // настроек — уже ошибка.
+  const [touched, setTouched] = useState(
+    () => variant.text.length > 0 || variant.image_path !== null
+  );
 
   // С картинкой текст уезжает подписью, а у неё лимит вчетверо меньше.
   const maxLength = variant.image_path ? FIRST_COMMENT_MAX_CAPTION : FIRST_COMMENT_MAX_TEXT;
@@ -234,7 +243,7 @@ function VariantRow({ agentId, index, variant, onPatch, onRemove }: VariantRowPr
   return (
     <div className="rounded-sm border border-void-700 bg-void-900/40 p-3 space-y-3">
       <div className="flex items-center justify-between">
-        <span className="font-mono text-xs text-void-500 uppercase tracking-wider">
+        <span className="font-mono text-xs text-void-300 uppercase tracking-wider">
           Вариант {index + 1}
         </span>
         <button
@@ -250,6 +259,8 @@ function VariantRow({ agentId, index, variant, onPatch, onRemove }: VariantRowPr
       <Textarea
         value={variant.text}
         onChange={(e) => onPatch({ text: e.target.value })}
+        onBlur={() => setTouched(true)}
+        aria-label={`Текст варианта ${index + 1}`}
         placeholder={variant.image_path ? 'Подпись к картинке (необязательно)' : 'Текст комментария'}
         className="min-h-[80px]"
         showCount
@@ -257,7 +268,7 @@ function VariantRow({ agentId, index, variant, onPatch, onRemove }: VariantRowPr
         error={
           tooLong
             ? `Не больше ${maxLength} символов`
-            : isEmpty
+            : isEmpty && (touched || showErrors)
               ? 'Добавьте текст или картинку — иначе вариант не отправится'
               : undefined
         }
@@ -293,7 +304,7 @@ function VariantRow({ agentId, index, variant, onPatch, onRemove }: VariantRowPr
               <ImagePlus className="h-4 w-4" />
               {uploading ? 'Загружаем…' : 'Добавить картинку'}
             </Button>
-            <span className="font-mono text-xs text-void-500">
+            <span className="font-mono text-xs text-void-300">
               JPEG или PNG до {MAX_IMAGE_MB} МБ
             </span>
           </div>
@@ -336,7 +347,7 @@ function ImagePreview({
           'border border-void-700 bg-void-800'
         )}
       >
-        {status === 'loading' && <Loader2 className="h-4 w-4 animate-spin text-void-500" />}
+        {status === 'loading' && <Loader2 className="h-4 w-4 animate-spin text-void-300" />}
         {status === 'error' && (
           <span className="font-mono text-[10px] text-crimson-400 text-center px-1">
             не открылась
@@ -348,11 +359,11 @@ function ImagePreview({
         )}
       </div>
       <div className="flex min-w-0 flex-col gap-1">
-        <span className="font-mono text-xs text-void-400 break-all">{name ?? storagePath}</span>
+        <span className="font-mono text-xs text-void-200 break-all">{name ?? storagePath}</span>
         <button
           type="button"
           onClick={onRemove}
-          className="flex w-fit items-center gap-1 font-mono text-xs text-void-500 transition-colors hover:text-crimson-400 focus:outline-none focus:ring-1 focus:ring-crimson-500"
+          className="flex w-fit items-center gap-1 font-mono text-xs text-void-300 transition-colors hover:text-crimson-400 focus:outline-none focus:ring-1 focus:ring-crimson-500"
         >
           <X className="h-3 w-3" />
           Убрать картинку
