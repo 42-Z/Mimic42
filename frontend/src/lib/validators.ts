@@ -108,6 +108,8 @@ export const telegram2FASchema = z.object({
 export const FIRST_COMMENT_MAX_TEXT = 4096;
 export const FIRST_COMMENT_MAX_CAPTION = 1024;
 export const FIRST_COMMENT_MAX_VARIANTS = 20;
+// Предел Telegram для фото; бэкенд проверяет его же (MAX_PHOTO_BYTES).
+export const FIRST_COMMENT_MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 
 export const firstCommentVariantSchema = z
   .object({

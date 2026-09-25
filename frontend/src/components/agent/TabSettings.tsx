@@ -12,6 +12,7 @@ import {
   EMPTY_FIRST_COMMENT,
   FirstCommentSettingsSection,
   readFirstComment,
+  type FirstCommentDraft,
 } from '@/components/agent/FirstCommentSettings';
 import { DEFAULT_MODEL, optionsIncluding } from '@/lib/models';
 import { agentsApi } from '@/lib/api';
@@ -19,13 +20,20 @@ import { pickReasoningValue, reasoningLabel, reasoningOptionValues } from '@/lib
 import { agentSettingsSchema, type AgentSettingsValues } from '@/lib/validators';
 import type { ApiError } from '@/types';
 
+// В форме у вариантов первого комментария есть ключи строк; при разборе схемой
+// они отбрасываются и в настройки не попадают.
+type SettingsFormValues = Omit<AgentSettingsValues, 'first_comment'> & {
+  first_comment: FirstCommentDraft;
+};
+type TextField = Exclude<keyof AgentSettingsValues, 'first_comment'>;
+
 export function TabSettings({ agentId }: { agentId: string }) {
   const { toast } = useToast();
   const { data: details, isLoading } = useAgentDetails(agentId);
   const update = useUpdateAgentSettings(agentId);
   const { data: reasoningByModel } = useModelReasoning();
 
-  const [values, setValues] = useState<AgentSettingsValues>({
+  const [values, setValues] = useState<SettingsFormValues>({
     name: '', soul_prompt: '', reasoning_effort: 'high', model: DEFAULT_MODEL,
     first_comment: EMPTY_FIRST_COMMENT,
   });
@@ -56,7 +64,7 @@ export function TabSettings({ agentId }: { agentId: string }) {
     }
   }, [values.model, values.reasoning_effort, reasoningOptions, reasoningMeta]);
 
-  const set = (field: keyof AgentSettingsValues, value: string) => {
+  const set = (field: TextField, value: string) => {
     setValues((v) => ({ ...v, [field]: value }));
     setDirty(true);
   };
@@ -176,9 +184,9 @@ export function TabSettings({ agentId }: { agentId: string }) {
 
       <FirstCommentSettingsSection
         agentId={agentId}
-        value={values.first_comment ?? EMPTY_FIRST_COMMENT}
-        onChange={(next) => {
-          setValues((v) => ({ ...v, first_comment: next }));
+        value={values.first_comment}
+        onChange={(update) => {
+          setValues((v) => ({ ...v, first_comment: update(v.first_comment) }));
           setDirty(true);
         }}
         error={formErrors.first_comment}
