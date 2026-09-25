@@ -7,6 +7,8 @@ from httpx import ASGITransport, AsyncClient
 
 from mimic42.api.app import _telegram_login_http_error, create_app
 from mimic42.config import Settings
+from mimic42.core.agent_runtime import AgentRuntimeState
+from mimic42.core.agent_store import AgentRecord, InMemoryAgentStore
 from mimic42.core.onboarding import (
     AgentOnboardingService,
     InMemoryOnboardingRepository,
@@ -313,3 +315,113 @@ async def test_finalize_agent_reports_incomplete_authorization_in_russian() -> N
 
     assert response.status_code == 409
     assert "авторизац" in response.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_finalize_agent_refuses_to_take_over_a_foreign_agent() -> None:
+    """Issue #95: поддельная онбординг-сессия с id чужого агента не должна
+    переприсваивать агента вместе с его Telegram-сессией и характером."""
+    owner_id = uuid4()
+    foreign_owner_id = uuid4()
+    agent_id = uuid4()
+    store = InMemoryAgentStore(
+        agents=[
+            AgentRecord(
+                agent_id=agent_id,
+                owner_id=foreign_owner_id,
+                name="Легальный агент",
+                state=AgentRuntimeState.STOPPED,
+            )
+        ]
+    )
+    repository = InMemoryOnboardingRepository()
+    await repository.save(
+        OnboardingSession(
+            onboarding_id=agent_id,
+            owner_id=owner_id,
+            api_id=12345,
+            api_hash_secret="forged-hash",
+            phone_number="+79990000000",
+            authorization_status=TelegramLoginStatus.AUTHORIZED,
+            session_secret="forged-session",
+            name="Хакер",
+            soul_prompt="Характер взломщика",
+        )
+    )
+    service = AgentOnboardingService(
+        repository=repository,
+        telegram_factory=FakeTelegramAuthClientFactory(FakeTelegramAccount()),
+        agent_store=store,
+    )
+    app = create_app(
+        onboarding_service=service,
+        agent_store=store,
+        auth_verifier=FakeAuthVerifier(owner_id),
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        response = await client.post(
+            f"/api/v1/onboarding/{agent_id}/agent",
+            headers=AUTH_HEADERS,
+            json={"name": "Хакер", "soul_prompt": "Характер взломщика"},
+        )
+
+    assert response.status_code == 409
+    assert "занят другим агентом" in response.json()["detail"]
+    assert await store.list_agents(owner_id=owner_id) == []
+    kept = await store.list_agents(owner_id=foreign_owner_id)
+    assert [(agent.agent_id, agent.name) for agent in kept] == [(agent_id, "Легальный агент")]
+
+
+@pytest.mark.asyncio
+async def test_finalize_agent_can_be_retried_by_its_owner() -> None:
+    """Гвард переприсвоения не должен ломать повторную финализацию: её делает
+    тот же пользователь, когда ответ предыдущего запроса не дошёл."""
+    owner_id = uuid4()
+    agent_id = uuid4()
+    store = InMemoryAgentStore()
+    repository = InMemoryOnboardingRepository()
+    await repository.save(
+        OnboardingSession(
+            onboarding_id=agent_id,
+            owner_id=owner_id,
+            api_id=12345,
+            api_hash_secret="api-hash",
+            phone_number="+79990000000",
+            authorization_status=TelegramLoginStatus.AUTHORIZED,
+            session_secret="session",
+        )
+    )
+    service = AgentOnboardingService(
+        repository=repository,
+        telegram_factory=FakeTelegramAuthClientFactory(FakeTelegramAccount()),
+        agent_store=store,
+    )
+    app = create_app(
+        onboarding_service=service,
+        agent_store=store,
+        auth_verifier=FakeAuthVerifier(owner_id),
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        first = await client.post(
+            f"/api/v1/onboarding/{agent_id}/agent",
+            headers=AUTH_HEADERS,
+            json={"name": "Mimic", "soul_prompt": "Short replies"},
+        )
+        second = await client.post(
+            f"/api/v1/onboarding/{agent_id}/agent",
+            headers=AUTH_HEADERS,
+            json={"name": "Mimic", "soul_prompt": "Short replies"},
+        )
+
+    assert first.status_code == 201
+    assert second.status_code == 201
+    agents = await store.list_agents(owner_id=owner_id)
+    assert [agent.agent_id for agent in agents] == [agent_id]
