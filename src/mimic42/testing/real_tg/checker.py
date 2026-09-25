@@ -14,20 +14,26 @@ import threading
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from io import BytesIO
 from typing import Any, cast
 from uuid import UUID
 
 import asyncpg
 from telethon import TelegramClient, events, utils
+from telethon.errors import ChatNotModifiedError, UserNotParticipantError
 from telethon.sessions import StringSession
 from telethon.tl.functions.channels import (
     CreateChannelRequest,
     DeleteChannelRequest,
+    GetFullChannelRequest,
+    GetParticipantRequest,
     InviteToChannelRequest,
+    SetDiscussionGroupRequest,
+    TogglePreHistoryHiddenRequest,
     ToggleSlowModeRequest,
 )
 from telethon.tl.functions.contacts import ImportContactsRequest
-from telethon.tl.types import InputPhoneContact
+from telethon.tl.types import InputPhoneContact, PeerChannel
 
 from mimic42.testing.slots import plain_dsn
 
@@ -43,6 +49,27 @@ class SeenMessage:
     text: str
     reply_to: int | None
     date: datetime
+
+
+def _digits(phone: str) -> str:
+    """Номер без «+», пробелов и скобок: так его отдаёт Telegram в User.phone."""
+    return "".join(ch for ch in phone if ch.isdigit())
+
+
+@dataclass(frozen=True)
+class ThreadMessage:
+    """Сообщение группы обсуждения канала глазами проверяющего."""
+
+    message_id: int
+    sender_id: int | None
+    text: str
+    reply_to: int | None
+    # У автопересылки поста в обсуждение: ID поста в самом канале.
+    channel_post: int | None
+    # Одинаковый ID у двух комментариев — одна и та же загруженная фотография.
+    photo_id: int | None
+    # loop.time() в момент получения: задержки считаются по одним часам.
+    arrived: float
 
 
 class Checker:
@@ -74,6 +101,14 @@ class Checker:
         return self._client
 
     async def mimic_phones(self, dsn: str, owner_id: UUID) -> list[str]:
+        """Номера мимиков тестового аккаунта, кроме номера самого проверяющего.
+
+        Аккаунт проверяющего может оказаться онборженным агентом (так было
+        при ручной проверке перепривязки). Запуск такого агента подключил бы
+        аккаунт проверяющего второй раз, и Telegram мог бы отозвать сессию.
+        """
+        me = await self.client.get_me()
+        own_phone = _digits(getattr(me, "phone", None) or "")
         conn = await asyncpg.connect(plain_dsn(dsn))
         try:
             rows = await conn.fetch(
@@ -88,7 +123,11 @@ class Checker:
             )
         finally:
             await conn.close()
-        phones = [row["phone_number"] for row in rows if row["phone_number"]]
+        phones = [
+            row["phone_number"]
+            for row in rows
+            if row["phone_number"] and _digits(row["phone_number"]) != own_phone
+        ]
         if not phones:
             raise RuntimeError("Мимики не заведены — прогони реальный онборд")
         return phones
@@ -173,6 +212,130 @@ class Checker:
         """Убирает тестовую группу: они создаются на настоящем аккаунте и копились бы."""
         channel = await self.client.get_input_entity(peer_id)
         await self.client(DeleteChannelRequest(channel=cast(Any, channel)))
+
+    # --- постоянные каналы: комментарии под постами -------------------------------------
+
+    async def ensure_channel(self, title: str, *, discussion: bool) -> tuple[int, int | None]:
+        """Канал проверяющего с таким названием; создаётся, только если его нет.
+
+        Создание, привязку и удаление каналов Telegram жёстко ограничивает:
+        уже третий прогон подряд получал на DeleteChannel и SetDiscussionGroup
+        ожидание по 8–9 минут. Поэтому каналы постоянные, а прогон только
+        публикует в них посты. Возвращает (канал, группа обсуждения или None)
+        в формате Telethon (-100...).
+        """
+        channel_id = await self._own_channel(title)
+        if channel_id is None:
+            created = await self.client(
+                CreateChannelRequest(title=title, about="mimic42 real tests", broadcast=True)
+            )
+            channel_id = int(utils.get_peer_id(cast(Any, created).chats[0]))
+        if not discussion:
+            return channel_id, None
+        group_id = await self._discussion_of(channel_id)
+        if group_id is None:
+            group_id = await self._link_discussion(channel_id, f"{title} — обсуждение")
+        return channel_id, group_id
+
+    async def _own_channel(self, title: str) -> int | None:
+        async for dialog in self.client.iter_dialogs():
+            entity = dialog.entity
+            if (
+                dialog.is_channel
+                and not dialog.is_group
+                and dialog.title == title
+                and getattr(entity, "creator", False)
+            ):
+                return int(dialog.id)
+        return None
+
+    async def _discussion_of(self, channel_id: int) -> int | None:
+        channel = await self.client.get_input_entity(channel_id)
+        full = await self.client(GetFullChannelRequest(channel=cast(Any, channel)))
+        linked = getattr(cast(Any, full).full_chat, "linked_chat_id", None)
+        return int(utils.get_peer_id(PeerChannel(linked))) if linked else None
+
+    async def _link_discussion(self, channel_id: int, title: str) -> int:
+        """Группа обсуждения для канала.
+
+        Группу со скрытой для новичков историей привязать нельзя
+        (MEGAGROUP_PREHISTORY_HIDDEN), поэтому история открывается до привязки.
+        """
+        group_id = await self.create_supergroup(title, [])
+        group = await self.client.get_input_entity(group_id)
+        with suppress(ChatNotModifiedError):
+            await self.client(
+                TogglePreHistoryHiddenRequest(channel=cast(Any, group), enabled=False)
+            )
+        channel = await self.client.get_input_entity(channel_id)
+        await self.client(
+            SetDiscussionGroupRequest(broadcast=cast(Any, channel), group=cast(Any, group))
+        )
+        return group_id
+
+    async def subscribe(self, channel_id: int, phone: str) -> bool:
+        """Подписать аккаунт на канал. True — пришлось звать только сейчас.
+
+        Комментировать можно и не вступая в обсуждение, поэтому зовём только в
+        канал. Отказ по приватности InviteToChannel не бросает, а кладёт в
+        ``missing_invitees``, поэтому он проверяется явно.
+        """
+        channel = await self.client.get_input_entity(channel_id)
+        user = await self.client.get_input_entity(phone)
+        try:
+            await self.client(GetParticipantRequest(channel=cast(Any, channel), participant=user))
+            return False
+        except UserNotParticipantError:
+            pass
+        invited = await self.client(
+            InviteToChannelRequest(channel=cast(Any, channel), users=cast(Any, [user]))
+        )
+        missing = list(getattr(invited, "missing_invitees", None) or [])
+        if missing:
+            raise RuntimeError(f"Не удалось пригласить в канал: {missing}")
+        return True
+
+    async def post(self, channel_id: int, text: str) -> int:
+        message = await self.client.send_message(channel_id, text)
+        return int(cast(Any, message).id)
+
+    async def post_album(self, channel_id: int, photos: list[bytes], caption: str) -> list[int]:
+        """Альбом из фото: у потоков есть имя с расширением, иначе уйдут файлами."""
+        files = []
+        for index, data in enumerate(photos):
+            stream = BytesIO(data)
+            stream.name = f"photo{index}.png"
+            files.append(stream)
+        messages = await self.client.send_file(channel_id, files, caption=caption)
+        return [int(message.id) for message in cast(list[Any], messages)]
+
+    async def collect_thread(self, group_id: int, *, seconds: float) -> list[ThreadMessage]:
+        """Слушает группу обсуждения: автопересылки постов и комментарии к ним."""
+        loop = asyncio.get_running_loop()
+        seen: list[ThreadMessage] = []
+
+        async def handler(event: Any) -> None:
+            message = event.message
+            reply = getattr(message, "reply_to", None)
+            forward = getattr(message, "fwd_from", None)
+            seen.append(
+                ThreadMessage(
+                    message_id=int(message.id),
+                    sender_id=event.sender_id,
+                    text=str(message.message or ""),
+                    reply_to=getattr(reply, "reply_to_msg_id", None),
+                    channel_post=getattr(forward, "channel_post", None),
+                    photo_id=getattr(message.photo, "id", None),
+                    arrived=loop.time(),
+                )
+            )
+
+        self.client.add_event_handler(handler, events.NewMessage(chats=[group_id]))
+        try:
+            await asyncio.sleep(seconds)
+        finally:
+            self.client.remove_event_handler(handler)
+        return seen
 
     async def set_slow_mode(self, peer_id: int, seconds: int) -> None:
         """Допустимо: 0 (выкл), 10, 30, 60, 300, 900, 3600 — иначе SecondsInvalidError."""
