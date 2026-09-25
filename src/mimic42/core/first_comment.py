@@ -7,10 +7,14 @@
 
 from __future__ import annotations
 
+import logging
 from collections import OrderedDict
-from typing import Any
+from collections.abc import Iterable
+from typing import Any, Self
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError, model_validator
+
+logger = logging.getLogger("mimic42.first_comment")
 
 # Лимиты Телеграма: 4096 символов на текстовое сообщение и 1024 на подпись
 # к медиа. Вариант с картинкой уезжает подписью, поэтому режется жёстче.
@@ -26,6 +30,13 @@ class FirstCommentVariant(BaseModel):
     image_path: str | None = None
     # Имя файла нужно Telethon: расширение решает, уйдёт картинка фото или файлом.
     image_name: str | None = None
+
+    @model_validator(mode="after")
+    def _caption_fits(self) -> Self:
+        # Длинная подпись упала бы в Telegram на каждом посте: отсекаем при разборе.
+        if self.image_path and len(self.text) > MAX_COMMENT_CAPTION:
+            raise ValueError(f"подпись к картинке длиннее {MAX_COMMENT_CAPTION} символов")
+        return self
 
     @property
     def is_usable(self) -> bool:
@@ -68,6 +79,32 @@ class PostedAlbumGuard:
         return True
 
 
+class SentFirstComments:
+    """Какой вариант ушёл под какой пост — чтобы ход ИИ по посту знал о нём.
+
+    Ход по посту начинается после отправки комментария (обработчики одного
+    апдейта Telethon вызывает по очереди), а альбом ИИ-ветка ещё и копит,
+    поэтому к её разбору запись уже есть. Размер ограничен, как у guard.
+    """
+
+    def __init__(self, capacity: int = 512) -> None:
+        self._capacity = capacity
+        self._sent: OrderedDict[tuple[str, int], FirstCommentVariant] = OrderedDict()
+
+    def remember(self, peer: str, post_id: int, variant: FirstCommentVariant) -> None:
+        self._sent[(peer, post_id)] = variant
+        while len(self._sent) > self._capacity:
+            self._sent.popitem(last=False)
+
+    def lookup(self, peer: str, post_ids: Iterable[int]) -> FirstCommentVariant | None:
+        """Вариант под любым из постов: у альбома комментарий висит на одном элементе."""
+        for post_id in post_ids:
+            variant = self._sent.get((peer, post_id))
+            if variant is not None:
+                return variant
+        return None
+
+
 def parse_first_comment(raw: Any) -> FirstCommentSettings:
     """Собрать настройку из сырого JSON, пропуская всё нечитаемое.
 
@@ -77,15 +114,18 @@ def parse_first_comment(raw: Any) -> FirstCommentSettings:
     if not isinstance(raw, dict):
         return FirstCommentSettings()
 
+    raw_variants = raw.get("variants")
     variants: list[FirstCommentVariant] = []
-    for item in raw.get("variants") or []:
+    for item in raw_variants if isinstance(raw_variants, list) else []:
         if not isinstance(item, dict):
             continue
         try:
             variant = FirstCommentVariant.model_validate(item)
-        except Exception:
+        except ValidationError as exc:
+            logger.warning("Вариант первого комментария пропущен: %s", exc)
             continue
         if variant.is_usable:
             variants.append(variant)
 
-    return FirstCommentSettings(enabled=bool(raw.get("enabled")), variants=variants)
+    # Строго True: строка "false" из ручной правки JSON не должна включать фичу.
+    return FirstCommentSettings(enabled=raw.get("enabled") is True, variants=variants)

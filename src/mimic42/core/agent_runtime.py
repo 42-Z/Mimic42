@@ -22,6 +22,7 @@ from mimic42.core.first_comment import (
     FirstCommentSettings,
     FirstCommentVariant,
     PostedAlbumGuard,
+    SentFirstComments,
 )
 from mimic42.core.media import MAX_MEDIA_BYTES, MediaFile, MediaUploader
 from mimic42.core.memory import MemoryServiceLike, RuntimeMemoryService
@@ -40,6 +41,10 @@ DEFER_MARGIN_SECONDS = 0.25
 
 class TelegramAuthorizationRequired(RuntimeError):
     """Raised when a Telethon user session is connected but not authorized."""
+
+
+class FirstCommentImageUnavailable(RuntimeError):
+    """Картинку варианта не прочитать из хранилища, а подписи, чтобы уйти без неё, нет."""
 
 
 UNAUTHORIZED_SESSION_MESSAGE = (
@@ -243,6 +248,10 @@ class MimicAgentRuntime:
         self._album_grouper = AlbumGrouper(self._flush_album)
         self._deferred_inbox = DeferredInbox(self._flush_deferred)
         self._album_comment_guard = PostedAlbumGuard()
+        self._sent_first_comments = SentFirstComments()
+        # Картинка варианта, уже залитая в Telegram: следующий пост получает её
+        # без скачивания из хранилища и повторной загрузки — это секунды.
+        self._first_comment_media: dict[str, Any] = {}
         self._activity = ActivityRecorder(session_factory) if session_factory is not None else None
 
     async def _record_event(
@@ -871,7 +880,7 @@ class MimicAgentRuntime:
     async def _handle_channel_post(self, event: TelegramEventLike) -> None:
         """Новый пост в канале — мгновенный комментарий без ИИ и задержек."""
         settings = self.config.first_comment
-        if not settings.is_active:
+        if not settings.is_active or self._session_revoked:
             return
         if not _is_broadcast_post(event):
             return
@@ -888,10 +897,18 @@ class MimicAgentRuntime:
             if not self._album_comment_guard.claim((str(chat_id), str(grouped_id))):
                 return
 
+        if not await _has_discussion_group(event):
+            # Комментарии у канала выключены — это его настройка, а не сбой:
+            # запрос в Telegram и ошибка в ленте на каждый пост ни к чему.
+            logger.info("У канала %s нет обсуждения, первый комментарий не нужен", chat_id)
+            return
+
         variant = random.choice(settings.usable_variants)
         started_at = datetime.now(UTC)
+        peer = str(chat_id or "")
         try:
-            sent = await self._send_first_comment(event, message_id, variant)
+            peer = await _extract_incoming_peer(event)
+            sent, variant = await self._send_first_comment(peer, message_id, variant)
         except Exception as exc:
             logger.warning(
                 "Failed to post first comment in chat %s to message %s",
@@ -899,27 +916,35 @@ class MimicAgentRuntime:
                 message_id,
                 exc_info=True,
             )
+            dead_session = _is_dead_session_error(exc)
+            if dead_session:
+                await self._revoke_dead_session()
             await self._record_event(
                 event_type="first_comment.failed",
                 status="failed",
                 payload={
-                    "peer": str(chat_id or ""),
+                    "peer": peer,
                     "post_id": message_id,
                     "reason": _first_comment_failure_reason(exc),
                     "error_code": type(exc).__name__,
                 },
-                error=str(exc),
+                error=REVOKED_SESSION_MESSAGE if dead_session else str(exc),
                 started_at=started_at,
                 completed_at=datetime.now(UTC),
             )
+            if dead_session:
+                # Последним шагом: disconnect отменяет запущенные обработчики,
+                # включая этот, — после него код бы не выполнился.
+                await self._disconnect_revoked_client()
             return
 
+        self._sent_first_comments.remember(peer, message_id, variant)
         logger.info("Posted first comment in chat %s under post %s", chat_id, message_id)
         await self._record_event(
             event_type="first_comment.sent",
             status="succeeded",
             payload={
-                "peer": str(chat_id or ""),
+                "peer": peer,
                 "post_id": message_id,
                 "text": variant.text,
                 "with_image": variant.image_path is not None,
@@ -931,30 +956,78 @@ class MimicAgentRuntime:
 
     async def _send_first_comment(
         self,
-        event: TelegramEventLike,
+        peer: str,
         message_id: int,
         variant: FirstCommentVariant,
-    ) -> object:
-        """Отправить вариант в обсуждение канала.
+    ) -> tuple[object, FirstCommentVariant]:
+        """Отправить вариант в обсуждение канала; вернуть сообщение и то, что ушло.
 
         ``comment_to`` уводит сообщение в привязанную к каналу группу
         обсуждения — это и есть «комментарий» к посту; без такой группы
-        Telethon поднимает MsgIdInvalidError.
+        Telethon поднимает MsgIdInvalidError. Если картинку взять неоткуда,
+        уходит одна подпись — и возвращается именно она, чтобы ИИ и лента
+        знали, что под постом на самом деле.
         """
-        peer = _peer_for_send(await _extract_incoming_peer(event))
-        image = await self._load_first_comment_image(variant)
-        if image is not None:
-            return await self._telegram_client.send_file(
-                peer,
-                image,
-                caption=variant.text or None,
-                comment_to=message_id,
-            )
-        return await self._telegram_client.send_message(
-            peer,
+        target = _peer_for_send(peer)
+        if variant.image_path:
+            sent = await self._send_first_comment_image(target, message_id, variant)
+            if sent is not None:
+                return sent, variant
+            if not variant.text.strip():
+                raise FirstCommentImageUnavailable(
+                    f"Картинка {variant.image_path} недоступна, а подписи нет"
+                )
+            variant = FirstCommentVariant(text=variant.text)
+        sent = await self._telegram_client.send_message(
+            target,
             variant.text,
             comment_to=message_id,
         )
+        return sent, variant
+
+    async def _send_first_comment_image(
+        self,
+        target: str | int,
+        message_id: int,
+        variant: FirstCommentVariant,
+    ) -> object | None:
+        """Картинка с подписью. ``None`` — картинку взять неоткуда.
+
+        Уже отправленную картинку Telethon принимает обратно как файл
+        (``message.media``), и повторной загрузки нет. Ссылка на файл у неё
+        со временем протухает — тогда картинка заливается заново.
+        """
+        from telethon import errors
+
+        path = variant.image_path
+        if path is None:
+            return None
+        caption = variant.text or None
+        cached = self._first_comment_media.get(path)
+        if cached is not None:
+            try:
+                return await self._telegram_client.send_file(
+                    target, cached, caption=caption, comment_to=message_id
+                )
+            except (
+                errors.FileReferenceExpiredError,
+                errors.FileReferenceInvalidError,
+                errors.FileReferenceEmptyError,
+            ):
+                logger.info("Ссылка на картинку первого комментария устарела, заливаем заново")
+                self._first_comment_media.pop(path, None)
+
+        image = await self._load_first_comment_image(variant)
+        if image is None:
+            return None
+        sent = await self._telegram_client.send_file(
+            target, image, caption=caption, comment_to=message_id
+        )
+        media = getattr(sent, "media", None)
+        # Медиа из защищённого чата (noforwards) Telegram переслать не даст.
+        if media is not None and not getattr(sent, "noforwards", False):
+            self._first_comment_media[path] = media
+        return sent
 
     async def _load_first_comment_image(self, variant: FirstCommentVariant) -> io.BytesIO | None:
         """Картинка варианта как поток с именем.
@@ -1299,6 +1372,18 @@ class MimicAgentRuntime:
                 if (item_id := _extract_incoming_message_id(item)) is not None
             ]
             album_note = f"Альбом из {len(events)} файлов (ID: {', '.join(item_ids)})\n"
+        first_comment_str = ""
+        if _is_broadcast_post(event):
+            first_comment = self._sent_first_comments.lookup(
+                str(getattr(event, "chat_id", "")),
+                (
+                    item_id
+                    for item in events
+                    if (item_id := _extract_incoming_message_id(item)) is not None
+                ),
+            )
+            if first_comment is not None:
+                first_comment_str = f"\n{_first_comment_note(first_comment)}"
         text = (
             f"[Входящее сообщение]\n"
             f"Время: {time_str}\n"
@@ -1308,6 +1393,7 @@ class MimicAgentRuntime:
             f"{album_note}"
             f"{reply_str}"
             f"Содержимое: {text}"
+            f"{first_comment_str}"
         )
 
         return IncomingBlock(
@@ -2115,19 +2201,62 @@ def _is_broadcast_post(event: object) -> bool:
     return bool(getattr(event, "is_channel", False)) and not bool(getattr(event, "is_group", False))
 
 
+async def _has_discussion_group(event: object) -> bool:
+    """Есть ли у канала группа обсуждения, то есть можно ли комментировать.
+
+    Признак ``has_link`` приходит в самой сущности канала, даже в урезанной
+    min-версии, так что отдельный запрос за полной информацией не нужен.
+    Не удалось узнать — пробуем отправить: пусть ответит Telegram.
+    """
+    get_chat = getattr(event, "get_chat", None)
+    if not callable(get_chat):
+        return True
+    try:
+        chat = await get_chat()
+    except Exception:
+        logger.warning("Не удалось получить канал для проверки обсуждения", exc_info=True)
+        return True
+    return getattr(chat, "has_link", None) is not False
+
+
+def _first_comment_note(variant: FirstCommentVariant) -> str:
+    """Строка для модели: под постом уже висит её комментарий.
+
+    Только факт, без указаний, что делать: инструкция в шапке входящего
+    читается слабыми моделями как требование.
+    """
+    text = variant.text.strip()
+    if variant.image_path and text:
+        what = f"картинка с подписью «{text}»"
+    elif variant.image_path:
+        what = "картинка без подписи"
+    else:
+        what = f"«{text}»"
+    return f"Твой первый комментарий под этим постом: {what}"
+
+
 def _first_comment_failure_reason(exc: Exception) -> str:
     """Понятная причина для ленты активности.
 
-    Отсутствие группы обсуждения — штатная ситуация (комментарии у канала
-    просто выключены), и Telethon сигналит о ней MsgIdInvalidError.
+    Каналы без обсуждения отсеиваются до отправки по ``has_link``, так что
+    MsgIdInvalidError здесь — пост, который Telegram не нашёл в обсуждении.
     """
+    if isinstance(exc, FirstCommentImageUnavailable):
+        return "image_unavailable"
     try:
         from telethon import errors
     except ImportError:
         return "exception"
+    if _is_dead_session_error(exc):
+        return "unauthorized"
     if isinstance(exc, errors.MsgIdInvalidError):
-        return "no_discussion_group"
-    if isinstance(exc, errors.ChatWriteForbiddenError | errors.UserBannedInChannelError):
+        return "no_discussion_message"
+    if isinstance(
+        exc,
+        errors.ChatWriteForbiddenError
+        | errors.UserBannedInChannelError
+        | errors.ChatGuestSendForbiddenError,
+    ):
         return "write_forbidden"
     if isinstance(exc, errors.FloodWaitError):
         return "flood_wait"

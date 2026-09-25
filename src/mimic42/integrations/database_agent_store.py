@@ -587,7 +587,9 @@ class DatabaseAgentStore:
                 # realtime feed and nothing is duplicated inside a turn.
                 # Legacy tool events (no turn_id, pre-`tool.*` naming) still
                 # attach to the turn they ran in.
-                is_lifecycle = item.event_type.startswith(("agent.", "timer.", "turn.", "message."))
+                is_lifecycle = item.event_type.startswith(
+                    ("agent.", "timer.", "turn.", "message.", "first_comment.")
+                )
                 if is_lifecycle or legacy_current is None:
                     block = ConversationTurn(
                         id=evt.id,

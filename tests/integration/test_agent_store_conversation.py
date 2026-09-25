@@ -188,6 +188,17 @@ async def test_lifecycle_events_stay_standalone(
                 created_at=base + timedelta(seconds=1),
             )
         )
+        # Первый комментарий уходит без хода агента: turn_id у него нет, и
+        # приклеиться к соседнему входящему он не должен.
+        session.add(
+            AgentEventModel(
+                agent_id=agent_id,
+                event_type="first_comment.sent",
+                status="succeeded",
+                payload={"peer": "channel", "post_id": 7},
+                created_at=base + timedelta(milliseconds=1500),
+            )
+        )
         session.add(
             AgentMessageModel(
                 agent_id=agent_id,
@@ -218,8 +229,12 @@ async def test_lifecycle_events_stay_standalone(
     assert message_turns[0].tools == []
 
     lifecycle_turns = [turn for turn in page.turns if turn.direction == "tools"]
-    assert len(lifecycle_turns) == 2
-    assert {turn.tools[0].name for turn in lifecycle_turns} == {"agent.started", "agent.stopped"}
+    assert len(lifecycle_turns) == 3
+    assert {turn.tools[0].name for turn in lifecycle_turns} == {
+        "agent.started",
+        "first_comment.sent",
+        "agent.stopped",
+    }
 
 
 async def test_reply_targets_surface_on_turn(

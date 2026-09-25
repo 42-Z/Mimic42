@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -46,7 +47,7 @@ from mimic42.core.manager import (
     LangChainAgentFactory,
     TelegramClientFactory,
 )
-from mimic42.core.media import MAX_MEDIA_BYTES, MediaUploader
+from mimic42.core.media import MAX_PHOTO_BYTES, MediaUploader, detect_photo_type
 from mimic42.core.memory import LongTermMemoryLike, RuntimeMemoryService
 from mimic42.core.onboarding import (
     AgentOnboardingService,
@@ -154,6 +155,9 @@ class TelegramRebindConfirmRequest(BaseModel):
     onboarding_id: UUID
 
 
+_UPLOAD_CHUNK_BYTES = 1024 * 1024
+
+
 class UploadedMedia(BaseModel):
     """Ответ на загрузку картинки: путь кладётся в настройки агента."""
 
@@ -163,20 +167,26 @@ class UploadedMedia(BaseModel):
     size: int
 
 
-# Только JPEG и PNG: Telethon отправляет фотографией ровно эти расширения
-# (`telethon.utils.is_image`), остальное ушло бы в чат файлом.
-_UPLOADABLE_IMAGE_TYPES = {
-    "image/jpeg": "jpg",
-    "image/png": "png",
-}
-
-
-def _image_filename(filename: str | None, mime_type: str) -> str:
-    """Имя с расширением, соответствующим заявленному типу картинки."""
-    extension = _UPLOADABLE_IMAGE_TYPES[mime_type]
+def _image_filename(filename: str | None, extension: str) -> str:
+    """Имя с расширением настоящего формата: по нему Telethon решает, фото это или файл."""
     base = (filename or "").strip()
     stem = base.rsplit(".", 1)[0] if "." in base else base
     return f"{stem or 'image'}.{extension}"
+
+
+async def _read_limited(file: UploadFile, limit: int) -> bytes | None:
+    """Прочитать загрузку порциями; ``None`` — файл больше ``limit``.
+
+    Целиком в память не читаем: размер клиент может не прислать или соврать.
+    """
+    chunks: list[bytes] = []
+    size = 0
+    while chunk := await file.read(_UPLOAD_CHUNK_BYTES):
+        size += len(chunk)
+        if size > limit:
+            return None
+        chunks.append(chunk)
+    return b"".join(chunks)
 
 
 def _resolve_telegram_app(
@@ -635,23 +645,24 @@ def create_app(
             raise HTTPException(status_code=404, detail="Медиа недоступно")
         await _ensure_agent_owner(store, agent_id=agent_id, user_id=current_user.user_id)
 
-        mime_type = (file.content_type or "").split(";")[0].strip().lower()
-        if mime_type not in _UPLOADABLE_IMAGE_TYPES:
+        data = await _read_limited(file, MAX_PHOTO_BYTES)
+        if data is None:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Картинка больше {MAX_PHOTO_BYTES // (1024 * 1024)} МБ",
+            )
+        if not data:
+            raise HTTPException(status_code=400, detail="Файл пуст")
+        photo_type = await asyncio.to_thread(detect_photo_type, data)
+        if photo_type is None:
             raise HTTPException(
                 status_code=415,
                 detail="Поддерживаются только изображения JPEG и PNG",
             )
-        data = await file.read()
-        if not data:
-            raise HTTPException(status_code=400, detail="Файл пуст")
-        if len(data) > MAX_MEDIA_BYTES:
-            raise HTTPException(
-                status_code=413,
-                detail=f"Файл больше {MAX_MEDIA_BYTES // (1024 * 1024)} МБ",
-            )
+        mime_type, extension = photo_type
         uploaded = await media_storage.upload(
             agent_id=agent_id,
-            filename=_image_filename(file.filename, mime_type),
+            filename=_image_filename(file.filename, extension),
             data=data,
             mime_type=mime_type,
             kind="photo",

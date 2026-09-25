@@ -30,6 +30,8 @@ class IncomingMessage:
     # Пост вещательного канала: в Telethon у него is_channel без is_group.
     is_channel: bool = False
     is_group: bool = False
+    # Channel.has_link: есть ли у канала группа обсуждения (куда идут комментарии).
+    has_link: bool | None = None
 
 
 class _FakeReplyTo:
@@ -63,9 +65,13 @@ class FakeIncomingEvent:
         self.client = client
         self.grouped_id = message.grouped_id
         self._reply_to_msg_id = message.reply_to_msg_id
+        self._has_link = message.has_link
 
     async def get_chat(self) -> object:
-        return type("Chat", (), {"id": self.chat_id, "username": None})()
+        attrs: dict[str, object] = {"id": self.chat_id, "username": None}
+        if self._has_link is not None:
+            attrs["has_link"] = self._has_link
+        return type("Chat", (), attrs)()
 
     async def get_reply_message(self) -> object | None:
         if self._reply_to_msg_id is None:
@@ -123,8 +129,9 @@ class FakeTelegramAccount:
         chat_id: int,
         text: str,
         grouped_id: int | None = None,
+        has_link: bool = True,
     ) -> None:
-        """Новый пост вещательного канала, на который агент может комментировать."""
+        """Новый пост вещательного канала; ``has_link`` — открыты ли комментарии."""
         self._next_message_id += 1
         message = IncomingMessage(
             chat_id=chat_id,
@@ -134,6 +141,7 @@ class FakeTelegramAccount:
             order=self.next_order(),
             grouped_id=grouped_id,
             is_channel=True,
+            has_link=has_link,
         )
         self.incoming.append(message)
         for handler in list(self.handlers):

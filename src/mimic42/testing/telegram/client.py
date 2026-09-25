@@ -82,7 +82,11 @@ class FakeTelegramClient:
                 order=self.account.next_order(),
             )
         )
-        return type("Message", (), {"id": len(self.account.sent)})()
+        # media отправленного сообщения Telethon принимает обратно как файл:
+        # по нему тест видит, что картинка переотправлена, а не залита заново.
+        message_id = len(self.account.sent)
+        media = type("Media", (), {"message_id": message_id})()
+        return type("Message", (), {"id": message_id, "media": media})()
 
     def add_event_handler(
         self,
