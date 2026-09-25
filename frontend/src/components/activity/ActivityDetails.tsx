@@ -57,7 +57,7 @@ function KVTable({ rows, accent }: { rows: [string, unknown][]; accent?: 'error'
     <div className="rounded-[2px] border border-void-800 divide-y divide-void-800/60">
       {rows.map(([key, value]) => (
         <div key={key} className="flex gap-3 px-2.5 py-1.5">
-          <span className="font-mono text-[10px] text-void-600 uppercase tracking-wider w-28 shrink-0 pt-0.5">
+          <span className="font-mono text-[10px] text-void-400 uppercase tracking-wider w-28 shrink-0 pt-0.5">
             {key}
           </span>
           <span
@@ -81,7 +81,7 @@ function RawJson({ title, value }: { title: string; value: Record<string, unknow
     <div>
       <button
         onClick={() => setOpen((v) => !v)}
-        className="flex items-center gap-1.5 font-mono text-[10px] text-void-600 hover:text-void-400 transition-colors"
+        className="flex items-center gap-1.5 font-mono text-[10px] text-void-400 hover:text-void-200 transition-colors"
       >
         <Braces className="h-3 w-3" />
         {title}
@@ -130,7 +130,7 @@ export function ActivityDetails({
         </>
       )}
       {!hasStructured && !action.hint && (
-        <p className="font-mono text-[10px] text-void-600">Детали недоступны</p>
+        <p className="font-mono text-[10px] text-void-400">Детали недоступны</p>
       )}
       <RawJson title="Аргументы JSON" value={args} />
       <RawJson title="Результат JSON" value={result} />

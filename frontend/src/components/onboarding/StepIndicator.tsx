@@ -44,13 +44,13 @@ export function StepIndicator({ currentStep, className }: StepIndicatorProps) {
                 'border',
                 isDone && 'bg-neon-900 border-neon-700 text-neon-400',
                 isActive && 'bg-plasma-900 border-plasma-600 text-plasma-300 shadow-plasma-sm',
-                !isDone && !isActive && 'bg-void-800 border-void-700 text-void-600',
+                !isDone && !isActive && 'bg-void-800 border-void-700 text-void-400',
               )}>
                 {isDone ? '✓' : step.short}
               </div>
               <span className={cn(
                 'font-mono text-[10px] mt-1.5 text-center w-14 sm:w-16 leading-tight',
-                isActive ? 'text-plasma-400' : isDone ? 'text-neon-600' : 'text-void-600',
+                isActive ? 'text-plasma-400' : isDone ? 'text-neon-600' : 'text-void-400',
               )}>
                 {step.label}
               </span>

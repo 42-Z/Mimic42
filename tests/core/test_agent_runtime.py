@@ -1266,3 +1266,145 @@ async def test_send_failure_is_reported_to_the_window() -> None:
     await runtime.trigger_message(AgentTrigger(peer="123", text="привет"))
     assert len(window.errors) == 1
     assert window.sent_notes == []
+
+
+class _RecordingSession:
+    """Сессия БД без базы: фиксирует запросы и терпит служебные вызовы рантайма."""
+
+    def __init__(self, executed: list[object], *, fail_execute: bool = False) -> None:
+        self._executed = executed
+        self._fail_execute = fail_execute
+
+    async def __aenter__(self) -> _RecordingSession:
+        return self
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        return None
+
+    def add(self, obj: object) -> None:
+        return None
+
+    async def flush(self) -> None:
+        return None
+
+    async def commit(self) -> None:
+        return None
+
+    async def execute(self, statement: object) -> object:
+        if self._fail_execute:
+            raise RuntimeError("database is down")
+        self._executed.append(statement)
+        return type("Result", (), {"rowcount": 1})()
+
+    async def scalars(self, statement: object) -> list[object]:
+        return []
+
+
+class RecordingSessionFactory:
+    """Фабрика сессий: выполненные запросы записываются вместо похода в базу."""
+
+    def __init__(self, *, fail_execute: bool = False) -> None:
+        self.executed: list[object] = []
+        self._fail_execute = fail_execute
+
+    def __call__(self) -> _RecordingSession:
+        return _RecordingSession(self.executed, fail_execute=self._fail_execute)
+
+    def telegram_username_updates(self) -> list[Any]:
+        from sqlalchemy.sql.dml import Update
+
+        return [
+            statement
+            for statement in self.executed
+            if isinstance(statement, Update)
+            and getattr(statement.table, "name", None) == "telegram_sessions"
+        ]
+
+
+@pytest.mark.asyncio
+async def test_start_stores_telegram_username() -> None:
+    account = FakeTelegramAccount()
+    account.authorized = True
+    account.username = "mimic_user"
+    sessions = RecordingSessionFactory()
+    runtime = MimicAgentRuntime(
+        config=make_config().model_copy(update={"telegram_session_token": "old-session"}),
+        telegram_client=FakeTelegramClient(account),
+        langchain_agent=FakeLangChainAgent(),
+        session_factory=cast(Any, sessions),
+    )
+
+    await runtime.start()
+
+    assert runtime.state is AgentRuntimeState.RUNNING
+    updates = sessions.telegram_username_updates()
+    assert updates, "username update was not sent to the database"
+    params = updates[0].compile().params
+    assert params.get("username") == "mimic_user"
+    await runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_start_survives_get_me_failure() -> None:
+    """Сбой получения @username не должен мешать старту агента."""
+
+    class FailingGetMeClient(FakeTelegramClient):
+        async def get_me(self) -> object:
+            raise RuntimeError("Telegram unavailable")
+
+    account = FakeTelegramAccount()
+    account.authorized = True
+    sessions = RecordingSessionFactory()
+    runtime = MimicAgentRuntime(
+        config=make_config().model_copy(update={"telegram_session_token": "old-session"}),
+        telegram_client=FailingGetMeClient(account),
+        langchain_agent=FakeLangChainAgent(),
+        session_factory=cast(Any, sessions),
+    )
+
+    await runtime.start()
+
+    assert runtime.state is AgentRuntimeState.RUNNING
+    assert sessions.telegram_username_updates() == []
+    await runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_start_survives_username_store_failure() -> None:
+    """Сбой записи @username тоже не должен мешать старту агента."""
+
+    account = FakeTelegramAccount()
+    account.authorized = True
+    account.username = "mimic_user"
+    runtime = MimicAgentRuntime(
+        config=make_config().model_copy(update={"telegram_session_token": "old-session"}),
+        telegram_client=FakeTelegramClient(account),
+        langchain_agent=FakeLangChainAgent(),
+        session_factory=cast(Any, RecordingSessionFactory(fail_execute=True)),
+    )
+
+    await runtime.start()
+
+    assert runtime.state is AgentRuntimeState.RUNNING
+    await runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_start_without_session_token_skips_username_write() -> None:
+    """Без токена строки UPDATE не строится: неизвестный рантайм не пишет в базу."""
+    account = FakeTelegramAccount()
+    account.authorized = True
+    account.username = "mimic_user"
+    sessions = RecordingSessionFactory()
+    runtime = MimicAgentRuntime(
+        config=make_config(),
+        telegram_client=FakeTelegramClient(account),
+        langchain_agent=FakeLangChainAgent(),
+        session_factory=cast(Any, sessions),
+    )
+
+    await runtime.start()
+
+    assert runtime.state is AgentRuntimeState.RUNNING
+    assert sessions.telegram_username_updates() == []
+    await runtime.stop()

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+import logging
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Protocol, cast
+from typing import Protocol
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field
@@ -15,6 +15,9 @@ from mimic42.core.agent_runtime import (
     AgentStatus,
 )
 from mimic42.core.agent_store import AgentStore
+from mimic42.core.telegram_attrs import read_attr, read_optional_attr
+
+logger = logging.getLogger("mimic42.onboarding")
 
 
 def load_default_system_prompt() -> str:
@@ -69,6 +72,7 @@ class OnboardingSession(BaseModel):
     api_id: int | None = None
     api_hash_secret: str | None = None
     phone_number: str | None = None
+    username: str | None = None
     authorization_status: TelegramLoginStatus
     phone_code_hash_secret: str | None = None
     session_secret: str | None = None
@@ -172,6 +176,8 @@ class TelegramAuthClient(Protocol):
 
     def save_session(self) -> str: ...
 
+    async def get_me(self) -> object: ...
+
 
 class TelegramAuthClientFactory(Protocol):
     def build(
@@ -234,7 +240,7 @@ class AgentOnboardingService:
         finally:
             await client.disconnect()
 
-        phone_code_hash = _read_attr(sent_code, "phone_code_hash")
+        phone_code_hash = read_attr(sent_code, "phone_code_hash")
         session = OnboardingSession(
             onboarding_id=onboarding_id,
             owner_id=credentials.owner_id,
@@ -354,6 +360,9 @@ class AgentOnboardingService:
 
             session.authorization_status = TelegramLoginStatus.AUTHORIZED
             session.session_secret = self._cipher.encrypt(client.save_session())
+            # @username аккаунта ради дэшборда: фиксируется сразу после входа,
+            # чтобы не тянуть его потом из уже сохранённой сессии.
+            session.username = await _fetch_account_username(client)
         finally:
             await client.disconnect()
 
@@ -460,15 +469,18 @@ def _public_status(session: OnboardingSession) -> OnboardingPublicStatus:
     )
 
 
-def _read_attr(value: object, name: str) -> str:
-    if isinstance(value, Mapping):
-        value_map = cast("Mapping[str, Any]", value)
-        result = value_map.get(name)
-    else:
-        result = getattr(value, name, None)
-    if not isinstance(result, str) or not result:
-        raise ValueError("Telegram не вернул нужные данные. Попробуйте ещё раз.")
-    return result
+async def _fetch_account_username(client: TelegramAuthClient) -> str | None:
+    """@username авторизованного аккаунта.
+
+    У аккаунта может не быть @username, а сбой получения не должен отменять
+    уже успешный вход: сохраняется просто None.
+    """
+    try:
+        user = await client.get_me()
+    except Exception:
+        logger.warning("Failed to fetch Telegram username after sign-in", exc_info=True)
+        return None
+    return read_optional_attr(user, "username")
 
 
 def _decrypt_optional(cipher: SecretCipher, value: str | None) -> str | None:

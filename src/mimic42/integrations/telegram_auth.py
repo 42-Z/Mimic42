@@ -62,6 +62,10 @@ class TelethonAuthClient:
             raise RuntimeError("Telethon session is not initialized")
         return cast(str, session.save())
 
+    async def get_me(self) -> object:
+        # Возвращает types.User (или None, если входа ещё не было).
+        return await self._client.get_me()
+
 
 class TelethonAuthClientFactory:
     def build(

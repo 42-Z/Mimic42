@@ -209,12 +209,14 @@ export interface AgentEventRow {
 export interface TelegramSessionRow {
   id: string;
   agent_id: string;
+  /** @юзернейм аккаунта Telegram (без «@»). */
+  username: string | null;
   phone_number: string | null;
   authorization_status: TelegramAuthorizationStatus;
   last_authorized_at: string | null;
   last_error: string | null;
-  api_id: number | null;
-  // api_hash intentionally omitted — sensitive
+  // api_id / api_hash intentionally omitted — secrets of the Telegram app,
+  // the dashboard has no business showing them.
   created_at: string;
   updated_at: string;
 }

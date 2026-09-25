@@ -88,7 +88,7 @@ export default function UpdatePasswordPage() {
           <h1 className="font-display text-xl font-bold text-neon-400">
             Новый пароль
           </h1>
-          <p className="font-mono text-sm text-void-500">
+          <p className="font-mono text-sm text-void-300">
             Введите новый пароль для вашего аккаунта
           </p>
         </div>

@@ -137,7 +137,7 @@ export function TabActivity({ agentId, agentName }: { agentId: string; agentName
                 'px-3 py-1.5 rounded-sm font-mono text-xs border transition-colors',
                 filter === f
                   ? 'bg-plasma-950 border-plasma-800 text-plasma-400'
-                  : 'border-void-700 text-void-500 hover:text-void-300 hover:border-void-600',
+                  : 'border-void-700 text-void-300 hover:text-void-100 hover:border-void-600',
               )}
             >
               {FILTER_LABELS[f]}
@@ -149,7 +149,7 @@ export function TabActivity({ agentId, agentName }: { agentId: string; agentName
             onClick={() => setAutoScroll((v) => !v)}
             className={cn(
               'font-mono text-xs px-3 py-1.5 rounded-sm border transition-colors',
-              autoScroll ? 'border-neon-800 text-neon-500' : 'border-void-700 text-void-600',
+              autoScroll ? 'border-neon-800 text-neon-500' : 'border-void-700 text-void-400',
             )}
           >
             {autoScroll ? '⬇ Авто-скролл' : '— Авто-скролл'}
@@ -158,15 +158,15 @@ export function TabActivity({ agentId, agentName }: { agentId: string; agentName
             {isConnected ? (
               <Wifi className="h-3.5 w-3.5 text-neon-400" />
             ) : (
-              <WifiOff className="h-3.5 w-3.5 text-void-600" />
+              <WifiOff className="h-3.5 w-3.5 text-void-400" />
             )}
             <span
               className={cn(
                 'font-mono text-[10px]',
-                isConnected ? 'text-neon-500' : 'text-void-600',
+                isConnected ? 'text-neon-500' : 'text-void-400',
               )}
             >
-              {isConnected ? 'LIVE' : 'OFFLINE'}
+              {isConnected ? 'ОНЛАЙН' : 'ОФЛАЙН'}
             </span>
           </div>
         </div>
@@ -184,7 +184,7 @@ export function TabActivity({ agentId, agentName }: { agentId: string; agentName
               {filtered.length === 0 ? (
                 <div
                   className={cn(
-                    'flex flex-col items-center justify-center text-void-600 gap-2',
+                    'flex flex-col items-center justify-center text-void-400 gap-2',
                     hasNextPage ? 'py-16' : 'h-full',
                   )}
                 >
@@ -207,7 +207,7 @@ export function TabActivity({ agentId, agentName }: { agentId: string; agentName
                 ) : hasNextPage ? (
                   <button
                     onClick={() => fetchNextPage()}
-                    className="font-mono text-xs text-void-500 hover:text-void-300 transition-colors"
+                    className="font-mono text-xs text-void-300 hover:text-void-100 transition-colors"
                   >
                     Загрузить ещё
                   </button>
@@ -218,7 +218,7 @@ export function TabActivity({ agentId, agentName }: { agentId: string; agentName
         </div>
       </Card>
 
-      <p className="font-mono text-xs text-void-600 text-right">{filtered.length} записей</p>
+      <p className="font-mono text-xs text-void-400 text-right">{filtered.length} записей</p>
     </div>
   );
 }

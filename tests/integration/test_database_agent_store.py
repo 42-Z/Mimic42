@@ -24,13 +24,16 @@ from mimic42.integrations.database_models import (
 from mimic42.testing.slots import Slot
 
 
-def _make_session(owner_id: UUID, onboarding_id: UUID, name: str) -> OnboardingSession:
+def _make_session(
+    owner_id: UUID, onboarding_id: UUID, name: str, username: str | None = None
+) -> OnboardingSession:
     return OnboardingSession(
         onboarding_id=onboarding_id,
         owner_id=owner_id,
         api_id=12345,
         api_hash_secret="encrypted-hash",
         phone_number="+79990000000",
+        username=username,
         authorization_status=TelegramLoginStatus.AUTHORIZED,
         session_secret="encrypted-session",
         name=name,
@@ -38,13 +41,14 @@ def _make_session(owner_id: UUID, onboarding_id: UUID, name: str) -> OnboardingS
     )
 
 
-def _make_rebind_session(owner_id: UUID) -> OnboardingSession:
+def _make_rebind_session(owner_id: UUID, username: str | None = None) -> OnboardingSession:
     return OnboardingSession(
         onboarding_id=uuid4(),
         owner_id=owner_id,
         api_id=12345,
         api_hash_secret="encrypted-hash",
         phone_number="+79990000000",
+        username=username,
         authorization_status=TelegramLoginStatus.AUTHORIZED,
         session_secret="new-encrypted-session",
     )
@@ -65,6 +69,46 @@ async def test_get_telegram_rebind_credentials_returns_stored_secret(
     assert credentials.api_id == 12345
     assert credentials.api_hash_secret == "encrypted-hash"
     assert credentials.phone_number == "+79990000000"
+
+
+async def test_create_from_onboarding_stores_username(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    owner_id = clean_slot.persona("full").user_id
+    agent_id = uuid4()
+    store = DatabaseAgentStore(db_session_factory)
+
+    await store.create_from_onboarding(_make_session(owner_id, agent_id, "Mimic", "mimic_user"))
+
+    async with db_session_factory() as db_session:
+        row = await db_session.scalar(
+            select(TelegramSessionModel).where(TelegramSessionModel.agent_id == agent_id)
+        )
+    assert row is not None
+    assert row.username == "mimic_user"
+    credentials = await store.get_telegram_rebind_credentials(agent_id)
+    assert credentials.username == "mimic_user"
+
+
+async def test_rebind_telegram_session_updates_username(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    owner_id = clean_slot.persona("full").user_id
+    agent_id = uuid4()
+    store = DatabaseAgentStore(db_session_factory)
+    await store.create_from_onboarding(_make_session(owner_id, agent_id, "Mimic", "old_user"))
+
+    await store.rebind_telegram_session(agent_id, _make_rebind_session(owner_id, "new_user"))
+
+    async with db_session_factory() as db_session:
+        row = await db_session.scalar(
+            select(TelegramSessionModel).where(TelegramSessionModel.agent_id == agent_id)
+        )
+    assert row is not None
+    # Свежий @username после перелогина заменяет прежний.
+    assert row.username == "new_user"
 
 
 async def test_rebind_telegram_session_updates_session_and_keeps_profile(

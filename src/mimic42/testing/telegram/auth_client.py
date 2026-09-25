@@ -43,6 +43,13 @@ class FakeTelegramAuthClient:
         account.authorized = True
         return type("User", (), {"id": 777})()
 
+    async def get_me(self) -> object:
+        # Как у Telethon: без входа пользователь неизвестен (None),
+        # а у аккаунта может не быть @username.
+        if not self._account.authorized:
+            return None
+        return type("User", (), {"id": 777, "username": self._account.username})()
+
     def save_session(self) -> str:
         # Real Telethon can export a session string once connected, well
         # before sign-in completes (it encodes the auth key, not the login).

@@ -180,7 +180,7 @@ function Divider({ className, label }: { className?: string; label?: string }) {
     return (
       <div className={cn('flex items-center gap-3', className)}>
         <div className="flex-1 h-px bg-void-700" />
-        <span className="text-xs font-mono text-void-500 uppercase tracking-wider">{label}</span>
+        <span className="text-xs font-mono text-void-300 uppercase tracking-wider">{label}</span>
         <div className="flex-1 h-px bg-void-700" />
       </div>
     );

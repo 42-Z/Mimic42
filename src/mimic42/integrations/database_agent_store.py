@@ -96,6 +96,7 @@ class DatabaseAgentStore:
 
             telegram_session.session_name = session.onboarding_id.hex
             telegram_session.phone_number = session.phone_number
+            telegram_session.username = session.username
             telegram_session.api_id = session.api_id
             telegram_session.api_hash_ciphertext = session.api_hash_secret
             telegram_session.session_ciphertext = session.session_secret
@@ -142,6 +143,9 @@ class DatabaseAgentStore:
                     "Rebind session belongs to a different Telegram account or application"
                 )
             telegram_session.session_ciphertext = session.session_secret
+            # Свежий @username после перелогина заменяет прежний: он не входит
+            # в признаки аккаунта и может меняться у того же пользователя.
+            telegram_session.username = session.username
             telegram_session.authorization_status = "authorized"
             telegram_session.last_authorized_at = _now()
             telegram_session.last_error = None
@@ -210,6 +214,7 @@ class DatabaseAgentStore:
                 api_id=telegram_session.api_id,
                 api_hash_secret=telegram_session.api_hash_ciphertext,
                 phone_number=telegram_session.phone_number,
+                username=telegram_session.username,
             )
 
     async def list_agents(self, *, owner_id: UUID | None = None) -> list[AgentRecord]:

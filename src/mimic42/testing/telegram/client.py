@@ -59,6 +59,13 @@ class FakeTelegramClient:
     async def is_user_authorized(self) -> bool:
         return self.account.authorized
 
+    async def get_me(self) -> object:
+        # Как у Telethon: без входа пользователь неизвестен (None),
+        # а у аккаунта может не быть @username.
+        if not self.account.authorized:
+            return None
+        return type("User", (), {"id": 777, "username": self.account.username})()
+
     async def send_message(self, entity: str, message: str, **kwargs: Any) -> object:
         self.account.sent.append(
             SentMessage(

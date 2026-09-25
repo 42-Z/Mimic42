@@ -99,7 +99,7 @@ export default function RegisterPage() {
 
         <div>
           <h1 className="font-display text-2xl font-bold text-void-100">Создать аккаунт</h1>
-          <p className="mt-1 text-sm font-mono text-void-500">Запустите своего первого агента</p>
+          <p className="mt-1 text-sm font-mono text-void-300">Запустите своего первого агента</p>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4" noValidate>
@@ -124,7 +124,7 @@ export default function RegisterPage() {
             disabled={isLoading}
             rightElement={
               <button type="button" onClick={() => setShowPassword((v) => !v)}
-                className="text-void-500 hover:text-void-300 transition-colors p-2 -m-1">
+                className="text-void-300 hover:text-void-100 transition-colors p-2 -m-1">
                 {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
               </button>
             }
@@ -144,7 +144,7 @@ export default function RegisterPage() {
           </Button>
         </form>
 
-        <p className="text-center font-mono text-sm text-void-500">
+        <p className="text-center font-mono text-sm text-void-300">
           Уже есть аккаунт?{' '}
           <Link href="/login" className="text-plasma-400 hover:text-plasma-300 transition-colors inline-block py-2">
             Войти

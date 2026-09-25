@@ -79,7 +79,7 @@ export default function ResetPasswordPage() {
           <h1 className="font-display text-xl font-bold text-neon-400">
             Восстановление пароля
           </h1>
-          <p className="font-mono text-sm text-void-500">
+          <p className="font-mono text-sm text-void-300">
             Введите email, и мы отправим ссылку для сброса
           </p>
         </div>
@@ -102,7 +102,7 @@ export default function ResetPasswordPage() {
           </Button>
         </form>
 
-        <p className="text-center font-mono text-sm text-void-500">
+        <p className="text-center font-mono text-sm text-void-300">
           <Link href="/login" className="text-plasma-400 hover:text-plasma-300 transition-colors">
             ← Вернуться ко входу
           </Link>
