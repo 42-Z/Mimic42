@@ -9,6 +9,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mimic42.core.agent_runtime import AgentRuntimeState
+from mimic42.core.agent_store import AgentOwnershipError
 from mimic42.core.crypto import FernetSecretCipher
 from mimic42.core.model_catalog import DEFAULT_LLM_MODEL
 from mimic42.core.onboarding import OnboardingSession, TelegramLoginStatus
@@ -259,6 +260,45 @@ async def test_create_from_onboarding_twice_creates_two_agents(
     agents = await store.list_agents(owner_id=owner_id)
 
     assert {agent.agent_id for agent in agents} == {first_id, second_id}
+
+
+async def test_create_from_onboarding_keeps_agent_of_another_owner(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    """Issue #95: строка онбординга с id чужого агента не переприсваивает его."""
+    owner_id = clean_slot.persona("full").user_id
+    intruder_id = clean_slot.persona("code").user_id
+    agent_id = uuid4()
+    store = DatabaseAgentStore(db_session_factory)
+    await store.create_from_onboarding(_make_session(owner_id, agent_id, "Легальный агент"))
+
+    with pytest.raises(AgentOwnershipError):
+        await store.create_from_onboarding(_make_session(intruder_id, agent_id, "Хакер"))
+
+    kept = await store.list_agents(owner_id=owner_id)
+    assert [(agent.agent_id, agent.name) for agent in kept] == [(agent_id, "Легальный агент")]
+    assert await store.list_agents(owner_id=intruder_id) == []
+    # Telegram-сессия жертвы остаётся его собственной.
+    credentials = await store.get_telegram_rebind_credentials(agent_id)
+    assert credentials.owner_id == owner_id
+    assert credentials.api_hash_secret == "encrypted-hash"
+
+
+async def test_create_from_onboarding_repeats_for_the_same_owner(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    """Повторная финализация тем же пользователем остаётся идемпотентной."""
+    owner_id = clean_slot.persona("flow").user_id
+    agent_id = uuid4()
+    store = DatabaseAgentStore(db_session_factory)
+    await store.create_from_onboarding(_make_session(owner_id, agent_id, "Mimic"))
+
+    await store.create_from_onboarding(_make_session(owner_id, agent_id, "Mimic 2"))
+
+    agents = await store.list_agents(owner_id=owner_id)
+    assert [(agent.agent_id, agent.name) for agent in agents] == [(agent_id, "Mimic 2")]
 
 
 async def test_delete_agent_removes_agent_and_onboarding_row_only_for_it(

@@ -138,6 +138,15 @@ class TelegramAccountMismatchError(ValueError):
     """A rebind session belongs to a different Telegram account or app."""
 
 
+class AgentOwnershipError(PermissionError):
+    """Агент с таким идентификатором уже принадлежит другому пользователю.
+
+    Id онбординг-сессии — это id будущего агента, а строку сессии клиент пишет
+    сам. Переприсваивать уже существующего агента нельзя: иначе поддельная
+    сессия забирает чужого агента вместе с его Telegram-сессией.
+    """
+
+
 def reply_target_of(payload: dict[str, Any]) -> int | None:
     """Reply target of an answer row: structured response `reply_to`.
 
@@ -177,6 +186,9 @@ class InMemoryAgentStore:
             raise ValueError(
                 "Onboarding session is missing agent profile fields or Telegram credentials"
             )
+        existing = self._agents.get(session.onboarding_id)
+        if existing is not None and existing.owner_id != session.owner_id:
+            raise AgentOwnershipError(session.onboarding_id)
         record = AgentRecord(
             agent_id=session.onboarding_id,
             owner_id=session.owner_id,
