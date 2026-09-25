@@ -82,7 +82,7 @@ export default function OnboardingPage() {
             )}
             <Link
               href="/dashboard"
-              className="font-mono text-xs text-void-500 hover:text-void-200 transition-colors"
+              className="font-mono text-xs text-void-300 hover:text-void-200 transition-colors"
             >
               ← К агентам
             </Link>
@@ -127,7 +127,7 @@ function DiscardDraftButton({ sessionId }: { sessionId: string }) {
         type="button"
         onClick={() => setConfirmOpen(true)}
         disabled={discard.isPending}
-        className="font-mono text-xs text-void-500 hover:text-crimson-400 transition-colors disabled:opacity-50"
+        className="font-mono text-xs text-void-300 hover:text-crimson-400 transition-colors disabled:opacity-50"
       >
         Начать заново
       </button>
@@ -175,7 +175,7 @@ function StepHeading({ step, title, description }: { step: string; title: string
         Шаг {step}
       </p>
       <h1 className="font-display text-3xl font-bold text-void-100 mb-2">{title}</h1>
-      <p className="font-mono text-sm text-void-500 leading-relaxed">{description}</p>
+      <p className="font-mono text-sm text-void-300 leading-relaxed">{description}</p>
     </div>
   );
 }
@@ -335,7 +335,6 @@ function StepTelegramCredentials({ session }: { session: OnboardingSessionRow | 
           value={values.phone_number}
           onChange={(e) => setValues((v) => ({ ...v, phone_number: e.target.value }))}
           error={errors.phone_number}
-          hint="В формате E.164 с кодом страны"
         />
       </div>
 
@@ -503,11 +502,6 @@ function StepTelegram2FA({
         title="Двухфакторная аутентификация"
         description="На вашем аккаунте включена 2FA. Введите пароль облачного хранилища Telegram."
       />
-      <div className="p-4 rounded-sm bg-amber-950/20 border border-amber-900/50">
-        <p className="font-mono text-xs text-amber-400">
-          ⚠ Это пароль 2FA от Telegram, не от вашего устройства
-        </p>
-      </div>
       <Input
         label="Пароль 2FA"
         type="password"
@@ -571,7 +565,7 @@ function StepFinalize({ session }: { session: OnboardingSessionRow | null }) {
           { label: 'Авторизация', value: session?.authorization_status === 'authorized' ? '✓ Авторизован' : '—' },
         ].map((row) => (
           <div key={row.label} className="flex items-center justify-between py-3 border-b border-void-800">
-            <span className="font-mono text-xs text-void-500 uppercase tracking-wider">{row.label}</span>
+            <span className="font-mono text-xs text-void-300 uppercase tracking-wider">{row.label}</span>
             <span className="font-mono text-sm text-void-200">{row.value}</span>
           </div>
         ))}

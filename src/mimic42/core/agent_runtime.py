@@ -28,6 +28,7 @@ from mimic42.core.media import MAX_MEDIA_BYTES, MediaFile, MediaUploader
 from mimic42.core.memory import MemoryServiceLike, RuntimeMemoryService
 from mimic42.core.model_catalog import DEFAULT_LLM_MODEL
 from mimic42.core.send_window import SendWindow, SendWindowTracker
+from mimic42.core.telegram_attrs import read_optional_attr
 
 logger = logging.getLogger("mimic42.agent_runtime")
 logger.setLevel(logging.INFO)
@@ -147,6 +148,8 @@ class TelegramClientLike(Protocol):
     async def disconnect(self) -> None: ...
 
     async def is_user_authorized(self) -> bool: ...
+
+    async def get_me(self) -> object: ...
 
     # Пир — строка (юзернейм) или число (ID чата): сессия Telethon ищет
     # сущность по строке только среди телефонов, юзернеймов и инвайтов.
@@ -333,6 +336,54 @@ class MimicAgentRuntime:
                 exc_info=True,
             )
 
+    async def _store_telegram_username(self) -> None:
+        """Сохранить @username аккаунта в telegram_sessions: им дэшборд показывает агента.
+
+        Сбой получения или записи не должен мешать старту агента: значение
+        подтянется при следующем старте.
+        """
+        if self._session_factory is None:
+            return
+        if self.config.telegram_session_token is None:
+            logger.warning(
+                "Telegram session token is missing for agent %s, refusing unsafe username update",
+                self.config.agent_id,
+            )
+            return
+        try:
+            from sqlalchemy import update
+            from sqlalchemy.engine import CursorResult
+
+            from mimic42.integrations.database_models import TelegramSessionModel
+
+            user = await self._telegram_client.get_me()
+            username = read_optional_attr(user, "username")
+            async with self._session_factory() as db_session:
+                result = await db_session.execute(
+                    update(TelegramSessionModel)
+                    .where(
+                        TelegramSessionModel.agent_id == self.config.agent_id,
+                        TelegramSessionModel.session_ciphertext
+                        == self.config.telegram_session_token,
+                    )
+                    .values(username=username)
+                )
+                # execute() статически возвращает Result, а rowcount есть только
+                # у буферизованного CursorResult, который и приходит для UPDATE.
+                if cast(CursorResult[Any], result).rowcount == 0:
+                    logger.warning(
+                        "Telegram session changed or is missing for agent %s; "
+                        "stale runtime did not store the username",
+                        self.config.agent_id,
+                    )
+                await db_session.commit()
+        except Exception:
+            logger.warning(
+                "Failed to store Telegram username for agent %s",
+                self.config.agent_id,
+                exc_info=True,
+            )
+
     async def _revoke_dead_session(self) -> None:
         """Пометить мёртвую сессию и запретить дальнейшую работу рантайма.
 
@@ -392,6 +443,8 @@ class MimicAgentRuntime:
                 if not await self._telegram_client.is_user_authorized():
                     logger.error("Telegram session not authorized")
                     raise TelegramAuthorizationRequired(UNAUTHORIZED_SESSION_MESSAGE)
+                logger.debug("Authorized. Storing Telegram username...")
+                await self._store_telegram_username()
                 logger.debug("Authorized. Registering message handler...")
                 self._register_message_handler()
                 logger.info("Message handler registered")

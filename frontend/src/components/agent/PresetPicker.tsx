@@ -135,7 +135,7 @@ export function PresetPickerDialog({
                 )}
               >
                 <span className="block font-mono text-xs text-void-100">{preset.title}</span>
-                <span className="block font-mono text-[11px] text-void-500">{preset.summary}</span>
+                <span className="block font-mono text-[11px] text-void-300">{preset.summary}</span>
               </button>
             ))}
           </div>

@@ -420,6 +420,7 @@ export type Database = {
           session_ciphertext: string | null
           session_name: string
           updated_at: string
+          username: string | null
         }
         Insert: {
           agent_id: string
@@ -434,6 +435,7 @@ export type Database = {
           session_ciphertext?: string | null
           session_name: string
           updated_at?: string
+          username?: string | null
         }
         Update: {
           agent_id?: string
@@ -448,6 +450,7 @@ export type Database = {
           session_ciphertext?: string | null
           session_name?: string
           updated_at?: string
+          username?: string | null
         }
         Relationships: [
           {

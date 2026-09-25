@@ -28,6 +28,7 @@ class TelegramRebindCredentials(BaseModel):
     api_id: int
     api_hash_secret: str = Field(repr=False)
     phone_number: str
+    username: str | None = None
 
 
 class AgentMessageRecord(BaseModel):
@@ -173,6 +174,9 @@ class InMemoryAgentStore:
         self._agents = {agent.agent_id: agent for agent in agents or []}
         self._configs: dict[UUID, AgentRuntimeConfig] = {}
         self._telegram_accounts: dict[UUID, tuple[int, str, str | None]] = {}
+        # @username хранится рядом с аккаунтом, но вне его ключа: он меняется
+        # при перепривязке и не участвует в проверке «тот же ли аккаунт».
+        self._telegram_usernames: dict[UUID, str | None] = {}
         self._messages = messages or []
         self._activities = activities or []
 
@@ -214,6 +218,7 @@ class InMemoryAgentStore:
             session.api_hash_secret,
             session.phone_number,
         )
+        self._telegram_usernames[record.agent_id] = session.username
         return record
 
     async def rebind_telegram_session(self, agent_id: UUID, session: OnboardingSession) -> None:
@@ -244,6 +249,7 @@ class InMemoryAgentStore:
                 "telegram_session_token": session.session_secret,
             }
         )
+        self._telegram_usernames[agent_id] = session.username
 
     async def get_runtime_config(self, agent_id: UUID) -> AgentRuntimeConfig:
         try:
@@ -264,6 +270,7 @@ class InMemoryAgentStore:
             api_id=api_id,
             api_hash_secret=api_hash_secret,
             phone_number=phone_number,
+            username=self._telegram_usernames.get(agent_id),
         )
 
     async def list_agents(self, *, owner_id: UUID | None = None) -> list[AgentRecord]:
@@ -280,6 +287,7 @@ class InMemoryAgentStore:
         self._agents.pop(agent_id, None)
         self._configs.pop(agent_id, None)
         self._telegram_accounts.pop(agent_id, None)
+        self._telegram_usernames.pop(agent_id, None)
 
     async def list_messages(
         self, *, agent_id: UUID, limit: int = 50, offset: int = 0

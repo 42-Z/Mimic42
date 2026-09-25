@@ -133,6 +133,7 @@ class TelegramSessionModel(Base):
     )
     session_name: Mapped[str] = mapped_column(Text)
     phone_number: Mapped[str | None] = mapped_column(Text)
+    username: Mapped[str | None] = mapped_column(Text)
     api_id: Mapped[int | None] = mapped_column(Integer)
     api_hash_ciphertext: Mapped[str | None] = mapped_column(Text)
     session_ciphertext: Mapped[str | None] = mapped_column(Text)

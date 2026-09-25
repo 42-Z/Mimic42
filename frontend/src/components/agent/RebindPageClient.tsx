@@ -217,7 +217,7 @@ export function RebindWizard({
         </div>
         <div>
           <h1 className="font-display text-xl font-bold text-void-100">Перепривязка Telegram</h1>
-          <p className="font-mono text-xs text-void-500 mt-0.5">
+          <p className="font-mono text-xs text-void-300 mt-0.5">
             Введите код из Telegram. Имя, память и настройки сохранятся.
           </p>
         </div>
@@ -285,11 +285,6 @@ export function RebindWizard({
       {step === '2fa' && (
         <form onSubmit={handle2FA} className="space-y-6">
           <StepBadge step="2" label="Пароль 2FA" icon={ShieldCheck} />
-          <div className="p-4 rounded-sm bg-amber-950/20 border border-amber-900/50">
-            <p className="font-mono text-xs text-amber-400">
-              Это пароль 2FA от Telegram, а не от вашего устройства
-            </p>
-          </div>
           <Input
             label="Пароль 2FA"
             type="password"
@@ -310,7 +305,7 @@ export function RebindWizard({
           <p className="font-mono text-sm text-crimson-400">
             {error || 'Не удалось завершить перепривязку'}
           </p>
-          <p className="font-mono text-xs text-void-500">
+          <p className="font-mono text-xs text-void-300">
             Telegram уже привязан — осталось пересобрать агента.
           </p>
           <Button
@@ -328,7 +323,7 @@ export function RebindWizard({
         <Card variant="glass" padding="lg" className="space-y-4 text-center">
           <CheckCircle2 className="h-12 w-12 text-neon-400 mx-auto" />
           <h2 className="font-display text-lg font-bold text-void-100">Telegram перепривязан</h2>
-          <p className="font-mono text-sm text-void-500">
+          <p className="font-mono text-sm text-void-300">
             Агент пока остановлен — запустите его на странице агента.
           </p>
           <Button onClick={() => onNavigate(`/agent/${agentId}`)} size="lg" className="w-full">
@@ -340,7 +335,7 @@ export function RebindWizard({
       <div className="text-center">
         <Link
           href={`/agent/${agentId}`}
-          className="font-mono text-xs text-void-500 hover:text-void-200 transition-colors"
+          className="font-mono text-xs text-void-300 hover:text-void-200 transition-colors"
         >
           ← Вернуться к агенту
         </Link>
