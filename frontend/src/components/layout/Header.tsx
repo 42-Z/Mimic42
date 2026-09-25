@@ -26,14 +26,14 @@ export function Header({ onMenuClick }: HeaderProps) {
       <div className="flex items-center gap-3">
         <button
           onClick={onMenuClick}
-          className="md:hidden -ml-2 p-2 text-void-500 hover:text-void-300 transition-colors"
+          className="md:hidden -ml-2 p-2 text-void-300 hover:text-void-100 transition-colors"
           aria-label="Открыть меню"
         >
           <Menu className="h-5 w-5" />
         </button>
         <div className="flex items-center gap-2">
           <div className="h-1.5 w-1.5 rounded-full bg-plasma-500 animate-pulse" />
-          <span className="font-mono text-xs text-void-500 uppercase tracking-widest">
+          <span className="font-mono text-xs text-void-300 uppercase tracking-widest">
             Mimic42
           </span>
         </div>

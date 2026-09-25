@@ -26,7 +26,7 @@ interface NavItem {
 }
 
 const mainNav: NavItem[] = [
-  { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard, exact: true },
+  { href: '/dashboard', label: 'Главная', icon: LayoutDashboard, exact: true },
 ];
 
 interface SidebarProps {
@@ -97,15 +97,15 @@ export function Sidebar({ className, mobileOpen = false, onMobileClose }: Sideba
             <span className="font-mono font-bold text-sm text-void-100 tracking-wider">
               MIMIC<span className="text-plasma-400">42</span>
             </span>
-            <span className="font-mono text-[10px] text-void-500 tracking-widest uppercase">
-              Agent Control
+            <span className="font-mono text-[10px] text-void-300 tracking-widest uppercase">
+              Управление агентами
             </span>
           </div>
         )}
         {/* Mobile close button */}
         <button
           onClick={onMobileClose}
-          className="ml-auto md:hidden text-void-500 hover:text-void-300 transition-colors"
+          className="ml-auto md:hidden text-void-300 hover:text-void-100 transition-colors"
           aria-label="Закрыть меню"
         >
           <X className="h-5 w-5" />
@@ -130,7 +130,7 @@ export function Sidebar({ className, mobileOpen = false, onMobileClose }: Sideba
         {/* Agents section */}
         {!collapsed && agents && agents.length > 0 && (
           <div className="mt-6 mb-2">
-            <p className="px-3 text-[10px] font-mono text-void-600 uppercase tracking-widest mb-1">
+            <p className="px-3 text-[10px] font-mono text-void-400 uppercase tracking-widest mb-1">
               Агенты
             </p>
           </div>
@@ -177,7 +177,7 @@ export function Sidebar({ className, mobileOpen = false, onMobileClose }: Sideba
           onClick={onMobileClose}
           className={cn(
             'flex items-center rounded-sm transition-colors duration-150',
-            'text-void-500 hover:text-plasma-400 hover:bg-void-800/50',
+            'text-void-300 hover:text-plasma-400 hover:bg-void-800/50',
             'border border-dashed border-transparent hover:border-plasma-900',
             collapsed ? 'justify-center h-10 w-10 mx-auto mt-2' : 'gap-3 px-3 py-2 mt-2',
           )}
@@ -194,7 +194,7 @@ export function Sidebar({ className, mobileOpen = false, onMobileClose }: Sideba
           onClick={handleLogout}
           className={cn(
             'flex items-center w-full rounded-sm',
-            'text-void-500 hover:text-crimson-400 hover:bg-crimson-950/30',
+            'text-void-300 hover:text-crimson-400 hover:bg-crimson-950/30',
             'transition-colors duration-150',
             collapsed ? 'justify-center h-10' : 'gap-3 px-3 py-2'
           )}

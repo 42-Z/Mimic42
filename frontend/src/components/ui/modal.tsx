@@ -153,7 +153,7 @@ export function Modal({
           className={cn(
             'absolute top-4 right-4',
             'h-7 w-7 flex items-center justify-center',
-            'text-void-500 hover:text-void-200',
+            'text-void-300 hover:text-void-200',
             'transition-colors duration-150',
             'font-mono text-lg'
           )}

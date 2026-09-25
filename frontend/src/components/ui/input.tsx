@@ -38,7 +38,7 @@ const Input = React.forwardRef<HTMLInputElement, InputProps>(
               'bg-void-800 border border-void-600',
               'px-3 py-2',
               'font-mono text-base sm:text-sm text-void-100',
-              'placeholder:text-void-500',
+              'placeholder:text-void-400',
               'transition-colors duration-150',
               'focus:outline-none focus:ring-1 focus:ring-plasma-500 focus:border-plasma-600',
               'hover:border-void-500',
@@ -71,7 +71,7 @@ const Input = React.forwardRef<HTMLInputElement, InputProps>(
           </p>
         )}
         {hint && !error && (
-          <p id={`${inputId}-hint`} className="text-xs text-void-500 font-mono">
+          <p id={`${inputId}-hint`} className="text-xs text-void-300 font-mono">
             {hint}
           </p>
         )}
@@ -110,7 +110,7 @@ const Textarea = React.forwardRef<HTMLTextAreaElement, TextareaProps>(
             <span
               className={cn(
                 'text-xs font-mono tabular-nums',
-                charCount > maxLength * 0.9 ? 'text-amber-400' : 'text-void-500',
+                charCount > maxLength * 0.9 ? 'text-amber-400' : 'text-void-300',
                 charCount >= maxLength && 'text-crimson-400'
               )}
             >
@@ -125,7 +125,7 @@ const Textarea = React.forwardRef<HTMLTextAreaElement, TextareaProps>(
             'bg-void-800 border border-void-600',
             'px-3 py-2.5',
             'font-mono text-base sm:text-sm text-void-100',
-            'placeholder:text-void-500',
+            'placeholder:text-void-400',
             'transition-colors duration-150',
             'focus:outline-none focus:ring-1 focus:ring-plasma-500 focus:border-plasma-600',
             'hover:border-void-500',
@@ -154,7 +154,7 @@ const Textarea = React.forwardRef<HTMLTextAreaElement, TextareaProps>(
           </p>
         )}
         {hint && !error && (
-          <p id={`${textareaId}-hint`} className="text-xs text-void-500 font-mono">
+          <p id={`${textareaId}-hint`} className="text-xs text-void-300 font-mono">
             {hint}
           </p>
         )}
