@@ -24,6 +24,7 @@ from mimic42.core.agent_runtime import (
 from mimic42.core.agent_store import (
     AgentActivity,
     AgentMessageRecord,
+    AgentOwnershipError,
     AgentRecord,
     AgentStore,
     ConversationPage,
@@ -524,6 +525,13 @@ def create_app(
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=str(exc),
+            ) from exc
+        except AgentOwnershipError as exc:
+            # Поддельная или устаревшая строка онбординга: агент с этим id уже
+            # существует и принадлежит другому пользователю.
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Не удалось создать агента: идентификатор уже занят другим агентом.",
             ) from exc
 
     @app.get(

@@ -12,6 +12,7 @@ from mimic42.core.agent_runtime import DEFAULT_LLM_MODEL, AgentRuntimeConfig, Ag
 from mimic42.core.agent_store import (
     AgentActivity,
     AgentMessageRecord,
+    AgentOwnershipError,
     AgentRecord,
     ConversationPage,
     ConversationTurn,
@@ -73,6 +74,11 @@ class DatabaseAgentStore:
             if agent is None:
                 agent = AgentModel(id=session.onboarding_id)
                 db_session.add(agent)
+            elif agent.owner_id != session.owner_id:
+                # Id онбординг-сессии выбирает клиент, поэтому существующего
+                # агента переприсваивать нельзя: поддельная сессия с id чужого
+                # агента забрала бы его вместе с Telegram-сессией и характером.
+                raise AgentOwnershipError(session.onboarding_id)
 
             agent.owner_id = session.owner_id
             agent.name = session.name
