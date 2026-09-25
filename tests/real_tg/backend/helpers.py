@@ -91,7 +91,7 @@ async def ensure_free_model(dsn: str, agent_id: str) -> None:
     if not chain[0].endswith(":free"):
         raise AssertionError(
             f"У мимика {agent_id} выбрана модель {model!r} без бесплатного варианта: "
-            "открой настройки агента и выбери Ling 3.0 Flash VL или Laguna S 2.1"
+            "открой настройки агента и выбери Ling 3.0 Flash VL"
         )
 
 

@@ -5,6 +5,8 @@ import {
   MessageSquareX,
   MessageSquarePlus,
   Timer,
+  Hourglass,
+  Ban,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -24,6 +26,9 @@ export const EVENT_CATALOG: Record<string, EventMeta> = {
   'model.failed': { ru: 'Модель не ответила', icon: AlertTriangle },
   'turn.failed': { ru: 'Ход завершился ошибкой', icon: AlertTriangle },
   'message.send_failed': { ru: 'Не удалось отправить ответ', icon: MessageSquareX },
+  'message.deferred': { ru: 'Ответ отложен: медленный режим', icon: Hourglass },
+  'message.write_forbidden': { ru: 'Нет права писать в чате', icon: Ban },
+  'message.blocked': { ru: 'Отправка отменена: чат закрыт', icon: MessageSquareX },
   'timer.fired': { ru: 'Сработал отложенный таймер', icon: Timer },
   'timer.failed': { ru: 'Таймер завершился ошибкой', icon: AlertTriangle },
   'first_comment.sent': { ru: 'Первый комментарий отправлен', icon: MessageSquarePlus },

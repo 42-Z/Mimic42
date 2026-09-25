@@ -5,6 +5,7 @@ import {
   type EventLike,
   type MessageLike,
 } from '@/lib/activity/normalize';
+import { getEventMeta } from '@/lib/activity/eventCatalog';
 import type { ConversationTurn } from '@/types';
 
 const msg = (over: Partial<MessageLike>): MessageLike => ({
@@ -391,5 +392,22 @@ describe('turnToActivityItem', () => {
 
     expect(action?.completedAt).toBe('2026-01-01T00:00:05Z');
     expect(action?.startedAt).toBe('2026-01-01T00:00:03.500Z');
+  });
+});
+
+describe('каталог событий окна отправки', () => {
+  test('знает все три события окна', () => {
+    expect(getEventMeta('message.deferred')?.ru).toBe('Ответ отложен: медленный режим');
+    expect(getEventMeta('message.write_forbidden')?.ru).toBe('Нет права писать в чате');
+    expect(getEventMeta('message.blocked')?.ru).toBe('Отправка отменена: чат закрыт');
+  });
+
+  test('событие окна в ленте подписано по-русски, а не сырым типом', () => {
+    const feed = buildActivityFeed(
+      [],
+      [evt({ event_type: 'message.deferred', status: 'succeeded' })],
+    );
+    const labels = feed.flatMap((item) => item.actions.map((a) => a.label));
+    expect(labels).toContain('Ответ отложен: медленный режим');
   });
 });

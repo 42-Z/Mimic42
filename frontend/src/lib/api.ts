@@ -75,13 +75,13 @@ apiClient.interceptors.response.use(
         message = 'Ресурс не найден.';
         break;
       case 409:
-        message = 'Конфликт: ресурс уже существует.';
+        message = (typeof detail === 'string' && detail) || 'Конфликт: ресурс уже существует.';
         break;
       case 422:
         message = formatValidationError(detail);
         break;
       case 428:
-        message = 'Требуется 2FA пароль.';
+        message = (typeof detail === 'string' && detail) || 'Требуется 2FA пароль.';
         break;
       case 429:
         message = 'Слишком много запросов. Подождите немного.';
@@ -90,7 +90,7 @@ apiClient.interceptors.response.use(
         message = 'Внутренняя ошибка сервера.';
         break;
       case 503:
-        message = 'Сервер временно недоступен.';
+        message = (typeof detail === 'string' && detail) || 'Сервер временно недоступен.';
         break;
       default:
         if (!error.response) {
@@ -153,6 +153,18 @@ export const agentsApi = {
   /** POST /api/v1/agents/:id/reload — re-applies settings to the runtime */
   reload: (id: string) =>
     apiClient.post<void>(`/agents/${id}/reload`).then(() => undefined),
+
+  /** POST /api/v1/agents/:id/telegram/rebind — запросить код входа */
+  rebindTelegram: (id: string) =>
+    apiClient
+      .post<OnboardingPublicStatus>(`/agents/${id}/telegram/rebind`)
+      .then((r) => r.data),
+
+  /** POST /api/v1/agents/:id/telegram/rebind/confirm — применить новую сессию */
+  confirmRebind: (id: string, body: { onboarding_id: string }) =>
+    apiClient
+      .post<AgentStatus>(`/agents/${id}/telegram/rebind/confirm`, body)
+      .then((r) => r.data),
 
   /** DELETE /api/v1/agents/:id */
   remove: (id: string) =>

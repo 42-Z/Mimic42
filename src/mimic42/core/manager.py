@@ -21,6 +21,7 @@ from mimic42.core.agent_runtime import (
 )
 from mimic42.core.media import MediaUploader
 from mimic42.core.memory import RuntimeMemoryService
+from mimic42.core.send_window import SendWindowTracker
 from mimic42.integrations.langchain_agent import build_langchain_agent
 from mimic42.integrations.telegram_tools import (
     TelethonRequestClient,
@@ -115,13 +116,19 @@ class AgentManager:
         async with self._lock:
             runtime = self._register_locked(config)
         if start:
-            await runtime.start()
+            try:
+                await runtime.start()
+            except Exception:
+                # Как и в start_agent: без этого БД хранит устаревший статус
+                # (например, running после рестарта), и дэшборд врёт.
+                await self._save_status(config.agent_id, AgentRuntimeState.ERROR)
+                raise
         return runtime
 
     def _register_locked(self, config: AgentRuntimeConfig) -> MimicAgentRuntime:
         """Собрать и положить рантайм в реестр. Вызывать только под ``_lock``."""
         if config.agent_id in self._agents:
-            raise ValueError(f"Agent {config.agent_id} already exists")
+            raise ValueError("Агент с этим ID уже существует")
         runtime = self._build_runtime_for(config)
         self._agents[config.agent_id] = runtime
         self._removed.discard(config.agent_id)
@@ -218,7 +225,7 @@ class AgentManager:
             # already reads the fresh config from the database.
             return
         was_running = old_runtime.status.state is AgentRuntimeState.RUNNING
-        await old_runtime.stop()
+        await old_runtime.close()
         runtime = await self.get_agent(agent_id)
         if was_running:
             try:
@@ -245,7 +252,7 @@ class AgentManager:
             runtime = self._agents.pop(agent_id, None)
         try:
             if runtime is not None:
-                await runtime.stop()
+                await runtime.close()
         except Exception:
             async with self._lock:
                 self._removed.discard(agent_id)
@@ -260,10 +267,11 @@ class AgentManager:
 
     async def shutdown(self) -> None:
         agents = list(self._agents.values())
-        await asyncio.gather(*(agent.stop() for agent in agents), return_exceptions=True)
+        await asyncio.gather(*(agent.close() for agent in agents), return_exceptions=True)
 
     def _build_runtime_with_memory(self, config: AgentRuntimeConfig) -> MimicAgentRuntime:
         telegram_client = self._telegram_client_factory(config)
+        send_window = SendWindowTracker(telegram_client)
         if self._memory_service_factory is None:
             memory_service = RuntimeMemoryService()
         else:
@@ -278,12 +286,14 @@ class AgentManager:
                     agent_id=config.agent_id,
                     session_factory=self.session_factory,
                     media_uploader=self.media_uploader,
+                    send_window=send_window,
                 ),
                 self.session_factory,
             ),
             memory_service=memory_service,
             session_factory=self.session_factory,
             media_uploader=self.media_uploader,
+            send_window=send_window,
         )
 
     async def _save_status(self, agent_id: UUID, state: AgentRuntimeState) -> None:
@@ -298,6 +308,7 @@ def _build_runtime(
     media_uploader: MediaUploader | None = None,
 ) -> MimicAgentRuntime:
     telegram_client = cast(TelegramClientLike, build_telegram_client(config))
+    send_window = SendWindowTracker(telegram_client)
     return MimicAgentRuntime(
         config=config,
         telegram_client=telegram_client,
@@ -308,11 +319,13 @@ def _build_runtime(
                 agent_id=config.agent_id,
                 session_factory=session_factory,
                 media_uploader=media_uploader,
+                send_window=send_window,
             ),
             session_factory=session_factory,
         ),
         session_factory=session_factory,
         media_uploader=media_uploader,
+        send_window=send_window,
     )
 
 

@@ -135,6 +135,47 @@ class TestAgentPage:
         dialog.get_by_role("button", name="Отправить", exact=True).click()
         expect(page.get_by_test_id("toast-container")).to_contain_text("Сообщение отправлено")
 
+    def test_preset_fills_soul_prompt(
+        self, persona_page: Callable[..., Page], api: httpx.Client, users: dict
+    ) -> None:
+        agent_id = _new_agent(api, users, "Пресеты")
+        page = persona_page("full")
+        page.goto(f"/agent/{agent_id}?tab=settings")
+
+        soul = page.get_by_label("SOUL.md — Характер")
+        expect(soul).to_be_visible()
+        # Пустое поле — применение проходит одним кликом, без подтверждения.
+        soul.fill("")
+
+        page.get_by_test_id("open-presets").click()
+        page.get_by_role("option", name=re.compile("Фанат сасыча")).click()
+        body = page.get_by_test_id("preset-body").inner_text()
+        page.get_by_role("button", name="Применить пресет").click()
+
+        expect(page.get_by_test_id("preset-body")).to_be_hidden()
+        expect(soul).to_have_value(body)
+        expect(page.get_by_text("● Есть несохранённые изменения")).to_be_visible()
+
+    def test_preset_asks_before_overwriting(
+        self, persona_page: Callable[..., Page], api: httpx.Client, users: dict
+    ) -> None:
+        agent_id = _new_agent(api, users, "Пресеты поверх")
+        page = persona_page("full")
+        page.goto(f"/agent/{agent_id}?tab=settings")
+
+        soul = page.get_by_label("SOUL.md — Характер")
+        expect(soul).to_be_visible()
+        soul.fill("мой старый характер")
+
+        page.get_by_test_id("open-presets").click()
+        page.get_by_role("button", name="Применить пресет").click()
+
+        expect(page.get_by_text("Текущий характер будет заменён")).to_be_visible()
+        expect(soul).to_have_value("мой старый характер")
+
+        page.get_by_role("button", name="Всё равно заменить").click()
+        expect(soul).not_to_have_value("мой старый характер")
+
 
 class TestEmptyStates:
     def test_memory_empty(

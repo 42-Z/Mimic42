@@ -3,7 +3,9 @@ from __future__ import annotations
 import base64
 import json
 import logging
-from datetime import datetime, timedelta
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, Protocol
 from uuid import UUID
 
@@ -94,9 +96,53 @@ class CustomMarkdown:
         return markdown.unparse(text, temp_entities)
 
 
+class SendWindowClosed(RuntimeError):
+    """Окно отправки в этот чат закрыто: писать сейчас нельзя."""
+
+    def __init__(self, reason: str, retry_after_seconds: int | None) -> None:
+        self.reason = reason
+        self.retry_after_seconds = retry_after_seconds
+        if reason == "slowmode":
+            wait = (
+                f"подожди {retry_after_seconds} с" if retry_after_seconds is not None else "подожди"
+            )
+            message = f"В чате включён медленный режим: писать пока нельзя, {wait}."
+        else:
+            until = (
+                f" Повторить можно через {retry_after_seconds} с."
+                if retry_after_seconds is not None
+                else " Срок не ограничен."
+            )
+            message = f"В этом чате у тебя нет права писать.{until}"
+        super().__init__(message)
+
+
+class _SendSlot:
+    """Расходуется ли слот медленного режима на этой отправке.
+
+    По умолчанию да; ветка, которая вернулась, ничего не отправив (невалидный
+    ввод), сбрасывает флаг, чтобы не сжигать кд впустую.
+    """
+
+    spent = True
+
+
 def _tool_failure(exc: Exception) -> dict[str, Any]:
     """Structured tool failure: machine-readable error identity for the activity log."""
-    return {"success": False, "error": str(exc), "error_code": type(exc).__name__}
+    failure: dict[str, Any] = {
+        "success": False,
+        "error": str(exc),
+        "error_code": type(exc).__name__,
+    }
+    if isinstance(exc, SendWindowClosed):
+        failure["reason"] = exc.reason
+        failure["retry_after_seconds"] = exc.retry_after_seconds
+    else:
+        # SlowModeWaitError и FloodWaitError несут точный остаток в .seconds.
+        seconds = getattr(exc, "seconds", None)
+        if isinstance(seconds, int):
+            failure["retry_after_seconds"] = seconds
+    return failure
 
 
 def _tool_failure_list(exc: Exception) -> list[dict[str, Any]]:
@@ -251,12 +297,14 @@ class TelegramToolbox:
         agent_id: UUID | None = None,
         session_factory: async_sessionmaker[AsyncSession] | None = None,
         media_uploader: MediaUploader | None = None,
+        send_window: Any | None = None,
     ) -> None:
         self._client = client
         self._agent_id = agent_id
         self._session_factory = session_factory
         self._last_send_text_message: dict[str, datetime] = {}
         self._media_uploader = media_uploader
+        self._send_window = send_window
 
     async def _resolve_peer(self, peer: Any, as_input: bool = True) -> Any:
         """Resolve a peer string/int to a Telethon entity."""
@@ -286,6 +334,34 @@ class TelegramToolbox:
                 ) from e
         raise ValueError("Telethon client missing entity resolution method")
 
+    @asynccontextmanager
+    async def _sending(
+        self, peer: str, *, comment_to_msg_id: int | None = None
+    ) -> AsyncIterator[_SendSlot]:
+        """Проверка окна до отправки и учёт результата после.
+
+        Окно — источник дешёвой правды, ошибка Telegram — источник точной:
+        обе ветки кормят трекер, иначе он разойдётся с реальностью.
+        """
+        slot = _SendSlot()
+        # Комментарий уходит в связанную группу, а не в peer: окно канала к нему
+        # не относится, а права и кд группы мы здесь не знаем.
+        if self._send_window is None or comment_to_msg_id is not None:
+            yield slot
+            return
+        now = datetime.now(UTC)
+        window = await self._send_window.check(peer)
+        if not window.is_open(now):
+            raise SendWindowClosed(window.reason, window.retry_after(now))
+        try:
+            yield slot
+        except Exception as exc:
+            self._send_window.note_error(peer, exc)
+            raise
+        else:
+            if slot.spent:
+                self._send_window.note_sent(peer)
+
     # Category 1: Messages and Basic Communication (1-12)
 
     async def send_text_message(
@@ -310,16 +386,17 @@ class TelegramToolbox:
                 ),
             }
         try:
-            entity = await self._resolve_peer(peer)
-            msg = await self._client.send_message(
-                entity,
-                message,
-                reply_to=reply_to_msg_id,
-                comment_to=comment_to_msg_id,
-                parse_mode=CustomMarkdown(),
-            )
-            self._last_send_text_message[peer] = now
-            return {"success": True, "message_id": msg.id}
+            async with self._sending(peer, comment_to_msg_id=comment_to_msg_id):
+                entity = await self._resolve_peer(peer)
+                msg = await self._client.send_message(
+                    entity,
+                    message,
+                    reply_to=reply_to_msg_id,
+                    comment_to=comment_to_msg_id,
+                    parse_mode=CustomMarkdown(),
+                )
+                self._last_send_text_message[peer] = now
+                return {"success": True, "message_id": msg.id}
         except Exception as e:
             return _tool_failure(e)
 
@@ -352,10 +429,11 @@ class TelegramToolbox:
     ) -> dict[str, Any]:
         """Forward messages from one chat to another."""
         try:
-            from_entity = await self._resolve_peer(from_peer)
-            to_entity = await self._resolve_peer(to_peer)
-            await self._client.forward_messages(to_entity, message_ids, from_peer=from_entity)
-            return {"success": True}
+            async with self._sending(to_peer):
+                from_entity = await self._resolve_peer(from_peer)
+                to_entity = await self._resolve_peer(to_peer)
+                await self._client.forward_messages(to_entity, message_ids, from_peer=from_entity)
+                return {"success": True}
         except Exception as e:
             return _tool_failure(e)
 
@@ -635,41 +713,43 @@ class TelegramToolbox:
     ) -> dict[str, Any]:
         """Send a file by URL or Media ID."""
         try:
-            entity = await self._resolve_peer(peer)
-            if file_source.startswith("http://") or file_source.startswith("https://"):
+            async with self._sending(peer, comment_to_msg_id=comment_to_msg_id) as slot:
+                entity = await self._resolve_peer(peer)
+                if file_source.startswith("http://") or file_source.startswith("https://"):
+                    msg = await self._client.send_file(
+                        entity,
+                        file_source,
+                        caption=caption,
+                        reply_to=reply_to_msg_id,
+                        comment_to=comment_to_msg_id,
+                    )
+                    return {"success": True, "message_id": msg.id}
+
+                media_type, obj_id, access_hash, file_reference, dc_id = parse_media_id(file_source)
+                if media_type == "photo":
+                    file_input = types.InputPhoto(
+                        id=obj_id,
+                        access_hash=access_hash,
+                        file_reference=file_reference,
+                    )
+                elif media_type in ("sticker", "doc", "voice", "round"):
+                    file_input = types.InputDocument(
+                        id=obj_id,
+                        access_hash=access_hash,
+                        file_reference=file_reference,
+                    )
+                else:
+                    slot.spent = False
+                    return {"success": False, "error": f"Invalid media type: {media_type}"}
+
                 msg = await self._client.send_file(
                     entity,
-                    file_source,
+                    file_input,
                     caption=caption,
                     reply_to=reply_to_msg_id,
                     comment_to=comment_to_msg_id,
                 )
                 return {"success": True, "message_id": msg.id}
-
-            media_type, obj_id, access_hash, file_reference, dc_id = parse_media_id(file_source)
-            if media_type == "photo":
-                file_input = types.InputPhoto(
-                    id=obj_id,
-                    access_hash=access_hash,
-                    file_reference=file_reference,
-                )
-            elif media_type in ("sticker", "doc", "voice", "round"):
-                file_input = types.InputDocument(
-                    id=obj_id,
-                    access_hash=access_hash,
-                    file_reference=file_reference,
-                )
-            else:
-                return {"success": False, "error": f"Invalid media type: {media_type}"}
-
-            msg = await self._client.send_file(
-                entity,
-                file_input,
-                caption=caption,
-                reply_to=reply_to_msg_id,
-                comment_to=comment_to_msg_id,
-            )
-            return {"success": True, "message_id": msg.id}
         except Exception as e:
             return _tool_failure(e)
 
@@ -823,31 +903,32 @@ class TelegramToolbox:
     ) -> dict[str, Any]:
         """Send voice note by URL or Media ID."""
         try:
-            entity = await self._resolve_peer(peer)
-            if file_source.startswith("http://") or file_source.startswith("https://"):
+            async with self._sending(peer, comment_to_msg_id=comment_to_msg_id):
+                entity = await self._resolve_peer(peer)
+                if file_source.startswith("http://") or file_source.startswith("https://"):
+                    msg = await self._client.send_file(
+                        entity,
+                        file_source,
+                        voice_note=True,
+                        reply_to=reply_to_msg_id,
+                        comment_to=comment_to_msg_id,
+                    )
+                    return {"success": True, "message_id": msg.id}
+
+                media_type, obj_id, access_hash, file_reference, dc_id = parse_media_id(file_source)
+                file_input = types.InputDocument(
+                    id=obj_id,
+                    access_hash=access_hash,
+                    file_reference=file_reference,
+                )
                 msg = await self._client.send_file(
                     entity,
-                    file_source,
+                    file_input,
                     voice_note=True,
                     reply_to=reply_to_msg_id,
                     comment_to=comment_to_msg_id,
                 )
                 return {"success": True, "message_id": msg.id}
-
-            media_type, obj_id, access_hash, file_reference, dc_id = parse_media_id(file_source)
-            file_input = types.InputDocument(
-                id=obj_id,
-                access_hash=access_hash,
-                file_reference=file_reference,
-            )
-            msg = await self._client.send_file(
-                entity,
-                file_input,
-                voice_note=True,
-                reply_to=reply_to_msg_id,
-                comment_to=comment_to_msg_id,
-            )
-            return {"success": True, "message_id": msg.id}
         except Exception as e:
             return _tool_failure(e)
 
@@ -861,45 +942,47 @@ class TelegramToolbox:
     ) -> dict[str, Any]:
         """Send video note (round video) by URL or Media ID."""
         try:
-            entity = await self._resolve_peer(peer)
-            if file_source.startswith("http://") or file_source.startswith("https://"):
+            async with self._sending(peer, comment_to_msg_id=comment_to_msg_id):
+                entity = await self._resolve_peer(peer)
+                if file_source.startswith("http://") or file_source.startswith("https://"):
+                    msg = await self._client.send_file(
+                        entity,
+                        file_source,
+                        video_note=True,
+                        reply_to=reply_to_msg_id,
+                        comment_to=comment_to_msg_id,
+                    )
+                    return {"success": True, "message_id": msg.id}
+
+                media_type, obj_id, access_hash, file_reference, dc_id = parse_media_id(file_source)
+                file_input = types.InputDocument(
+                    id=obj_id,
+                    access_hash=access_hash,
+                    file_reference=file_reference,
+                )
                 msg = await self._client.send_file(
                     entity,
-                    file_source,
+                    file_input,
                     video_note=True,
                     reply_to=reply_to_msg_id,
                     comment_to=comment_to_msg_id,
                 )
                 return {"success": True, "message_id": msg.id}
-
-            media_type, obj_id, access_hash, file_reference, dc_id = parse_media_id(file_source)
-            file_input = types.InputDocument(
-                id=obj_id,
-                access_hash=access_hash,
-                file_reference=file_reference,
-            )
-            msg = await self._client.send_file(
-                entity,
-                file_input,
-                video_note=True,
-                reply_to=reply_to_msg_id,
-                comment_to=comment_to_msg_id,
-            )
-            return {"success": True, "message_id": msg.id}
         except Exception as e:
             return _tool_failure(e)
 
     async def send_location(self, peer: str, latitude: float, longitude: float) -> dict[str, Any]:
         """Send a map location pin with specific latitude and longitude."""
         try:
-            entity = await self._resolve_peer(peer)
-            msg = await self._client.send_file(
-                entity,
-                types.InputMediaGeoPoint(
-                    geo_point=types.InputGeoPoint(lat=latitude, long=longitude)
-                ),
-            )
-            return {"success": True, "message_id": msg.id}
+            async with self._sending(peer):
+                entity = await self._resolve_peer(peer)
+                msg = await self._client.send_file(
+                    entity,
+                    types.InputMediaGeoPoint(
+                        geo_point=types.InputGeoPoint(lat=latitude, long=longitude)
+                    ),
+                )
+                return {"success": True, "message_id": msg.id}
         except Exception as e:
             return _tool_failure(e)
 
@@ -908,19 +991,20 @@ class TelegramToolbox:
     ) -> dict[str, Any]:
         """Send a beautiful venue location card with a map pin, title, and address."""
         try:
-            entity = await self._resolve_peer(peer)
-            msg = await self._client.send_file(
-                entity,
-                types.InputMediaVenue(
-                    geo_point=types.InputGeoPoint(lat=latitude, long=longitude),
-                    title=title,
-                    address=address,
-                    provider="",
-                    venue_id="",
-                    venue_type="",
-                ),
-            )
-            return {"success": True, "message_id": msg.id}
+            async with self._sending(peer):
+                entity = await self._resolve_peer(peer)
+                msg = await self._client.send_file(
+                    entity,
+                    types.InputMediaVenue(
+                        geo_point=types.InputGeoPoint(lat=latitude, long=longitude),
+                        title=title,
+                        address=address,
+                        provider="",
+                        venue_id="",
+                        venue_type="",
+                    ),
+                )
+                return {"success": True, "message_id": msg.id}
         except Exception as e:
             return _tool_failure(e)
 
@@ -1068,23 +1152,25 @@ class TelegramToolbox:
     ) -> dict[str, Any]:
         """Send a sticker by its Media ID."""
         try:
-            entity = await self._resolve_peer(peer)
-            media_type, obj_id, access_hash, file_reference, dc_id = parse_media_id(media_id)
-            if media_type != "sticker":
-                return {"success": False, "error": "media_id is not a sticker"}
+            async with self._sending(peer, comment_to_msg_id=comment_to_msg_id) as slot:
+                entity = await self._resolve_peer(peer)
+                media_type, obj_id, access_hash, file_reference, dc_id = parse_media_id(media_id)
+                if media_type != "sticker":
+                    slot.spent = False
+                    return {"success": False, "error": "media_id is not a sticker"}
 
-            sticker_input = types.InputDocument(
-                id=obj_id,
-                access_hash=access_hash,
-                file_reference=file_reference,
-            )
-            msg = await self._client.send_file(
-                entity,
-                sticker_input,
-                reply_to=reply_to_msg_id,
-                comment_to=comment_to_msg_id,
-            )
-            return {"success": True, "message_id": msg.id}
+                sticker_input = types.InputDocument(
+                    id=obj_id,
+                    access_hash=access_hash,
+                    file_reference=file_reference,
+                )
+                msg = await self._client.send_file(
+                    entity,
+                    sticker_input,
+                    reply_to=reply_to_msg_id,
+                    comment_to=comment_to_msg_id,
+                )
+                return {"success": True, "message_id": msg.id}
         except Exception as e:
             return _tool_failure(e)
 
@@ -1338,19 +1424,20 @@ class TelegramToolbox:
     ) -> dict[str, Any]:
         """Send an inline bot result to a chat."""
         try:
-            entity = await self._resolve_peer(peer)
-            reply_to = None
-            if reply_to_msg_id is not None:
-                reply_to = types.InputReplyToMessage(reply_to_msg_id=reply_to_msg_id)
-            await self._client(
-                functions.messages.SendInlineBotResultRequest(
-                    peer=entity,
-                    query_id=query_id,
-                    id=result_id,
-                    reply_to=reply_to,
+            async with self._sending(peer):
+                entity = await self._resolve_peer(peer)
+                reply_to = None
+                if reply_to_msg_id is not None:
+                    reply_to = types.InputReplyToMessage(reply_to_msg_id=reply_to_msg_id)
+                await self._client(
+                    functions.messages.SendInlineBotResultRequest(
+                        peer=entity,
+                        query_id=query_id,
+                        id=result_id,
+                        reply_to=reply_to,
+                    )
                 )
-            )
-            return {"success": True}
+                return {"success": True}
         except Exception as e:
             return _tool_failure(e)
 
@@ -1967,28 +2054,29 @@ class TelegramToolbox:
     ) -> dict[str, Any]:
         """Send a poll or quiz."""
         try:
-            entity = await self._resolve_peer(peer)
-            poll = types.Poll(
-                id=0,
-                hash=0,
-                question=types.TextWithEntities(text=question, entities=[]),
-                answers=[
-                    types.PollAnswer(
-                        text=types.TextWithEntities(text=opt, entities=[]), option=bytes([i])
-                    )
-                    for i, opt in enumerate(options)
-                ],
-                closed=False,
-                public_voters=not is_anonymous,
-                multiple_choice=False,
-                quiz=is_quiz,
-            )
-            media = types.InputMediaPoll(
-                poll=poll,
-                correct_answers=[correct_option_id] if correct_option_id is not None else None,
-            )
-            msg = await self._client.send_file(entity, media)
-            return {"success": True, "message_id": msg.id}
+            async with self._sending(peer):
+                entity = await self._resolve_peer(peer)
+                poll = types.Poll(
+                    id=0,
+                    hash=0,
+                    question=types.TextWithEntities(text=question, entities=[]),
+                    answers=[
+                        types.PollAnswer(
+                            text=types.TextWithEntities(text=opt, entities=[]), option=bytes([i])
+                        )
+                        for i, opt in enumerate(options)
+                    ],
+                    closed=False,
+                    public_voters=not is_anonymous,
+                    multiple_choice=False,
+                    quiz=is_quiz,
+                )
+                media = types.InputMediaPoll(
+                    poll=poll,
+                    correct_answers=[correct_option_id] if correct_option_id is not None else None,
+                )
+                msg = await self._client.send_file(entity, media)
+                return {"success": True, "message_id": msg.id}
         except Exception as e:
             return _tool_failure(e)
 
@@ -2498,6 +2586,7 @@ def build_telegram_langchain_tools(
     agent_id: UUID | None = None,
     session_factory: async_sessionmaker[AsyncSession] | None = None,
     media_uploader: MediaUploader | None = None,
+    send_window: Any | None = None,
 ) -> list[BaseTool]:
     """Expose all 91 tools as LangChain StructuredTools."""
     toolbox = TelegramToolbox(
@@ -2505,6 +2594,7 @@ def build_telegram_langchain_tools(
         agent_id=agent_id,
         session_factory=session_factory,
         media_uploader=media_uploader,
+        send_window=send_window,
     )
 
     return [

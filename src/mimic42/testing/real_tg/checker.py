@@ -11,18 +11,38 @@ from __future__ import annotations
 import asyncio
 import random
 import threading
+from contextlib import suppress
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 from typing import Any, cast
 from uuid import UUID
 
 import asyncpg
-from telethon import TelegramClient, events
+from telethon import TelegramClient, events, utils
 from telethon.sessions import StringSession
+from telethon.tl.functions.channels import (
+    CreateChannelRequest,
+    DeleteChannelRequest,
+    InviteToChannelRequest,
+    ToggleSlowModeRequest,
+)
 from telethon.tl.functions.contacts import ImportContactsRequest
 from telethon.tl.types import InputPhoneContact
 
 from mimic42.testing.slots import plain_dsn
 
 REPLY_TIMEOUT_SECONDS = 300.0
+
+
+@dataclass(frozen=True)
+class SeenMessage:
+    """Сообщение, замеченное проверяющим в группе."""
+
+    message_id: int
+    sender_id: int | None
+    text: str
+    reply_to: int | None
+    date: datetime
 
 
 class Checker:
@@ -117,6 +137,97 @@ class Checker:
             return await asyncio.wait_for(got, timeout)
         finally:
             self.client.remove_event_handler(handler)
+
+    # --- группы: медленный режим и права ------------------------------------------------
+
+    async def create_supergroup(self, title: str, members: list[str]) -> int:
+        """Создаёт супергруппу (медленный режим бывает только у них) и зовёт участников.
+
+        Возвращает peer id в формате Telethon (-100...). InviteToChannelRequest не
+        бросает исключение на отказ по приватности: недоставленные приглашения
+        лежат в `missing_invitees`, поэтому их проверяем явно.
+        """
+        created = await self.client(
+            CreateChannelRequest(title=title, about="mimic42 send window test", megagroup=True)
+        )
+        channel = cast(Any, created).chats[0]
+        peer_id = int(utils.get_peer_id(channel))
+        if members:
+            try:
+                users = [await self.client.get_input_entity(phone) for phone in members]
+                invited = await self.client(
+                    InviteToChannelRequest(channel=channel, users=cast(Any, users))
+                )
+                missing = list(getattr(invited, "missing_invitees", None) or [])
+                if missing:
+                    raise RuntimeError(f"Не удалось пригласить в группу: {missing}")
+            except BaseException:
+                # Без peer_id вызывающий не сможет удалить группу: убираем её здесь,
+                # иначе каждый неудачный прогон оставлял бы её на настоящем аккаунте.
+                with suppress(Exception):
+                    await self.delete_group(peer_id)
+                raise
+        return peer_id
+
+    async def delete_group(self, peer_id: int) -> None:
+        """Убирает тестовую группу: они создаются на настоящем аккаунте и копились бы."""
+        channel = await self.client.get_input_entity(peer_id)
+        await self.client(DeleteChannelRequest(channel=cast(Any, channel)))
+
+    async def set_slow_mode(self, peer_id: int, seconds: int) -> None:
+        """Допустимо: 0 (выкл), 10, 30, 60, 300, 900, 3600 — иначе SecondsInvalidError."""
+        channel = await self.client.get_input_entity(peer_id)
+        await self.client(ToggleSlowModeRequest(channel=cast(Any, channel), seconds=seconds))
+
+    async def restrict(self, peer_id: int, user: int | str, *, seconds: int = 0) -> None:
+        """Запрещает пользователю писать. seconds=0 — бессрочно (по документации
+        edit_permissions срок короче 30 с или длиннее 366 дней считается вечным)."""
+        until = timedelta(seconds=seconds) if seconds else None
+        await self.client.edit_permissions(peer_id, user, until, send_messages=False)
+
+    async def unrestrict(self, peer_id: int, user: int | str) -> None:
+        """Все флаги по умолчанию True — то есть «ничего не запрещать»."""
+        await self.client.edit_permissions(peer_id, user)
+
+    async def set_default_write(self, peer_id: int, *, allowed: bool) -> None:
+        """Права по умолчанию для всех участников (user=None)."""
+        await self.client.edit_permissions(peer_id, None, send_messages=allowed)
+
+    async def resolve_id(self, phone: str) -> int:
+        entity = await self.client.get_entity(phone)
+        return int(cast(Any, entity).id)
+
+    async def send_many(self, peer_id: int, texts: list[str], *, pause: float) -> list[int]:
+        ids: list[int] = []
+        for text in texts:
+            message = await self.client.send_message(peer_id, text)
+            ids.append(int(cast(Any, message).id))
+            await asyncio.sleep(pause)
+        return ids
+
+    async def collect_messages(self, peer_id: int, *, seconds: float) -> list[SeenMessage]:
+        """Слушает группу заданное время и возвращает всё, что в ней появилось."""
+        seen: list[SeenMessage] = []
+
+        async def handler(event: Any) -> None:
+            message = event.message
+            reply = getattr(message, "reply_to", None)
+            seen.append(
+                SeenMessage(
+                    message_id=int(message.id),
+                    sender_id=event.sender_id,
+                    text=str(message.message or ""),
+                    reply_to=getattr(reply, "reply_to_msg_id", None),
+                    date=message.date,
+                )
+            )
+
+        self.client.add_event_handler(handler, events.NewMessage(chats=[peer_id]))
+        try:
+            await asyncio.sleep(seconds)
+        finally:
+            self.client.remove_event_handler(handler)
+        return seen
 
     async def send_and_wait_reply(
         self, phone: str, text: str, *, timeout: float = REPLY_TIMEOUT_SECONDS

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mimic42.core.onboarding import (
@@ -45,6 +45,22 @@ class DatabaseOnboardingRepository:
             )
             if model is None:
                 raise OnboardingNotFoundError(onboarding_id)
+            return _model_to_session(model)
+
+    async def get_for_agent(self, agent_id: UUID) -> OnboardingSession:
+        async with self._session_factory() as db_session:
+            model = await db_session.scalar(
+                select(AgentOnboardingSessionModel)
+                .where(
+                    or_(
+                        AgentOnboardingSessionModel.id == agent_id,
+                        AgentOnboardingSessionModel.completed_agent_id == agent_id,
+                    )
+                )
+                .limit(1)
+            )
+            if model is None:
+                raise OnboardingNotFoundError(agent_id)
             return _model_to_session(model)
 
 

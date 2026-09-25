@@ -54,6 +54,12 @@ export const queryKeys = {
     current: () => [...queryKeys.profile.all, 'current'] as const,
   },
 
+  // Prompt presets
+  presets: {
+    all: ['presets'] as const,
+    list: () => [...queryKeys.presets.all, 'list'] as const,
+  },
+
   // Memories
   memories: {
     all: ['memories'] as const,

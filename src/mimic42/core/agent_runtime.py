@@ -4,7 +4,8 @@ import asyncio
 import io
 import logging
 import random
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -16,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mimic42.core.activity import ActivityRecorder
 from mimic42.core.album_grouper import AlbumGrouper
+from mimic42.core.deferred_inbox import DeferredInbox
 from mimic42.core.first_comment import (
     FirstCommentSettings,
     FirstCommentVariant,
@@ -24,13 +26,44 @@ from mimic42.core.first_comment import (
 from mimic42.core.media import MAX_MEDIA_BYTES, MediaFile, MediaUploader
 from mimic42.core.memory import MemoryServiceLike, RuntimeMemoryService
 from mimic42.core.model_catalog import DEFAULT_LLM_MODEL
+from mimic42.core.send_window import SendWindow, SendWindowTracker
 
 logger = logging.getLogger("mimic42.agent_runtime")
 logger.setLevel(logging.INFO)
 
+# Дольше этого ждать открытия окна бессмысленно: сообщения успеют устареть.
+DEFER_LIMIT_SECONDS = 300.0
+# Слив ставится чуть позже открытия окна: иначе округление вниз запускает его
+# раньше времени, и он перепланирует сам себя в плотном цикле.
+DEFER_MARGIN_SECONDS = 0.25
+
 
 class TelegramAuthorizationRequired(RuntimeError):
     """Raised when a Telethon user session is connected but not authorized."""
+
+
+UNAUTHORIZED_SESSION_MESSAGE = (
+    "Сессия Telegram не авторизована. Требуется повторная привязка Telegram-аккаунта."
+)
+
+REVOKED_SESSION_MESSAGE = (
+    "Сессия Telegram недействительна. Требуется повторная привязка Telegram-аккаунта."
+)
+
+
+def _is_dead_session_error(exc: BaseException) -> bool:
+    """Мёртвая сессия: нужен повторный вход, рантайм сам не восстановится.
+
+    Telegram отдаёт это как AuthKeyDuplicatedError (406 — обычная
+    причина: одну сессию использовали с двух IP), и как UnauthorizedError
+    (401: revoked/expired/unregistered/deactivated).
+    """
+    from telethon.errors import AuthKeyDuplicatedError, UnauthorizedError
+
+    return isinstance(
+        exc,
+        (TelegramAuthorizationRequired, AuthKeyDuplicatedError, UnauthorizedError),
+    )
 
 
 class AgentRuntimeState(StrEnum):
@@ -47,6 +80,9 @@ class AgentRuntimeConfig(BaseModel):
     telegram_api_id: int = Field(gt=0)
     telegram_api_hash: str = Field(min_length=1)
     telegram_session_string: str | None = Field(default=None, min_length=1)
+    # Opaque identity of the persisted session ciphertext. It is deliberately
+    # separate from the decrypted Telethon string and must never be serialized.
+    telegram_session_token: str | None = Field(default=None, exclude=True, repr=False)
     llm_model: str = Field(default=DEFAULT_LLM_MODEL, min_length=1)
     reasoning_effort: str = Field(default="high")
     system_prompt: str = Field(min_length=1)
@@ -80,6 +116,9 @@ class AgentTrigger(BaseModel):
     media: list[dict[str, Any]] = Field(default_factory=list)
     reply_to_message_id: int | None = Field(default=None, gt=0)
     reply_preview: str | None = None
+    require_reply_to: bool = False
+    """Ответ на схлопнутую пачку без reply_to нечитаем: рантайм подставит fallback."""
+    fallback_reply_to: int | None = Field(default=None, gt=0)
 
 
 class AgentTriggerResult(BaseModel):
@@ -150,6 +189,22 @@ class TurnContext:
     peer: str
 
 
+@dataclass
+class IncomingBlock:
+    """Одно входящее (или один альбом), уже приведённое к тексту для модели."""
+
+    text: str
+    media: list[MediaFile]
+    message_id: int | None
+    reply_to_msg_id: int | None
+    reply_preview: str
+    raw_text: str
+    thread_title: str | None
+    sender_str: str
+    chat_type_str: str
+    msg_date: datetime
+
+
 class MimicAgentRuntime:
     """Async runtime that owns one Telegram user session and one LangChain agent."""
 
@@ -162,6 +217,7 @@ class MimicAgentRuntime:
         memory_service: MemoryServiceLike | None = None,
         session_factory: async_sessionmaker[AsyncSession] | None = None,
         media_uploader: MediaUploader | None = None,
+        send_window: SendWindowTracker | None = None,
     ) -> None:
         self.config = config
         self._telegram_client = telegram_client
@@ -169,15 +225,23 @@ class MimicAgentRuntime:
         self._memory_service = memory_service or RuntimeMemoryService()
         self._session_factory = session_factory
         self._media_uploader = media_uploader
+        self._send_window = send_window
         self._state = AgentRuntimeState.STOPPED
         self._lifecycle_lock = asyncio.Lock()
         self._trigger_lock = asyncio.Lock()
+        # Проверка окна и ход по ней — одна операция: иначе сообщения, пришедшие во время
+        # хода, проходят гейт при ещё открытом окне и упираются в закрытое на отправке.
+        self._dispatch_lock = asyncio.Lock()
         self._message_handler_registered = False
+        # Мёртвая сессия не чинится перезапуском: рантайм с ней больше не
+        # поднимаем до перепривязки (reload_agent создаёт новый объект).
+        self._session_revoked = False
         self._member_tag_cache: dict[tuple[int, int], tuple[str | None, float]] = {}
         self._chat_mute_cache: dict[str, tuple[bool, float]] = {}
         self._scheduler_task: asyncio.Task[None] | None = None
         self._http_client: Any | None = None
         self._album_grouper = AlbumGrouper(self._flush_album)
+        self._deferred_inbox = DeferredInbox(self._flush_deferred)
         self._album_comment_guard = PostedAlbumGuard()
         self._activity = ActivityRecorder(session_factory) if session_factory is not None else None
 
@@ -202,6 +266,90 @@ class MimicAgentRuntime:
             started_at=started_at,
             completed_at=completed_at,
         )
+
+    async def _mark_telegram_session_revoked(self, *, error: str) -> None:
+        """Пометить telegram_sessions revoked: дэшборд предложит перепривязку.
+
+        Ошибка записи не мешает основному исключению: статус агента и события
+        фиксируются отдельно.
+        """
+        if self._session_factory is None:
+            return
+        if self.config.telegram_session_token is None:
+            logger.warning(
+                "Telegram session token is missing for agent %s, refusing unsafe revoke",
+                self.config.agent_id,
+            )
+            return
+        try:
+            from sqlalchemy import update
+            from sqlalchemy.engine import CursorResult
+
+            from mimic42.integrations.database_models import AgentModel, TelegramSessionModel
+
+            async with self._session_factory() as db_session:
+                result = await db_session.execute(
+                    update(TelegramSessionModel)
+                    .where(
+                        TelegramSessionModel.agent_id == self.config.agent_id,
+                        TelegramSessionModel.session_ciphertext
+                        == self.config.telegram_session_token,
+                    )
+                    .values(authorization_status="revoked", last_error=error)
+                )
+                # execute() статически возвращает Result, а rowcount есть только
+                # у буферизованного CursorResult, который и приходит для UPDATE.
+                if cast(CursorResult[Any], result).rowcount == 0:
+                    logger.warning(
+                        "Telegram session changed or is missing for agent %s; "
+                        "stale runtime did not mark it revoked",
+                        self.config.agent_id,
+                    )
+                else:
+                    await db_session.execute(
+                        update(AgentModel)
+                        .where(AgentModel.id == self.config.agent_id)
+                        .values(status=AgentRuntimeState.ERROR.value)
+                    )
+                await db_session.commit()
+        except Exception:
+            logger.warning(
+                "Failed to mark telegram session revoked for agent %s",
+                self.config.agent_id,
+                exc_info=True,
+            )
+
+    async def _revoke_dead_session(self) -> None:
+        """Пометить мёртвую сессию и запретить дальнейшую работу рантайма.
+
+        Из задачи планировщика нельзя звать ``stop()``: он ожидает завершения
+        этой же задачи. Состояния ``ERROR`` достаточно, чтобы цикл планировщика
+        вышел на следующей проверке. Клиент отключается вызывающим кодом только
+        после завершения текущего хода, иначе Telethon может отменить активный
+        обработчик входящего сообщения до сохранения истории.
+        """
+        self._session_revoked = True
+        await self._mark_telegram_session_revoked(error=REVOKED_SESSION_MESSAGE)
+        self._state = AgentRuntimeState.ERROR
+
+    async def _disconnect_revoked_client(self) -> None:
+        """Отключить клиент уже после завершения активного хода."""
+        try:
+            await self._telegram_client.disconnect()
+        except Exception:
+            logger.exception(
+                "Failed to disconnect revoked Telegram client for agent %s",
+                self.config.agent_id,
+            )
+
+    @asynccontextmanager
+    async def _disconnect_revoked_client_after_turn(self) -> AsyncIterator[None]:
+        """Гарантированно отключить revoked-клиент после снятия trigger lock."""
+        try:
+            yield
+        finally:
+            if self._session_revoked:
+                await self._disconnect_revoked_client()
 
     @property
     def state(self) -> AgentRuntimeState:
@@ -229,26 +377,37 @@ class MimicAgentRuntime:
                 logger.debug("Connected. Checking authorization...")
                 if not await self._telegram_client.is_user_authorized():
                     logger.error("Telegram session not authorized")
-                    raise TelegramAuthorizationRequired(
-                        "Telegram user session is not authorized. Complete onboarding first."
-                    )
+                    raise TelegramAuthorizationRequired(UNAUTHORIZED_SESSION_MESSAGE)
                 logger.debug("Authorized. Registering message handler...")
                 self._register_message_handler()
                 logger.info("Message handler registered")
             except Exception as e:
                 logger.error(f"Failed to start agent {self.config.agent_id}: {e}", exc_info=True)
                 self._state = AgentRuntimeState.ERROR
-                reason = (
-                    "unauthorized" if isinstance(e, TelegramAuthorizationRequired) else "exception"
-                )
+                dead_session = _is_dead_session_error(e)
+                reason = "unauthorized" if dead_session else "exception"
+                if dead_session:
+                    self._session_revoked = True
+                    await self._mark_telegram_session_revoked(error=REVOKED_SESSION_MESSAGE)
+                # connect() мог пройти до падения: не оставляем полуживое
+                # соединение висеть до следующего старта.
+                try:
+                    await self._telegram_client.disconnect()
+                except Exception:
+                    logger.exception("Failed to disconnect Telegram client after start failure")
                 await self._record_event(
                     event_type="agent.start_failed",
                     status="failed",
                     payload={"reason": reason, "error_code": type(e).__name__},
-                    error=str(e),
+                    error=REVOKED_SESSION_MESSAGE if dead_session else str(e),
                     started_at=datetime.now(UTC),
                     completed_at=datetime.now(UTC),
                 )
+                if dead_session and not isinstance(e, TelegramAuthorizationRequired):
+                    # Унифицируем для вызывающего слоя: API отдаёт 428 с понятным
+                    # русским текстом вместо 500. Исходное исключение остаётся
+                    # в логе и в payload.error_code.
+                    raise TelegramAuthorizationRequired(REVOKED_SESSION_MESSAGE) from e
                 raise
 
             self._state = AgentRuntimeState.RUNNING
@@ -281,6 +440,7 @@ class MimicAgentRuntime:
                     self._scheduler_task = None
 
                 await self._album_grouper.close()
+                await self._deferred_inbox.close()
 
                 if self._http_client is not None:
                     try:
@@ -300,6 +460,17 @@ class MimicAgentRuntime:
                 started_at=datetime.now(UTC),
                 completed_at=datetime.now(UTC),
             )
+
+    async def close(self) -> None:
+        """Stop for good and release what only a restart would need.
+
+        The manager calls this when it drops the runtime (removal, reload,
+        shutdown); a plain stop keeps the agent's HTTP client for a restart.
+        """
+        await self.stop()
+        close_agent = getattr(self._langchain_agent, "aclose", None)
+        if close_agent is not None:
+            await close_agent()
 
     async def _humanized_send(
         self,
@@ -422,11 +593,20 @@ class MimicAgentRuntime:
             trigger.peer,
             trigger.text[:50],
         )
+        if self._session_revoked:
+            # Перезапуск поднимет тот же мёртвый ключ и снова упадёт: ждём
+            # перепривязки, а не долбим Telegram на каждом входящем.
+            raise TelegramAuthorizationRequired(REVOKED_SESSION_MESSAGE)
         if self._state is not AgentRuntimeState.RUNNING:
             logger.info(f"Agent not running (state={self._state}), starting...")
             await self.start()
 
-        async with self._trigger_lock:
+        # Контексты выходят в обратном порядке: сначала снимается trigger lock,
+        # затем finally отключает revoked-клиент даже при ошибке сохранения хода.
+        async with self._disconnect_revoked_client_after_turn(), self._trigger_lock:
+            # Вызов мог ждать lock, пока предыдущий ход отозвал сессию.
+            if self._session_revoked:
+                raise TelegramAuthorizationRequired(REVOKED_SESSION_MESSAGE)
             logger.debug(f"Processing message from {trigger.peer}: {trigger.text[:100]}")
             turn_id = str(uuid4())
             turn_context = TurnContext(turn_id=turn_id, peer=trigger.peer)
@@ -506,6 +686,34 @@ class MimicAgentRuntime:
                 logger.info("Agent generated empty response, not sending")
                 send_any = False
 
+            if send_any and trigger.require_reply_to and reply_to is None:
+                reply_to = trigger.fallback_reply_to
+                logger.info("Модель не указала reply_to на схлопнутой пачке, ставим %s", reply_to)
+
+            # Между решением и отправкой прошло время генерации: слот мог закрыться.
+            if send_any and self._send_window is not None:
+                window = await self._send_window.check(trigger.peer)
+                now = datetime.now(UTC)
+                if not window.is_open(now):
+                    logger.info(
+                        "Окно отправки в %s закрыто (%s), ответ не уходит",
+                        trigger.peer,
+                        window.reason,
+                    )
+                    await self._record_event(
+                        event_type="message.blocked",
+                        status="cancelled",
+                        payload={
+                            "turn_id": turn_id,
+                            "peer": trigger.peer,
+                            "reason": window.reason,
+                            "retry_after_seconds": window.retry_after(now),
+                        },
+                        started_at=now,
+                        completed_at=datetime.now(UTC),
+                    )
+                    send_any = False
+
             peer_id_for_send = _peer_for_send(trigger.peer)
             # Mark incoming message as read immediately after deciding to reply,
             # before the typing delay, so the order is: read -> typing -> send.
@@ -544,10 +752,17 @@ class MimicAgentRuntime:
                         reply_to=reply_to,
                     )
                     logger.info(f"Message sent successfully to {peer_id_for_send}")
+                    if self._send_window is not None:
+                        self._send_window.note_sent(trigger.peer)
                 except Exception as e:
+                    if self._send_window is not None:
+                        self._send_window.note_error(trigger.peer, e)
                     # The turn must not crash on a delivery failure, but the
                     # silence must be visible in the dashboard, not only in logs.
                     logger.exception("Failed to send Telegram message to %s", peer_id_for_send)
+                    dead_session = _is_dead_session_error(e)
+                    if dead_session:
+                        await self._revoke_dead_session()
                     await self._record_event(
                         event_type="message.send_failed",
                         status="failed",
@@ -556,7 +771,7 @@ class MimicAgentRuntime:
                             "peer": trigger.peer,
                             "error_code": type(e).__name__,
                         },
-                        error=str(e),
+                        error=REVOKED_SESSION_MESSAGE if dead_session else str(e),
                         started_at=datetime.now(UTC),
                         completed_at=datetime.now(UTC),
                     )
@@ -763,7 +978,7 @@ class MimicAgentRuntime:
         if not isinstance(grouped_id, int):
             # TL: grouped_id — flags.17?long, то есть int или None. Любое другое
             # значение означает «это не элемент альбома».
-            await self._process_incoming([event])
+            await self._dispatch_incoming([event])
             return
         chat_id = getattr(event, "chat_id", None)
         self._album_grouper.add((str(chat_id), str(grouped_id)), event)
@@ -776,21 +991,13 @@ class MimicAgentRuntime:
             getattr(events[0], "chat_id", None),
         )
         try:
-            await self._process_incoming(events)
+            await self._dispatch_incoming(events)
         except Exception:
             logger.exception("Failed to process grouped album")
 
-    async def _process_incoming(self, events: list[TelegramEventLike]) -> None:
-        event = events[0]
-        logger.info("Incoming message event received")
-        logger.info(
-            "Incoming message event: chat_id=%s, text=%s",
-            getattr(event, "chat_id", None),
-            getattr(event, "raw_text", "")[:50],
-        )
-        # Check if chat is muted
+    async def _is_chat_muted(self, event: TelegramEventLike, peer: str) -> bool:
+        """Приглушён ли чат у самого агента (уведомления), а не запрет писать в него."""
         try:
-            peer = await _extract_incoming_peer(event)
             import time
 
             now_ts = time.time()
@@ -801,7 +1008,7 @@ class MimicAgentRuntime:
                 if now_ts < expiry:
                     is_muted = cached_muted
                     if is_muted:
-                        return
+                        return True
                 else:
                     self._chat_mute_cache.pop(peer, None)
 
@@ -847,299 +1054,459 @@ class MimicAgentRuntime:
 
                     if is_muted:
                         logger.info("Chat %s is muted, skipping", peer)
-                        return
+                        return True
         except Exception:
             logger.exception("Failed to check mute status for peer %s", peer)
 
-        # Protect the rest of the message handling pipeline from crashes
-        try:
-            # Элементы альбома обрабатываются по отдельности (у каждого свой
-            # маркер и своя подпись), но ход, ответ и запись — общие.
-            merged_content: list[str] = []
-            merged_raw: list[str] = []
-            media_files: list[MediaFile] = []
-            for item in events:
-                item_raw = getattr(item, "raw_text", None) or getattr(item, "text", None)
-                if not isinstance(item_raw, str):
-                    item_raw = ""
-                if item_raw:
-                    merged_raw.append(item_raw)
-                item_text, item_media = await _process_media_and_text(
-                    item,
-                    item_raw,
-                    http_client=self._http_client,
-                    media_uploader=self._media_uploader,
-                    agent_id=self.config.agent_id,
-                )
-                if item_text:
-                    merged_content.append(item_text)
-                media_files.extend(item_media)
+        return False
 
-            raw_text = "\n".join(merged_raw)
-            text = "\n".join(merged_content)
-            if not text:
-                logger.info(
-                    "Empty text after _process_media_and_text for chat %s, skipping",
-                    getattr(event, "chat_id", None),
+    async def _format_incoming(self, events: list[TelegramEventLike]) -> IncomingBlock | None:
+        """Привести одно входящее или один альбом к тексту для модели."""
+        event = events[0]
+        # Элементы альбома обрабатываются по отдельности (у каждого свой
+        # маркер и своя подпись), но ход, ответ и запись — общие.
+        merged_content: list[str] = []
+        merged_raw: list[str] = []
+        media_files: list[MediaFile] = []
+        for item in events:
+            item_raw = getattr(item, "raw_text", None) or getattr(item, "text", None)
+            if not isinstance(item_raw, str):
+                item_raw = ""
+            if item_raw:
+                merged_raw.append(item_raw)
+            item_text, item_media = await _process_media_and_text(
+                item,
+                item_raw,
+                http_client=self._http_client,
+                media_uploader=self._media_uploader,
+                agent_id=self.config.agent_id,
+            )
+            if item_text:
+                merged_content.append(item_text)
+            media_files.extend(item_media)
+
+        raw_text = "\n".join(merged_raw)
+        text = "\n".join(merged_content)
+        if not text:
+            logger.info(
+                "Empty text after _process_media_and_text for chat %s, skipping",
+                getattr(event, "chat_id", None),
+            )
+            return None
+
+        # Format sender name and metadata
+        is_private = getattr(event, "is_private", False)
+        is_group = getattr(event, "is_group", False)
+
+        from datetime import datetime
+
+        msg_date = getattr(event, "date", None)
+        if not msg_date:
+            message = getattr(event, "message", None)
+            msg_date = getattr(message, "date", None)
+        if not msg_date:
+            msg_date = datetime.now()
+        time_str = msg_date.strftime("%Y-%m-%d %H:%M:%S")
+
+        # Chat name
+        chat = None
+        if is_private:
+            chat_type_str = "ЛС"
+        else:
+            chat = await event.get_chat()
+            chat_title = getattr(chat, "title", "")
+            if not chat_title:
+                chat_title = getattr(chat, "username", "") or str(getattr(event, "chat_id", ""))
+            if is_group:
+                chat_type_str = f'Группа "{chat_title}"'
+            else:
+                chat_type_str = f'Канал "{chat_title}"'
+
+        # Sender details
+        get_sender = getattr(event, "get_sender", None)
+        sender = None
+        if callable(get_sender):
+            try:
+                import inspect
+
+                res = get_sender()
+                if inspect.isawaitable(res):
+                    sender = await res
+                else:
+                    sender = res
+            except Exception:
+                logger.warning("Failed to get sender for event", exc_info=True)
+        if sender:
+            first_name = getattr(sender, "first_name", None) or ""
+            last_name = getattr(sender, "last_name", None) or ""
+            name_parts = []
+            if first_name:
+                name_parts.append(first_name)
+            if last_name:
+                name_parts.append(last_name)
+            name_str = " ".join(name_parts)
+            if not name_str:
+                name_str = (
+                    getattr(sender, "title", None)
+                    or getattr(sender, "username", None)
+                    or str(getattr(sender, "id", ""))
                 )
+            if not name_str:
+                name_str = "Unknown"
+
+            username = getattr(sender, "username", None)
+            username_str = f"@{username}" if username else ""
+            sender_id = getattr(sender, "id", None)
+            id_str = f"ID: {sender_id}" if sender_id else ""
+
+            details = ", ".join(filter(None, [username_str, id_str]))
+            details_str = f" ({details})" if details else ""
+            sender_str = f"{name_str}{details_str}"
+        else:
+            chat = await event.get_chat()
+            if isinstance(chat, str):
+                sender_str = chat
+            else:
+                chat_title = getattr(chat, "title", None)
+                sender_str = chat_title if isinstance(chat_title, str) else "Unknown"
+
+        # Check role/title
+        title = None
+        event_chat_id = event.chat_id
+        event_sender_id = event.sender_id
+        if event_sender_id and event_chat_id:
+            cache_key = (event_chat_id, event_sender_id)
+            import time
+
+            now_ts = time.time()
+            if cache_key in self._member_tag_cache:
+                cached_title, expiry = self._member_tag_cache[cache_key]
+                if now_ts < expiry:
+                    title = cached_title
+
+            is_expired = (
+                cache_key not in self._member_tag_cache
+                or now_ts >= self._member_tag_cache[cache_key][1]
+            )
+            if is_expired:
+                try:
+                    from telethon.tl import functions
+
+                    is_supergroup = getattr(event, "is_channel", False)
+                    if is_supergroup:
+                        input_chat = getattr(event, "input_chat", None) or event_chat_id
+                        input_sender = getattr(event, "input_sender", None) or event_sender_id
+                        res = await event.client(
+                            functions.channels.GetParticipantRequest(
+                                channel=cast(Any, input_chat),
+                                participant=cast(Any, input_sender),
+                            )
+                        )
+                        title = res.participant.title if hasattr(res.participant, "title") else None
+                except Exception:
+                    logger.warning("Failed to get participant title", exc_info=True)
+                    title = None
+                self._member_tag_cache[cache_key] = (title, now_ts + 3600.0)
+
+        # Fallback to channel post author signature
+        post_author = getattr(getattr(event, "message", None), "post_author", None)
+        if not title and post_author:
+            title = post_author
+
+        if title:
+            sender_str += f" [Подпись/Роль: {title}]"
+
+        # Thread title for the dashboard: reuse the entities already
+        # fetched above — no extra Telegram requests. For private chats
+        # the interlocutor is the chat itself.
+        thread_title: str | None = None
+        thread_entity = chat if (not is_private and chat is not None) else sender
+        if thread_entity is not None:
+            from telethon import utils as telethon_utils
+
+            thread_title = telethon_utils.get_display_name(thread_entity) or None
+        if not thread_title:
+            thread_title = str(getattr(event, "chat_id", "")) or None
+
+        # NewMessage.Event delegates __getattr__ to self.message, but
+        # self.message is a raw types.Message (not the custom wrapper),
+        # so it lacks the reply_to_msg_id property. Inspect reply_to directly.
+        from telethon.tl import types
+
+        reply_to_msg_id = None
+        ev_message = getattr(event, "message", None)
+        if ev_message:
+            reply_to = getattr(ev_message, "reply_to", None)
+            if isinstance(reply_to, types.MessageReplyHeader):
+                reply_to_msg_id = reply_to.reply_to_msg_id
+            elif reply_to:
+                reply_to_msg_id = getattr(reply_to, "reply_to_msg_id", None)
+
+        reply_str = ""
+        reply_preview = ""
+        if reply_to_msg_id:
+            logger.debug(
+                "Reply detected: reply_to_msg_id=%s for chat_id=%s",
+                reply_to_msg_id,
+                getattr(event, "chat_id", None),
+            )
+            reply_preview = ""
+            try:
+                reply_msg = await event.get_reply_message()
+                if reply_msg:
+                    raw = getattr(reply_msg, "raw_text", "")
+                    reply_preview = raw or getattr(reply_msg, "text", "")
+                    logger.debug(
+                        "get_reply_message succeeded, preview=%s",
+                        reply_preview[:30] if reply_preview else "(empty)",
+                    )
+                else:
+                    logger.debug("get_reply_message returned None")
+            except Exception:
+                logger.debug("get_reply_message failed", exc_info=True)
+
+            if not reply_preview:
+                # Fallback: fetch the replied message directly via RPC
+                try:
+                    get_messages = getattr(self._telegram_client, "get_messages", None)
+                    if callable(get_messages):
+                        peer = await _extract_incoming_peer(event)
+                        msgs = await get_messages(peer, ids=reply_to_msg_id)
+                        if msgs:
+                            reply_msg = msgs[0] if isinstance(msgs, list) else msgs
+                            raw = getattr(reply_msg, "raw_text", "")
+                            reply_preview = raw or getattr(reply_msg, "text", "")
+                            logger.debug(
+                                "Fallback get_messages succeeded, preview=%s",
+                                reply_preview[:30] if reply_preview else "(empty)",
+                            )
+                except Exception:
+                    logger.debug("Fallback get_messages failed", exc_info=True)
+
+            if reply_preview:
+                preview = reply_preview[:20]
+                reply_str = f'Ответ на сообщение #{reply_to_msg_id} ("{preview}...")\n'
+            else:
+                reply_str = f"Ответ на сообщение #{reply_to_msg_id}\n"
+
+        # Format output message text
+        incoming_msg_id = _extract_incoming_message_id(event)
+        album_note = ""
+        if len(events) > 1:
+            item_ids = [
+                str(item_id)
+                for item in events
+                if (item_id := _extract_incoming_message_id(item)) is not None
+            ]
+            album_note = f"Альбом из {len(events)} файлов (ID: {', '.join(item_ids)})\n"
+        text = (
+            f"[Входящее сообщение]\n"
+            f"Время: {time_str}\n"
+            f"Чат: {chat_type_str}\n"
+            f"Отправитель: {sender_str}\n"
+            f"ID сообщения: {incoming_msg_id}\n"
+            f"{album_note}"
+            f"{reply_str}"
+            f"Содержимое: {text}"
+        )
+
+        return IncomingBlock(
+            text=text,
+            media=media_files,
+            message_id=_extract_incoming_message_id(event),
+            reply_to_msg_id=reply_to_msg_id,
+            reply_preview=reply_preview,
+            raw_text=raw_text,
+            thread_title=thread_title,
+            sender_str=sender_str,
+            chat_type_str=chat_type_str,
+            msg_date=msg_date,
+        )
+
+    async def _dispatch_incoming(self, events: list[TelegramEventLike]) -> None:
+        """Решить, идёт ли ход сейчас, позже или не идёт вовсе."""
+        event = events[0]
+        logger.info("Incoming message event received")
+        logger.info(
+            "Incoming message event: chat_id=%s, text=%s",
+            getattr(event, "chat_id", None),
+            getattr(event, "raw_text", "")[:50],
+        )
+        try:
+            peer = await _extract_incoming_peer(event)
+        except Exception as e:
+            await self._record_incoming_failure(str(getattr(event, "chat_id", "") or ""), e)
+            return
+        if await self._is_chat_muted(event, peer):
+            return
+        async with self._dispatch_lock:
+            await self._gate_and_process(event, events, peer)
+
+    async def _gate_and_process(
+        self, event: TelegramEventLike, events: list[TelegramEventLike], peer: str
+    ) -> None:
+        # Окно отправки бывает только у групп. В ЛС ограничений на запись нет, а пост
+        # канала читают, не отвечая в него: комментарий уходит в связанную группу.
+        if self._send_window is None or not getattr(event, "is_group", False):
+            await self._process_batch(peer, [events])
+            return
+
+        chat = None
+        get_chat = getattr(event, "get_chat", None)
+        if callable(get_chat):
+            try:
+                # event.chat бывает пустым: Telegram не всегда шлёт эти данные.
+                chat = await get_chat()
+            except Exception:
+                logger.warning("Не удалось получить чат для проверки окна", exc_info=True)
+
+        now = datetime.now(UTC)
+        window = await self._send_window.check(peer, chat=chat)
+        if window.is_open(now):
+            # Сбрасываем объявление: следующее закрытие снова надо сообщить.
+            self._send_window.announce(peer, "open")
+            await self._process_batch(peer, [events])
+            return
+
+        retry_after = window.retry_after(now)
+        if retry_after is not None and retry_after <= DEFER_LIMIT_SECONDS:
+            self._deferred_inbox.add(peer, list(events), delay=_delay_until(window, now))
+            if self._send_window.announce(peer, window.reason):
+                await self._record_event(
+                    event_type="message.deferred",
+                    status="succeeded",
+                    payload={
+                        "peer": peer,
+                        "reason": window.reason,
+                        "retry_after_seconds": retry_after,
+                    },
+                    started_at=now,
+                    completed_at=datetime.now(UTC),
+                )
+            return
+
+        # Закрыто надолго или бессрочно: копить нечего, сообщения устареют раньше.
+        if self._send_window.announce(peer, window.reason):
+            await self._record_event(
+                event_type="message.write_forbidden",
+                status="cancelled",
+                payload={
+                    "peer": peer,
+                    "reason": window.reason,
+                    "until": window.open_at.isoformat() if window.open_at else None,
+                },
+                started_at=now,
+                completed_at=datetime.now(UTC),
+            )
+            await self._notify_write_forbidden(peer, window)
+
+    async def _notify_write_forbidden(self, peer: str, window: SendWindow) -> None:
+        """Один служебный ход: агент узнаёт про запрет и может отреагировать иначе."""
+        until = (
+            f" до {window.open_at:%Y-%m-%d %H:%M}"
+            if window.open_at is not None and not window.forever
+            else ""
+        )
+        try:
+            await self.trigger_message(
+                AgentTrigger(
+                    peer=peer,
+                    text=(
+                        "[Системное уведомление]\n"
+                        f"В чате {peer} у тебя забрали право писать{until}. "
+                        "Отправить туда ничего не получится — ни ответом, ни инструментом. "
+                        "Входящие оттуда ты больше не увидишь, пока запрет не снимут."
+                    ),
+                )
+            )
+        except Exception as e:
+            await self._record_incoming_failure(peer, e)
+
+    async def _flush_deferred(
+        self, peer: str, groups: list[list[Any]], arrived: list[float]
+    ) -> None:
+        """Окно должно было открыться: перепроверяем и разбираем накопленное одним ходом."""
+        async with self._dispatch_lock:
+            # Слив в полёте stop() не отменяет, а trigger_message на остановленном
+            # рантайме запустил бы его заново и ответил бы в чат после остановки.
+            if self._state is not AgentRuntimeState.RUNNING:
+                logger.info("Рантайм остановлен, отложенное из чата %s отброшено", peer)
+                return
+            if self._send_window is not None:
+                now = datetime.now(UTC)
+                window = await self._send_window.check(peer)
+                if not window.is_open(now):
+                    retry_after = window.retry_after(now)
+                    if retry_after is not None and retry_after <= DEFER_LIMIT_SECONDS:
+                        # Слот успел закрыться снова (свой ответ инструментом, ошибка Telegram).
+                        delay = max(_delay_until(window, now), 1.0)
+                        for added_at, group in zip(arrived, groups, strict=True):
+                            self._deferred_inbox.add(peer, group, delay=delay, added_at=added_at)
+                    else:
+                        logger.info("Окно в чате %s закрыто надолго, накопленное отброшено", peer)
+                    return
+            await self._process_batch(peer, groups)
+
+    async def _process_batch(self, peer: str, groups: list[list[TelegramEventLike]]) -> None:
+        """Один ход по нескольким группам входящих (сообщение или альбом)."""
+        # Защищаем остальной конвейер обработки сообщения от падений.
+        try:
+            blocks: list[IncomingBlock] = []
+            for group in groups:
+                block = await self._format_incoming(group)
+                if block is not None:
+                    blocks.append(block)
+            if not blocks:
+                logger.info("Пачка для чата %s пуста после разбора, пропускаем", peer)
                 return
 
-            # Format sender name and metadata
-            is_private = getattr(event, "is_private", False)
-            is_group = getattr(event, "is_group", False)
+            last = blocks[-1]
+            body = "\n\n".join(block.text for block in blocks)
+            window = await self._send_window.check(peer) if self._send_window else None
+            text = f"{_batch_header(len(blocks), window)}{body}"
+            media: list[dict[str, Any]] = []
+            for block in blocks:
+                media.extend(m.as_payload() for m in block.media)
 
-            from datetime import datetime
-
-            msg_date = getattr(event, "date", None)
-            if not msg_date:
-                message = getattr(event, "message", None)
-                msg_date = getattr(message, "date", None)
-            if not msg_date:
-                msg_date = datetime.now()
-            time_str = msg_date.strftime("%Y-%m-%d %H:%M:%S")
-
-            # Chat name
-            chat = None
-            if is_private:
-                chat_type_str = "ЛС"
-            else:
-                chat = await event.get_chat()
-                chat_title = getattr(chat, "title", "")
-                if not chat_title:
-                    chat_title = getattr(chat, "username", "") or str(getattr(event, "chat_id", ""))
-                if is_group:
-                    chat_type_str = f'Группа "{chat_title}"'
-                else:
-                    chat_type_str = f'Канал "{chat_title}"'
-
-            # Sender details
-            get_sender = getattr(event, "get_sender", None)
-            sender = None
-            if callable(get_sender):
-                try:
-                    import inspect
-
-                    res = get_sender()
-                    if inspect.isawaitable(res):
-                        sender = await res
-                    else:
-                        sender = res
-                except Exception:
-                    logger.warning("Failed to get sender for event", exc_info=True)
-            if sender:
-                first_name = getattr(sender, "first_name", None) or ""
-                last_name = getattr(sender, "last_name", None) or ""
-                name_parts = []
-                if first_name:
-                    name_parts.append(first_name)
-                if last_name:
-                    name_parts.append(last_name)
-                name_str = " ".join(name_parts)
-                if not name_str:
-                    name_str = (
-                        getattr(sender, "title", None)
-                        or getattr(sender, "username", None)
-                        or str(getattr(sender, "id", ""))
-                    )
-                if not name_str:
-                    name_str = "Unknown"
-
-                username = getattr(sender, "username", None)
-                username_str = f"@{username}" if username else ""
-                sender_id = getattr(sender, "id", None)
-                id_str = f"ID: {sender_id}" if sender_id else ""
-
-                details = ", ".join(filter(None, [username_str, id_str]))
-                details_str = f" ({details})" if details else ""
-                sender_str = f"{name_str}{details_str}"
-            else:
-                chat = await event.get_chat()
-                if isinstance(chat, str):
-                    sender_str = chat
-                else:
-                    chat_title = getattr(chat, "title", None)
-                    sender_str = chat_title if isinstance(chat_title, str) else "Unknown"
-
-            # Check role/title
-            title = None
-            event_chat_id = event.chat_id
-            event_sender_id = event.sender_id
-            if event_sender_id and event_chat_id:
-                cache_key = (event_chat_id, event_sender_id)
-                import time
-
-                now_ts = time.time()
-                if cache_key in self._member_tag_cache:
-                    cached_title, expiry = self._member_tag_cache[cache_key]
-                    if now_ts < expiry:
-                        title = cached_title
-
-                is_expired = (
-                    cache_key not in self._member_tag_cache
-                    or now_ts >= self._member_tag_cache[cache_key][1]
-                )
-                if is_expired:
-                    try:
-                        from telethon.tl import functions
-
-                        is_supergroup = getattr(event, "is_channel", False)
-                        if is_supergroup:
-                            input_chat = getattr(event, "input_chat", None) or event_chat_id
-                            input_sender = getattr(event, "input_sender", None) or event_sender_id
-                            res = await event.client(
-                                functions.channels.GetParticipantRequest(
-                                    channel=cast(Any, input_chat),
-                                    participant=cast(Any, input_sender),
-                                )
-                            )
-                            title = (
-                                res.participant.title if hasattr(res.participant, "title") else None
-                            )
-                    except Exception:
-                        logger.warning("Failed to get participant title", exc_info=True)
-                        title = None
-                    self._member_tag_cache[cache_key] = (title, now_ts + 3600.0)
-
-            # Fallback to channel post author signature
-            post_author = getattr(getattr(event, "message", None), "post_author", None)
-            if not title and post_author:
-                title = post_author
-
-            if title:
-                sender_str += f" [Подпись/Роль: {title}]"
-
-            # Thread title for the dashboard: reuse the entities already
-            # fetched above — no extra Telegram requests. For private chats
-            # the interlocutor is the chat itself.
-            thread_title: str | None = None
-            thread_entity = chat if (not is_private and chat is not None) else sender
-            if thread_entity is not None:
-                from telethon import utils as telethon_utils
-
-                thread_title = telethon_utils.get_display_name(thread_entity) or None
-            if not thread_title:
-                thread_title = str(getattr(event, "chat_id", "")) or None
-
-            # NewMessage.Event delegates __getattr__ to self.message, but
-            # self.message is a raw types.Message (not the custom wrapper),
-            # so it lacks the reply_to_msg_id property. Inspect reply_to directly.
-            from telethon.tl import types
-
-            reply_to_msg_id = None
-            ev_message = getattr(event, "message", None)
-            if ev_message:
-                reply_to = getattr(ev_message, "reply_to", None)
-                if isinstance(reply_to, types.MessageReplyHeader):
-                    reply_to_msg_id = reply_to.reply_to_msg_id
-                elif reply_to:
-                    reply_to_msg_id = getattr(reply_to, "reply_to_msg_id", None)
-
-            reply_str = ""
-            reply_preview = ""
-            if reply_to_msg_id:
-                logger.debug(
-                    "Reply detected: reply_to_msg_id=%s for chat_id=%s",
-                    reply_to_msg_id,
-                    getattr(event, "chat_id", None),
-                )
-                reply_preview = ""
-                try:
-                    reply_msg = await event.get_reply_message()
-                    if reply_msg:
-                        raw = getattr(reply_msg, "raw_text", "")
-                        reply_preview = raw or getattr(reply_msg, "text", "")
-                        logger.debug(
-                            "get_reply_message succeeded, preview=%s",
-                            reply_preview[:30] if reply_preview else "(empty)",
-                        )
-                    else:
-                        logger.debug("get_reply_message returned None")
-                except Exception:
-                    logger.debug("get_reply_message failed", exc_info=True)
-
-                if not reply_preview:
-                    # Fallback: fetch the replied message directly via RPC
-                    try:
-                        get_messages = getattr(self._telegram_client, "get_messages", None)
-                        if callable(get_messages):
-                            peer = await _extract_incoming_peer(event)
-                            msgs = await get_messages(peer, ids=reply_to_msg_id)
-                            if msgs:
-                                reply_msg = msgs[0] if isinstance(msgs, list) else msgs
-                                raw = getattr(reply_msg, "raw_text", "")
-                                reply_preview = raw or getattr(reply_msg, "text", "")
-                                logger.debug(
-                                    "Fallback get_messages succeeded, preview=%s",
-                                    reply_preview[:30] if reply_preview else "(empty)",
-                                )
-                    except Exception:
-                        logger.debug("Fallback get_messages failed", exc_info=True)
-
-                if reply_preview:
-                    preview = reply_preview[:20]
-                    reply_str = f'Ответ на сообщение #{reply_to_msg_id} ("{preview}...")\n'
-                else:
-                    reply_str = f"Ответ на сообщение #{reply_to_msg_id}\n"
-
-            # Format output message text
-            incoming_msg_id = _extract_incoming_message_id(event)
-            album_note = ""
-            if len(events) > 1:
-                item_ids = [
-                    str(item_id)
-                    for item in events
-                    if (item_id := _extract_incoming_message_id(item)) is not None
-                ]
-                album_note = f"Альбом из {len(events)} файлов (ID: {', '.join(item_ids)})\n"
-            text = (
-                f"[Входящее сообщение]\n"
-                f"Время: {time_str}\n"
-                f"Чат: {chat_type_str}\n"
-                f"Отправитель: {sender_str}\n"
-                f"ID сообщения: {incoming_msg_id}\n"
-                f"{album_note}"
-                f"{reply_str}"
-                f"Содержимое: {text}"
-            )
-
-            peer = await _extract_incoming_peer(event)
             thread_id = await self._upsert_thread(
                 peer=peer,
-                title=thread_title,
-                last_message_at=msg_date,
+                title=last.thread_title,
+                last_message_at=last.msg_date,
             )
             await self.trigger_message(
                 AgentTrigger(
                     peer=peer,
                     text=text,
-                    raw_text=raw_text,
-                    peer_name=sender_str,
-                    chat_name=chat_type_str,
-                    message_id=_extract_incoming_message_id(event),
+                    raw_text="\n".join(block.raw_text for block in blocks),
+                    peer_name=last.sender_str,
+                    chat_name=last.chat_type_str,
+                    message_id=last.message_id,
                     thread_id=thread_id,
-                    thread_title=thread_title,
-                    media=[m.as_payload() for m in media_files],
-                    reply_to_message_id=reply_to_msg_id,
-                    reply_preview=reply_preview[:200] if reply_preview else None,
+                    thread_title=last.thread_title,
+                    media=media,
+                    reply_to_message_id=last.reply_to_msg_id,
+                    reply_preview=last.reply_preview[:200] if last.reply_preview else None,
+                    require_reply_to=len(blocks) > 1,
+                    fallback_reply_to=last.message_id,
                 )
             )
         except Exception as e:
-            logger.exception("Unhandled exception in incoming message handler")
-            if getattr(e, "_mimic_turn_failed_recorded", False):
-                # trigger_message already recorded turn.failed with the
-                # turn_id — a second row would double the error KPI.
-                return
-            await self._record_event(
-                event_type="turn.failed",
-                status="failed",
-                payload={
-                    "peer": str(getattr(event, "chat_id", "") or ""),
-                    "error_code": type(e).__name__,
-                },
-                error=str(e),
-                started_at=datetime.now(UTC),
-                completed_at=datetime.now(UTC),
-            )
+            await self._record_incoming_failure(peer, e)
+
+    async def _record_incoming_failure(self, peer: str, exc: Exception) -> None:
+        logger.error("Unhandled exception in incoming message handler", exc_info=exc)
+        if getattr(exc, "_mimic_turn_failed_recorded", False):
+            # trigger_message already recorded turn.failed with the
+            # turn_id — a second row would double the error KPI.
+            return
+        await self._record_event(
+            event_type="turn.failed",
+            status="failed",
+            payload={"peer": peer, "error_code": type(exc).__name__},
+            error=str(exc),
+            started_at=datetime.now(UTC),
+            completed_at=datetime.now(UTC),
+        )
 
     async def _run_scheduler_loop(self) -> None:
         """Background loop to check and trigger pending agent timers."""
@@ -1226,6 +1593,38 @@ class MimicAgentRuntime:
                         .values(status=timer.status)
                     )
                     await update_session.commit()
+
+
+def _delay_until(window: SendWindow, now: datetime) -> float:
+    """Секунды до открытия окна с небольшим запасом (см. DEFER_MARGIN_SECONDS)."""
+    if window.open_at is None:
+        return DEFER_MARGIN_SECONDS
+    return max(0.0, (window.open_at - now).total_seconds()) + DEFER_MARGIN_SECONDS
+
+
+def _batch_header(block_count: int, window: SendWindow | None) -> str:
+    """Шапка над входящим: сколько накопилось и сколько стоит ответ.
+
+    Формулировка подобрана замером на самой слабой модели каталога. Прежняя
+    («ответить можно только ОДНИМ сообщением») читалась как требование
+    отвечать: в чужом разговоре модель отвечала в 4 из 4 случаев против 2 из 4
+    без шапки. Теперь ответ явно необязателен и привязан к адресованности,
+    а пропущенный reply_to достраивает рантайм (fallback_reply_to).
+    """
+    seconds = window.slowmode_seconds if window is not None else None
+    if block_count <= 1:
+        if seconds is None:
+            return ""
+        return (
+            f"[В чате медленный режим: одно сообщение раз в {seconds} с. "
+            f"Ответишь — следующее сможешь написать не раньше чем через {seconds} с]\n\n"
+        )
+    mode = f" Медленный режим: одно сообщение раз в {seconds} с." if seconds is not None else ""
+    return (
+        f"[Накопилось сообщений: {block_count}.{mode} "
+        "Ответить можно один раз и только если что-то из этого адресовано тебе — тогда "
+        "укажи в reply_to ID нужного сообщения. Иначе send_any_message = false]\n\n"
+    )
 
 
 def _sticker_file_of(message: Any) -> tuple[str, str]:
@@ -1690,7 +2089,7 @@ async def _extract_incoming_peer(event: object) -> str:
     peer_id = getattr(event, "peer_id", None)
     if peer_id is not None:
         return str(peer_id)
-    raise ValueError("Incoming Telegram event does not include a peer")
+    raise ValueError("Входящее событие Telegram не содержит получателя")
 
 
 def _peer_for_send(peer: str) -> str | int:

@@ -126,7 +126,7 @@ async def test_get_agent_during_removal_sees_tombstone() -> None:
         def __init__(self, config: AgentRuntimeConfig) -> None:
             self.config = config
 
-        async def stop(self) -> None:
+        async def close(self) -> None:
             entered.set()
             await release.wait()
 
@@ -153,3 +153,40 @@ async def test_get_agent_during_removal_sees_tombstone() -> None:
 
     assert manager._agents == {}
     assert agent_id in manager._removed
+
+
+@pytest.mark.asyncio
+async def test_remove_agent_releases_the_model_client() -> None:
+    """Удалённый рантайм больше никто не запустит: HTTP-клиент модели закрывается."""
+    agent = FakeLangChainAgent()
+    manager = AgentManager(
+        runtime_factory=lambda runtime_config: MimicAgentRuntime(
+            config=runtime_config,
+            telegram_client=FakeTelegramClient(),
+            langchain_agent=agent,
+        ),
+    )
+    agent_id = uuid4()
+    await manager.create_agent(_build_config(agent_id), start=True)
+
+    await manager.remove_agent(agent_id)
+
+    assert agent.closed
+
+
+@pytest.mark.asyncio
+async def test_stopped_agent_keeps_the_model_client_for_a_restart() -> None:
+    agent = FakeLangChainAgent()
+    manager = AgentManager(
+        runtime_factory=lambda runtime_config: MimicAgentRuntime(
+            config=runtime_config,
+            telegram_client=FakeTelegramClient(),
+            langchain_agent=agent,
+        ),
+    )
+    agent_id = uuid4()
+    await manager.create_agent(_build_config(agent_id), start=True)
+
+    await manager.stop_agent(agent_id)
+
+    assert not agent.closed

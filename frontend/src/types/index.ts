@@ -109,7 +109,7 @@ export type TelegramAuthorizationStatus = OnboardingAuthorizationStatus | 'revok
 export interface OnboardingPublicStatus {
   onboarding_id: string;
   owner_id: string;
-  phone_number: string;
+  phone_number: string | null;
   authorization_status: OnboardingAuthorizationStatus;
 }
 
@@ -397,3 +397,16 @@ export interface MemoryHistoryItem {
   user_id?: string | null;
 }
 
+
+// ── Prompt presets ────────────────────────────────────────────────────────────
+export interface PromptPresetRow {
+  id: string;
+  slug: string;
+  title: string;
+  summary: string;
+  body: string;
+  sort_order: number;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
