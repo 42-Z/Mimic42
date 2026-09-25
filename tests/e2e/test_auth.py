@@ -47,7 +47,7 @@ class TestAuthenticatedNavigation:
         expect(page.get_by_test_id(f"agent-card-{stopped}")).to_be_visible()
         expect(page.get_by_test_id("kpi-card")).to_have_count(4)
 
-    def test_start_stop_buttons_reflect_state(
+    def test_control_button_reflects_state(
         self,
         persona_page: Callable[..., Page],
         api: httpx.Client,
@@ -56,12 +56,22 @@ class TestAuthenticatedNavigation:
         running, stopped = seed_agents(api, users["full"].id)
         page = persona_page("full")
         page.goto("/dashboard")
+
+        # Вместо пары «Запустить»/«Стоп» — одна кнопка, подпись которой
+        # меняется в зависимости от статуса агента (issue #47).
         running_card = page.get_by_test_id(f"agent-card-{running}")
-        expect(running_card.get_by_role("button", name="Запустить")).to_be_disabled()
-        expect(running_card.get_by_role("button", name="Стоп")).to_be_enabled()
+        expect(
+            running_card.get_by_role("button", name=re.compile("Запустить|Остановить"))
+        ).to_have_count(1)
+        expect(running_card.get_by_role("button", name="Остановить")).to_be_enabled()
+        expect(running_card.get_by_role("button", name="Запустить")).to_have_count(0)
+
         stopped_card = page.get_by_test_id(f"agent-card-{stopped}")
+        expect(
+            stopped_card.get_by_role("button", name=re.compile("Запустить|Остановить"))
+        ).to_have_count(1)
         expect(stopped_card.get_by_role("button", name="Запустить")).to_be_enabled()
-        expect(stopped_card.get_by_role("button", name="Стоп")).to_be_disabled()
+        expect(stopped_card.get_by_role("button", name="Остановить")).to_have_count(0)
 
 
 class TestSignOut:
