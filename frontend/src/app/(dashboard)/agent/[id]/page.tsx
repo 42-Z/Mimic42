@@ -99,7 +99,6 @@ function AgentPageContent({
               )}
               {status && <AgentStatusBadge state={status.state} />}
             </div>
-            <p className="font-mono text-xs text-void-300 mt-0.5">{agentId}</p>
           </div>
         </div>
         <div className="hidden sm:block">
