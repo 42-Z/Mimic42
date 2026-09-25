@@ -61,6 +61,13 @@ describe('AgentToggleButton', () => {
     expect(button.hasAttribute('disabled')).toBe(true);
   });
 
+  test('черновик запустить нельзя', () => {
+    renderButton({ state: 'draft' });
+    const button = screen.getByRole('button');
+    expect(button.textContent).toContain('Запустить');
+    expect(button.hasAttribute('disabled')).toBe(true);
+  });
+
   test('пока статус неизвестен, кнопка заблокирована', () => {
     renderButton({ state: undefined });
     const button = screen.getByRole('button');

@@ -81,7 +81,9 @@ export function AgentToggleButton({
       variant="success"
       size={size}
       onClick={onStart}
-      disabled={state === undefined || isStarting}
+      // Запускать можно только остановленного агента и агента с ошибкой:
+      // черновик ещё не собран, а неизвестный статус не повод слать запрос.
+      disabled={(state !== 'stopped' && state !== 'error') || isStarting}
       isLoading={isStarting}
       leftIcon={<Play className="h-3.5 w-3.5" />}
       className={className}
