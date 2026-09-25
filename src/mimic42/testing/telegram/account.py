@@ -75,6 +75,7 @@ class FakeIncomingEvent:
 class FakeTelegramAccount:
     def __init__(self) -> None:
         self.phone: str | None = None
+        self.username: str | None = None
         self.authorized = False
         self.expected_code: str | None = None
         self.password: str | None = None

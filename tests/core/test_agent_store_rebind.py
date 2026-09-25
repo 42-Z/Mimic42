@@ -9,7 +9,10 @@ from mimic42.core.onboarding import OnboardingSession, TelegramLoginStatus
 
 
 def _authorized_session(
-    owner_id: UUID, onboarding_id: UUID, session_secret: str
+    owner_id: UUID,
+    onboarding_id: UUID,
+    session_secret: str,
+    username: str | None = None,
 ) -> OnboardingSession:
     return OnboardingSession(
         onboarding_id=onboarding_id,
@@ -17,6 +20,7 @@ def _authorized_session(
         api_id=12345,
         api_hash_secret="old-encrypted-hash",
         phone_number="+79990000000",
+        username=username,
         authorization_status=TelegramLoginStatus.AUTHORIZED,
         session_secret=session_secret,
     )
@@ -127,3 +131,58 @@ async def test_rebind_unknown_agent_raises_key_error() -> None:
         await store.rebind_telegram_session(
             uuid4(), _authorized_session(uuid4(), uuid4(), "new-encrypted-session")
         )
+
+
+@pytest.mark.asyncio
+async def test_create_from_onboarding_stores_username() -> None:
+    owner_id = uuid4()
+    agent_id = uuid4()
+    store = InMemoryAgentStore()
+    await store.create_from_onboarding(
+        OnboardingSession(
+            onboarding_id=agent_id,
+            owner_id=owner_id,
+            api_id=12345,
+            api_hash_secret="old-encrypted-hash",
+            phone_number="+79990000000",
+            username="mimic_user",
+            authorization_status=TelegramLoginStatus.AUTHORIZED,
+            session_secret="old-encrypted-session",
+            name="Mimic",
+            soul_prompt="Soul",
+        )
+    )
+
+    credentials = await store.get_telegram_rebind_credentials(agent_id)
+
+    assert credentials.username == "mimic_user"
+
+
+@pytest.mark.asyncio
+async def test_rebind_telegram_session_updates_username() -> None:
+    owner_id = uuid4()
+    agent_id = uuid4()
+    store = InMemoryAgentStore()
+    await store.create_from_onboarding(
+        OnboardingSession(
+            onboarding_id=agent_id,
+            owner_id=owner_id,
+            api_id=12345,
+            api_hash_secret="old-encrypted-hash",
+            phone_number="+79990000000",
+            username="old_user",
+            authorization_status=TelegramLoginStatus.AUTHORIZED,
+            session_secret="old-encrypted-session",
+            name="Mimic",
+            soul_prompt="Soul",
+        )
+    )
+
+    await store.rebind_telegram_session(
+        agent_id,
+        _authorized_session(owner_id, uuid4(), "new-encrypted-session", username="new_user"),
+    )
+
+    credentials = await store.get_telegram_rebind_credentials(agent_id)
+    # @username не входит в признаки аккаунта и обновляется при перепривязке.
+    assert credentials.username == "new_user"

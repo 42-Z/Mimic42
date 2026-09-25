@@ -4,7 +4,7 @@ from typing import Any, cast
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from telethon import errors
 
@@ -112,6 +112,80 @@ async def test_authorized_start_keeps_session_status_untouched(
     assert row is not None
     assert row.authorization_status == "authorized"
     assert row.last_error is None
+
+
+async def test_authorized_start_backfills_username(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    owner_id = clean_slot.persona("flow").user_id
+    agent_id = uuid4()
+    await _seed_agent_with_session(db_session_factory, agent_id=agent_id, owner_id=owner_id)
+    account = FakeTelegramAccount()
+    account.authorized = True
+    account.username = "mimic_user"
+
+    runtime = MimicAgentRuntime(
+        config=make_config(agent_id, owner_id).model_copy(
+            update={"telegram_session_token": "old-session"}
+        ),
+        telegram_client=FakeTelegramClient(account),
+        langchain_agent=FakeLangChainAgent(),
+        session_factory=db_session_factory,
+    )
+
+    await runtime.start()
+    await runtime.stop()
+
+    async with db_session_factory() as session:
+        row = await session.scalar(
+            select(TelegramSessionModel).where(TelegramSessionModel.agent_id == agent_id)
+        )
+    assert row is not None
+    # Уже зарегистрированные агенты подтягивают @username при старте.
+    assert row.username == "mimic_user"
+
+
+async def test_stale_runtime_does_not_clobber_username(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    owner_id = clean_slot.persona("flow").user_id
+    agent_id = uuid4()
+    await _seed_agent_with_session(db_session_factory, agent_id=agent_id, owner_id=owner_id)
+    # Строку уже заняла новая сессия (перепривязка), у неё свой @username.
+    async with db_session_factory() as session:
+        await session.execute(
+            update(TelegramSessionModel)
+            .where(TelegramSessionModel.agent_id == agent_id)
+            .values(session_ciphertext="new-session", username="fresh_user")
+        )
+        await session.commit()
+    account = FakeTelegramAccount()
+    account.authorized = True
+    account.username = "stale_user"
+
+    runtime = MimicAgentRuntime(
+        config=make_config(agent_id, owner_id).model_copy(
+            update={"telegram_session_token": "old-session"}
+        ),
+        telegram_client=FakeTelegramClient(account),
+        langchain_agent=FakeLangChainAgent(),
+        session_factory=db_session_factory,
+    )
+
+    with caplog.at_level("WARNING", logger="mimic42.agent_runtime"):
+        await runtime.start()
+    await runtime.stop()
+
+    async with db_session_factory() as session:
+        row = await session.scalar(
+            select(TelegramSessionModel).where(TelegramSessionModel.agent_id == agent_id)
+        )
+    assert row is not None
+    assert row.username == "fresh_user"
+    assert any("changed or is missing" in record.message for record in caplog.records)
 
 
 class FailingConnectClient(FakeTelegramClient):
