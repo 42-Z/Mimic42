@@ -37,6 +37,11 @@ DEFER_LIMIT_SECONDS = 300.0
 # Слив ставится чуть позже открытия окна: иначе округление вниз запускает его
 # раньше времени, и он перепланирует сам себя в плотном цикле.
 DEFER_MARGIN_SECONDS = 0.25
+# Ветку свежего поста Telegram отдаёт не сразу: GetDiscussionMessage отвечает
+# FLOOD_WAIT на пару секунд, а сам клиент на флуде не спит (порог 0 ради окна
+# отправки). Так же ждёт медленный режим обсуждения, если посты идут подряд.
+# Короткое ожидание — всё ещё «сразу»; дольше комментарий уже не первый.
+FIRST_COMMENT_FLOOD_WAIT_LIMIT = 10
 
 
 class TelegramAuthorizationRequired(RuntimeError):
@@ -968,7 +973,28 @@ class MimicAgentRuntime:
         уходит одна подпись — и возвращается именно она, чтобы ИИ и лента
         знали, что под постом на самом деле.
         """
+        from telethon import errors
+
         target = _peer_for_send(peer)
+        waited = 0
+        while True:
+            try:
+                return await self._send_first_comment_once(target, message_id, variant)
+            except (errors.FloodWaitError, errors.SlowModeWaitError) as exc:
+                # .seconds — точный остаток: после него запрос проходит.
+                delay = max(int(exc.seconds), 1)
+                if waited + delay > FIRST_COMMENT_FLOOD_WAIT_LIMIT:
+                    raise
+                logger.info("Первый комментарий ждёт %s с: %s", delay, type(exc).__name__)
+                waited += delay
+                await asyncio.sleep(delay)
+
+    async def _send_first_comment_once(
+        self,
+        target: str | int,
+        message_id: int,
+        variant: FirstCommentVariant,
+    ) -> tuple[object, FirstCommentVariant]:
         if variant.image_path:
             sent = await self._send_first_comment_image(target, message_id, variant)
             if sent is not None:
@@ -1265,8 +1291,10 @@ class MimicAgentRuntime:
                 try:
                     from telethon.tl import functions
 
+                    # Автор поста канала — сам канал: список участников
+                    # вещательного канала открыт только админам.
                     is_supergroup = getattr(event, "is_channel", False)
-                    if is_supergroup:
+                    if is_supergroup and not _is_broadcast_post(event):
                         input_chat = getattr(event, "input_chat", None) or event_chat_id
                         input_sender = getattr(event, "input_sender", None) or event_sender_id
                         res = await event.client(
@@ -2220,19 +2248,18 @@ async def _has_discussion_group(event: object) -> bool:
 
 
 def _first_comment_note(variant: FirstCommentVariant) -> str:
-    """Строка для модели: под постом уже висит её комментарий.
+    """Ветка комментариев под постом: в ней уже есть комментарий агента.
 
-    Только факт, без указаний, что делать: инструкция в шапке входящего
-    читается слабыми моделями как требование.
+    Только факт в виде ветки, без указаний, что делать: инструкция в шапке
+    входящего читается слабыми моделями как требование, а фраза «твой
+    комментарий: «…»» — как образец, который они повторяют слово в слово.
     """
     text = variant.text.strip()
-    if variant.image_path and text:
-        what = f"картинка с подписью «{text}»"
-    elif variant.image_path:
-        what = "картинка без подписи"
+    if variant.image_path:
+        what = "[Фото]" + (f" {text}" if text else "")
     else:
-        what = f"«{text}»"
-    return f"Твой первый комментарий под этим постом: {what}"
+        what = text
+    return f"Комментарии под постом:\n— ты (сразу после публикации): {what}"
 
 
 def _first_comment_failure_reason(exc: Exception) -> str:
@@ -2260,6 +2287,8 @@ def _first_comment_failure_reason(exc: Exception) -> str:
         return "write_forbidden"
     if isinstance(exc, errors.FloodWaitError):
         return "flood_wait"
+    if isinstance(exc, errors.SlowModeWaitError):
+        return "slow_mode"
     return "exception"
 
 

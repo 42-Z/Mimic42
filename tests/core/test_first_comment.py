@@ -212,6 +212,9 @@ def test_failures_are_reported_with_readable_reasons() -> None:
     )
     assert _first_comment_failure_reason(errors.AuthKeyDuplicatedError(request)) == "unauthorized"
     assert _first_comment_failure_reason(FirstCommentImageUnavailable("x")) == "image_unavailable"
+    assert (
+        _first_comment_failure_reason(errors.SlowModeWaitError(request, capture=30)) == "slow_mode"
+    )
     assert _first_comment_failure_reason(ValueError("boom")) == "exception"
 
 
@@ -486,6 +489,88 @@ async def test_unreadable_image_still_sends_the_text() -> None:
     assert note.image_path is None
 
 
+class FloodingClient(FakeTelegramClient):
+    """Ветку свежего поста Telegram отдаёт после FLOOD_WAIT (так в живом TG)."""
+
+    def __init__(self, account: FakeTelegramAccount, waits: list[Exception]) -> None:
+        super().__init__(account)
+        self.waits = waits
+
+    async def send_message(self, entity: str | int, message: str, **kwargs: Any) -> object:
+        if "comment_to" in kwargs and self.waits:
+            raise self.waits.pop(0)
+        return await super().send_message(entity, message, **kwargs)
+
+
+def flood(seconds: int) -> Exception:
+    from telethon import errors
+
+    return errors.FloodWaitError(request=None, capture=seconds)
+
+
+def slow_mode(seconds: int) -> Exception:
+    from telethon import errors
+
+    return errors.SlowModeWaitError(request=None, capture=seconds)
+
+
+def build_flooding_runtime(
+    waits: list[Exception], monkeypatch: pytest.MonkeyPatch
+) -> tuple[MimicAgentRuntime, FloodingClient, list[float], list[dict[str, Any]]]:
+    account = FakeTelegramAccount()
+    account.authorized = True
+    telegram = FloodingClient(account, waits)
+    runtime = MimicAgentRuntime(
+        config=make_config(
+            FirstCommentSettings(enabled=True, variants=[FirstCommentVariant(text="Первый!")])
+        ),
+        telegram_client=telegram,
+        langchain_agent=FakeLangChainAgent(),
+    )
+    slept: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        slept.append(delay)
+
+    monkeypatch.setattr("mimic42.core.agent_runtime.asyncio.sleep", fake_sleep)
+    return runtime, telegram, slept, record_events(runtime)
+
+
+@pytest.mark.asyncio
+async def test_short_flood_wait_is_waited_out_and_the_comment_still_goes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Медленный режим обсуждения: второй пост подряд упирается в него так же.
+    runtime, telegram, slept, events = build_flooding_runtime([flood(2), slow_mode(5)], monkeypatch)
+    await runtime.start()
+
+    await telegram.account.deliver_post(chat_id=-100500, text="Новый пост")
+
+    assert slept == [2, 5]
+    comments = [msg for msg in telegram.account.sent if "comment_to" in msg.kwargs]
+    assert [msg.text for msg in comments] == ["Первый!"]
+    assert [e["event_type"] for e in events if e["event_type"].startswith("first_comment.")] == [
+        "first_comment.sent"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_long_flood_wait_gives_up_instead_of_a_late_first_comment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime, telegram, slept, events = build_flooding_runtime([flood(2), flood(9)], monkeypatch)
+    await runtime.start()
+
+    await telegram.account.deliver_post(chat_id=-100500, text="Новый пост")
+
+    # 2 с ждём, а ещё 9 сверху — уже за пределом «сразу».
+    assert slept == [2]
+    assert [msg for msg in telegram.account.sent if "comment_to" in msg.kwargs] == []
+    failed = [e for e in events if e["event_type"].startswith("first_comment.")]
+    assert [e["event_type"] for e in failed] == ["first_comment.failed"]
+    assert failed[0]["payload"]["reason"] == "flood_wait"
+
+
 @pytest.mark.asyncio
 async def test_a_failed_comment_does_not_break_the_incoming_pipeline() -> None:
     class RefusingClient(FakeTelegramClient):
@@ -514,15 +599,15 @@ async def test_a_failed_comment_does_not_break_the_incoming_pipeline() -> None:
 # ── Что знает ИИ ──────────────────────────────────────────────────────────────
 
 
-def test_note_names_what_is_under_the_post() -> None:
-    assert _first_comment_note(FirstCommentVariant(text="Первый!")) == (
-        "Твой первый комментарий под этим постом: «Первый!»"
+def test_note_shows_the_comment_thread_under_the_post() -> None:
+    assert _first_comment_note(FirstCommentVariant(text=" Первый! ")) == (
+        "Комментарии под постом:\n— ты (сразу после публикации): Первый!"
     )
     assert _first_comment_note(FirstCommentVariant(text="", image_path="a/b.jpg")).endswith(
-        "картинка без подписи"
+        "— ты (сразу после публикации): [Фото]"
     )
     assert _first_comment_note(FirstCommentVariant(text="глянь", image_path="a/b.jpg")).endswith(
-        "картинка с подписью «глянь»"
+        "— ты (сразу после публикации): [Фото] глянь"
     )
 
 
@@ -549,7 +634,25 @@ async def test_agent_turn_on_the_post_knows_about_the_first_comment() -> None:
     await telegram.account.deliver_post(chat_id=-100500, text="Новый пост")
 
     assert agent.calls == 1
-    assert "Твой первый комментарий под этим постом: «Первый!»" in agent.inputs[0]
+    assert agent.inputs[0].endswith(
+        "Содержимое: Новый пост\nКомментарии под постом:\n— ты (сразу после публикации): Первый!"
+    )
+
+
+@pytest.mark.asyncio
+async def test_channel_post_skips_the_participant_lookup(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Автор поста — сам канал, а участников вещательного канала видят только
+    админы: запрос вернул бы ChatAdminRequired на каждом новом канале."""
+    runtime, telegram, agent = build_runtime(FirstCommentSettings())
+    await runtime.start()
+
+    with caplog.at_level("WARNING", logger="mimic42.agent_runtime"):
+        await telegram.account.deliver_post(chat_id=-100500, text="Новый пост")
+
+    assert agent.calls == 1
+    assert "participant title" not in caplog.text
 
 
 @pytest.mark.asyncio
@@ -563,4 +666,4 @@ async def test_agent_turn_without_a_comment_carries_no_note() -> None:
     await telegram.account.deliver(chat_id=777, text="привет")
 
     assert agent.calls == 2
-    assert all("первый комментарий" not in text for text in agent.inputs)
+    assert all("Комментарии под постом" not in text for text in agent.inputs)
