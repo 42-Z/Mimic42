@@ -1,5 +1,4 @@
 import * as React from 'react';
-import { Slot } from '@radix-ui/react-slot';
 import { cva, type VariantProps } from 'class-variance-authority';
 import { cn } from '@/lib/utils';
 
@@ -19,7 +18,7 @@ const buttonVariants = cva(
         secondary: ['bg-secondary border-border text-secondary-foreground', 'hover:bg-muted'],
         ghost: ['bg-transparent border-transparent text-muted-foreground', 'hover:bg-muted hover:text-foreground'],
         danger: ['bg-destructive border-destructive text-destructive-foreground', 'hover:bg-destructive/90 hover:shadow-crimson'],
-        success: ['bg-success border-success text-white', 'hover:bg-success/90 hover:shadow-neon-sm'],
+        success: ['bg-success border-success text-success-foreground', 'hover:bg-success/90 hover:shadow-neon-sm'],
         outline: ['bg-transparent border-border text-foreground', 'hover:bg-muted hover:border-primary/60 hover:text-primary'],
         'plasma-outline': ['bg-transparent border-primary/50 text-primary', 'hover:bg-primary/10 hover:border-primary hover:text-primary/90 hover:shadow-plasma-sm'],
       },
@@ -34,8 +33,9 @@ const buttonVariants = cva(
 );
 
 export interface ButtonProps
-  extends React.ButtonHTMLAttributes<HTMLButtonElement>, VariantProps<typeof buttonVariants> {
-  isLoading?: boolean; leftIcon?: React.ReactNode; rightIcon?: React.ReactNode; asChild?: boolean;
+  extends React.ButtonHTMLAttributes<HTMLButtonElement>,
+    Omit<VariantProps<typeof buttonVariants>, 'loading'> {
+  isLoading?: boolean; leftIcon?: React.ReactNode; rightIcon?: React.ReactNode;
 }
 
 const Spinner = ({ className }: { className?: string }) => (
@@ -46,15 +46,14 @@ const Spinner = ({ className }: { className?: string }) => (
 );
 
 const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
-  ({ className, variant, size, isLoading, loading: _loading, leftIcon, rightIcon, children, disabled, asChild = false, ...props }, ref) => {
+  ({ className, variant, size, isLoading, leftIcon, rightIcon, children, disabled, ...props }, ref) => {
     const isDisabled = disabled || isLoading;
-    const Comp = asChild ? Slot : 'button';
     return (
-      <Comp ref={ref} className={cn(buttonVariants({ variant, size, loading: isLoading }), className)} disabled={isDisabled} aria-disabled={isDisabled} {...props}>
+      <button ref={ref} className={cn(buttonVariants({ variant, size, loading: isLoading }), className)} disabled={isDisabled} aria-disabled={isDisabled} {...props}>
         {isLoading ? <Spinner className="h-4 w-4" /> : leftIcon ? <span className="shrink-0">{leftIcon}</span> : null}
         {children}
         {!isLoading && rightIcon ? <span className="shrink-0">{rightIcon}</span> : null}
-      </Comp>
+      </button>
     );
   }
 );

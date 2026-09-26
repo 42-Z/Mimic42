@@ -108,7 +108,7 @@ function ToastItem({ toast, onDismiss }: ToastItemProps) {
       <p className="flex-1 leading-relaxed break-words">{toast.message}</p>
       <button
         onClick={handleDismiss}
-        className="shrink-0 ml-2 opacity-60 hover:opacity-100 transition-opacity text-current"
+        className="shrink-0 ml-2 opacity-60 hover:opacity-100 transition-opacity text-current focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         aria-label="Закрыть уведомление"
       >
         ×

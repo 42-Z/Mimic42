@@ -28,6 +28,7 @@
     --destructive: 244 63 94;        /* crimson-500 */
     --destructive-foreground: 255 255 255;
     --success: 0 224 112;            /* neon-500 */
+    --success-foreground: 255 255 255;
     --warning: 245 158 11;           /* amber-500 */
     --border: 37 37 53;
     --input: 37 37 53;

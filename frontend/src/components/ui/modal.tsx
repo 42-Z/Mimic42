@@ -34,10 +34,6 @@ export function Modal({
 }: ModalProps) {
   const contentRef = React.useRef<HTMLDivElement>(null);
   const triggerRef = React.useRef<HTMLElement | null>(null);
-  const onCloseRef = React.useRef(onClose);
-  React.useEffect(() => {
-    onCloseRef.current = onClose;
-  }, [onClose]);
 
   // Return focus to the trigger so keyboard users keep their place. Restore is
   // done here — synchronously on unmount of the open dialog — because radix
@@ -60,7 +56,7 @@ export function Modal({
     <DialogPrimitive.Root
       open={isOpen}
       onOpenChange={(open) => {
-        if (!open) onCloseRef.current();
+        if (!open) onClose();
       }}
     >
       <DialogPrimitive.Portal>
@@ -69,8 +65,7 @@ export function Modal({
           ref={contentRef}
           tabIndex={-1}
           aria-modal="true"
-          aria-labelledby={title ? 'modal-title' : undefined}
-          aria-describedby={description ? 'modal-description' : undefined}
+          aria-label={title ? undefined : 'Диалог'}
           onOpenAutoFocus={(event) => {
             // Remember what opened the dialog and move focus onto the panel
             // instead of the first focusable child.
@@ -101,7 +96,6 @@ export function Modal({
             <div className="px-6 pt-6 pb-4 border-b border-border">
               {title && (
                 <DialogPrimitive.Title
-                  id="modal-title"
                   className="font-mono text-base font-semibold text-foreground uppercase tracking-wider"
                 >
                   {title}
@@ -109,7 +103,6 @@ export function Modal({
               )}
               {description && (
                 <DialogPrimitive.Description
-                  id="modal-description"
                   className="mt-1 text-sm text-muted-foreground font-mono"
                 >
                   {description}
@@ -128,6 +121,7 @@ export function Modal({
               'h-7 w-7 flex items-center justify-center',
               'text-muted-foreground hover:text-foreground',
               'transition-colors duration-150',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
               'font-mono text-lg'
             )}
             aria-label="Закрыть"
@@ -171,7 +165,7 @@ export function ConfirmDialog({
           {cancelLabel}
         </Button>
         <Button
-          variant={variant === 'danger' ? 'danger' : 'default'}
+          variant={variant}
           size="sm"
           onClick={onConfirm}
           isLoading={isLoading}

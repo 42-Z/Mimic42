@@ -95,7 +95,7 @@ const config: Config = {
         muted: { DEFAULT: 'rgb(var(--muted) / <alpha-value>)', foreground: 'rgb(var(--muted-foreground) / <alpha-value>)' },
         accent: { DEFAULT: 'rgb(var(--accent) / <alpha-value>)', foreground: 'rgb(var(--accent-foreground) / <alpha-value>)' },
         destructive: { DEFAULT: 'rgb(var(--destructive) / <alpha-value>)', foreground: 'rgb(var(--destructive-foreground) / <alpha-value>)' },
-        success: 'rgb(var(--success) / <alpha-value>)',
+        success: { DEFAULT: 'rgb(var(--success) / <alpha-value>)', foreground: 'rgb(var(--success-foreground) / <alpha-value>)' },
         warning: 'rgb(var(--warning) / <alpha-value>)',
         border: 'rgb(var(--border) / <alpha-value>)',
         input: 'rgb(var(--input) / <alpha-value>)',
@@ -177,6 +177,7 @@ const config: Config = {
         DEFAULT: 'rgba(96, 96, 117, 0.2)',
       },
       spacing: {
+        '13': '3.25rem',
         '18': '4.5rem',
         '22': '5.5rem',
         '68': '17rem',
