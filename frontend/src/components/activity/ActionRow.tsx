@@ -1,6 +1,6 @@
 'use client';
 
-import { CheckCircle2, XCircle, Loader2 } from 'lucide-react';
+import { CheckCircle2, ExternalLink, XCircle, Loader2 } from 'lucide-react';
 import { getToolMeta } from '@/lib/activity/toolCatalog';
 import { getEventMeta } from '@/lib/activity/eventCatalog';
 import type { ActivityAction } from '@/lib/activity/normalize';
@@ -49,6 +49,17 @@ export function ActionRow({ action }: { action: ActivityAction }) {
         <span className="hidden md:inline text-[11px] text-void-400 truncate max-w-[40%]">
           {resultSummary}
         </span>
+      )}
+      {action.traceUrl && (
+        <a
+          href={action.traceUrl}
+          target="_blank"
+          rel="noreferrer"
+          className="shrink-0 inline-flex items-center gap-1 text-[11px] text-plasma-400 hover:text-plasma-300 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-plasma-500 rounded-[2px]"
+        >
+          Трейс
+          <ExternalLink aria-hidden="true" className="h-3 w-3" />
+        </a>
       )}
       {duration && <span className="shrink-0 font-mono text-[10px] text-void-400">{duration}</span>}
       {failed ? (

@@ -38,6 +38,7 @@ export interface ActivityAction {
   result: Record<string, unknown> | null;
   startedAt: string | null;
   completedAt: string | null;
+  traceUrl: string | null;
 }
 
 export interface ActivityMessagePart {
@@ -101,6 +102,7 @@ function toAction(event: EventLike): ActivityAction {
   const meta = isTool ? getToolMeta(event.event_type.slice('tool.'.length)) : null;
   const lifecycle = getEventMeta(event.event_type);
   const label = meta ? meta.ru : lifecycle ? lifecycle.ru : event.event_type;
+  const traceUrl = typeof payload?.trace_url === 'string' ? payload.trace_url : null;
   return {
     id: event.id ?? event.created_at,
     eventType: event.event_type,
@@ -116,6 +118,7 @@ function toAction(event: EventLike): ActivityAction {
     result: event.result ?? null,
     startedAt: event.started_at ?? null,
     completedAt: event.completed_at ?? null,
+    traceUrl,
   };
 }
 
