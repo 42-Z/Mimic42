@@ -21,6 +21,16 @@ class AgentRecord(BaseModel):
     restore_on_start: bool = Field(default=True, exclude=True)
 
 
+class TelegramRebindCredentials(BaseModel):
+    """Внутренние сохранённые реквизиты Telegram для повторной авторизации."""
+
+    owner_id: UUID
+    api_id: int
+    api_hash_secret: str = Field(repr=False)
+    phone_number: str
+    username: str | None = None
+
+
 class AgentMessageRecord(BaseModel):
     id: UUID = Field(default_factory=uuid4)
     agent_id: UUID
@@ -89,7 +99,13 @@ class ConversationPage(BaseModel):
 class AgentStore(Protocol):
     async def create_from_onboarding(self, session: OnboardingSession) -> AgentRecord: ...
 
+    async def rebind_telegram_session(self, agent_id: UUID, session: OnboardingSession) -> None: ...
+
     async def get_runtime_config(self, agent_id: UUID) -> AgentRuntimeConfig: ...
+
+    async def get_telegram_rebind_credentials(
+        self, agent_id: UUID
+    ) -> TelegramRebindCredentials: ...
 
     async def list_agents(self, *, owner_id: UUID | None = None) -> list[AgentRecord]: ...
 
@@ -123,6 +139,19 @@ class AgentStore(Protocol):
     ) -> ConversationPage: ...
 
 
+class TelegramAccountMismatchError(ValueError):
+    """A rebind session belongs to a different Telegram account or app."""
+
+
+class AgentOwnershipError(PermissionError):
+    """Агент с таким идентификатором уже принадлежит другому пользователю.
+
+    Id онбординг-сессии — это id будущего агента, а строку сессии клиент пишет
+    сам. Переприсваивать уже существующего агента нельзя: иначе поддельная
+    сессия забирает чужого агента вместе с его Telegram-сессией.
+    """
+
+
 def reply_target_of(payload: dict[str, Any]) -> int | None:
     """Reply target of an answer row: structured response `reply_to`.
 
@@ -149,6 +178,10 @@ class InMemoryAgentStore:
         self._agents = {agent.agent_id: agent for agent in agents or []}
         self._configs: dict[UUID, AgentRuntimeConfig] = {}
         self.context_resets: dict[UUID, datetime] = {}
+        self._telegram_accounts: dict[UUID, tuple[int, str, str | None]] = {}
+        # @username хранится рядом с аккаунтом, но вне его ключа: он меняется
+        # при перепривязке и не участвует в проверке «тот же ли аккаунт».
+        self._telegram_usernames: dict[UUID, str | None] = {}
         self._messages = messages or []
         self._activities = activities or []
 
@@ -162,6 +195,9 @@ class InMemoryAgentStore:
             raise ValueError(
                 "Onboarding session is missing agent profile fields or Telegram credentials"
             )
+        existing = self._agents.get(session.onboarding_id)
+        if existing is not None and existing.owner_id != session.owner_id:
+            raise AgentOwnershipError(session.onboarding_id)
         record = AgentRecord(
             agent_id=session.onboarding_id,
             owner_id=session.owner_id,
@@ -177,17 +213,70 @@ class InMemoryAgentStore:
             telegram_api_id=session.api_id,
             telegram_api_hash=session.api_hash_secret,
             telegram_session_string=session.session_secret,
+            telegram_session_token=session.session_secret,
             system_prompt=load_default_system_prompt(),
             soul_prompt=session.soul_prompt,
             name=session.name or "AI",
         )
+        self._telegram_accounts[record.agent_id] = (
+            session.api_id,
+            session.api_hash_secret,
+            session.phone_number,
+        )
+        self._telegram_usernames[record.agent_id] = session.username
         return record
+
+    async def rebind_telegram_session(self, agent_id: UUID, session: OnboardingSession) -> None:
+        """Обновить только Telegram-сессию агента, не трогая профиль.
+
+        Меняется лишь строка сессии (auth key): номер и приложение остаются
+        прежними. Проверка владельца агента — ответственность вызывающего слоя.
+        """
+        if (
+            session.api_id is None
+            or session.api_hash_secret is None
+            or session.session_secret is None
+            or session.phone_number is None
+        ):
+            raise ValueError("Onboarding session is missing Telegram credentials")
+        config = self._configs.get(agent_id)
+        if config is None:
+            raise KeyError(f"Agent {agent_id} does not have a runtime config")
+        expected_account = self._telegram_accounts.get(agent_id)
+        rebound_account = (session.api_id, session.api_hash_secret, session.phone_number)
+        if expected_account != rebound_account:
+            raise TelegramAccountMismatchError(
+                "Rebind session belongs to a different Telegram account or application"
+            )
+        self._configs[agent_id] = config.model_copy(
+            update={
+                "telegram_session_string": session.session_secret,
+                "telegram_session_token": session.session_secret,
+            }
+        )
+        self._telegram_usernames[agent_id] = session.username
 
     async def get_runtime_config(self, agent_id: UUID) -> AgentRuntimeConfig:
         try:
             return self._configs[agent_id]
         except KeyError as exc:
             raise KeyError(f"Agent {agent_id} does not have a runtime config") from exc
+
+    async def get_telegram_rebind_credentials(self, agent_id: UUID) -> TelegramRebindCredentials:
+        record = self._agents.get(agent_id)
+        account = self._telegram_accounts.get(agent_id)
+        if record is None or account is None:
+            raise KeyError(f"Agent {agent_id} does not have saved Telegram credentials")
+        api_id, api_hash_secret, phone_number = account
+        if phone_number is None:
+            raise KeyError(f"Agent {agent_id} does not have saved Telegram credentials")
+        return TelegramRebindCredentials(
+            owner_id=record.owner_id,
+            api_id=api_id,
+            api_hash_secret=api_hash_secret,
+            phone_number=phone_number,
+            username=self._telegram_usernames.get(agent_id),
+        )
 
     async def list_agents(self, *, owner_id: UUID | None = None) -> list[AgentRecord]:
         records = list(self._agents.values())
@@ -202,6 +291,8 @@ class InMemoryAgentStore:
     async def delete_agent(self, agent_id: UUID) -> None:
         self._agents.pop(agent_id, None)
         self._configs.pop(agent_id, None)
+        self._telegram_accounts.pop(agent_id, None)
+        self._telegram_usernames.pop(agent_id, None)
 
     async def reset_context(self, agent_id: UUID, *, actor_user_id: UUID) -> datetime:
         if agent_id not in self._agents:

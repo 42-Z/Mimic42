@@ -8,11 +8,24 @@ import { Button } from '@/components/ui/button';
 import { Input, Textarea } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/card';
 import { PresetPicker } from '@/components/agent/PresetPicker';
+import {
+  EMPTY_FIRST_COMMENT,
+  FirstCommentSettingsSection,
+  readFirstComment,
+  type FirstCommentDraft,
+} from '@/components/agent/FirstCommentSettings';
 import { DEFAULT_MODEL, optionsIncluding } from '@/lib/models';
 import { agentsApi } from '@/lib/api';
 import { pickReasoningValue, reasoningLabel, reasoningOptionValues } from '@/lib/reasoning';
 import { agentSettingsSchema, type AgentSettingsValues } from '@/lib/validators';
 import type { ApiError } from '@/types';
+
+// В форме у вариантов первого комментария есть ключи строк; при разборе схемой
+// они отбрасываются и в настройки не попадают.
+type SettingsFormValues = Omit<AgentSettingsValues, 'first_comment'> & {
+  first_comment: FirstCommentDraft;
+};
+type TextField = Exclude<keyof AgentSettingsValues, 'first_comment'>;
 
 export function TabSettings({ agentId }: { agentId: string }) {
   const { toast } = useToast();
@@ -20,8 +33,9 @@ export function TabSettings({ agentId }: { agentId: string }) {
   const update = useUpdateAgentSettings(agentId);
   const { data: reasoningByModel } = useModelReasoning();
 
-  const [values, setValues] = useState<AgentSettingsValues>({
+  const [values, setValues] = useState<SettingsFormValues>({
     name: '', soul_prompt: '', reasoning_effort: 'high', model: DEFAULT_MODEL,
+    first_comment: EMPTY_FIRST_COMMENT,
   });
   const [formErrors, setFormErrors] = useState<Partial<Record<keyof AgentSettingsValues, string>>>({});
   const [dirty, setDirty] = useState(false);
@@ -34,6 +48,7 @@ export function TabSettings({ agentId }: { agentId: string }) {
         reasoning_effort:
           (details.settings?.reasoning_effort as AgentSettingsValues['reasoning_effort']) ?? 'high',
         model: (details.settings?.model as string) ?? DEFAULT_MODEL,
+        first_comment: readFirstComment(details.settings),
       });
     }
   }, [details]);
@@ -49,7 +64,7 @@ export function TabSettings({ agentId }: { agentId: string }) {
     }
   }, [values.model, values.reasoning_effort, reasoningOptions, reasoningMeta]);
 
-  const set = (field: keyof AgentSettingsValues, value: string) => {
+  const set = (field: TextField, value: string) => {
     setValues((v) => ({ ...v, [field]: value }));
     setDirty(true);
   };
@@ -76,6 +91,7 @@ export function TabSettings({ agentId }: { agentId: string }) {
           // stored effort: "none" keeps the request clean.
           reasoning_effort: reasoningOptions === null ? 'none' : result.data.reasoning_effort,
           model: result.data.model,
+          first_comment: result.data.first_comment ?? EMPTY_FIRST_COMMENT,
         },
       };
       await update.mutateAsync(submissionData);
@@ -125,7 +141,7 @@ export function TabSettings({ agentId }: { agentId: string }) {
         <select
           value={values.model}
           onChange={(e) => set('model', e.target.value)}
-          className="flex h-10 w-full rounded-sm bg-void-800 border border-void-600 px-3 py-2 font-mono text-base sm:text-sm text-void-100 placeholder:text-void-500 transition-colors duration-150 focus:outline-none focus:ring-1 focus:ring-plasma-500 focus:border-plasma-600 hover:border-void-500 disabled:cursor-not-allowed disabled:opacity-50"
+          className="flex h-10 w-full rounded-sm bg-void-800 border border-void-600 px-3 py-2 font-mono text-base sm:text-sm text-void-100 placeholder:text-void-400 transition-colors duration-150 focus:outline-none focus:ring-1 focus:ring-plasma-500 focus:border-plasma-600 hover:border-void-500 disabled:cursor-not-allowed disabled:opacity-50"
         >
           {optionsIncluding(values.model).map((m) => (
             <option key={m.value} value={m.value}>
@@ -144,12 +160,12 @@ export function TabSettings({ agentId }: { agentId: string }) {
       {reasoningOptions !== null && (
         <div className="flex flex-col gap-1.5">
           <label className="text-xs font-mono font-medium text-void-300 uppercase tracking-wider">
-            Уровень рассуждения (Reasoning Effort)
+            Уровень рассуждения
           </label>
           <select
             value={values.reasoning_effort ?? ''}
             onChange={(e) => set('reasoning_effort', e.target.value)}
-            className="flex h-10 w-full rounded-sm bg-void-800 border border-void-600 px-3 py-2 font-mono text-base sm:text-sm text-void-100 placeholder:text-void-500 transition-colors duration-150 focus:outline-none focus:ring-1 focus:ring-plasma-500 focus:border-plasma-600 hover:border-void-500 disabled:cursor-not-allowed disabled:opacity-50"
+            className="flex h-10 w-full rounded-sm bg-void-800 border border-void-600 px-3 py-2 font-mono text-base sm:text-sm text-void-100 placeholder:text-void-400 transition-colors duration-150 focus:outline-none focus:ring-1 focus:ring-plasma-500 focus:border-plasma-600 hover:border-void-500 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {reasoningOptions.map((effort) => (
               <option key={effort} value={effort}>
@@ -165,6 +181,16 @@ export function TabSettings({ agentId }: { agentId: string }) {
           )}
         </div>
       )}
+
+      <FirstCommentSettingsSection
+        agentId={agentId}
+        value={values.first_comment}
+        onChange={(update) => {
+          setValues((v) => ({ ...v, first_comment: update(v.first_comment) }));
+          setDirty(true);
+        }}
+        error={formErrors.first_comment}
+      />
 
       <div className="flex items-center gap-3 pt-2">
         <Button type="submit" isLoading={update.isPending} disabled={!dirty}>

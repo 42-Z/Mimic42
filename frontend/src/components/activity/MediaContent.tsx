@@ -21,7 +21,7 @@ function MediaView({
 
   if (!item.storage_path) {
     return (
-      <span className="inline-flex items-center gap-1.5 font-mono text-[10px] text-void-500 border border-void-700 rounded-sm px-2 py-1">
+      <span className="inline-flex items-center gap-1.5 font-mono text-[10px] text-void-300 border border-void-700 rounded-sm px-2 py-1">
         <ImageOff className="h-3 w-3" />
         {item.name} (файл не сохранён)
       </span>
@@ -36,7 +36,7 @@ function MediaView({
     );
   }
   if (!url) {
-    return <span className="font-mono text-[10px] text-void-600">Загрузка медиа…</span>;
+    return <span className="font-mono text-[10px] text-void-400">Загрузка медиа…</span>;
   }
 
   if (IMAGE_KINDS.has(item.kind)) {

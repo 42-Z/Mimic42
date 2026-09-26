@@ -67,7 +67,7 @@ function TokenStat({
   return (
     <div title={value.toLocaleString('ru-RU')}>
       <div className={cn('font-mono text-2xl', className)}>{formatCompactNumber(value)}</div>
-      <div className="font-mono text-[10px] uppercase tracking-wider text-void-500 mt-1">
+      <div className="font-mono text-[10px] uppercase tracking-wider text-void-300 mt-1">
         {label}
       </div>
     </div>

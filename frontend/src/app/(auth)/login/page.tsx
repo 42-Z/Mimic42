@@ -31,10 +31,10 @@ function LoginContent() {
   // Terminal typing effect on mount
   useEffect(() => {
     const lines = [
-      '> Initializing MIMIC42 control panel...',
-      '> Loading agent protocols...',
-      '> Connecting to Supabase cluster...',
-      '> Ready. Awaiting authentication.',
+      '> Инициализация панели MIMIC42...',
+      '> Загрузка протоколов агента...',
+      '> Подключение к кластеру Supabase...',
+      '> Готово. Ожидание авторизации.',
     ];
     const queue = [...lines];
     const interval = setInterval(() => {
@@ -116,8 +116,8 @@ function LoginContent() {
             <div className="font-mono font-bold text-xl text-void-100 tracking-wider">
               MIMIC<span className="text-plasma-400">42</span>
             </div>
-            <div className="font-mono text-[11px] text-void-500 tracking-widest uppercase">
-              Agent Control Panel
+            <div className="font-mono text-[11px] text-void-300 tracking-widest uppercase">
+              Панель управления агентом
             </div>
           </div>
         </div>
@@ -141,7 +141,7 @@ function LoginContent() {
         </div>
 
         {/* Bottom tag */}
-        <p className="relative font-mono text-xs text-void-600">
+        <p className="relative font-mono text-xs text-void-400">
           v0.1.0 — Реалистичный ИИ-агент для Telegram
         </p>
       </div>
@@ -161,7 +161,7 @@ function LoginContent() {
             <h1 className="font-display text-2xl font-bold text-void-100">
               Вход в систему
             </h1>
-            <p className="mt-1 text-sm font-mono text-void-500">
+            <p className="mt-1 text-sm font-mono text-void-300">
               Управляйте своим агентом
             </p>
           </div>
@@ -191,7 +191,7 @@ function LoginContent() {
                 <button
                   type="button"
                   onClick={() => setShowPassword((v) => !v)}
-                  className="text-void-500 hover:text-void-300 transition-colors p-2 -m-1"
+                  className="text-void-300 hover:text-void-100 transition-colors p-2 -m-1"
                   aria-label={showPassword ? 'Скрыть пароль' : 'Показать пароль'}
                 >
                   {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
@@ -202,7 +202,7 @@ function LoginContent() {
             <div className="flex justify-end">
               <Link
                 href="/reset-password"
-                className="font-mono text-xs text-void-500 hover:text-plasma-300 transition-colors py-2"
+                className="font-mono text-xs text-void-300 hover:text-plasma-300 transition-colors py-2"
               >
                 Забыли пароль?
               </Link>
@@ -218,7 +218,7 @@ function LoginContent() {
             </Button>
           </form>
 
-          <p className="text-center font-mono text-sm text-void-500">
+          <p className="text-center font-mono text-sm text-void-300">
             Нет аккаунта?{' '}
             <Link href="/register" className="text-plasma-400 hover:text-plasma-300 transition-colors inline-block py-2">
               Зарегистрироваться
@@ -232,7 +232,7 @@ function LoginContent() {
 
 export default function LoginPage() {
   return (
-    <Suspense fallback={<div className="min-h-dvh bg-void-950 flex items-center justify-center font-mono text-void-500">Loading...</div>}>
+    <Suspense fallback={<div className="min-h-dvh bg-void-950 flex items-center justify-center font-mono text-void-300">Загрузка...</div>}>
       <LoginContent />
     </Suspense>
   );

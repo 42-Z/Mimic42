@@ -4,7 +4,11 @@ import { useQuery } from '@tanstack/react-query';
 import { getSupabaseClient } from '@/lib/supabase/client';
 import { queryKeys } from '@/lib/queryClient';
 import { agentIdSchema } from '@/lib/validators';
-import type { TelegramSessionRow, MessageThreadRow } from '@/types';
+import type {
+  TelegramAuthorizationStatus,
+  TelegramSessionRow,
+  MessageThreadRow,
+} from '@/types';
 
 /**
  * Fetch Telegram session for an agent directly from Supabase.
@@ -18,7 +22,11 @@ export function useTelegramSession(agentId: string) {
       const supabase = getSupabaseClient();
       const { data, error } = await supabase
         .from('telegram_sessions')
-        .select('*')
+        // Явный список колонок вместо `*`: api_id и api_hash_ciphertext —
+        // секреты Telegram-приложения и в браузер не выгружаются.
+        .select(
+          'id, agent_id, username, phone_number, authorization_status, last_authorized_at, last_error, created_at, updated_at',
+        )
         .eq('agent_id', agentId)
         .maybeSingle();
 
@@ -172,12 +180,15 @@ export function useAllAgentsKPIs(agentIds: string[]) {
 }
 
 export interface AgentDetails {
+  username: string | null;
   phone_number: string | null;
+  authorization_status: TelegramAuthorizationStatus | null;
   last_started_at: string | null;
 }
 
 /**
- * Fetch Telegram phone numbers and last start times for several agents.
+ * Fetch Telegram username, phone numbers, session authorization status and last
+ * start times for several agents.
  */
 export function useAgentsDetails(agentIds: string[]) {
   const isValid = agentIds.length > 0;
@@ -189,7 +200,7 @@ export function useAgentsDetails(agentIds: string[]) {
       const [sessionsResult, agentsResult] = await Promise.all([
         supabase
           .from('telegram_sessions')
-          .select('agent_id, phone_number')
+          .select('agent_id, username, phone_number, authorization_status')
           .in('agent_id', agentIds),
         supabase
           .from('agents')
@@ -202,12 +213,19 @@ export function useAgentsDetails(agentIds: string[]) {
 
       const details: Record<string, AgentDetails> = {};
       for (const row of agentsResult.data ?? []) {
-        details[row.id] = { phone_number: null, last_started_at: row.last_started_at ?? null };
+        details[row.id] = {
+          username: null,
+          phone_number: null,
+          authorization_status: null,
+          last_started_at: row.last_started_at ?? null,
+        };
       }
       for (const row of sessionsResult.data ?? []) {
         details[row.agent_id] = {
           ...(details[row.agent_id] ?? { last_started_at: null }),
+          username: row.username ?? null,
           phone_number: row.phone_number ?? null,
+          authorization_status: row.authorization_status ?? null,
         };
       }
       return details;

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
 import random
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -16,10 +18,17 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from mimic42.core.activity import ActivityRecorder
 from mimic42.core.album_grouper import AlbumGrouper
 from mimic42.core.deferred_inbox import DeferredInbox
+from mimic42.core.first_comment import (
+    FirstCommentSettings,
+    FirstCommentVariant,
+    PostedAlbumGuard,
+    SentFirstComments,
+)
 from mimic42.core.media import MAX_MEDIA_BYTES, MediaFile, MediaUploader
 from mimic42.core.memory import MemoryServiceLike, RuntimeMemoryService
 from mimic42.core.model_catalog import DEFAULT_LLM_MODEL
 from mimic42.core.send_window import SendWindow, SendWindowTracker
+from mimic42.core.telegram_attrs import read_optional_attr
 
 logger = logging.getLogger("mimic42.agent_runtime")
 logger.setLevel(logging.INFO)
@@ -29,10 +38,48 @@ DEFER_LIMIT_SECONDS = 300.0
 # Слив ставится чуть позже открытия окна: иначе округление вниз запускает его
 # раньше времени, и он перепланирует сам себя в плотном цикле.
 DEFER_MARGIN_SECONDS = 0.25
+# Ветку свежего поста Telegram отдаёт не сразу: GetDiscussionMessage отвечает
+# FLOOD_WAIT на пару секунд, а сам клиент на флуде не спит (порог 0 ради окна
+# отправки). Так же ждёт медленный режим обсуждения, если посты идут подряд.
+# Короткое ожидание — всё ещё «сразу»; дольше комментарий уже не первый.
+FIRST_COMMENT_FLOOD_WAIT_LIMIT = 10
+# Столько close() ждёт ходы по альбомам и отложенным сообщениям, а оставшиеся
+# отменяет: следом закрываются клиент модели и пул базы, и ход-сирота открыл бы
+# соединение, которое уже никто не закроет. Менеджер закрывает агентов разом,
+# так что это ожидание укладывается в 10 секунд, которые Docker даёт на остановку.
+CLOSE_GRACE_SECONDS = 5.0
 
 
 class TelegramAuthorizationRequired(RuntimeError):
     """Raised when a Telethon user session is connected but not authorized."""
+
+
+class FirstCommentImageUnavailable(RuntimeError):
+    """Картинку варианта не прочитать из хранилища, а подписи, чтобы уйти без неё, нет."""
+
+
+UNAUTHORIZED_SESSION_MESSAGE = (
+    "Сессия Telegram не авторизована. Требуется повторная привязка Telegram-аккаунта."
+)
+
+REVOKED_SESSION_MESSAGE = (
+    "Сессия Telegram недействительна. Требуется повторная привязка Telegram-аккаунта."
+)
+
+
+def _is_dead_session_error(exc: BaseException) -> bool:
+    """Мёртвая сессия: нужен повторный вход, рантайм сам не восстановится.
+
+    Telegram отдаёт это как AuthKeyDuplicatedError (406 — обычная
+    причина: одну сессию использовали с двух IP), и как UnauthorizedError
+    (401: revoked/expired/unregistered/deactivated).
+    """
+    from telethon.errors import AuthKeyDuplicatedError, UnauthorizedError
+
+    return isinstance(
+        exc,
+        (TelegramAuthorizationRequired, AuthKeyDuplicatedError, UnauthorizedError),
+    )
 
 
 class AgentRuntimeState(StrEnum):
@@ -49,11 +96,15 @@ class AgentRuntimeConfig(BaseModel):
     telegram_api_id: int = Field(gt=0)
     telegram_api_hash: str = Field(min_length=1)
     telegram_session_string: str | None = Field(default=None, min_length=1)
+    # Opaque identity of the persisted session ciphertext. It is deliberately
+    # separate from the decrypted Telethon string and must never be serialized.
+    telegram_session_token: str | None = Field(default=None, exclude=True, repr=False)
     llm_model: str = Field(default=DEFAULT_LLM_MODEL, min_length=1)
     reasoning_effort: str = Field(default="high")
     system_prompt: str = Field(min_length=1)
     soul_prompt: str = Field(default="", max_length=20_000)
     name: str = Field(default="AI", min_length=1, max_length=120)
+    first_comment: FirstCommentSettings = Field(default_factory=FirstCommentSettings)
 
     @property
     def combined_prompt(self) -> str:
@@ -103,7 +154,13 @@ class TelegramClientLike(Protocol):
 
     async def is_user_authorized(self) -> bool: ...
 
-    async def send_message(self, entity: str, message: str, **kwargs: Any) -> object: ...
+    async def get_me(self) -> object: ...
+
+    # Пир — строка (юзернейм) или число (ID чата): сессия Telethon ищет
+    # сущность по строке только среди телефонов, юзернеймов и инвайтов.
+    async def send_message(self, entity: str | int, message: str, **kwargs: Any) -> object: ...
+
+    async def send_file(self, entity: str | int, file: Any, **kwargs: Any) -> object: ...
 
     def add_event_handler(
         self,
@@ -194,12 +251,20 @@ class MimicAgentRuntime:
         # хода, проходят гейт при ещё открытом окне и упираются в закрытое на отправке.
         self._dispatch_lock = asyncio.Lock()
         self._message_handler_registered = False
+        # Мёртвая сессия не чинится перезапуском: рантайм с ней больше не
+        # поднимаем до перепривязки (reload_agent создаёт новый объект).
+        self._session_revoked = False
         self._member_tag_cache: dict[tuple[int, int], tuple[str | None, float]] = {}
         self._chat_mute_cache: dict[str, tuple[bool, float]] = {}
         self._scheduler_task: asyncio.Task[None] | None = None
         self._http_client: Any | None = None
         self._album_grouper = AlbumGrouper(self._flush_album)
         self._deferred_inbox = DeferredInbox(self._flush_deferred)
+        self._album_comment_guard = PostedAlbumGuard()
+        self._sent_first_comments = SentFirstComments()
+        # Картинка варианта, уже залитая в Telegram: следующий пост получает её
+        # без скачивания из хранилища и повторной загрузки — это секунды.
+        self._first_comment_media: dict[str, Any] = {}
         self._activity = ActivityRecorder(session_factory) if session_factory is not None else None
 
     async def _record_event(
@@ -223,6 +288,138 @@ class MimicAgentRuntime:
             started_at=started_at,
             completed_at=completed_at,
         )
+
+    async def _mark_telegram_session_revoked(self, *, error: str) -> None:
+        """Пометить telegram_sessions revoked: дэшборд предложит перепривязку.
+
+        Ошибка записи не мешает основному исключению: статус агента и события
+        фиксируются отдельно.
+        """
+        if self._session_factory is None:
+            return
+        if self.config.telegram_session_token is None:
+            logger.warning(
+                "Telegram session token is missing for agent %s, refusing unsafe revoke",
+                self.config.agent_id,
+            )
+            return
+        try:
+            from sqlalchemy import update
+            from sqlalchemy.engine import CursorResult
+
+            from mimic42.integrations.database_models import AgentModel, TelegramSessionModel
+
+            async with self._session_factory() as db_session:
+                result = await db_session.execute(
+                    update(TelegramSessionModel)
+                    .where(
+                        TelegramSessionModel.agent_id == self.config.agent_id,
+                        TelegramSessionModel.session_ciphertext
+                        == self.config.telegram_session_token,
+                    )
+                    .values(authorization_status="revoked", last_error=error)
+                )
+                # execute() статически возвращает Result, а rowcount есть только
+                # у буферизованного CursorResult, который и приходит для UPDATE.
+                if cast(CursorResult[Any], result).rowcount == 0:
+                    logger.warning(
+                        "Telegram session changed or is missing for agent %s; "
+                        "stale runtime did not mark it revoked",
+                        self.config.agent_id,
+                    )
+                else:
+                    await db_session.execute(
+                        update(AgentModel)
+                        .where(AgentModel.id == self.config.agent_id)
+                        .values(status=AgentRuntimeState.ERROR.value)
+                    )
+                await db_session.commit()
+        except Exception:
+            logger.warning(
+                "Failed to mark telegram session revoked for agent %s",
+                self.config.agent_id,
+                exc_info=True,
+            )
+
+    async def _store_telegram_username(self) -> None:
+        """Сохранить @username аккаунта в telegram_sessions: им дэшборд показывает агента.
+
+        Сбой получения или записи не должен мешать старту агента: значение
+        подтянется при следующем старте.
+        """
+        if self._session_factory is None:
+            return
+        if self.config.telegram_session_token is None:
+            logger.warning(
+                "Telegram session token is missing for agent %s, refusing unsafe username update",
+                self.config.agent_id,
+            )
+            return
+        try:
+            from sqlalchemy import update
+            from sqlalchemy.engine import CursorResult
+
+            from mimic42.integrations.database_models import TelegramSessionModel
+
+            user = await self._telegram_client.get_me()
+            username = read_optional_attr(user, "username")
+            async with self._session_factory() as db_session:
+                result = await db_session.execute(
+                    update(TelegramSessionModel)
+                    .where(
+                        TelegramSessionModel.agent_id == self.config.agent_id,
+                        TelegramSessionModel.session_ciphertext
+                        == self.config.telegram_session_token,
+                    )
+                    .values(username=username)
+                )
+                # execute() статически возвращает Result, а rowcount есть только
+                # у буферизованного CursorResult, который и приходит для UPDATE.
+                if cast(CursorResult[Any], result).rowcount == 0:
+                    logger.warning(
+                        "Telegram session changed or is missing for agent %s; "
+                        "stale runtime did not store the username",
+                        self.config.agent_id,
+                    )
+                await db_session.commit()
+        except Exception:
+            logger.warning(
+                "Failed to store Telegram username for agent %s",
+                self.config.agent_id,
+                exc_info=True,
+            )
+
+    async def _revoke_dead_session(self) -> None:
+        """Пометить мёртвую сессию и запретить дальнейшую работу рантайма.
+
+        Из задачи планировщика нельзя звать ``stop()``: он ожидает завершения
+        этой же задачи. Состояния ``ERROR`` достаточно, чтобы цикл планировщика
+        вышел на следующей проверке. Клиент отключается вызывающим кодом только
+        после завершения текущего хода, иначе Telethon может отменить активный
+        обработчик входящего сообщения до сохранения истории.
+        """
+        self._session_revoked = True
+        await self._mark_telegram_session_revoked(error=REVOKED_SESSION_MESSAGE)
+        self._state = AgentRuntimeState.ERROR
+
+    async def _disconnect_revoked_client(self) -> None:
+        """Отключить клиент уже после завершения активного хода."""
+        try:
+            await self._telegram_client.disconnect()
+        except Exception:
+            logger.exception(
+                "Failed to disconnect revoked Telegram client for agent %s",
+                self.config.agent_id,
+            )
+
+    @asynccontextmanager
+    async def _disconnect_revoked_client_after_turn(self) -> AsyncIterator[None]:
+        """Гарантированно отключить revoked-клиент после снятия trigger lock."""
+        try:
+            yield
+        finally:
+            if self._session_revoked:
+                await self._disconnect_revoked_client()
 
     @property
     def state(self) -> AgentRuntimeState:
@@ -250,26 +447,39 @@ class MimicAgentRuntime:
                 logger.debug("Connected. Checking authorization...")
                 if not await self._telegram_client.is_user_authorized():
                     logger.error("Telegram session not authorized")
-                    raise TelegramAuthorizationRequired(
-                        "Telegram user session is not authorized. Complete onboarding first."
-                    )
+                    raise TelegramAuthorizationRequired(UNAUTHORIZED_SESSION_MESSAGE)
+                logger.debug("Authorized. Storing Telegram username...")
+                await self._store_telegram_username()
                 logger.debug("Authorized. Registering message handler...")
                 self._register_message_handler()
                 logger.info("Message handler registered")
             except Exception as e:
                 logger.error(f"Failed to start agent {self.config.agent_id}: {e}", exc_info=True)
                 self._state = AgentRuntimeState.ERROR
-                reason = (
-                    "unauthorized" if isinstance(e, TelegramAuthorizationRequired) else "exception"
-                )
+                dead_session = _is_dead_session_error(e)
+                reason = "unauthorized" if dead_session else "exception"
+                if dead_session:
+                    self._session_revoked = True
+                    await self._mark_telegram_session_revoked(error=REVOKED_SESSION_MESSAGE)
+                # connect() мог пройти до падения: не оставляем полуживое
+                # соединение висеть до следующего старта.
+                try:
+                    await self._telegram_client.disconnect()
+                except Exception:
+                    logger.exception("Failed to disconnect Telegram client after start failure")
                 await self._record_event(
                     event_type="agent.start_failed",
                     status="failed",
                     payload={"reason": reason, "error_code": type(e).__name__},
-                    error=str(e),
+                    error=REVOKED_SESSION_MESSAGE if dead_session else str(e),
                     started_at=datetime.now(UTC),
                     completed_at=datetime.now(UTC),
                 )
+                if dead_session and not isinstance(e, TelegramAuthorizationRequired):
+                    # Унифицируем для вызывающего слоя: API отдаёт 428 с понятным
+                    # русским текстом вместо 500. Исходное исключение остаётся
+                    # в логе и в payload.error_code.
+                    raise TelegramAuthorizationRequired(REVOKED_SESSION_MESSAGE) from e
                 raise
 
             self._state = AgentRuntimeState.RUNNING
@@ -330,9 +540,31 @@ class MimicAgentRuntime:
         shutdown); a plain stop keeps the agent's HTTP client for a restart.
         """
         await self.stop()
+        await self._settle_in_flight()
         close_agent = getattr(self._langchain_agent, "aclose", None)
         if close_agent is not None:
             await close_agent()
+
+    async def _settle_in_flight(self) -> None:
+        """Дать начавшимся ходам по альбомам и отложенным закончиться, остальные отменить.
+
+        stop() их не обрывает: ответ мог уже уйти, и запись хода не должна
+        потеряться. Но после close() рантайм больше никто не закроет."""
+        in_flight = self._album_grouper.in_flight | self._deferred_inbox.in_flight
+        if not in_flight:
+            return
+        _, pending = await asyncio.wait(in_flight, timeout=CLOSE_GRACE_SECONDS)
+        if not pending:
+            return
+        logger.warning(
+            "Агент %s закрывается: %d ход(ов) не успели за %.0f с и отменены",
+            self.config.agent_id,
+            len(pending),
+            CLOSE_GRACE_SECONDS,
+        )
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
 
     async def _humanized_send(
         self,
@@ -455,201 +687,209 @@ class MimicAgentRuntime:
             trigger.peer,
             trigger.text[:50],
         )
+        if self._session_revoked:
+            # Перезапуск поднимет тот же мёртвый ключ и снова упадёт: ждём
+            # перепривязки, а не долбим Telegram на каждом входящем.
+            raise TelegramAuthorizationRequired(REVOKED_SESSION_MESSAGE)
         if self._state is not AgentRuntimeState.RUNNING:
             logger.info(f"Agent not running (state={self._state}), starting...")
             await self.start()
 
-        async with self._trigger_lock:
-            logger.debug(f"Processing message from {trigger.peer}: {trigger.text[:100]}")
-            turn_id = str(uuid4())
-            turn_context = TurnContext(turn_id=turn_id, peer=trigger.peer)
-            reply_payload = (
+        # Контексты выходят в обратном порядке: сначала снимается trigger lock,
+        # затем finally отключает revoked-клиент даже при ошибке сохранения хода.
+        async with self._disconnect_revoked_client_after_turn(), self._trigger_lock:
+            return await self._take_turn(trigger)
+
+    async def _take_turn(self, trigger: AgentTrigger) -> AgentTriggerResult:
+        """Сам ход: модель, отправка ответа, запись. Вызывается под trigger lock."""
+        # Вызов мог ждать lock, пока предыдущий ход отозвал сессию.
+        if self._session_revoked:
+            raise TelegramAuthorizationRequired(REVOKED_SESSION_MESSAGE)
+        logger.debug(f"Processing message from {trigger.peer}: {trigger.text[:100]}")
+        turn_id = str(uuid4())
+        turn_context = TurnContext(turn_id=turn_id, peer=trigger.peer)
+        reply_payload = (
+            {
+                "message_id": trigger.reply_to_message_id,
+                "preview": trigger.reply_preview,
+            }
+            if trigger.reply_to_message_id is not None
+            else None
+        )
+        messages = await self._memory_service.build_messages(
+            agent_id=self.config.agent_id,
+            peer=trigger.peer,
+            user_text=trigger.text,
+        )
+        logger.debug(f"Built {len(messages)} messages for context")
+        try:
+            response = await self._langchain_agent.ainvoke(
                 {
-                    "message_id": trigger.reply_to_message_id,
-                    "preview": trigger.reply_preview,
-                }
-                if trigger.reply_to_message_id is not None
-                else None
+                    "messages": messages,
+                },
+                context=turn_context,
             )
-            messages = await self._memory_service.build_messages(
-                agent_id=self.config.agent_id,
-                peer=trigger.peer,
-                user_text=trigger.text,
+        except Exception as e:
+            logger.error(f"Error invoking agent: {e}", exc_info=True)
+            await self._record_event(
+                event_type="turn.failed",
+                status="failed",
+                payload={
+                    "turn_id": turn_id,
+                    "peer": trigger.peer,
+                    "error_code": type(e).__name__,
+                },
+                error=str(e),
+                started_at=datetime.now(UTC),
+                completed_at=datetime.now(UTC),
             )
-            logger.debug(f"Built {len(messages)} messages for context")
+            # Keep the incoming message in the transcript even though the
+            # turn crashed — the dashboard card must show what was asked.
             try:
-                response = await self._langchain_agent.ainvoke(
-                    {
-                        "messages": messages,
-                    },
-                    context=turn_context,
+                await self._memory_service.save_messages(
+                    agent_id=self.config.agent_id,
+                    peer=trigger.peer,
+                    input_messages=messages,
+                    output_messages=[],
+                    raw_user_text=trigger.raw_text,
+                    turn_id=turn_id,
+                    thread_id=trigger.thread_id,
+                    media=trigger.media or None,
+                    reply=reply_payload,
                 )
-            except Exception as e:
-                logger.error(f"Error invoking agent: {e}", exc_info=True)
+            except Exception:
+                logger.warning(
+                    "Failed to persist incoming message after turn failure", exc_info=True
+                )
+            # Mark the exception so the handler-level catch-all does not
+            # record turn.failed a second time (the event above already
+            # carries the turn_id).
+            # Marker for the handler catch-all: turn.failed was already
+            # recorded with the turn_id, so it must not be recorded twice.
+            e._mimic_turn_failed_recorded = True  # ty: ignore[unresolved-attribute]
+            raise
+
+        output_messages = _messages_to_dicts(response)
+
+        structured = _extract_structured_response(response)
+        if structured is not None:
+            send_any = bool(structured.get("send_any_message", True))
+            response_text = structured.get("text", "")
+            reply_to = structured.get("reply_to")
+        else:
+            send_any, response_text, reply_to = _interpret_agent_response(response)
+
+        # Don't send empty messages
+        if send_any and not response_text:
+            logger.info("Agent generated empty response, not sending")
+            send_any = False
+
+        if send_any and trigger.require_reply_to and reply_to is None:
+            reply_to = trigger.fallback_reply_to
+            logger.info("Модель не указала reply_to на схлопнутой пачке, ставим %s", reply_to)
+
+        # Между решением и отправкой прошло время генерации: слот мог закрыться.
+        if send_any and self._send_window is not None:
+            window = await self._send_window.check(trigger.peer)
+            now = datetime.now(UTC)
+            if not window.is_open(now):
+                logger.info(
+                    "Окно отправки в %s закрыто (%s), ответ не уходит",
+                    trigger.peer,
+                    window.reason,
+                )
                 await self._record_event(
-                    event_type="turn.failed",
+                    event_type="message.blocked",
+                    status="cancelled",
+                    payload={
+                        "turn_id": turn_id,
+                        "peer": trigger.peer,
+                        "reason": window.reason,
+                        "retry_after_seconds": window.retry_after(now),
+                    },
+                    started_at=now,
+                    completed_at=datetime.now(UTC),
+                )
+                send_any = False
+
+        peer_id_for_send = _peer_for_send(trigger.peer)
+        # Mark incoming message as read immediately after deciding to reply,
+        # before the typing delay, so the order is: read -> typing -> send.
+        if send_any and trigger.message_id is not None:
+            try:
+                from telethon.tl import functions
+
+                read_entity = peer_id_for_send
+                get_input_entity = getattr(self._telegram_client, "get_input_entity", None)
+                if callable(get_input_entity):
+                    try:
+                        read_entity = await get_input_entity(peer_id_for_send)
+                    except Exception:
+                        pass
+                await self._telegram_client(
+                    functions.messages.ReadHistoryRequest(
+                        peer=cast(Any, read_entity),
+                        max_id=trigger.message_id,
+                    )
+                )
+                logger.debug(
+                    "Marked message %s as read in peer %s",
+                    trigger.message_id,
+                    trigger.peer,
+                )
+            except Exception:
+                logger.warning("Failed to mark message as read", exc_info=True)
+
+        sent_message = None
+        if send_any:
+            logger.info(f"Sending response to {peer_id_for_send}: {response_text[:100]}")
+            try:
+                sent_message = await self._humanized_send(
+                    peer_id_for_send,
+                    response_text,
+                    reply_to=reply_to,
+                )
+                logger.info(f"Message sent successfully to {peer_id_for_send}")
+                if self._send_window is not None:
+                    self._send_window.note_sent(trigger.peer)
+            except Exception as e:
+                if self._send_window is not None:
+                    self._send_window.note_error(trigger.peer, e)
+                # The turn must not crash on a delivery failure, but the
+                # silence must be visible in the dashboard, not only in logs.
+                logger.exception("Failed to send Telegram message to %s", peer_id_for_send)
+                dead_session = _is_dead_session_error(e)
+                if dead_session:
+                    await self._revoke_dead_session()
+                await self._record_event(
+                    event_type="message.send_failed",
                     status="failed",
                     payload={
                         "turn_id": turn_id,
                         "peer": trigger.peer,
                         "error_code": type(e).__name__,
                     },
-                    error=str(e),
+                    error=REVOKED_SESSION_MESSAGE if dead_session else str(e),
                     started_at=datetime.now(UTC),
                     completed_at=datetime.now(UTC),
                 )
-                # Keep the incoming message in the transcript even though the
-                # turn crashed — the dashboard card must show what was asked.
-                try:
-                    await self._memory_service.save_messages(
-                        agent_id=self.config.agent_id,
-                        peer=trigger.peer,
-                        input_messages=messages,
-                        output_messages=[],
-                        raw_user_text=trigger.raw_text,
-                        turn_id=turn_id,
-                        thread_id=trigger.thread_id,
-                        media=trigger.media or None,
-                        reply=reply_payload,
-                    )
-                except Exception:
-                    logger.warning(
-                        "Failed to persist incoming message after turn failure", exc_info=True
-                    )
-                # Mark the exception so the handler-level catch-all does not
-                # record turn.failed a second time (the event above already
-                # carries the turn_id).
-                # Marker for the handler catch-all: turn.failed was already
-                # recorded with the turn_id, so it must not be recorded twice.
-                e._mimic_turn_failed_recorded = True  # ty: ignore[unresolved-attribute]
-                raise
+        else:
+            logger.debug("Agent decided not to send message (send_any=False)")
 
-            output_messages = _messages_to_dicts(response)
-
-            structured = _extract_structured_response(response)
-            if structured is not None:
-                send_any = bool(structured.get("send_any_message", True))
-                response_text = structured.get("text", "")
-                reply_to = structured.get("reply_to")
-            else:
-                send_any, response_text, reply_to = _interpret_agent_response(response)
-
-            # Don't send empty messages
-            if send_any and not response_text:
-                logger.info("Agent generated empty response, not sending")
-                send_any = False
-
-            if send_any and trigger.require_reply_to and reply_to is None:
-                reply_to = trigger.fallback_reply_to
-                logger.info("Модель не указала reply_to на схлопнутой пачке, ставим %s", reply_to)
-
-            # Между решением и отправкой прошло время генерации: слот мог закрыться.
-            if send_any and self._send_window is not None:
-                window = await self._send_window.check(trigger.peer)
-                now = datetime.now(UTC)
-                if not window.is_open(now):
-                    logger.info(
-                        "Окно отправки в %s закрыто (%s), ответ не уходит",
-                        trigger.peer,
-                        window.reason,
-                    )
-                    await self._record_event(
-                        event_type="message.blocked",
-                        status="cancelled",
-                        payload={
-                            "turn_id": turn_id,
-                            "peer": trigger.peer,
-                            "reason": window.reason,
-                            "retry_after_seconds": window.retry_after(now),
-                        },
-                        started_at=now,
-                        completed_at=datetime.now(UTC),
-                    )
-                    send_any = False
-
-            # Convert stringified numeric peer ID to integer for Telethon compatibility
-            peer_id_value: str | int = trigger.peer
-            if isinstance(peer_id_value, str):
-                if peer_id_value.startswith("-") and peer_id_value[1:].isdigit():
-                    peer_id_value = int(peer_id_value)
-                elif peer_id_value.isdigit():
-                    peer_id_value = int(peer_id_value)
-            # Use the correctly typed value for sending
-            peer_id_for_send = peer_id_value
-            # Mark incoming message as read immediately after deciding to reply,
-            # before the typing delay, so the order is: read -> typing -> send.
-            if send_any and trigger.message_id is not None:
-                try:
-                    from telethon.tl import functions
-
-                    read_entity = peer_id_for_send
-                    get_input_entity = getattr(self._telegram_client, "get_input_entity", None)
-                    if callable(get_input_entity):
-                        try:
-                            read_entity = await get_input_entity(peer_id_for_send)
-                        except Exception:
-                            pass
-                    await self._telegram_client(
-                        functions.messages.ReadHistoryRequest(
-                            peer=cast(Any, read_entity),
-                            max_id=trigger.message_id,
-                        )
-                    )
-                    logger.debug(
-                        "Marked message %s as read in peer %s",
-                        trigger.message_id,
-                        trigger.peer,
-                    )
-                except Exception:
-                    logger.warning("Failed to mark message as read", exc_info=True)
-
-            sent_message = None
-            if send_any:
-                logger.info(f"Sending response to {peer_id_for_send}: {response_text[:100]}")
-                try:
-                    sent_message = await self._humanized_send(
-                        peer_id_for_send,
-                        response_text,
-                        reply_to=reply_to,
-                    )
-                    logger.info(f"Message sent successfully to {peer_id_for_send}")
-                    if self._send_window is not None:
-                        self._send_window.note_sent(trigger.peer)
-                except Exception as e:
-                    if self._send_window is not None:
-                        self._send_window.note_error(trigger.peer, e)
-                    # The turn must not crash on a delivery failure, but the
-                    # silence must be visible in the dashboard, not only in logs.
-                    logger.exception("Failed to send Telegram message to %s", peer_id_for_send)
-                    await self._record_event(
-                        event_type="message.send_failed",
-                        status="failed",
-                        payload={
-                            "turn_id": turn_id,
-                            "peer": trigger.peer,
-                            "error_code": type(e).__name__,
-                        },
-                        error=str(e),
-                        started_at=datetime.now(UTC),
-                        completed_at=datetime.now(UTC),
-                    )
-            else:
-                logger.debug("Agent decided not to send message (send_any=False)")
-
-            await self._memory_service.save_messages(
-                agent_id=self.config.agent_id,
-                peer=trigger.peer,
-                input_messages=messages,
-                output_messages=output_messages,
-                structured_response=structured,
-                peer_name=trigger.peer_name,
-                agent_name=self.config.name,
-                raw_user_text=trigger.raw_text,
-                turn_id=turn_id,
-                thread_id=trigger.thread_id,
-                media=trigger.media or None,
-                reply=reply_payload,
-            )
+        await self._memory_service.save_messages(
+            agent_id=self.config.agent_id,
+            peer=trigger.peer,
+            input_messages=messages,
+            output_messages=output_messages,
+            structured_response=structured,
+            peer_name=trigger.peer_name,
+            agent_name=self.config.name,
+            raw_user_text=trigger.raw_text,
+            turn_id=turn_id,
+            thread_id=trigger.thread_id,
+            media=trigger.media or None,
+            reply=reply_payload,
+        )
 
         return AgentTriggerResult(
             agent_id=self.config.agent_id,
@@ -714,11 +954,206 @@ class MimicAgentRuntime:
             from telethon import events
         except ImportError:
             event_builder = None
+            first_comment_builder = None
         else:
             event_builder = events.NewMessage(incoming=True)
+            first_comment_builder = events.NewMessage(incoming=True)
 
+        # Первый комментарий регистрируется раньше ИИ-ветки: внутри одного
+        # апдейта Telethon вызывает обработчики строго в порядке регистрации,
+        # поэтому комментарий уходит до того, как начнётся ход агента.
+        self._telegram_client.add_event_handler(self._handle_channel_post, first_comment_builder)
         self._telegram_client.add_event_handler(self._handle_incoming_message, event_builder)
         self._message_handler_registered = True
+
+    async def _handle_channel_post(self, event: TelegramEventLike) -> None:
+        """Новый пост в канале — мгновенный комментарий без ИИ и задержек."""
+        settings = self.config.first_comment
+        if not settings.is_active or self._session_revoked:
+            return
+        if not _is_broadcast_post(event):
+            return
+
+        message_id = _extract_incoming_message_id(event)
+        if message_id is None:
+            return
+
+        chat_id = getattr(event, "chat_id", None)
+        grouped_id = getattr(event, "grouped_id", None)
+        if isinstance(grouped_id, int):
+            # Пост-альбом приходит несколькими апдейтами с общим grouped_id,
+            # а комментарий на него нужен один.
+            if not self._album_comment_guard.claim((str(chat_id), str(grouped_id))):
+                return
+
+        if not await _has_discussion_group(event):
+            # Комментарии у канала выключены — это его настройка, а не сбой:
+            # запрос в Telegram и ошибка в ленте на каждый пост ни к чему.
+            logger.info("У канала %s нет обсуждения, первый комментарий не нужен", chat_id)
+            return
+
+        variant = random.choice(settings.usable_variants)
+        started_at = datetime.now(UTC)
+        peer = str(chat_id or "")
+        try:
+            peer = await _extract_incoming_peer(event)
+            sent, variant = await self._send_first_comment(peer, message_id, variant)
+        except Exception as exc:
+            logger.warning(
+                "Failed to post first comment in chat %s to message %s",
+                chat_id,
+                message_id,
+                exc_info=True,
+            )
+            dead_session = _is_dead_session_error(exc)
+            if dead_session:
+                await self._revoke_dead_session()
+            await self._record_event(
+                event_type="first_comment.failed",
+                status="failed",
+                payload={
+                    "peer": peer,
+                    "post_id": message_id,
+                    "reason": _first_comment_failure_reason(exc),
+                    "error_code": type(exc).__name__,
+                },
+                error=REVOKED_SESSION_MESSAGE if dead_session else str(exc),
+                started_at=started_at,
+                completed_at=datetime.now(UTC),
+            )
+            if dead_session:
+                # Последним шагом: disconnect отменяет запущенные обработчики,
+                # включая этот, — после него код бы не выполнился.
+                await self._disconnect_revoked_client()
+            return
+
+        self._sent_first_comments.remember(peer, message_id, variant)
+        logger.info("Posted first comment in chat %s under post %s", chat_id, message_id)
+        await self._record_event(
+            event_type="first_comment.sent",
+            status="succeeded",
+            payload={
+                "peer": peer,
+                "post_id": message_id,
+                "text": variant.text,
+                "with_image": variant.image_path is not None,
+                "comment_id": _extract_message_id(sent),
+            },
+            started_at=started_at,
+            completed_at=datetime.now(UTC),
+        )
+
+    async def _send_first_comment(
+        self,
+        peer: str,
+        message_id: int,
+        variant: FirstCommentVariant,
+    ) -> tuple[object, FirstCommentVariant]:
+        """Отправить вариант в обсуждение канала; вернуть сообщение и то, что ушло.
+
+        ``comment_to`` уводит сообщение в привязанную к каналу группу
+        обсуждения — это и есть «комментарий» к посту; без такой группы
+        Telethon поднимает MsgIdInvalidError. Если картинку взять неоткуда,
+        уходит одна подпись — и возвращается именно она, чтобы ИИ и лента
+        знали, что под постом на самом деле.
+        """
+        from telethon import errors
+
+        target = _peer_for_send(peer)
+        waited = 0
+        while True:
+            try:
+                return await self._send_first_comment_once(target, message_id, variant)
+            except (errors.FloodWaitError, errors.SlowModeWaitError) as exc:
+                # .seconds — точный остаток: после него запрос проходит.
+                delay = max(int(exc.seconds), 1)
+                if waited + delay > FIRST_COMMENT_FLOOD_WAIT_LIMIT:
+                    raise
+                logger.info("Первый комментарий ждёт %s с: %s", delay, type(exc).__name__)
+                waited += delay
+                await asyncio.sleep(delay)
+
+    async def _send_first_comment_once(
+        self,
+        target: str | int,
+        message_id: int,
+        variant: FirstCommentVariant,
+    ) -> tuple[object, FirstCommentVariant]:
+        if variant.image_path:
+            sent = await self._send_first_comment_image(target, message_id, variant)
+            if sent is not None:
+                return sent, variant
+            if not variant.text.strip():
+                raise FirstCommentImageUnavailable(
+                    f"Картинка {variant.image_path} недоступна, а подписи нет"
+                )
+            variant = FirstCommentVariant(text=variant.text)
+        sent = await self._telegram_client.send_message(
+            target,
+            variant.text,
+            comment_to=message_id,
+        )
+        return sent, variant
+
+    async def _send_first_comment_image(
+        self,
+        target: str | int,
+        message_id: int,
+        variant: FirstCommentVariant,
+    ) -> object | None:
+        """Картинка с подписью. ``None`` — картинку взять неоткуда.
+
+        Уже отправленную картинку Telethon принимает обратно как файл
+        (``message.media``), и повторной загрузки нет. Ссылка на файл у неё
+        со временем протухает — тогда картинка заливается заново.
+        """
+        from telethon import errors
+
+        path = variant.image_path
+        if path is None:
+            return None
+        caption = variant.text or None
+        cached = self._first_comment_media.get(path)
+        if cached is not None:
+            try:
+                return await self._telegram_client.send_file(
+                    target, cached, caption=caption, comment_to=message_id
+                )
+            except (
+                errors.FileReferenceExpiredError,
+                errors.FileReferenceInvalidError,
+                errors.FileReferenceEmptyError,
+            ):
+                logger.info("Ссылка на картинку первого комментария устарела, заливаем заново")
+                self._first_comment_media.pop(path, None)
+
+        image = await self._load_first_comment_image(variant)
+        if image is None:
+            return None
+        sent = await self._telegram_client.send_file(
+            target, image, caption=caption, comment_to=message_id
+        )
+        media = getattr(sent, "media", None)
+        # Медиа из защищённого чата (noforwards) Telegram переслать не даст.
+        if media is not None and not getattr(sent, "noforwards", False):
+            self._first_comment_media[path] = media
+        return sent
+
+    async def _load_first_comment_image(self, variant: FirstCommentVariant) -> io.BytesIO | None:
+        """Картинка варианта как поток с именем.
+
+        Telethon определяет фото по расширению имени файла (``utils.is_image``),
+        а у голых ``bytes`` имени нет — такой вариант ушёл бы документом.
+        """
+        if not variant.image_path or self._media_uploader is None:
+            return None
+        data = await self._media_uploader.open(variant.image_path)
+        if not data:
+            logger.warning("First comment image %s is unavailable", variant.image_path)
+            return None
+        stream = io.BytesIO(data)
+        stream.name = variant.image_name or variant.image_path.rsplit("/", 1)[-1] or "image.jpg"
+        return stream
 
     async def _handle_incoming_message(self, event: TelegramEventLike) -> None:
         """Альбомы буферизуются, одиночные сообщения обрабатываются сразу."""
@@ -940,8 +1375,10 @@ class MimicAgentRuntime:
                 try:
                     from telethon.tl import functions
 
+                    # Автор поста канала — сам канал: список участников
+                    # вещательного канала открыт только админам.
                     is_supergroup = getattr(event, "is_channel", False)
-                    if is_supergroup:
+                    if is_supergroup and not _is_broadcast_post(event):
                         input_chat = getattr(event, "input_chat", None) or event_chat_id
                         input_sender = getattr(event, "input_sender", None) or event_sender_id
                         res = await event.client(
@@ -1047,6 +1484,18 @@ class MimicAgentRuntime:
                 if (item_id := _extract_incoming_message_id(item)) is not None
             ]
             album_note = f"Альбом из {len(events)} файлов (ID: {', '.join(item_ids)})\n"
+        first_comment_str = ""
+        if _is_broadcast_post(event):
+            first_comment = self._sent_first_comments.lookup(
+                str(getattr(event, "chat_id", "")),
+                (
+                    item_id
+                    for item in events
+                    if (item_id := _extract_incoming_message_id(item)) is not None
+                ),
+            )
+            if first_comment is not None:
+                first_comment_str = f"\n{_first_comment_note(first_comment)}"
         text = (
             f"[Входящее сообщение]\n"
             f"Время: {time_str}\n"
@@ -1056,6 +1505,7 @@ class MimicAgentRuntime:
             f"{album_note}"
             f"{reply_str}"
             f"Содержимое: {text}"
+            f"{first_comment_str}"
         )
 
         return IncomingBlock(
@@ -1088,7 +1538,26 @@ class MimicAgentRuntime:
         if await self._is_chat_muted(event, peer):
             return
         async with self._dispatch_lock:
+            # Пока ждали очереди за чужим ходом, агента могли остановить: клиент
+            # отключён, и разбор сообщения только насыпал бы ошибок в ленту.
+            if not await self._running_once_started():
+                logger.info(
+                    "Рантайм не запущен (%s), входящее из чата %s отброшено", self._state, peer
+                )
+                return
             await self._gate_and_process(event, events, peer)
+
+    async def _running_once_started(self) -> bool:
+        """Запущен ли рантайм; идущий запуск сначала дожидаемся.
+
+        Telethon доставляет апдейты уже внутри connect(), пока start() не
+        закончен: после Стоп → Старт такое сообщение адресовано запускаемому
+        агенту и не должно теряться. Если за запуском в очереди стоит stop(),
+        замок отдаст его раньше нас, и мы увидим уже остановленный рантайм."""
+        if self._state is AgentRuntimeState.STARTING:
+            async with self._lifecycle_lock:
+                pass
+        return self._state is AgentRuntimeState.RUNNING
 
     async def _gate_and_process(
         self, event: TelegramEventLike, events: list[TelegramEventLike], peer: str
@@ -1156,7 +1625,7 @@ class MimicAgentRuntime:
             else ""
         )
         try:
-            await self.trigger_message(
+            await self._trigger_while_running(
                 AgentTrigger(
                     peer=peer,
                     text=(
@@ -1177,8 +1646,10 @@ class MimicAgentRuntime:
         async with self._dispatch_lock:
             # Слив в полёте stop() не отменяет, а trigger_message на остановленном
             # рантайме запустил бы его заново и ответил бы в чат после остановки.
-            if self._state is not AgentRuntimeState.RUNNING:
-                logger.info("Рантайм остановлен, отложенное из чата %s отброшено", peer)
+            if not await self._running_once_started():
+                logger.info(
+                    "Рантайм не запущен (%s), отложенное из чата %s отброшено", self._state, peer
+                )
                 return
             if self._send_window is not None:
                 now = datetime.now(UTC)
@@ -1221,7 +1692,7 @@ class MimicAgentRuntime:
                 title=last.thread_title,
                 last_message_at=last.msg_date,
             )
-            await self.trigger_message(
+            await self._trigger_while_running(
                 AgentTrigger(
                     peer=peer,
                     text=text,
@@ -1240,6 +1711,23 @@ class MimicAgentRuntime:
             )
         except Exception as e:
             await self._record_incoming_failure(peer, e)
+
+    async def _trigger_while_running(self, trigger: AgentTrigger) -> None:
+        """Ход по событию из Telegram — только у запущенного рантайма.
+
+        trigger_message сам запускает остановленный рантайм: это нужно ручке
+        дашборда, но не событию, которое stop() застал посреди подготовки хода —
+        агент ожил бы и отвечал дальше при статусе «остановлен» в базе. Состояние
+        проверяется уже под замком хода: пока ход ждал чужой, агента могли
+        остановить, и звать модель с инструментами ему больше незачем.
+        """
+        async with self._disconnect_revoked_client_after_turn(), self._trigger_lock:
+            if not await self._running_once_started():
+                logger.info(
+                    "Рантайм не запущен (%s), ход по чату %s отброшен", self._state, trigger.peer
+                )
+                return
+            await self._take_turn(trigger)
 
     async def _record_incoming_failure(self, peer: str, exc: Exception) -> None:
         logger.error("Unhandled exception in incoming message handler", exc_info=exc)
@@ -1837,7 +2325,93 @@ async def _extract_incoming_peer(event: object) -> str:
     peer_id = getattr(event, "peer_id", None)
     if peer_id is not None:
         return str(peer_id)
-    raise ValueError("Incoming Telegram event does not include a peer")
+    raise ValueError("Входящее событие Telegram не содержит получателя")
+
+
+def _peer_for_send(peer: str) -> str | int:
+    """Пир в виде, который Telethon умеет разрешить.
+
+    ID чата хранится строкой, а сессия ищет сущность по строке только среди
+    телефонов, юзернеймов и инвайтов: «-1001234567890» не нашлось бы ни в
+    одном из них. Числовой ID обязан уехать числом; юзернеймы — как есть.
+    """
+    if peer.startswith("-") and peer[1:].isdigit():
+        return int(peer)
+    if peer.isdigit():
+        return int(peer)
+    return peer
+
+
+def _is_broadcast_post(event: object) -> bool:
+    """Пост вещательного канала, а не сообщение в группе или личке.
+
+    В Telethon супергруппа тоже «канал» (``is_channel``), и отличает её
+    ``is_group``: у вещательного канала он False.
+    """
+    return bool(getattr(event, "is_channel", False)) and not bool(getattr(event, "is_group", False))
+
+
+async def _has_discussion_group(event: object) -> bool:
+    """Есть ли у канала группа обсуждения, то есть можно ли комментировать.
+
+    Признак ``has_link`` приходит в самой сущности канала, даже в урезанной
+    min-версии, так что отдельный запрос за полной информацией не нужен.
+    Не удалось узнать — пробуем отправить: пусть ответит Telegram.
+    """
+    get_chat = getattr(event, "get_chat", None)
+    if not callable(get_chat):
+        return True
+    try:
+        chat = await get_chat()
+    except Exception:
+        logger.warning("Не удалось получить канал для проверки обсуждения", exc_info=True)
+        return True
+    return getattr(chat, "has_link", None) is not False
+
+
+def _first_comment_note(variant: FirstCommentVariant) -> str:
+    """Ветка комментариев под постом: в ней уже есть комментарий агента.
+
+    Только факт в виде ветки, без указаний, что делать: инструкция в шапке
+    входящего читается слабыми моделями как требование, а фраза «твой
+    комментарий: «…»» — как образец, который они повторяют слово в слово.
+    """
+    text = variant.text.strip()
+    if variant.image_path:
+        what = "[Фото]" + (f" {text}" if text else "")
+    else:
+        what = text
+    return f"Комментарии под постом:\n— ты (сразу после публикации): {what}"
+
+
+def _first_comment_failure_reason(exc: Exception) -> str:
+    """Понятная причина для ленты активности.
+
+    Каналы без обсуждения отсеиваются до отправки по ``has_link``, так что
+    MsgIdInvalidError здесь — пост, который Telegram не нашёл в обсуждении.
+    """
+    if isinstance(exc, FirstCommentImageUnavailable):
+        return "image_unavailable"
+    try:
+        from telethon import errors
+    except ImportError:
+        return "exception"
+    if _is_dead_session_error(exc):
+        return "unauthorized"
+    if isinstance(exc, errors.MsgIdInvalidError):
+        return "no_discussion_message"
+    if isinstance(
+        exc,
+        errors.ChatWriteForbiddenError
+        | errors.UserBannedInChannelError
+        | errors.ChatGuestSendForbiddenError,
+    ):
+        return "write_forbidden"
+    if isinstance(exc, errors.FloodWaitError):
+        return "flood_wait"
+    if isinstance(exc, errors.SlowModeWaitError):
+        return "slow_mode"
+    return "exception"
 
 
 def _extract_incoming_message_id(event: object) -> int | None:

@@ -109,7 +109,7 @@ export type TelegramAuthorizationStatus = OnboardingAuthorizationStatus | 'revok
 export interface OnboardingPublicStatus {
   onboarding_id: string;
   owner_id: string;
-  phone_number: string;
+  phone_number: string | null;
   authorization_status: OnboardingAuthorizationStatus;
 }
 
@@ -210,12 +210,14 @@ export interface AgentEventRow {
 export interface TelegramSessionRow {
   id: string;
   agent_id: string;
+  /** @юзернейм аккаунта Telegram (без «@»). */
+  username: string | null;
   phone_number: string | null;
   authorization_status: TelegramAuthorizationStatus;
   last_authorized_at: string | null;
   last_error: string | null;
-  api_id: number | null;
-  // api_hash intentionally omitted — sensitive
+  // api_id / api_hash intentionally omitted — secrets of the Telegram app,
+  // the dashboard has no business showing them.
   created_at: string;
   updated_at: string;
 }
@@ -330,6 +332,32 @@ export interface AnalyticsDataPoint {
   messages: number;
   actions: number;
   errors: number;
+}
+
+/**
+ * POST /api/v1/agents/:id/media — ответ на загрузку картинки
+ */
+export interface UploadedMedia {
+  storage_path: string;
+  name: string;
+  mime_type: string;
+  size: number;
+}
+
+/**
+ * Один вариант «Первого комментария»: текст и/или картинка.
+ * Хранится в agents.settings.first_comment — зеркало FirstCommentVariant
+ * из src/mimic42/core/first_comment.py.
+ */
+export interface FirstCommentVariant {
+  text: string;
+  image_path: string | null;
+  image_name: string | null;
+}
+
+export interface FirstCommentSettings {
+  enabled: boolean;
+  variants: FirstCommentVariant[];
 }
 
 /**

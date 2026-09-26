@@ -16,21 +16,26 @@ import {
 import { useAgentMemories, useAgentMemoryHistory } from '@/hooks/useMemory';
 import { useToast } from '@/components/ui/toast';
 import { AgentStatusBadge } from '@/components/agents/AgentStatusBadge';
-import { Button } from '@/components/ui/button';
+import { Button, buttonVariants } from '@/components/ui/button';
 import { Input, Textarea } from '@/components/ui/input';
 import { Card, Skeleton, Spinner, Divider } from '@/components/ui/card';
 import { ConfirmDialog, Modal } from '@/components/ui/modal';
-import { sanitizeText, maskPhoneNumber } from '@/lib/sanitize';
+import { sanitizeText } from '@/lib/sanitize';
+import { needsRebind } from '@/lib/telegram';
+import { AgentToggleButton } from '@/components/agents/AgentToggleButton';
+import { TelegramSessionDetails } from '@/components/agent/TelegramSessionDetails';
+import { formatTelegramUsername } from '@/components/agents/AgentIdentity';
 import { triggerMessageSchema, type TriggerMessageValues } from '@/lib/validators';
 import {
   Settings, Activity, Zap, MessageSquare, BarChart2, Brain,
-  Play, Square, Send, AlertTriangle, RefreshCw,
+  Play, Square, Send, AlertTriangle, RefreshCw, Link2,
   Bot, Clock, Search, Trash2, RotateCcw,
 } from 'lucide-react';
+import Link from 'next/link';
 import { formatDistanceToNow, format } from 'date-fns';
 import { ru } from 'date-fns/locale';
 import { cn } from '@/lib/utils';
-import type { AgentTab, ApiError } from '@/types';
+import type { AgentTab, AgentState, ApiError } from '@/types';
 
 const TABS: { id: AgentTab; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
   { id: 'settings',  label: 'Настройки',  icon: Settings },
@@ -74,6 +79,7 @@ function AgentPageContent({
 
   const { data: status } = useAgentStatus(agentId);
   const { data: details } = useAgentDetails(agentId);
+  const { data: telegramSession } = useTelegramSession(agentId);
   useAgentStatusRealtime(agentId);
 
   return (
@@ -89,9 +95,13 @@ function AgentPageContent({
               <h1 className="font-display text-xl font-bold text-void-100">
                 {details?.name ?? <Skeleton className="h-6 w-32 inline-block" />}
               </h1>
+              {formatTelegramUsername(telegramSession?.username) && (
+                <span className="font-mono text-sm text-plasma-400">
+                  @{formatTelegramUsername(telegramSession?.username)}
+                </span>
+              )}
               {status && <AgentStatusBadge state={status.state} />}
             </div>
-            <p className="font-mono text-xs text-void-600 mt-0.5">{agentId}</p>
           </div>
         </div>
         <div className="hidden sm:block">
@@ -111,7 +121,7 @@ function AgentPageContent({
                 'flex items-center gap-2 px-4 py-3 font-mono text-xs border-b-2 transition-all duration-150 whitespace-nowrap',
                 activeTab === tab.id
                   ? 'border-plasma-500 text-plasma-400'
-                  : 'border-transparent text-void-500 hover:text-void-300 hover:border-void-700',
+                  : 'border-transparent text-void-300 hover:text-void-100 hover:border-void-700',
               )}
             >
               <tab.icon className="h-3.5 w-3.5" />
@@ -135,34 +145,29 @@ function AgentPageContent({
 }
 
 // ── Agent Controls ────────────────────────────────────────────────────────────
-function AgentControls({ agentId, state }: { agentId: string; state?: string }) {
+function AgentControls({ agentId, state }: { agentId: string; state?: AgentState }) {
   const { toast } = useToast();
   const { mutate: start, isPending: starting } = useStartAgent();
   const { mutate: stop,  isPending: stopping } = useStopAgent();
+  const { data: telegramSession } = useTelegramSession(agentId);
   const [stopConfirm, setStopConfirm] = useState(false);
+
+  const rebind = needsRebind(telegramSession?.authorization_status);
 
   return (
     <div className="flex items-center gap-2">
-      <Button variant="success" size="sm"
-        onClick={() => start(agentId, {
+      <AgentToggleButton
+        agentId={agentId}
+        state={state}
+        needsRebind={rebind}
+        isStarting={starting}
+        isStopping={stopping}
+        onStart={() => start(agentId, {
           onSuccess: () => toast('Агент запускается', 'success'),
           onError: (e: unknown) => toast((e as ApiError).message, 'error'),
         })}
-        disabled={state === 'running' || state === 'starting'}
-        isLoading={starting}
-        leftIcon={<Play className="h-3.5 w-3.5" />}
-      >
-        Запустить
-      </Button>
-
-      <Button variant="danger" size="sm"
-        onClick={() => setStopConfirm(true)}
-        disabled={state !== 'running'}
-        isLoading={stopping}
-        leftIcon={<Square className="h-3.5 w-3.5" />}
-      >
-        Стоп
-      </Button>
+        onStop={() => setStopConfirm(true)}
+      />
 
       <ConfirmDialog
         isOpen={stopConfirm}
@@ -192,6 +197,8 @@ function TabActions({ agentId }: { agentId: string }) {
   const { mutate: remove, isPending: deleting } = useDeleteAgent();
   const trigger = useTriggerMessage(agentId);
   const { data: details } = useAgentDetails(agentId);
+  const { data: telegramSession } = useTelegramSession(agentId);
+  const rebind = needsRebind(telegramSession?.authorization_status);
   const [stopConfirm, setStopConfirm] = useState(false);
   const [resetConfirm, setResetConfirm] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState(false);
@@ -220,22 +227,37 @@ function TabActions({ agentId }: { agentId: string }) {
     }
   };
 
+  const startAction = rebind
+    ? {
+        title: 'Перепривязать Telegram',
+        desc: 'Сессия недействительна. Введите код заново — память и настройки сохранятся',
+        icon: Link2,
+        color: 'text-amber-400',
+        bg: 'bg-amber-950/40 border-amber-900',
+        action: () => router.push(`/agent/${agentId}/rebind`),
+        loading: false,
+        label: 'Перепривязать',
+        variant: 'default' as const,
+        destructive: false,
+      }
+    : {
+        title: 'Запустить агента',
+        desc: 'Агент начнёт получать и отвечать на сообщения в Telegram',
+        icon: Play,
+        color: 'text-neon-400',
+        bg: 'bg-neon-950/40 border-neon-900',
+        action: () => start(agentId, {
+          onSuccess: () => toast('Агент запускается', 'success'),
+          onError: (e: unknown) => toast((e as ApiError).message, 'error'),
+        }),
+        loading: starting,
+        label: 'Запустить',
+        variant: 'success' as const,
+        destructive: false,
+      };
+
   const actions = [
-    {
-      title: 'Запустить агента',
-      desc: 'Агент начнёт получать и отвечать на сообщения в Telegram',
-      icon: Play,
-      color: 'text-neon-400',
-      bg: 'bg-neon-950/40 border-neon-900',
-      action: () => start(agentId, {
-        onSuccess: () => toast('Агент запускается', 'success'),
-        onError: (e: unknown) => toast((e as ApiError).message, 'error'),
-      }),
-      loading: starting,
-      label: 'Запустить',
-      variant: 'success' as const,
-      destructive: false,
-    },
+    startAction,
     {
       title: 'Остановить агента',
       desc: 'Агент перестанет обрабатывать входящие сообщения',
@@ -298,7 +320,7 @@ function TabActions({ agentId }: { agentId: string }) {
             </div>
             <div>
               <p className="font-mono text-sm font-medium text-void-200">{a.title}</p>
-              <p className="font-mono text-xs text-void-500 mt-0.5">{a.desc}</p>
+              <p className="font-mono text-xs text-void-300 mt-0.5">{a.desc}</p>
             </div>
           </div>
           <Button variant={a.variant} size="sm" onClick={a.action} isLoading={a.loading} className="shrink-0">
@@ -394,60 +416,31 @@ function TabTelegram({ agentId }: { agentId: string }) {
 
   if (isLoading) return <Spinner className="mt-8" />;
   if (!session) return (
-    <div className="font-mono text-sm text-void-500 mt-8">
+    <div className="font-mono text-sm text-void-300 mt-8">
       Telegram сессия не найдена
     </div>
   );
 
-  const statusColors: Record<string, string> = {
-    authorized:       'text-neon-400',
-    code_requested:   'text-plasma-400',
-    password_required:'text-amber-400',
-    not_started:      'text-void-500',
-    error:            'text-crimson-400',
-    revoked:          'text-crimson-500',
-  };
-
-  const rows = [
-    { label: 'Статус авторизации', value: session.authorization_status.toUpperCase(), color: statusColors[session.authorization_status] },
-    { label: 'Номер телефона',      value: maskPhoneNumber(session.phone_number) },
-    { label: 'API ID',              value: session.api_id ? String(session.api_id) : '—' },
-    {
-      label: 'Последняя авторизация',
-      value: session.last_authorized_at
-        ? formatDistanceToNow(new Date(session.last_authorized_at), { addSuffix: true, locale: ru })
-        : '—',
-    },
-    { label: 'Последняя ошибка', value: session.last_error ?? '—', color: session.last_error ? 'text-crimson-400' : undefined },
-  ];
-
   return (
     <div className="max-w-xl space-y-4">
-      <Card variant="glass" padding="none">
-        {rows.map((row, i) => (
-          <div key={row.label} className={cn(
-            'flex items-start justify-between px-5 py-4',
-            i < rows.length - 1 && 'border-b border-void-800',
-          )}>
-            <span className="font-mono text-xs text-void-500 uppercase tracking-wider">{row.label}</span>
-            <span className={cn('font-mono text-sm text-right', row.color ?? 'text-void-200')}>
-              {row.value}
-            </span>
-          </div>
-        ))}
-      </Card>
+      <TelegramSessionDetails session={session} />
 
-      {(session.authorization_status === 'error' || session.authorization_status === 'revoked') && (
+      {needsRebind(session.authorization_status) && (
         <div className="p-4 rounded-sm bg-amber-950/20 border border-amber-900/50 flex items-center justify-between gap-4">
           <div>
-            <p className="font-mono text-sm text-amber-400 font-medium">Требуется переподключение</p>
-            <p className="font-mono text-xs text-amber-600 mt-0.5">
+            <p className="font-mono text-sm text-amber-400 font-medium">Требуется перепривязка Telegram</p>
+            <p className="font-mono text-xs text-amber-500 mt-0.5">
               Сессия истекла или была отозвана
             </p>
           </div>
-          <Button variant="outline" size="sm" leftIcon={<RefreshCw className="h-3.5 w-3.5" />}>
-            Переподключить
-          </Button>
+          <Link
+            href={`/agent/${agentId}/rebind`}
+            aria-label="Перепривязать Telegram"
+            className={buttonVariants({ variant: 'outline', size: 'sm' })}
+          >
+            <RefreshCw className="h-3.5 w-3.5" />
+            Перепривязать
+          </Link>
         </div>
       )}
     </div>
@@ -500,19 +493,19 @@ function TabMemory({ agentId }: TabMemoryProps) {
             <Brain className="h-5 w-5 text-plasma-400 animate-pulse" />
             Долгосрочная память
           </h2>
-          <p className="font-mono text-xs text-void-500 mt-1">
+          <p className="font-mono text-xs text-void-300 mt-1">
             Список фактов и предпочтений, автоматически выделенных агентом из диалогов.
           </p>
         </div>
 
         <div className="relative max-w-sm w-full">
-          <Search className="absolute left-3 top-2.5 h-4 w-4 text-void-600" />
+          <Search className="absolute left-3 top-2.5 h-4 w-4 text-void-400" />
           <Input
             type="text"
             placeholder="Поиск воспоминаний..."
             value={searchVal}
             onChange={(e) => setSearchVal(e.target.value)}
-            className="pl-9 bg-void-950/40 border-void-800 text-void-200 placeholder-void-600 focus:border-plasma-500"
+            className="pl-9 bg-void-950/40 border-void-800 text-void-200 placeholder-void-400 focus:border-plasma-500"
           />
         </div>
       </div>
@@ -549,7 +542,7 @@ function TabMemory({ agentId }: TabMemoryProps) {
           <h3 className="font-display text-base font-bold text-void-400">
             {searchVal ? 'Ничего не найдено' : 'Память пуста'}
           </h3>
-          <p className="font-mono text-xs text-void-600">
+          <p className="font-mono text-xs text-void-400">
             {searchVal 
               ? 'Попробуйте изменить поисковый запрос.' 
               : 'Агент начнет автоматически формировать память после первых сообщений с пользователями.'}
@@ -571,7 +564,7 @@ function TabMemory({ agentId }: TabMemoryProps) {
               </div>
 
               <div className="mt-4 flex items-center justify-between border-t border-void-900/60 pt-3">
-                <span className="font-mono text-[10px] text-void-600 flex items-center gap-1.5">
+                <span className="font-mono text-[10px] text-void-400 flex items-center gap-1.5">
                   <Clock className="h-3 w-3" />
                   {mem.created_at 
                     ? format(new Date(mem.created_at), 'dd.MM.yyyy HH:mm', { locale: ru }) 
@@ -605,13 +598,13 @@ function TabMemory({ agentId }: TabMemoryProps) {
         {isHistoryLoading ? (
           <div className="flex flex-col items-center justify-center py-12 space-y-4">
             <Spinner size="lg" className="text-plasma-500" />
-            <span className="font-mono text-xs text-void-500">Загрузка истории изменений...</span>
+            <span className="font-mono text-xs text-void-300">Загрузка истории изменений...</span>
           </div>
         ) : !history || history.length === 0 ? (
           <div className="text-center py-8 space-y-2">
             <Clock className="h-8 w-8 text-void-700 mx-auto" />
             <h4 className="font-display text-sm font-bold text-void-400">История отсутствует</h4>
-            <p className="font-mono text-xs text-void-600">Для данного факта не найдено изменений.</p>
+            <p className="font-mono text-xs text-void-400">Для данного факта не найдено изменений.</p>
           </div>
         ) : (
           <div className="space-y-6 py-2 max-h-[450px] overflow-y-auto pr-2 custom-scrollbar">
@@ -641,7 +634,7 @@ function TabMemory({ agentId }: TabMemoryProps) {
                       {item.event_type === 'add' ? 'Создано' :
                        item.event_type === 'delete' ? 'Удалено' : 'Обновлено'}
                     </span>
-                    <span className="font-mono text-[10px] text-void-500">
+                    <span className="font-mono text-[10px] text-void-300">
                       {format(new Date(item.created_at), 'dd MMMM yyyy, HH:mm', { locale: ru })}
                     </span>
                   </div>
@@ -652,7 +645,7 @@ function TabMemory({ agentId }: TabMemoryProps) {
 
                   {item.prev_value && item.new_value && item.prev_value !== item.new_value && (
                     <div className="text-xs border-l-2 border-void-800 pl-3 py-1 space-y-1 bg-void-950/20 rounded-r-sm">
-                      <span className="text-void-500 font-mono block text-[10px]">Предыдущее значение:</span>
+                      <span className="text-void-300 font-mono block text-[10px]">Предыдущее значение:</span>
                       <span className="text-void-400 line-through block text-xs">{sanitizeText(item.prev_value)}</span>
                     </div>
                   )}

@@ -12,12 +12,16 @@ from mimic42.core.agent_runtime import DEFAULT_LLM_MODEL, AgentRuntimeConfig, Ag
 from mimic42.core.agent_store import (
     AgentActivity,
     AgentMessageRecord,
+    AgentOwnershipError,
     AgentRecord,
     ConversationPage,
     ConversationTurn,
+    TelegramAccountMismatchError,
+    TelegramRebindCredentials,
     ToolCallRecord,
     reply_target_of,
 )
+from mimic42.core.first_comment import parse_first_comment
 from mimic42.core.onboarding import OnboardingSession, SecretCipher
 from mimic42.integrations.database_models import (
     AgentEventModel,
@@ -71,6 +75,11 @@ class DatabaseAgentStore:
             if agent is None:
                 agent = AgentModel(id=session.onboarding_id)
                 db_session.add(agent)
+            elif agent.owner_id != session.owner_id:
+                # Id онбординг-сессии выбирает клиент, поэтому существующего
+                # агента переприсваивать нельзя: поддельная сессия с id чужого
+                # агента забрала бы его вместе с Telegram-сессией и характером.
+                raise AgentOwnershipError(session.onboarding_id)
 
             agent.owner_id = session.owner_id
             agent.name = session.name
@@ -88,6 +97,7 @@ class DatabaseAgentStore:
 
             telegram_session.session_name = session.onboarding_id.hex
             telegram_session.phone_number = session.phone_number
+            telegram_session.username = session.username
             telegram_session.api_id = session.api_id
             telegram_session.api_hash_ciphertext = session.api_hash_secret
             telegram_session.session_ciphertext = session.session_secret
@@ -96,6 +106,51 @@ class DatabaseAgentStore:
 
             await db_session.commit()
             return _agent_record(agent)
+
+    async def rebind_telegram_session(self, agent_id: UUID, session: OnboardingSession) -> None:
+        """Обновляется только авторизация (auth key).
+
+        Номер, приложение и остальные данные агента не меняются. Строковая
+        блокировка защищает от гонки с параллельным финалом онбординга того же
+        агента.
+        """
+        if (
+            session.api_id is None
+            or session.api_hash_secret is None
+            or session.session_secret is None
+            or session.phone_number is None
+        ):
+            raise ValueError("Onboarding session is missing Telegram credentials")
+
+        async with self._session_factory() as db_session:
+            telegram_session = await db_session.scalar(
+                select(TelegramSessionModel)
+                .where(TelegramSessionModel.agent_id == agent_id)
+                .with_for_update()
+            )
+            if telegram_session is None:
+                raise KeyError(f"Agent {agent_id} does not have a telegram session")
+            stored_api_hash = telegram_session.api_hash_ciphertext or ""
+            rebound_api_hash = session.api_hash_secret
+            if self._cipher is not None:
+                stored_api_hash = self._cipher.decrypt(stored_api_hash)
+                rebound_api_hash = self._cipher.decrypt(rebound_api_hash)
+            if (
+                telegram_session.phone_number != session.phone_number
+                or telegram_session.api_id != session.api_id
+                or stored_api_hash != rebound_api_hash
+            ):
+                raise TelegramAccountMismatchError(
+                    "Rebind session belongs to a different Telegram account or application"
+                )
+            telegram_session.session_ciphertext = session.session_secret
+            # Свежий @username после перелогина заменяет прежний: он не входит
+            # в признаки аккаунта и может меняться у того же пользователя.
+            telegram_session.username = session.username
+            telegram_session.authorization_status = "authorized"
+            telegram_session.last_authorized_at = _now()
+            telegram_session.last_error = None
+            await db_session.commit()
 
     async def get_runtime_config(self, agent_id: UUID) -> AgentRuntimeConfig:
         async with self._session_factory() as db_session:
@@ -124,6 +179,7 @@ class DatabaseAgentStore:
                     if self._cipher and telegram_session.session_ciphertext
                     else telegram_session.session_ciphertext
                 ),
+                telegram_session_token=telegram_session.session_ciphertext,
                 llm_model=(
                     agent.settings.get("model", self._llm_model)
                     if agent.settings
@@ -135,6 +191,34 @@ class DatabaseAgentStore:
                 system_prompt=load_default_system_prompt(),
                 soul_prompt=agent.soul_prompt,
                 name=agent.name,
+                first_comment=parse_first_comment(
+                    agent.settings.get("first_comment") if agent.settings else None
+                ),
+            )
+
+    async def get_telegram_rebind_credentials(self, agent_id: UUID) -> TelegramRebindCredentials:
+        async with self._session_factory() as db_session:
+            row = await db_session.execute(
+                select(AgentModel, TelegramSessionModel)
+                .join(TelegramSessionModel, TelegramSessionModel.agent_id == AgentModel.id)
+                .where(AgentModel.id == agent_id)
+            )
+            item = row.first()
+            if item is None:
+                raise KeyError(f"Agent {agent_id} does not have saved Telegram credentials")
+            agent, telegram_session = item
+            if (
+                telegram_session.api_id is None
+                or telegram_session.api_hash_ciphertext is None
+                or telegram_session.phone_number is None
+            ):
+                raise KeyError(f"Agent {agent_id} does not have saved Telegram credentials")
+            return TelegramRebindCredentials(
+                owner_id=agent.owner_id,
+                api_id=telegram_session.api_id,
+                api_hash_secret=telegram_session.api_hash_ciphertext,
+                phone_number=telegram_session.phone_number,
+                username=telegram_session.username,
             )
 
     async def list_agents(self, *, owner_id: UUID | None = None) -> list[AgentRecord]:
@@ -542,7 +626,9 @@ class DatabaseAgentStore:
                 # realtime feed and nothing is duplicated inside a turn.
                 # Legacy tool events (no turn_id, pre-`tool.*` naming) still
                 # attach to the turn they ran in.
-                is_lifecycle = item.event_type.startswith(("agent.", "timer.", "turn.", "message."))
+                is_lifecycle = item.event_type.startswith(
+                    ("agent.", "timer.", "turn.", "message.", "first_comment.")
+                )
                 if is_lifecycle or legacy_current is None:
                     block = ConversationTurn(
                         id=evt.id,

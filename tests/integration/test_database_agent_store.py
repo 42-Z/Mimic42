@@ -3,10 +3,14 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
+import pytest
+from cryptography.fernet import Fernet
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mimic42.core.agent_runtime import AgentRuntimeState
+from mimic42.core.agent_store import AgentOwnershipError
+from mimic42.core.crypto import FernetSecretCipher
 from mimic42.core.model_catalog import DEFAULT_LLM_MODEL
 from mimic42.core.onboarding import OnboardingSession, TelegramLoginStatus
 from mimic42.integrations.database_agent_store import DatabaseAgentStore
@@ -20,18 +24,235 @@ from mimic42.integrations.database_models import (
 from mimic42.testing.slots import Slot
 
 
-def _make_session(owner_id: UUID, onboarding_id: UUID, name: str) -> OnboardingSession:
+def _make_session(
+    owner_id: UUID, onboarding_id: UUID, name: str, username: str | None = None
+) -> OnboardingSession:
     return OnboardingSession(
         onboarding_id=onboarding_id,
         owner_id=owner_id,
         api_id=12345,
         api_hash_secret="encrypted-hash",
         phone_number="+79990000000",
+        username=username,
         authorization_status=TelegramLoginStatus.AUTHORIZED,
         session_secret="encrypted-session",
         name=name,
         soul_prompt="Soul",
     )
+
+
+def _make_rebind_session(owner_id: UUID, username: str | None = None) -> OnboardingSession:
+    return OnboardingSession(
+        onboarding_id=uuid4(),
+        owner_id=owner_id,
+        api_id=12345,
+        api_hash_secret="encrypted-hash",
+        phone_number="+79990000000",
+        username=username,
+        authorization_status=TelegramLoginStatus.AUTHORIZED,
+        session_secret="new-encrypted-session",
+    )
+
+
+async def test_get_telegram_rebind_credentials_returns_stored_secret(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    owner_id = clean_slot.persona("full").user_id
+    agent_id = uuid4()
+    store = DatabaseAgentStore(db_session_factory)
+    await store.create_from_onboarding(_make_session(owner_id, agent_id, "Mimic"))
+
+    credentials = await store.get_telegram_rebind_credentials(agent_id)
+
+    assert credentials.owner_id == owner_id
+    assert credentials.api_id == 12345
+    assert credentials.api_hash_secret == "encrypted-hash"
+    assert credentials.phone_number == "+79990000000"
+
+
+async def test_create_from_onboarding_stores_username(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    owner_id = clean_slot.persona("full").user_id
+    agent_id = uuid4()
+    store = DatabaseAgentStore(db_session_factory)
+
+    await store.create_from_onboarding(_make_session(owner_id, agent_id, "Mimic", "mimic_user"))
+
+    async with db_session_factory() as db_session:
+        row = await db_session.scalar(
+            select(TelegramSessionModel).where(TelegramSessionModel.agent_id == agent_id)
+        )
+    assert row is not None
+    assert row.username == "mimic_user"
+    credentials = await store.get_telegram_rebind_credentials(agent_id)
+    assert credentials.username == "mimic_user"
+
+
+async def test_rebind_telegram_session_updates_username(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    owner_id = clean_slot.persona("full").user_id
+    agent_id = uuid4()
+    store = DatabaseAgentStore(db_session_factory)
+    await store.create_from_onboarding(_make_session(owner_id, agent_id, "Mimic", "old_user"))
+
+    await store.rebind_telegram_session(agent_id, _make_rebind_session(owner_id, "new_user"))
+
+    async with db_session_factory() as db_session:
+        row = await db_session.scalar(
+            select(TelegramSessionModel).where(TelegramSessionModel.agent_id == agent_id)
+        )
+    assert row is not None
+    # Свежий @username после перелогина заменяет прежний.
+    assert row.username == "new_user"
+
+
+async def test_rebind_telegram_session_updates_session_and_keeps_profile(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    owner_id = clean_slot.persona("full").user_id
+    agent_id = uuid4()
+
+    store = DatabaseAgentStore(db_session_factory)
+    await store.create_from_onboarding(_make_session(owner_id, agent_id, "Mimic"))
+    async with db_session_factory() as session:
+        await session.execute(
+            update(AgentModel)
+            .where(AgentModel.id == agent_id)
+            .values(settings={"model": "custom/model"})
+        )
+        await session.commit()
+    await store.rebind_telegram_session(agent_id, _make_rebind_session(owner_id))
+
+    config = await store.get_runtime_config(agent_id)
+    # Номер и приложение агента не меняются — обновляется только сессия.
+    assert config.telegram_api_id == 12345
+    assert config.telegram_api_hash == "encrypted-hash"
+    assert config.telegram_session_string == "new-encrypted-session"
+    assert config.soul_prompt == "Soul"
+    # Настройки агента (выбранная модель) переживают перепривязку.
+    assert config.llm_model == "custom/model"
+    agents = await store.list_agents(owner_id=owner_id)
+    assert [agent.name for agent in agents if agent.agent_id == agent_id] == ["Mimic"]
+
+    async with db_session_factory() as session:
+        row = await session.scalar(
+            select(TelegramSessionModel).where(TelegramSessionModel.agent_id == agent_id)
+        )
+    assert row is not None
+    assert row.session_name == agent_id.hex
+    assert row.phone_number == "+79990000000"
+    assert row.api_id == 12345
+    assert row.api_hash_ciphertext == "encrypted-hash"
+    assert row.authorization_status == "authorized"
+    assert row.last_authorized_at is not None
+    assert row.last_error is None
+
+
+async def test_rebind_telegram_session_clears_revoked_state(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    owner_id = clean_slot.persona("full").user_id
+    agent_id = uuid4()
+
+    store = DatabaseAgentStore(db_session_factory)
+    await store.create_from_onboarding(_make_session(owner_id, agent_id, "Mimic"))
+    async with db_session_factory() as session:
+        await session.execute(
+            update(TelegramSessionModel)
+            .where(TelegramSessionModel.agent_id == agent_id)
+            .values(
+                authorization_status="revoked",
+                last_error="Сессия Telegram не авторизована",
+            )
+        )
+        await session.commit()
+
+    await store.rebind_telegram_session(agent_id, _make_rebind_session(owner_id))
+
+    async with db_session_factory() as session:
+        row = await session.scalar(
+            select(TelegramSessionModel).where(TelegramSessionModel.agent_id == agent_id)
+        )
+    assert row is not None
+    assert row.authorization_status == "authorized"
+    assert row.last_error is None
+
+
+async def test_rebind_accepts_fresh_ciphertexts_for_the_same_account(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    owner_id = clean_slot.persona("full").user_id
+    agent_id = uuid4()
+    cipher = FernetSecretCipher(Fernet.generate_key().decode())
+    store = DatabaseAgentStore(db_session_factory, cipher=cipher)
+    initial = _make_session(owner_id, agent_id, "Mimic")
+    initial.api_hash_secret = cipher.encrypt("api-hash")
+    initial.session_secret = cipher.encrypt("old-session")
+    await store.create_from_onboarding(initial)
+    rebound = _make_rebind_session(owner_id)
+    rebound.api_hash_secret = cipher.encrypt("api-hash")
+    rebound.session_secret = cipher.encrypt("new-session")
+
+    await store.rebind_telegram_session(agent_id, rebound)
+
+    config = await store.get_runtime_config(agent_id)
+    assert config.telegram_api_hash == "api-hash"
+    assert config.telegram_session_string == "new-session"
+
+
+@pytest.mark.parametrize(
+    "missing_field", ["api_id", "api_hash_secret", "session_secret", "phone_number"]
+)
+async def test_rebind_telegram_session_rejects_missing_credentials(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+    missing_field: str,
+) -> None:
+    owner_id = clean_slot.persona("full").user_id
+    agent_id = uuid4()
+
+    store = DatabaseAgentStore(db_session_factory)
+    await store.create_from_onboarding(_make_session(owner_id, agent_id, "Mimic"))
+
+    broken = _make_rebind_session(owner_id)
+    setattr(broken, missing_field, None)
+
+    with pytest.raises(ValueError):
+        await store.rebind_telegram_session(agent_id, broken)
+
+    config = await store.get_runtime_config(agent_id)
+    assert config.telegram_api_id == 12345
+    assert config.telegram_api_hash == "encrypted-hash"
+    assert config.telegram_session_string == "encrypted-session"
+
+    async with db_session_factory() as session:
+        row = await session.scalar(
+            select(TelegramSessionModel).where(TelegramSessionModel.agent_id == agent_id)
+        )
+    assert row is not None
+    assert row.phone_number == "+79990000000"
+    assert row.authorization_status == "authorized"
+    assert row.last_error is None
+
+
+async def test_rebind_telegram_session_unknown_agent_raises_key_error(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    store = DatabaseAgentStore(db_session_factory)
+
+    with pytest.raises(KeyError):
+        await store.rebind_telegram_session(
+            uuid4(), _make_rebind_session(clean_slot.persona("empty").user_id)
+        )
 
 
 async def test_database_agent_store_creates_agent_session_and_runtime_config(
@@ -83,6 +304,45 @@ async def test_create_from_onboarding_twice_creates_two_agents(
     agents = await store.list_agents(owner_id=owner_id)
 
     assert {agent.agent_id for agent in agents} == {first_id, second_id}
+
+
+async def test_create_from_onboarding_keeps_agent_of_another_owner(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    """Issue #95: строка онбординга с id чужого агента не переприсваивает его."""
+    owner_id = clean_slot.persona("full").user_id
+    intruder_id = clean_slot.persona("code").user_id
+    agent_id = uuid4()
+    store = DatabaseAgentStore(db_session_factory)
+    await store.create_from_onboarding(_make_session(owner_id, agent_id, "Легальный агент"))
+
+    with pytest.raises(AgentOwnershipError):
+        await store.create_from_onboarding(_make_session(intruder_id, agent_id, "Хакер"))
+
+    kept = await store.list_agents(owner_id=owner_id)
+    assert [(agent.agent_id, agent.name) for agent in kept] == [(agent_id, "Легальный агент")]
+    assert await store.list_agents(owner_id=intruder_id) == []
+    # Telegram-сессия жертвы остаётся его собственной.
+    credentials = await store.get_telegram_rebind_credentials(agent_id)
+    assert credentials.owner_id == owner_id
+    assert credentials.api_hash_secret == "encrypted-hash"
+
+
+async def test_create_from_onboarding_repeats_for_the_same_owner(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    """Повторная финализация тем же пользователем остаётся идемпотентной."""
+    owner_id = clean_slot.persona("flow").user_id
+    agent_id = uuid4()
+    store = DatabaseAgentStore(db_session_factory)
+    await store.create_from_onboarding(_make_session(owner_id, agent_id, "Mimic"))
+
+    await store.create_from_onboarding(_make_session(owner_id, agent_id, "Mimic 2"))
+
+    agents = await store.list_agents(owner_id=owner_id)
+    assert [(agent.agent_id, agent.name) for agent in agents] == [(agent_id, "Mimic 2")]
 
 
 async def test_delete_agent_removes_agent_and_onboarding_row_only_for_it(
@@ -259,3 +519,56 @@ async def test_database_conversation_groups_messages_and_tool_events(
     limited = await store.get_conversation(agent_id=agent_id, limit=1)
     assert len(limited.turns) == 1
     assert limited.turns[0].outgoing == "proactive"
+
+
+async def test_runtime_config_carries_the_first_comment_setting(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    """Настройка живёт в JSON-колонке, и рантайм обязан видеть её как модель."""
+    owner_id = clean_slot.persona("full").user_id
+    agent_id = uuid4()
+
+    store = DatabaseAgentStore(db_session_factory)
+    await store.create_from_onboarding(_make_session(owner_id, agent_id, "Mimic"))
+
+    async with db_session_factory() as session:
+        await session.execute(
+            update(AgentModel)
+            .where(AgentModel.id == agent_id)
+            .values(
+                settings={
+                    "first_comment": {
+                        "enabled": True,
+                        "variants": [
+                            {"text": "Первый!"},
+                            {"text": "  "},
+                            {"text": "", "image_path": f"{agent_id}/u/pic.jpg"},
+                        ],
+                    }
+                }
+            )
+        )
+        await session.commit()
+
+    config = await store.get_runtime_config(agent_id)
+
+    assert config.first_comment.enabled is True
+    # Пустой вариант отброшен: он не дал бы Телеграму что отправить.
+    assert [variant.text for variant in config.first_comment.variants] == ["Первый!", ""]
+    assert config.first_comment.variants[1].image_path == f"{agent_id}/u/pic.jpg"
+
+
+async def test_runtime_config_defaults_first_comment_to_off(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    owner_id = clean_slot.persona("full").user_id
+    agent_id = uuid4()
+
+    store = DatabaseAgentStore(db_session_factory)
+    await store.create_from_onboarding(_make_session(owner_id, agent_id, "Mimic"))
+
+    config = await store.get_runtime_config(agent_id)
+
+    assert config.first_comment.is_active is False

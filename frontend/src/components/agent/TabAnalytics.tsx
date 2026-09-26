@@ -8,6 +8,7 @@ import {
 import { useAnalyticsData } from '@/hooks/useTelegramSession';
 import { Card, Skeleton } from '@/components/ui/card';
 import { TokenUsageCard } from '@/components/agent/TokenUsageCard';
+import { formatDayLabel, formatDayFull } from '@/lib/format';
 import { cn } from '@/lib/utils';
 
 const TOOLTIP_STYLE = {
@@ -18,6 +19,9 @@ const TOOLTIP_STYLE = {
   fontSize: '11px',
   color: '#c0c0cc',
 };
+
+// Подписи осей и легенды: #9090a0 на тёмном фоне даёт ~6:1 вместо ~3:1 у #606075.
+const TICK_STYLE = { fontSize: 10, fontFamily: 'Space Mono', fill: '#9090a0' };
 
 export function TabAnalytics({ agentId }: { agentId: string }) {
   const [days, setDays] = useState<7 | 30>(7);
@@ -36,7 +40,7 @@ export function TabAnalytics({ agentId }: { agentId: string }) {
               'px-4 py-1.5 rounded-sm font-mono text-xs border transition-colors',
               days === d
                 ? 'bg-plasma-950 border-plasma-800 text-plasma-400'
-                : 'border-void-700 text-void-500 hover:text-void-300',
+                : 'border-void-700 text-void-300 hover:text-void-100',
             )}
           >
             {d} дней
@@ -68,11 +72,11 @@ export function TabAnalytics({ agentId }: { agentId: string }) {
                   </linearGradient>
                 </defs>
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(96,96,117,0.1)" />
-                <XAxis dataKey="date" tick={{ fontSize: 10, fontFamily: 'Space Mono', fill: '#606075' }} />
-                <YAxis tick={{ fontSize: 10, fontFamily: 'Space Mono', fill: '#606075' }} allowDecimals={false} />
-                <Tooltip contentStyle={TOOLTIP_STYLE} />
+                <XAxis dataKey="date" tick={TICK_STYLE} tickFormatter={formatDayLabel} />
+                <YAxis tick={TICK_STYLE} allowDecimals={false} />
+                <Tooltip contentStyle={TOOLTIP_STYLE} labelFormatter={formatDayFull} />
                 <Legend
-                  wrapperStyle={{ fontSize: 10, fontFamily: 'Space Mono', color: '#606075' }}
+                  wrapperStyle={{ fontSize: 10, fontFamily: 'Space Mono', color: '#9090a0' }}
                 />
                 <Area
                   type="monotone"
@@ -103,9 +107,9 @@ export function TabAnalytics({ agentId }: { agentId: string }) {
             <ResponsiveContainer width="100%" height={220}>
               <BarChart data={data}>
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(96,96,117,0.1)" />
-                <XAxis dataKey="date" tick={{ fontSize: 10, fontFamily: 'Space Mono', fill: '#606075' }} />
-                <YAxis tick={{ fontSize: 10, fontFamily: 'Space Mono', fill: '#606075' }} allowDecimals={false} />
-                <Tooltip contentStyle={TOOLTIP_STYLE} />
+                <XAxis dataKey="date" tick={TICK_STYLE} tickFormatter={formatDayLabel} />
+                <YAxis tick={TICK_STYLE} allowDecimals={false} />
+                <Tooltip contentStyle={TOOLTIP_STYLE} labelFormatter={formatDayFull} />
                 <Bar dataKey="errors" name="Ошибки" fill="#f43f5e" opacity={0.8} radius={[2, 2, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>

@@ -176,6 +176,38 @@ class TestAgentPage:
         page.get_by_role("button", name="Всё равно заменить").click()
         expect(soul).not_to_have_value("мой старый характер")
 
+    def test_first_comment_variants_survive_save_and_reload(
+        self, persona_page: Callable[..., Page], api: httpx.Client, users: dict
+    ) -> None:
+        agent_id = _new_agent(api, users, "Первый комментарий")
+        page = persona_page("full")
+        page.goto(f"/agent/{agent_id}?tab=settings")
+
+        toggle = page.get_by_role("switch", name="Первый комментарий")
+        expect(toggle).to_have_attribute("aria-checked", "false")
+        toggle.click()
+        expect(page.get_by_text("Пока ни одного варианта")).to_be_visible()
+
+        add = page.get_by_role("button", name="Добавить вариант")
+        add.click()
+        page.get_by_label("Текст варианта 1").fill("Первый!")
+        add.click()
+        page.get_by_label("Текст варианта 2").fill("Я тут")
+        # Удаление первого сдвигает второй на его место, текст остаётся при нём.
+        page.get_by_role("button", name="Удалить вариант 1").click()
+        expect(page.get_by_label("Текст варианта 1")).to_have_value("Я тут")
+        expect(page.get_by_label("Текст варианта 2")).to_have_count(0)
+
+        page.get_by_role("button", name="Сохранить изменения").click()
+        expect(page.get_by_test_id("toast-container")).to_contain_text("Настройки сохранены")
+
+        page.reload()
+        expect(page.get_by_role("switch", name="Первый комментарий")).to_have_attribute(
+            "aria-checked", "true"
+        )
+        expect(page.get_by_label("Текст варианта 1")).to_have_value("Я тут")
+        expect(page.get_by_label("Текст варианта 2")).to_have_count(0)
+
 
 class TestEmptyStates:
     def test_memory_empty(

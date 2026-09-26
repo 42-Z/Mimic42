@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -11,12 +11,18 @@ from mimic42.core.onboarding import (
     AgentProfileInput,
     InMemoryOnboardingRepository,
     OnboardingOwnershipError,
+    OnboardingPublicStatus,
     OnboardingSession,
     TelegramAuthClient,
+    TelegramCodeVerification,
     TelegramCredentials,
     TelegramLoginStatus,
 )
-from mimic42.testing.telegram import FakeTelegramAccount, FakeTelegramAuthClientFactory
+from mimic42.testing.telegram import (
+    FakeTelegramAccount,
+    FakeTelegramAuthClient,
+    FakeTelegramAuthClientFactory,
+)
 
 
 def _fake_telegram_factory() -> FakeTelegramAuthClientFactory:
@@ -75,6 +81,129 @@ async def test_finalize_agent_persists_agent_and_telegram_session() -> None:
 
     assert persisted.system_prompt == load_default_system_prompt()
     assert persisted.soul_prompt == "Short replies"
+
+
+async def _started_onboarding(
+    service: AgentOnboardingService, owner_id: UUID, phone_number: str
+) -> OnboardingPublicStatus:
+    started = await service.request_telegram_code(
+        TelegramCredentials(
+            owner_id=owner_id,
+            api_id=12345,
+            api_hash="hash",
+            phone_number=phone_number,
+        )
+    )
+    return started
+
+
+@pytest.mark.asyncio
+async def test_verify_telegram_code_stores_account_username() -> None:
+    owner_id = uuid4()
+    repository = InMemoryOnboardingRepository()
+    account = FakeTelegramAccount()
+    account.script_code("12345")
+    account.username = "mimic_user"
+    service = AgentOnboardingService(
+        repository=repository,
+        telegram_factory=FakeTelegramAuthClientFactory(account),
+    )
+    started = await _started_onboarding(service, owner_id, "+79990000003")
+
+    status = await service.verify_telegram_code(
+        started.onboarding_id, TelegramCodeVerification(code="12345")
+    )
+
+    assert status.authorization_status is TelegramLoginStatus.AUTHORIZED
+    session = await repository.get(started.onboarding_id)
+    assert session.username == "mimic_user"
+
+
+@pytest.mark.asyncio
+async def test_verify_telegram_code_without_account_username_stores_none() -> None:
+    owner_id = uuid4()
+    repository = InMemoryOnboardingRepository()
+    account = FakeTelegramAccount()
+    account.script_code("12345")
+    service = AgentOnboardingService(
+        repository=repository,
+        telegram_factory=FakeTelegramAuthClientFactory(account),
+    )
+    started = await _started_onboarding(service, owner_id, "+79990000004")
+
+    status = await service.verify_telegram_code(
+        started.onboarding_id, TelegramCodeVerification(code="12345")
+    )
+
+    assert status.authorization_status is TelegramLoginStatus.AUTHORIZED
+    session = await repository.get(started.onboarding_id)
+    assert session.username is None
+
+
+@pytest.mark.asyncio
+async def test_verify_telegram_code_with_2fa_password_stores_account_username() -> None:
+    owner_id = uuid4()
+    repository = InMemoryOnboardingRepository()
+    account = FakeTelegramAccount()
+    account.script_code("12345")
+    account.require_password("secret")
+    account.username = "mimic_user"
+    service = AgentOnboardingService(
+        repository=repository,
+        telegram_factory=FakeTelegramAuthClientFactory(account),
+    )
+    started = await _started_onboarding(service, owner_id, "+79990000005")
+
+    password_required = await service.verify_telegram_code(
+        started.onboarding_id, TelegramCodeVerification(code="12345")
+    )
+    assert password_required.authorization_status is TelegramLoginStatus.PASSWORD_REQUIRED
+
+    status = await service.verify_telegram_code(
+        started.onboarding_id, TelegramCodeVerification(code="12345", password="secret")
+    )
+
+    assert status.authorization_status is TelegramLoginStatus.AUTHORIZED
+    session = await repository.get(started.onboarding_id)
+    assert session.username == "mimic_user"
+
+
+@pytest.mark.asyncio
+async def test_verify_telegram_code_survives_get_me_failure() -> None:
+    """Сбой получения @username не должен ломать уже успешный вход."""
+
+    owner_id = uuid4()
+    repository = InMemoryOnboardingRepository()
+    account = FakeTelegramAccount()
+    account.script_code("12345")
+
+    class FailingGetMeClient(FakeTelegramAuthClient):
+        async def get_me(self) -> object:
+            raise RuntimeError("Telegram unavailable")
+
+    class FailingGetMeFactory(FakeTelegramAuthClientFactory):
+        def build(
+            self,
+            *,
+            api_id: int,
+            api_hash: str,
+            session_string: str | None = None,
+        ) -> FakeTelegramAuthClient:
+            return FailingGetMeClient(self._account)
+
+    service = AgentOnboardingService(
+        repository=repository,
+        telegram_factory=FailingGetMeFactory(account),
+    )
+    started = await _started_onboarding(service, owner_id, "+79990000006")
+
+    status = await service.verify_telegram_code(
+        started.onboarding_id, TelegramCodeVerification(code="12345")
+    )
+
+    assert status.authorization_status is TelegramLoginStatus.AUTHORIZED
+    session = await repository.get(started.onboarding_id)
+    assert session.username is None
 
 
 @pytest.mark.asyncio

@@ -46,11 +46,11 @@ export function ActionRow({ action }: { action: ActivityAction }) {
         </span>
       )}
       {!failed && !running && !action.hint && isTool && resultSummary && (
-        <span className="hidden md:inline text-[11px] text-void-600 truncate max-w-[40%]">
+        <span className="hidden md:inline text-[11px] text-void-400 truncate max-w-[40%]">
           {resultSummary}
         </span>
       )}
-      {duration && <span className="shrink-0 font-mono text-[10px] text-void-600">{duration}</span>}
+      {duration && <span className="shrink-0 font-mono text-[10px] text-void-400">{duration}</span>}
       {failed ? (
         <XCircle className="h-3.5 w-3.5 shrink-0 text-crimson-500" />
       ) : running ? (

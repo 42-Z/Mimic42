@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Any, cast
 
 from telethon import TelegramClient
@@ -7,12 +8,14 @@ from telethon.sessions import StringSession
 
 from mimic42.core.agent_runtime import AgentRuntimeConfig, TelegramAuthorizationRequired
 
+logger = logging.getLogger("mimic42.telethon_client")
+
 
 def build_telegram_client(config: AgentRuntimeConfig) -> TelegramClient:
     if not config.telegram_session_string:
+        logger.warning("Agent %s has no stored telegram session string", config.agent_id)
         raise TelegramAuthorizationRequired(
-            f"Agent {config.agent_id} has no stored Telegram session string — "
-            "complete onboarding first"
+            "Сессия Telegram не привязана. Требуется привязка Telegram-аккаунта."
         )
     client = TelegramClient(
         StringSession(config.telegram_session_string),

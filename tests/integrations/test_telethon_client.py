@@ -31,7 +31,7 @@ def _valid_session_string() -> str:
 
 
 def test_missing_session_string_raises_before_creating_client() -> None:
-    with pytest.raises(TelegramAuthorizationRequired):
+    with pytest.raises(TelegramAuthorizationRequired, match="не привязана"):
         build_telegram_client(_config(None))
 
 

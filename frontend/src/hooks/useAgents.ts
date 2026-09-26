@@ -46,9 +46,11 @@ export function useStartAgent() {
       }
     },
     onSettled: (_, __, agentId) => {
-      // Always refetch after mutation settles
-      qc.invalidateQueries({ queryKey: queryKeys.agents.detail(agentId) });
-      qc.invalidateQueries({ queryKey: queryKeys.agents.list() });
+      // Always refetch after mutation settles; agents.all also covers
+      // detailsAll used by dashboard cards and telegram.byAgent used by
+      // the agent header, so a failed start surfaces the rebind CTA.
+      qc.invalidateQueries({ queryKey: queryKeys.agents.all });
+      qc.invalidateQueries({ queryKey: queryKeys.telegram.byAgent(agentId) });
     },
   });
 }
@@ -79,8 +81,8 @@ export function useStopAgent() {
       }
     },
     onSettled: (_, __, agentId) => {
-      qc.invalidateQueries({ queryKey: queryKeys.agents.detail(agentId) });
-      qc.invalidateQueries({ queryKey: queryKeys.agents.list() });
+      qc.invalidateQueries({ queryKey: queryKeys.agents.all });
+      qc.invalidateQueries({ queryKey: queryKeys.telegram.byAgent(agentId) });
     },
   });
 }

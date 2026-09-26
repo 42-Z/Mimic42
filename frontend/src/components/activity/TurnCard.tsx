@@ -45,8 +45,8 @@ const TONES: Record<
   },
   trigger: {
     box: 'border-void-800 bg-void-900/50',
-    icon: 'text-void-500',
-    name: 'text-void-500',
+    icon: 'text-void-300',
+    name: 'text-void-300',
     tag: 'text-void-700',
     text: 'text-void-400 italic',
   },
@@ -82,15 +82,15 @@ function MessageRow({
           <span className={cn(MESSAGE_META, 'truncate', styles.name)}>{sanitizeText(name)}</span>
           <span className={cn(MESSAGE_META, 'shrink-0 text-[9px]', styles.tag)}>{tag}</span>
           {badgeId != null && (
-            <span className="shrink-0 rounded-[2px] border border-void-800 px-1 font-mono text-[9px] tabular-nums text-void-500">
+            <span className="shrink-0 rounded-[2px] border border-void-800 px-1 font-mono text-[9px] tabular-nums text-void-300">
               #{badgeId}
             </span>
           )}
         </div>
         {reply && (
           <div className="mt-1 flex items-start gap-1.5 border-l-2 border-void-700 pl-2">
-            <Reply className="mt-px h-3 w-3 shrink-0 text-void-600" />
-            <span className="truncate font-mono text-[10px] text-void-500">
+            <Reply className="mt-px h-3 w-3 shrink-0 text-void-400" />
+            <span className="truncate font-mono text-[10px] text-void-300">
               #{reply.message_id}
               {reply.preview ? ` · ${sanitizeText(reply.preview)}` : ''}
             </span>
@@ -140,7 +140,7 @@ function ToolEntry({
         </span>
         <ChevronDown
           className={cn(
-            'h-3 w-3 shrink-0 text-void-600 transition-transform',
+            'h-3 w-3 shrink-0 text-void-400 transition-transform',
             expanded && 'rotate-180',
           )}
         />
@@ -216,7 +216,7 @@ export function TurnCard({
         )}
       >
         <Clock className="h-3 w-3 shrink-0 text-void-700" />
-        <span className="w-14 shrink-0 font-mono text-[10px] tabular-nums text-void-600">
+        <span className="w-14 shrink-0 font-mono text-[10px] tabular-nums text-void-400">
           {time}
         </span>
         <span
@@ -248,7 +248,7 @@ export function TurnCard({
           className="flex w-full items-center gap-2 text-left"
         >
           <Clock className="h-3 w-3 shrink-0 text-void-700" />
-          <span className="w-14 shrink-0 font-mono text-[10px] tabular-nums text-void-500">
+          <span className="w-14 shrink-0 font-mono text-[10px] tabular-nums text-void-300">
             {time}
           </span>
           <span className="flex min-w-0 flex-1 items-center gap-1.5">
@@ -262,7 +262,7 @@ export function TurnCard({
             </span>
           </span>
           {item.peer && (
-            <span className="shrink-0 rounded-[2px] border border-void-800 bg-void-900/40 px-1.5 py-px font-mono text-[9px] tabular-nums text-void-500">
+            <span className="shrink-0 rounded-[2px] border border-void-800 bg-void-900/40 px-1.5 py-px font-mono text-[9px] tabular-nums text-void-300">
               #{sanitizeText(item.peer)}
             </span>
           )}
@@ -273,7 +273,7 @@ export function TurnCard({
           )}
           <ChevronDown
             className={cn(
-              'h-3.5 w-3.5 shrink-0 text-void-600 transition-transform',
+              'h-3.5 w-3.5 shrink-0 text-void-400 transition-transform',
               openAll && 'rotate-180',
             )}
           />
