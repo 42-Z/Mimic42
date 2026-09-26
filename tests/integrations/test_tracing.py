@@ -138,6 +138,7 @@ class FakeSpan:
         self.calls: list[str] = []
         self.start_kwargs: dict[str, Any] = {}
         self.log_error: BaseException | None = None
+        self.set_current_error: BaseException | None = None
         self.permalink_value = "https://braintrust.dev/app/p/mimic42/t/turn-1"
 
     def log(self, **event: Any) -> None:
@@ -146,6 +147,8 @@ class FakeSpan:
         self.events.append(event)
 
     def set_current(self) -> None:
+        if self.set_current_error is not None:
+            raise self.set_current_error
         self.calls.append("set_current")
 
     def unset_current(self) -> None:
@@ -280,6 +283,35 @@ def test_turn_span_records_base_exception_error(monkeypatch: pytest.MonkeyPatch)
     assert spans[0].events[-1] == {"error": "CancelledError"}
     assert spans[0].ended == 1
     assert spans[0].calls == ["set_current", "unset_current", "end"]
+
+
+def test_turn_span_set_current_base_exception_still_closes_span(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """BaseException внутри set_current (например, отмена) не должен держать спан открытым."""
+    spans = _enable_tracing(monkeypatch)
+
+    def start_span_with_cancellable_set_current(**kwargs: Any) -> FakeSpan:
+        span = FakeSpan()
+        span.start_kwargs = kwargs
+        span.set_current_error = asyncio.CancelledError()
+        spans.append(span)
+        return span
+
+    monkeypatch.setattr(
+        tracing.braintrust, "start_span", start_span_with_cancellable_set_current
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        with tracing.turn_span(
+            agent_id=uuid4(), turn_id="t1", peer="chat", model="m", input=None
+        ):
+            pytest.fail("тело хода не должно выполняться")
+
+    span = spans[0]
+    assert span.events[-1] == {"error": "CancelledError"}
+    assert span.ended == 1
+    assert span.calls == ["unset_current", "end"]
 
 
 def test_turn_span_uses_environment_from_setup(monkeypatch: pytest.MonkeyPatch) -> None:

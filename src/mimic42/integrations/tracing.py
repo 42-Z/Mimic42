@@ -138,12 +138,12 @@ def turn_span(
         logger.warning("Braintrust start_span failed", exc_info=True)
         yield TurnTrace(None)
         return
-    try:
-        span.set_current()
-    except Exception:
-        logger.warning("Braintrust span set_current failed", exc_info=True)
     trace = TurnTrace(span)
     try:
+        try:
+            span.set_current()
+        except Exception:
+            logger.warning("Braintrust span set_current failed", exc_info=True)
         try:
             span.log(
                 input=input,

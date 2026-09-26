@@ -344,7 +344,7 @@ Expected: `All checks passed!` дважды, коммит создан.
 
 ---
 
-### Task 3: `tracing.py` — корневой спан хода `turn_span`
+### Task 3: `tracing.py` — корневой спан хода `turn_span` ✅ (a700007 + 5f17a4d; spec ✅, quality ✅ после фикса Critical)
 
 **Files:**
 - Modify: `src/mimic42/integrations/tracing.py`
@@ -541,6 +541,8 @@ def test_turn_span_does_not_construct_settings(monkeypatch: pytest.MonkeyPatch) 
 
 Тесты закрепляют current-контракт спана: `set_current` вызывается ровно один раз, `unset_current` — строго до `end`, и на обычном пути (`test_turn_span_logs_input_metadata_and_output`), и на error-путях (`test_turn_span_records_error_and_reraises`, `test_turn_span_records_base_exception_error`). Без этих проверок `turn_span` снова может «забыть» сделать спан current (контекст ставит только `Span.__enter__`/`set_current`, а не `set_current=True` у `start_span`) или не закрыть его.
 
+В блоке выше — 8 из 10 тестов `turn_span`; при реализации добавлены ещё два: `test_turn_span_is_current_span_for_real_braintrust_machinery` (интеграционный: настоящая span-context машинерия SDK, без сети) и `test_turn_span_set_current_base_exception_still_closes_span` (ревью-фикс: `BaseException` внутри `set_current` не оставляет спан незакрытым).
+
 - [ ] **Step 2: Запусти тест — он должен упасть**
 
 Run: `uv run pytest tests/integrations/test_tracing.py -q`
@@ -618,12 +620,12 @@ def turn_span(
         logger.warning("Braintrust start_span failed", exc_info=True)
         yield TurnTrace(None)
         return
-    try:
-        span.set_current()
-    except Exception:
-        logger.warning("Braintrust span set_current failed", exc_info=True)
     trace = TurnTrace(span)
     try:
+        try:
+            span.set_current()
+        except Exception:
+            logger.warning("Braintrust span set_current failed", exc_info=True)
         try:
             span.log(
                 input=input,
@@ -666,7 +668,7 @@ def turn_span(
 - [ ] **Step 4: Запусти тест — он должен пройти**
 
 Run: `uv run pytest tests/integrations/test_tracing.py -q`
-Expected: PASS — все тесты файла зелёные (8 тестов `turn_span`, включая проверки `set_current`/`unset_current`).
+Expected: PASS — все тесты файла зелёные (10 тестов `turn_span`, включая проверки `set_current`/`unset_current`).
 
 - [ ] **Step 5: Проверь линтеры и закоммить**
 

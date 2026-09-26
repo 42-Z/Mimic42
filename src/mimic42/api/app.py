@@ -74,6 +74,7 @@ from mimic42.integrations.database_session import create_engine, create_session_
 from mimic42.integrations.mem0_memory import build_mem0_memory
 from mimic42.integrations.supabase_media import SupabaseMediaStorage
 from mimic42.integrations.telegram_auth import TelethonAuthClientFactory
+from mimic42.integrations.tracing import flush_tracing, setup_tracing
 
 logger = logging.getLogger("mimic42.api.app")
 
@@ -364,6 +365,7 @@ def create_app(
                     media_uploader=app_media_storage,
                 )
         try:
+            setup_tracing(app_settings)
             # Restore running agents from database after restart
             logger.info(
                 f"[lifespan] should_build={should_build_database}, manager_none={manager is None}"
@@ -400,6 +402,7 @@ def create_app(
                     logger.exception(f"[lifespan] Failed to restore running agents: {exc}")
             yield
         finally:
+            flush_tracing()
             await _get_agent_manager(app).shutdown()
             if owned_media_storage is not None:
                 # После остановки агентов: до неё они ещё читают из хранилища картинки.
