@@ -6,7 +6,7 @@ import logging
 import random
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Protocol, cast
@@ -25,6 +25,13 @@ from mimic42.core.first_comment import (
     SentFirstComments,
 )
 from mimic42.core.media import MAX_MEDIA_BYTES, MediaFile, MediaUploader
+from mimic42.core.media_download import (
+    UNAVAILABLE_MARKER_TEXT,
+    MediaRef,
+    MediaRefCache,
+    MediaUnavailableError,
+    download_media_with_refresh,
+)
 from mimic42.core.memory import MemoryServiceLike, RuntimeMemoryService
 from mimic42.core.model_catalog import DEFAULT_LLM_MODEL
 from mimic42.core.send_window import SendWindow, SendWindowTracker
@@ -236,6 +243,7 @@ class MimicAgentRuntime:
         session_factory: async_sessionmaker[AsyncSession] | None = None,
         media_uploader: MediaUploader | None = None,
         send_window: SendWindowTracker | None = None,
+        media_refs: MediaRefCache | None = None,
     ) -> None:
         self.config = config
         self._telegram_client = telegram_client
@@ -244,6 +252,9 @@ class MimicAgentRuntime:
         self._session_factory = session_factory
         self._media_uploader = media_uploader
         self._send_window = send_window
+        # Общий с тулзами кеш media_id → сообщение/архив: без него
+        # протухшую file_reference нечем обновить (issue #98).
+        self._media_refs = media_refs or MediaRefCache()
         self._state = AgentRuntimeState.STOPPED
         self._lifecycle_lock = asyncio.Lock()
         self._trigger_lock = asyncio.Lock()
@@ -1263,6 +1274,7 @@ class MimicAgentRuntime:
                 http_client=self._http_client,
                 media_uploader=self._media_uploader,
                 agent_id=self.config.agent_id,
+                media_refs=self._media_refs,
             )
             if item_text:
                 merged_content.append(item_text)
@@ -1882,12 +1894,29 @@ async def _process_media_and_text(
     http_client: Any | None = None,
     media_uploader: MediaUploader | None = None,
     agent_id: UUID | None = None,
+    media_refs: MediaRefCache | None = None,
 ) -> tuple[str, list[MediaFile]]:
     message = getattr(event, "message", None)
     if not message or not getattr(message, "media", None):
         return text, []
 
+    from mimic42.integrations.telegram_tools import format_media_object
+
+    media_id = format_media_object(message)
+    if not media_id:
+        return text, []
+
     media_files: list[MediaFile] = []
+    message_ref = _message_ref_of(event, message)
+    chat, msg_id = message_ref or (None, None)
+    base_ref = MediaRef(
+        peer=str(chat) if chat is not None else None,
+        message_id=msg_id if isinstance(msg_id, int) else None,
+    )
+    if media_refs is not None:
+        # Пока ссылка на файл свежая: тулзы по ней найдут сообщение и
+        # заархивированную копию, когда file_reference протухнет.
+        media_refs.remember(media_id, base_ref)
 
     async def _archive(kind: str, filename: str, mime_type: str, data: bytes) -> None:
         """Archive one attachment to Storage; never break the turn on failure."""
@@ -1906,16 +1935,14 @@ async def _process_media_and_text(
             return
         if archived is not None:
             media_files.append(archived)
+            if media_refs is not None:
+                media_refs.remember(media_id, replace(base_ref, storage_path=archived.storage_path))
 
     try:
-        from mimic42.integrations.telegram_tools import format_media_object
-
-        media_id = format_media_object(message)
-        if not media_id:
-            return text, media_files
-
         if media_id.startswith("photo:"):
-            data = await event.client.download_media(message, file=bytes)
+            data = await download_media_with_refresh(
+                event.client, message, message_ref=message_ref, file=bytes
+            )
             await _archive("photo", "photo.jpeg", "image/jpeg", data or b"")
             return f"[Фото id={media_id}]" + (f" {text}" if text else ""), media_files
 
@@ -1924,7 +1951,9 @@ async def _process_media_and_text(
             emoji = parts[5] if len(parts) > 5 else ""
             pack_name = parts[6] if len(parts) > 6 else ""
             pack_str = f" пак={pack_name}" if pack_name else ""
-            data = await event.client.download_media(message, file=bytes)
+            data = await download_media_with_refresh(
+                event.client, message, message_ref=message_ref, file=bytes
+            )
             sticker_name, sticker_mime = _sticker_file_of(message)
             await _archive("sticker", sticker_name, sticker_mime, data or b"")
             return (
@@ -1946,7 +1975,9 @@ async def _process_media_and_text(
                 return err_msg + (f" {text}" if text else ""), media_files
 
             buffer = BytesIO()
-            await event.client.download_media(message, file=buffer)
+            await download_media_with_refresh(
+                event.client, message, message_ref=message_ref, file=buffer
+            )
             file_bytes = buffer.getvalue()
             if not file_bytes:
                 err_msg = "[Голосовое сообщение (ошибка: файл пустой)]"
@@ -2030,7 +2061,9 @@ async def _process_media_and_text(
                 # same size cap as the storage layer) unless it is huge.
                 if not isinstance(doc_size, int) or doc_size <= MAX_MEDIA_BYTES:
                     buffer = BytesIO()
-                    await event.client.download_media(message, file=buffer)
+                    await download_media_with_refresh(
+                        event.client, message, message_ref=message_ref, file=buffer
+                    )
                     await _archive("doc", filename, doc_mime_type, buffer.getvalue())
                 return (
                     f"[Файл name={filename} (этот тип документа нельзя открыть)]"
@@ -2048,7 +2081,9 @@ async def _process_media_and_text(
                 )
 
             buffer = BytesIO()
-            await event.client.download_media(message, file=buffer)
+            await download_media_with_refresh(
+                event.client, message, message_ref=message_ref, file=buffer
+            )
             file_bytes = buffer.getvalue()
             if not file_bytes:
                 return (
@@ -2106,10 +2141,46 @@ async def _process_media_and_text(
                 txt_text = f'[Файл name={filename} (содержимое: "{txt_content}")]'
                 return txt_text + (f" {text}" if text else ""), media_files
 
+    except MediaUnavailableError:
+        # Медиа не скачать (протухшая ссылка или самоуничтожившийся файл):
+        # сообщение не теряем — агент видит маркер и может ответить на него.
+        return _unavailable_marker(media_id, text), media_files
     except Exception:
-        pass
+        logger.warning("Media processing failed for %s", media_id, exc_info=True)
+        if not text:
+            return "[Медиа (не удалось обработать)]", media_files
 
     return text, media_files
+
+
+def _message_ref_of(event: Any, message: Any) -> tuple[Any, int] | None:
+    """Пара (чат, id сообщения) для перечитывания при протухшей file_reference."""
+    msg_id = _extract_incoming_message_id(event)
+    if msg_id is None:
+        return None
+    chat = getattr(event, "chat_id", None) or getattr(message, "input_chat", None)
+    return (chat, msg_id) if chat is not None else None
+
+
+def _unavailable_marker(media_id: str, text: str) -> str:
+    """Маркер медиа, которое не удалось скачать: без сырых ошибок Telegram."""
+    parts = media_id.split(":")
+    kind = parts[0]
+    if kind == "photo":
+        label = "Фото"
+    elif kind == "sticker":
+        label = "Стикер"
+    elif kind == "voice":
+        label = "Голосовое сообщение"
+    elif kind == "round":
+        label = "Видеосообщение"
+    elif kind == "doc":
+        filename = parts[5] if len(parts) > 5 else "file"
+        label = f"Файл name={filename}"
+    else:
+        label = "Медиа"
+    marker = f"[{label} ({UNAVAILABLE_MARKER_TEXT})]"
+    return marker + (f" {text}" if text else "")
 
 
 def _messages_to_dicts(response: object) -> list[dict[str, Any]]:

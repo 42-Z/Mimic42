@@ -37,6 +37,7 @@ const ERROR_CATALOG: Record<string, string> = {
   MessageEmptyError: 'Сообщение пустое',
   MediaEmptyError: 'Медиафайл недоступен',
   FileReferenceExpiredError: 'Ссылка на файл устарела',
+  MediaUnavailableError: 'Медиа больше недоступно: ссылка на файл устарела или файл самоуничтожился',
   FilePartMissingError: 'Ошибка передачи файла',
   PhotoInvalidError: 'Некорректное изображение',
   StickerSetInvalidError: 'Стикерпак не найден',

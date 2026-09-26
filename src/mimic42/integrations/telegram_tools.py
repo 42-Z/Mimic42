@@ -15,6 +15,12 @@ from telethon import functions, types
 from telethon.extensions import markdown
 
 from mimic42.core.media import MediaUploader
+from mimic42.core.media_download import (
+    MediaRef,
+    MediaRefCache,
+    MediaUnavailableError,
+    download_media_with_refresh,
+)
 
 logger = logging.getLogger("mimic42.telegram_tools")
 
@@ -298,6 +304,7 @@ class TelegramToolbox:
         session_factory: async_sessionmaker[AsyncSession] | None = None,
         media_uploader: MediaUploader | None = None,
         send_window: Any | None = None,
+        media_refs: MediaRefCache | None = None,
     ) -> None:
         self._client = client
         self._agent_id = agent_id
@@ -305,6 +312,42 @@ class TelegramToolbox:
         self._last_send_text_message: dict[str, datetime] = {}
         self._media_uploader = media_uploader
         self._send_window = send_window
+        self._media_refs = media_refs
+
+    async def _archived_media(self, ref: MediaRef | None) -> bytes | None:
+        """Заархивированная при получении копия из Storage.
+
+        Для самоуничтожившихся медиа это единственный источник: повторно
+        Telegram такие файлы не отдаёт вовсе.
+        """
+        if ref is None or ref.storage_path is None or self._media_uploader is None:
+            return None
+        return await self._media_uploader.open(ref.storage_path)
+
+    def _media_message_ref(self, media_id: str) -> tuple[Any, int] | None:
+        """Сообщение, из которого медиа попало в контекст, — чтобы обновить
+        протухший file_reference перечитыванием."""
+        if self._media_refs is None:
+            return None
+        ref = self._media_refs.lookup(media_id)
+        if ref is None or ref.peer is None or not isinstance(ref.message_id, int):
+            return None
+        peer: Any = ref.peer
+        if isinstance(peer, str):
+            stripped = peer.strip()
+            if stripped.lstrip("-").isdigit():
+                peer = int(stripped)
+        return (peer, ref.message_id)
+
+    async def _download_by_media_id(self, media_id: str, media_obj: Any, file: Any = bytes) -> Any:
+        """Скачать объект, восстановленный из media_id: при протухшей ссылке
+        перечитать сообщение и повторить (см. download_media_with_refresh)."""
+        return await download_media_with_refresh(
+            self._client,
+            media_obj,
+            message_ref=self._media_message_ref(media_id),
+            file=file,
+        )
 
     async def _resolve_peer(self, peer: Any, as_input: bool = True) -> Any:
         """Resolve a peer string/int to a Telethon entity."""
@@ -546,6 +589,12 @@ class TelegramToolbox:
                 text = msg.text or ""
                 media_id = format_media_object(msg)
                 if media_id:
+                    if self._media_refs is not None:
+                        # Запоминаем сообщение: по нему обновится протухшая
+                        # file_reference, когда агент вернётся к этой картинке.
+                        self._media_refs.remember(
+                            media_id, MediaRef(peer=str(peer), message_id=msg.id)
+                        )
                     if media_id.startswith("photo:"):
                         text = f"[Фото id={media_id}]" + (f" {text}" if text else "")
                     elif media_id.startswith("sticker:"):
@@ -798,14 +847,25 @@ class TelegramToolbox:
             else:
                 return [{"type": "text", "text": f"Unsupported media type: {media_type}"}]
 
-            data = await self._client.download_media(media_obj, file=bytes)
+            ref = self._media_refs.lookup(media_id) if self._media_refs is not None else None
+            cached = await self._archived_media(ref)
+            storage_path: str | None = None
+            if cached:
+                # Копия уже в Storage — повторно заливать нечего.
+                data = cached
+                storage_path = ref.storage_path if ref is not None else None
+            else:
+                data = await self._download_by_media_id(media_id, media_obj, file=bytes)
             if not data:
-                return [{"type": "text", "text": "Failed to download media."}]
+                return [{"type": "text", "text": "Не удалось скачать медиа."}]
 
             base64_str = base64.b64encode(data).decode("utf-8")
 
-            storage_path: str | None = None
-            if self._media_uploader is not None and self._agent_id is not None:
+            if (
+                storage_path is None
+                and self._media_uploader is not None
+                and self._agent_id is not None
+            ):
                 try:
                     archived = await self._media_uploader.upload(
                         agent_id=self._agent_id,
@@ -836,11 +896,23 @@ class TelegramToolbox:
                 }
             )
             return items
-        except Exception as e:
+        except MediaUnavailableError as e:
             return [
                 {
                     "type": "text",
-                    "text": f"Error loading image: {str(e)}",
+                    "text": str(e),
+                    "success": False,
+                    "error": str(e),
+                    "error_code": type(e).__name__,
+                }
+            ]
+        except Exception as e:
+            # Русский текст вместо сырых ошибок Telegram вида
+            # "caused by GetFileRequest".
+            return [
+                {
+                    "type": "text",
+                    "text": f"Не удалось открыть изображение: {e}",
                     "success": False,
                     "error": str(e),
                     "error_code": type(e).__name__,
@@ -883,7 +955,7 @@ class TelegramToolbox:
                 else:
                     return {"success": False, "error": f"Invalid media type: {media_type}"}
 
-                photo_bytes = await self._client.download_media(media_obj, file=bytes)
+                photo_bytes = await self._download_by_media_id(media_id, media_obj, file=bytes)
                 if not photo_bytes:
                     return {"success": False, "error": "Failed to download media."}
 
@@ -2111,7 +2183,7 @@ class TelegramToolbox:
                 attributes=[],
             )
 
-            data = await self._client.download_media(media_obj, file=bytes)
+            data = await self._download_by_media_id(media_id, media_obj, file=bytes)
             if not data:
                 return {"success": False, "error": "Failed to download media."}
 
@@ -2180,7 +2252,7 @@ class TelegramToolbox:
                 attributes=[],
             )
 
-            data = await self._client.download_media(media_obj, file=bytes)
+            data = await self._download_by_media_id(media_id, media_obj, file=bytes)
             if not data:
                 return {"success": False, "error": "Failed to download file."}
 
@@ -2587,6 +2659,7 @@ def build_telegram_langchain_tools(
     session_factory: async_sessionmaker[AsyncSession] | None = None,
     media_uploader: MediaUploader | None = None,
     send_window: Any | None = None,
+    media_refs: MediaRefCache | None = None,
 ) -> list[BaseTool]:
     """Expose all 91 tools as LangChain StructuredTools."""
     toolbox = TelegramToolbox(
@@ -2595,6 +2668,7 @@ def build_telegram_langchain_tools(
         session_factory=session_factory,
         media_uploader=media_uploader,
         send_window=send_window,
+        media_refs=media_refs,
     )
 
     return [

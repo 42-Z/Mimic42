@@ -16,6 +16,7 @@ from mimic42.core.agent_runtime import (
     TelegramAuthorizationRequired,
 )
 from mimic42.core.manager import AgentManager
+from mimic42.core.media_download import MediaRefCache
 from mimic42.testing.telegram import (
     FakeIncomingEvent,
     FakeTelegramAccount,
@@ -590,6 +591,52 @@ async def test_rich_message_trigger_and_txt_parsing(monkeypatch: pytest.MonkeyPa
     assert "report.txt" in prompt_text
     assert "Line 1 content" in prompt_text
     assert "Line 2 content" in prompt_text
+
+
+@pytest.mark.asyncio
+async def test_incoming_media_registers_a_message_ref_for_tools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """media_id входящего сообщения запоминается с парой (чат, id сообщения):
+    по ней тулзы обновляют протухшую file_reference (issue #98)."""
+    telegram = FakeTelegramClient()
+
+    async def mock_download_media(message: object, file: Any) -> bytes:
+        data = b"JPEGDATA"
+        file.write(data)
+        return data
+
+    telegram.download_media = mock_download_media  # type: ignore
+
+    cache = MediaRefCache()
+    runtime = MimicAgentRuntime(
+        config=make_config(),
+        telegram_client=telegram,
+        langchain_agent=FakeLangChainAgent(response="agent-ack"),
+        media_refs=cache,
+    )
+    await runtime.start()
+
+    monkeypatch.setattr(
+        "mimic42.integrations.telegram_tools.format_media_object",
+        lambda msg: "doc:12345:67890:726566:1:report.txt",
+    )
+
+    async def mock_peer(ev: Any) -> str:
+        return "12345"
+
+    monkeypatch.setattr("mimic42.core.agent_runtime._extract_incoming_peer", mock_peer)
+    monkeypatch.setattr("mimic42.core.agent_runtime._extract_incoming_message_id", lambda ev: 777)
+
+    event = MockEventWithMedia("report.txt", telegram)
+    await telegram.emit_message(event)
+
+    await runtime.stop()
+
+    ref = cache.lookup("doc:12345:67890:726566:1:report.txt")
+    assert ref is not None
+    assert ref.peer == "12345"
+    assert ref.message_id == 777
 
 
 @pytest.mark.asyncio

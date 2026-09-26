@@ -7,6 +7,7 @@ from telethon import types
 
 from mimic42.core.agent_runtime import _process_media_and_text
 from mimic42.core.media import MAX_MEDIA_BYTES, MediaFile
+from mimic42.core.media_download import MediaRefCache
 
 
 class FakeClient:
@@ -210,3 +211,95 @@ async def test_animated_sticker_keeps_its_real_mime() -> None:
 
     assert text.startswith("[Стикер")
     assert uploader.uploads == [("sticker.tgs", b"JPEGDATA", "application/x-tgsticker", "sticker")]
+
+
+class ExpiringClient(FakeClient):
+    """Свежая копия сообщения скачивается, исходная — падает с протухшей ссылкой."""
+
+    def __init__(self, fresh: object | None = None) -> None:
+        self.fresh = fresh
+        self.downloads = 0
+
+    async def download_media(self, message: object, file: object = None, **kwargs: object) -> bytes:
+        self.downloads += 1
+        if self.fresh is None or message is not self.fresh:
+            from telethon import errors
+
+            raise errors.FileReferenceExpiredError(type("Request", (), {})())
+        return await super().download_media(message, file, **kwargs)
+
+    async def get_messages(self, chat: object, ids: int) -> object:
+        self.refetched = (chat, ids)
+        return self.fresh
+
+
+def _photo_event_with(client: object) -> MagicMock:
+    event = _photo_event()
+    event.client = client
+    event.chat_id = -100500
+    event.message.id = 55
+    return event
+
+
+async def test_undownloadable_photo_keeps_a_graceful_marker() -> None:
+    """Не скачиваемая картинка не должна терять сообщение: остаётся маркер с
+    причиной, без сырых английских ошибок (issue #98: бот верификации шлёт
+    картинку, которую нельзя скачать повторно)."""
+    uploader = FakeUploader()
+
+    text, media = await _process_media_and_text(
+        _photo_event_with(ExpiringClient()),
+        "",
+        media_uploader=uploader,
+        agent_id=uuid4(),
+        media_refs=MediaRefCache(),
+    )
+
+    assert text.startswith("[Фото (недоступно")
+    assert "GetFileRequest" not in text
+    assert media == []
+    assert uploader.uploads == []
+
+
+async def test_incoming_photo_retries_after_refetching_the_message() -> None:
+    """Протухшую ссылку чиним перечитыванием сообщения, а не отбрасыванием."""
+    fresh = MagicMock(spec=types.Message)
+    fresh.media = _photo_event().message.media
+    client = ExpiringClient(fresh=fresh)
+    uploader = FakeUploader()
+
+    text, media = await _process_media_and_text(
+        _photo_event_with(client),
+        "",
+        media_uploader=uploader,
+        agent_id=uuid4(),
+        media_refs=MediaRefCache(),
+    )
+
+    assert text.startswith("[Фото id=")
+    assert client.downloads == 2
+    assert client.refetched == (-100500, 55)
+    assert len(media) == 1
+
+
+async def test_photo_media_id_is_registered_for_view_image() -> None:
+    """Ссылка на заархивированную копию и сообщение запоминаются, чтобы
+    view_image не качал самоуничтожившееся медиа повторно."""
+    cache = MediaRefCache()
+    uploader = FakeUploader()
+    agent_id = uuid4()
+
+    text, _media = await _process_media_and_text(
+        _photo_event_with(FakeClient()),
+        "",
+        media_uploader=uploader,
+        agent_id=agent_id,
+        media_refs=cache,
+    )
+
+    media_id = text[len("[Фото id=") : text.index("]")]
+    ref = cache.lookup(media_id)
+    assert ref is not None
+    assert ref.storage_path == f"{agent_id}/u1/photo.jpeg"
+    assert ref.peer == "-100500"
+    assert ref.message_id == 55

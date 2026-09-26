@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 from datetime import datetime
 from typing import Any, cast
@@ -9,6 +10,7 @@ import pytest
 from telethon import functions, types
 
 from mimic42.core.agent_runtime import TelegramClientLike, _extract_incoming_text
+from mimic42.core.media_download import MediaRef, MediaRefCache
 from mimic42.integrations.telegram_tools import (
     CustomMarkdown,
     TelegramToolbox,
@@ -563,6 +565,7 @@ async def test_view_image() -> None:
 class FakeMediaUploader:
     def __init__(self) -> None:
         self.uploads: list[tuple[str, bytes, str, str]] = []
+        self.files: dict[str, bytes] = {}
 
     async def upload(
         self,
@@ -585,7 +588,7 @@ class FakeMediaUploader:
         )
 
     async def open(self, path: str) -> bytes | None:
-        return None
+        return self.files.get(path)
 
     async def remove_prefix(self, agent_id: Any) -> None:
         return None
@@ -608,6 +611,134 @@ async def test_view_image_archives_media_when_uploader_configured() -> None:
     assert result[0]["mime_type"] == "image/jpeg"
     assert result[1]["type"] == "image_url"
     assert uploader.uploads == [("view_photo_123.jpeg", b"fake_image_data", "image/jpeg", "photo")]
+
+
+class ExpiringMediaClient(FakeTelethonClient):
+    """Скачивание всегда падает с протухшей ссылкой на файл."""
+
+    async def download_media(self, message: Any, file: Any = None, **kwargs: Any) -> Any:
+        from telethon import errors
+
+        self.calls.append(("download_media", {"message": message, "file": file, "kwargs": kwargs}))
+        raise errors.FileReferenceExpiredError(type("Request", (), {})())
+
+
+class RefreshingMediaClient(FakeTelethonClient):
+    """Старый объект не скачивается, свежее сообщение — скачивается."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        photo = MagicMock(spec=types.Photo)
+        photo.id = 123
+        photo.access_hash = 456
+        photo.file_reference = b"\x03\x04"
+        photo.dc_id = 2
+        media = MagicMock(spec=types.MessageMediaPhoto)
+        media.photo = photo
+        fresh = MagicMock(spec=types.Message)
+        fresh.id = 55
+        fresh.media = media
+        self.fresh = fresh
+
+    async def download_media(self, message: Any, file: Any = None, **kwargs: Any) -> Any:
+        from telethon import errors
+
+        self.calls.append(("download_media", {"message": message, "file": file, "kwargs": kwargs}))
+        if message is not self.fresh:
+            raise errors.FileReferenceExpiredError(type("Request", (), {})())
+        return b"fresh_image_data"
+
+    async def get_messages(self, entity: Any, **kwargs: Any) -> Any:
+        self.calls.append(("get_messages", {"entity": entity, "kwargs": kwargs}))
+        return self.fresh
+
+
+@pytest.mark.asyncio
+async def test_view_image_serves_archived_copy_when_telegram_media_is_gone() -> None:
+    """Самоуничтожившуюся картинку повторно не скачать — но её байты уже
+    заархивированы при получении, view_image отдаёт их из Storage."""
+    from uuid import uuid4
+
+    client = ExpiringMediaClient()
+    agent_id = uuid4()
+    uploader = FakeMediaUploader()
+    uploader.files = {f"{agent_id}/u1/photo.jpeg": b"ARCHIVED"}
+    cache = MediaRefCache()
+    cache.remember(
+        "photo:123:456:0102:2",
+        MediaRef(peer="-100500", message_id=55, storage_path=f"{agent_id}/u1/photo.jpeg"),
+    )
+    toolbox = TelegramToolbox(client, agent_id=agent_id, media_uploader=uploader, media_refs=cache)
+
+    result = await toolbox.view_image("photo:123:456:0102:2")
+
+    assert result[0]["type"] == "media_ref"
+    assert result[0]["storage_path"] == f"{agent_id}/u1/photo.jpeg"
+    assert uploader.uploads == []
+    assert result[1]["type"] == "image_url"
+    assert base64.b64encode(b"ARCHIVED").decode() in result[1]["image_url"]["url"]
+    assert [name for name, _ in client.calls] == []
+
+
+@pytest.mark.asyncio
+async def test_view_image_reports_unavailable_media_in_russian() -> None:
+    client = ExpiringMediaClient()
+    toolbox = TelegramToolbox(client)
+
+    result = await toolbox.view_image("photo:123:456:0102:2")
+
+    assert result[0]["success"] is False
+    assert result[0]["error_code"] == "MediaUnavailableError"
+    assert "недоступно" in result[0]["text"]
+    assert "GetFileRequest" not in result[0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_view_image_refreshes_stale_reference_via_message_ref() -> None:
+    client = RefreshingMediaClient()
+    cache = MediaRefCache()
+    cache.remember("photo:123:456:0102:2", MediaRef(peer="chat", message_id=55))
+    toolbox = TelegramToolbox(client, media_refs=cache)
+
+    result = await toolbox.view_image("photo:123:456:0102:2")
+
+    assert result[0]["type"] == "image_url"
+    assert base64.b64encode(b"fresh_image_data").decode() in result[0]["image_url"]["url"]
+    assert ("get_messages", {"entity": "chat", "kwargs": {"ids": 55}}) in client.calls
+
+
+@pytest.mark.asyncio
+async def test_get_messages_remembers_media_refs() -> None:
+    class PhotoHistoryClient(FakeTelethonClient):
+        def iter_messages(self, entity: Any, **kwargs: Any) -> Any:
+            async def gen() -> Any:
+                msg = MagicMock(spec=types.Message)
+                msg.id = 42
+                msg.sender_id = 1
+                msg.date = datetime.now()
+                msg.text = ""
+                msg.reply_markup = None
+                photo = MagicMock(spec=types.Photo)
+                photo.id = 123
+                photo.access_hash = 456
+                photo.file_reference = b"\x01\x02"
+                photo.dc_id = 2
+                media = MagicMock(spec=types.MessageMediaPhoto)
+                media.photo = photo
+                msg.media = media
+                yield msg
+
+            return gen()
+
+    cache = MediaRefCache()
+    toolbox = TelegramToolbox(PhotoHistoryClient(), media_refs=cache)
+
+    await toolbox.get_messages("chat")
+
+    ref = cache.lookup("photo:123:456:0102:2")
+    assert ref is not None
+    assert ref.peer == "chat"
+    assert ref.message_id == 42
 
 
 @pytest.mark.asyncio
