@@ -33,7 +33,7 @@ const mainNav: NavItem[] = [
 // Общие классы состояний навигации: фокус виден, активный пункт несёт
 // индикатор слева (плазменный) и подсвеченный фон.
 const navItemBase = cn(
-  'flex items-center rounded-sm border-l-2 transition-colors duration-150',
+  'flex items-center rounded-sm border-l transition-colors duration-150',
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
 );
 const navItemState = (isActive: boolean) =>

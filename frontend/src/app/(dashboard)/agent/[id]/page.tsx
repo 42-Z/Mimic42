@@ -662,7 +662,7 @@ function TabMemory({ agentId }: TabMemoryProps) {
                   </p>
 
                   {item.prev_value && item.new_value && item.prev_value !== item.new_value && (
-                    <div className="text-xs border-l-2 border-border pl-3 py-1 space-y-1 bg-background/20 rounded-r-sm">
+                    <div className="text-xs border-l border-border pl-3 py-1 space-y-1 bg-background/20 rounded-r-sm">
                       <span className="text-muted-foreground font-mono block text-[10px]">Предыдущее значение:</span>
                       <span className="text-muted-foreground line-through block text-xs">{sanitizeText(item.prev_value)}</span>
                     </div>
