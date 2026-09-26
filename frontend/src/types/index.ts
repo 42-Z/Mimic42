@@ -334,6 +334,32 @@ export interface AnalyticsDataPoint {
 }
 
 /**
+ * POST /api/v1/agents/:id/media — ответ на загрузку картинки
+ */
+export interface UploadedMedia {
+  storage_path: string;
+  name: string;
+  mime_type: string;
+  size: number;
+}
+
+/**
+ * Один вариант «Первого комментария»: текст и/или картинка.
+ * Хранится в agents.settings.first_comment — зеркало FirstCommentVariant
+ * из src/mimic42/core/first_comment.py.
+ */
+export interface FirstCommentVariant {
+  text: string;
+  image_path: string | null;
+  image_name: string | null;
+}
+
+export interface FirstCommentSettings {
+  enabled: boolean;
+  variants: FirstCommentVariant[];
+}
+
+/**
  * Form state for agent settings
  */
 export interface AgentSettingsForm {

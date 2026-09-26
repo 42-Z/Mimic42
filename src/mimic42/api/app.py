@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -7,7 +8,17 @@ from datetime import datetime
 from typing import Annotated, Any, Literal, Protocol
 from uuid import UUID, uuid4
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
+from fastapi import (
+    Depends,
+    FastAPI,
+    File,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+    status,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -37,7 +48,7 @@ from mimic42.core.manager import (
     LangChainAgentFactory,
     TelegramClientFactory,
 )
-from mimic42.core.media import MediaUploader
+from mimic42.core.media import MAX_PHOTO_BYTES, MediaUploader, detect_photo_type
 from mimic42.core.memory import LongTermMemoryLike, RuntimeMemoryService
 from mimic42.core.onboarding import (
     AgentOnboardingService,
@@ -145,6 +156,40 @@ class TelegramRebindConfirmRequest(BaseModel):
     onboarding_id: UUID
 
 
+_UPLOAD_CHUNK_BYTES = 1024 * 1024
+
+
+class UploadedMedia(BaseModel):
+    """Ответ на загрузку картинки: путь кладётся в настройки агента."""
+
+    storage_path: str
+    name: str
+    mime_type: str
+    size: int
+
+
+def _image_filename(filename: str | None, extension: str) -> str:
+    """Имя с расширением настоящего формата: по нему Telethon решает, фото это или файл."""
+    base = (filename or "").strip()
+    stem = base.rsplit(".", 1)[0] if "." in base else base
+    return f"{stem or 'image'}.{extension}"
+
+
+async def _read_limited(file: UploadFile, limit: int) -> bytes | None:
+    """Прочитать загрузку порциями; ``None`` — файл больше ``limit``.
+
+    Целиком в память не читаем: размер клиент может не прислать или соврать.
+    """
+    chunks: list[bytes] = []
+    size = 0
+    while chunk := await file.read(_UPLOAD_CHUNK_BYTES):
+        size += len(chunk)
+        if size > limit:
+            return None
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 def _resolve_telegram_app(
     settings: Settings,
     api_id: int | None,
@@ -248,19 +293,21 @@ def create_app(
     app_media_storage: MediaUploader | None = media_uploader or getattr(
         manager, "media_uploader", None
     )
+    # Хранилище, созданное здесь, приложение и закрывает; переданное снаружи — нет.
+    owned_media_storage: SupabaseMediaStorage | None = None
     if (
         app_media_storage is None
         and app_settings.supabase_url
         and app_settings.supabase_service_key
     ):
         try:
-            app_media_storage = SupabaseMediaStorage(
+            owned_media_storage = SupabaseMediaStorage(
                 supabase_url=app_settings.supabase_url,
                 service_key=app_settings.supabase_service_key,
             )
         except Exception:
             logger.warning("Failed to initialise Supabase media storage", exc_info=True)
-            app_media_storage = None
+        app_media_storage = owned_media_storage
     app_manager = manager or AgentManager(
         telegram_client_factory=telegram_client_factory,
         langchain_agent_factory=langchain_agent_factory,
@@ -350,6 +397,9 @@ def create_app(
             yield
         finally:
             await _get_agent_manager(app).shutdown()
+            if owned_media_storage is not None:
+                # После остановки агентов: до неё они ещё читают из хранилища картинки.
+                owned_media_storage.close()
             if database_engine is not None:
                 await database_engine.dispose()
 
@@ -584,6 +634,59 @@ def create_app(
         await _ensure_agent_owner(store, agent_id=agent_id, user_id=current_user.user_id)
         return await store.get_conversation(
             agent_id=agent_id, limit=limit, before=before, before_id=before_id
+        )
+
+    @app.post(
+        "/api/v1/agents/{agent_id}/media",
+        response_model=UploadedMedia,
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def upload_agent_media(
+        agent_id: UUID,
+        current_user: CurrentUserDep,
+        file: Annotated[UploadFile, File()],
+    ) -> UploadedMedia:
+        """Картинка для настроек агента (сейчас — «Первый комментарий»).
+
+        Бакет `agent-media` закрыт для клиентских ролей, поэтому дашборд не
+        может писать в него напрямую: файл проходит через бэкенд с
+        service-ключом, и тот же путь потом читается GET-эндпоинтом медиа.
+        """
+        store = _get_agent_store(app)
+        media_storage: MediaUploader | None = getattr(app.state, "media_uploader", None)
+        if store is None or media_storage is None:
+            raise HTTPException(status_code=404, detail="Медиа недоступно")
+        await _ensure_agent_owner(store, agent_id=agent_id, user_id=current_user.user_id)
+
+        data = await _read_limited(file, MAX_PHOTO_BYTES)
+        if data is None:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Картинка больше {MAX_PHOTO_BYTES // (1024 * 1024)} МБ",
+            )
+        if not data:
+            raise HTTPException(status_code=400, detail="Файл пуст")
+        photo_type = await asyncio.to_thread(detect_photo_type, data)
+        if photo_type is None:
+            raise HTTPException(
+                status_code=415,
+                detail="Поддерживаются только изображения JPEG и PNG",
+            )
+        mime_type, extension = photo_type
+        uploaded = await media_storage.upload(
+            agent_id=agent_id,
+            filename=_image_filename(file.filename, extension),
+            data=data,
+            mime_type=mime_type,
+            kind="photo",
+        )
+        if uploaded is None or uploaded.storage_path is None:
+            raise HTTPException(status_code=502, detail="Не удалось сохранить файл")
+        return UploadedMedia(
+            storage_path=uploaded.storage_path,
+            name=uploaded.name,
+            mime_type=uploaded.mime_type,
+            size=uploaded.size,
         )
 
     @app.get("/api/v1/agents/{agent_id}/media/{media_path:path}")

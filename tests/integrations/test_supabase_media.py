@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 import builtins
+import warnings
 from types import SimpleNamespace
+from typing import Any
 from uuid import uuid4
 
+import httpx
 import pytest
 
-from mimic42.integrations.supabase_media import MAX_MEDIA_BYTES, SupabaseMediaStorage
+from mimic42.integrations.supabase_media import (
+    MAX_MEDIA_BYTES,
+    SupabaseMediaStorage,
+    storage_client,
+)
+from supabase import SupabaseException
 
 
 class FakeBucket:
@@ -60,6 +68,37 @@ def build_storage(monkeypatch: pytest.MonkeyPatch, store: dict[str, bytes]) -> S
     return SupabaseMediaStorage(
         supabase_url="https://example.supabase.co", service_key="service-key"
     )
+
+
+def test_storage_builds_without_deprecation_warnings() -> None:
+    """Живые тесты идут с -W error: предупреждение при создании клиента отключало
+    хранилище целиком, и проверки с картинками тихо пропускались."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        storage = SupabaseMediaStorage(
+            supabase_url="https://example.supabase.co", service_key="header.payload.signature"
+        )
+    storage.close()
+
+
+def test_storage_client_closes_its_http_client_when_setup_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Неверный адрес в настройках: хранилища не будет, а сокеты его HTTP-клиента
+    закрыть больше некому."""
+    built: list[httpx.Client] = []
+
+    class RecordingClient(httpx.Client):
+        def __init__(self, **kwargs: Any) -> None:
+            super().__init__(**kwargs)
+            built.append(self)
+
+    monkeypatch.setattr(httpx, "Client", RecordingClient)
+    with pytest.raises(SupabaseException, match="Invalid URL"):
+        storage_client("not-a-url", "header.payload.signature")
+
+    (client,) = built
+    assert client.is_closed
 
 
 async def test_upload_stores_file_and_returns_metadata(monkeypatch: pytest.MonkeyPatch) -> None:

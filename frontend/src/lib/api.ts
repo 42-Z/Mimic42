@@ -130,6 +130,7 @@ import type {
   TriggerMessageResponse,
   AgentMemory,
   MemoryHistoryItem,
+  UploadedMedia,
 } from '@/types';
 
 export const agentsApi = {
@@ -184,6 +185,21 @@ export const agentsApi = {
     apiClient
       .post<TriggerMessageResponse>(`/agents/${id}/messages/trigger`, body)
       .then((r) => r.data),
+
+  /**
+   * POST /api/v1/agents/:id/media — картинка для настроек агента.
+   * Бакет закрыт для клиентских ролей, поэтому файл идёт через бэкенд.
+   * Content-Type не задаётся вручную: его ставит браузер вместе с boundary.
+   */
+  uploadMedia: (id: string, file: File) => {
+    const body = new FormData();
+    body.append('file', file);
+    return apiClient
+      .post<UploadedMedia>(`/agents/${id}/media`, body, {
+        headers: { 'Content-Type': undefined },
+      })
+      .then((r) => r.data);
+  },
 };
 
 export const onboardingApi = {

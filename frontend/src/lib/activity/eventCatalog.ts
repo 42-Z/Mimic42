@@ -3,6 +3,7 @@ import {
   Square,
   AlertTriangle,
   MessageSquareX,
+  MessageSquarePlus,
   Timer,
   Hourglass,
   Ban,
@@ -30,6 +31,8 @@ export const EVENT_CATALOG: Record<string, EventMeta> = {
   'message.blocked': { ru: 'Отправка отменена: чат закрыт', icon: MessageSquareX },
   'timer.fired': { ru: 'Сработал отложенный таймер', icon: Timer },
   'timer.failed': { ru: 'Таймер завершился ошибкой', icon: AlertTriangle },
+  'first_comment.sent': { ru: 'Первый комментарий отправлен', icon: MessageSquarePlus },
+  'first_comment.failed': { ru: 'Первый комментарий не ушёл', icon: AlertTriangle },
 };
 
 export function getEventMeta(eventType: string): EventMeta | null {

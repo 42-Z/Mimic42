@@ -21,6 +21,7 @@ from mimic42.core.agent_store import (
     ToolCallRecord,
     reply_target_of,
 )
+from mimic42.core.first_comment import parse_first_comment
 from mimic42.core.onboarding import OnboardingSession, SecretCipher
 from mimic42.integrations.database_models import (
     AgentEventModel,
@@ -190,6 +191,9 @@ class DatabaseAgentStore:
                 system_prompt=load_default_system_prompt(),
                 soul_prompt=agent.soul_prompt,
                 name=agent.name,
+                first_comment=parse_first_comment(
+                    agent.settings.get("first_comment") if agent.settings else None
+                ),
             )
 
     async def get_telegram_rebind_credentials(self, agent_id: UUID) -> TelegramRebindCredentials:
@@ -594,7 +598,9 @@ class DatabaseAgentStore:
                 # realtime feed and nothing is duplicated inside a turn.
                 # Legacy tool events (no turn_id, pre-`tool.*` naming) still
                 # attach to the turn they ran in.
-                is_lifecycle = item.event_type.startswith(("agent.", "timer.", "turn.", "message."))
+                is_lifecycle = item.event_type.startswith(
+                    ("agent.", "timer.", "turn.", "message.", "first_comment.")
+                )
                 if is_lifecycle or legacy_current is None:
                     block = ConversationTurn(
                         id=evt.id,
