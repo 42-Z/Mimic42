@@ -25,10 +25,9 @@ from fastapi import FastAPI
 from httpx import AsyncClient
 from PIL import Image
 
-from mimic42.integrations.supabase_media import BUCKET
+from mimic42.integrations.supabase_media import BUCKET, storage_client
 from mimic42.testing.real_tg.checker import Checker, ThreadMessage
 from mimic42.testing.slots import plain_dsn
-from supabase import create_client
 from tests.real_tg.backend.helpers import jwt
 
 pytestmark = pytest.mark.real_tg
@@ -232,10 +231,14 @@ async def test_image_comment_reuses_the_uploaded_photo(
             seen = await watcher
     finally:
         # Картинка тестовая: в хранилище агента её не оставляем.
-        storage = create_client(
-            os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_ROLE_KEY"]
-        ).storage
-        await asyncio.to_thread(lambda: storage.from_(BUCKET).remove([image_path]))
+        def remove_image() -> None:
+            # with закрывает HTTP-клиент: иначе его сокет всплыл бы под -W error.
+            with storage_client(
+                os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_ROLE_KEY"]
+            ) as storage:
+                storage.from_(BUCKET).remove([image_path])
+
+        await asyncio.to_thread(remove_image)
 
     events = await first_comment_events(agent_id, started)
     print("обсуждение:", seen)  # noqa: T201

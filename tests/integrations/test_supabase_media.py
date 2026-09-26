@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import builtins
+import warnings
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -60,6 +61,17 @@ def build_storage(monkeypatch: pytest.MonkeyPatch, store: dict[str, bytes]) -> S
     return SupabaseMediaStorage(
         supabase_url="https://example.supabase.co", service_key="service-key"
     )
+
+
+def test_storage_builds_without_deprecation_warnings() -> None:
+    """Живые тесты идут с -W error: предупреждение при создании клиента отключало
+    хранилище целиком, и проверки с картинками тихо пропускались."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        storage = SupabaseMediaStorage(
+            supabase_url="https://example.supabase.co", service_key="header.payload.signature"
+        )
+    storage.close()
 
 
 async def test_upload_stores_file_and_returns_metadata(monkeypatch: pytest.MonkeyPatch) -> None:

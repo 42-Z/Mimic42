@@ -293,19 +293,21 @@ def create_app(
     app_media_storage: MediaUploader | None = media_uploader or getattr(
         manager, "media_uploader", None
     )
+    # Хранилище, созданное здесь, приложение и закрывает; переданное снаружи — нет.
+    owned_media_storage: SupabaseMediaStorage | None = None
     if (
         app_media_storage is None
         and app_settings.supabase_url
         and app_settings.supabase_service_key
     ):
         try:
-            app_media_storage = SupabaseMediaStorage(
+            owned_media_storage = SupabaseMediaStorage(
                 supabase_url=app_settings.supabase_url,
                 service_key=app_settings.supabase_service_key,
             )
         except Exception:
             logger.warning("Failed to initialise Supabase media storage", exc_info=True)
-            app_media_storage = None
+        app_media_storage = owned_media_storage
     app_manager = manager or AgentManager(
         telegram_client_factory=telegram_client_factory,
         langchain_agent_factory=langchain_agent_factory,
@@ -395,6 +397,9 @@ def create_app(
             yield
         finally:
             await _get_agent_manager(app).shutdown()
+            if owned_media_storage is not None:
+                # После остановки агентов: до неё они ещё читают из хранилища картинки.
+                owned_media_storage.close()
             if database_engine is not None:
                 await database_engine.dispose()
 
