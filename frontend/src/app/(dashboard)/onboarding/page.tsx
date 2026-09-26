@@ -17,13 +17,14 @@ import { PresetPicker } from '@/components/agent/PresetPicker';
 import { Button } from '@/components/ui/button';
 import { ConfirmDialog } from '@/components/ui/modal';
 import { Input, Textarea } from '@/components/ui/input';
-import { Spinner } from '@/components/ui/card';
+import { Card, CardHeader, CardContent, CardFooter, Spinner } from '@/components/ui/card';
 import { useToast } from '@/components/ui/toast';
 import {
   agentNameSchema, soulPromptSchema,
   telegramCredentialsSchema, telegramCodeSchema, telegram2FASchema,
 } from '@/lib/validators';
-import { Zap } from 'lucide-react';
+import { cn } from '@/lib/utils';
+import { Lightbulb, Rocket, Zap } from 'lucide-react';
 import Link from 'next/link';
 import type { OnboardingStep, OnboardingSessionRow } from '@/types';
 import type { ApiError } from '@/types';
@@ -57,7 +58,7 @@ export default function OnboardingPage() {
 
   if (isLoading) {
     return (
-      <div className="min-h-screen bg-void-950 flex items-center justify-center">
+      <div className="min-h-screen bg-background flex items-center justify-center">
         <Spinner size="lg" />
       </div>
     );
@@ -66,13 +67,13 @@ export default function OnboardingPage() {
   const currentStep = deriveOnboardingStep(session);
 
   return (
-    <div className="min-h-screen bg-void-950">
+    <div className="min-h-screen bg-background">
       <div className="max-w-2xl mx-auto px-6 py-12">
         {/* Logo */}
         <div className="flex items-center justify-between mb-12">
           <div className="flex items-center gap-2">
             <Zap className="h-5 w-5 text-plasma-400" />
-            <span className="font-mono font-bold text-sm">
+            <span className="font-mono font-bold text-sm text-foreground">
               MIMIC<span className="text-plasma-400">42</span>
             </span>
           </div>
@@ -82,7 +83,7 @@ export default function OnboardingPage() {
             )}
             <Link
               href="/dashboard"
-              className="font-mono text-xs text-void-300 hover:text-void-200 transition-colors"
+              className="font-mono text-xs text-muted-foreground hover:text-foreground transition-colors"
             >
               ← К агентам
             </Link>
@@ -123,14 +124,16 @@ function DiscardDraftButton({ sessionId }: { sessionId: string }) {
 
   return (
     <>
-      <button
+      <Button
         type="button"
+        variant="ghost"
+        size="sm"
         onClick={() => setConfirmOpen(true)}
-        disabled={discard.isPending}
-        className="font-mono text-xs text-void-300 hover:text-crimson-400 transition-colors disabled:opacity-50"
+        isLoading={discard.isPending}
+        className="text-muted-foreground hover:text-destructive"
       >
         Начать заново
-      </button>
+      </Button>
       <ConfirmDialog
         isOpen={confirmOpen}
         onClose={() => setConfirmOpen(false)}
@@ -170,13 +173,13 @@ function StepRouter({
 // ── Step heading helper ───────────────────────────────────────────────────────
 function StepHeading({ step, title, description }: { step: string; title: string; description: string }) {
   return (
-    <div className="mb-8">
-      <p className="font-mono text-xs text-plasma-500 uppercase tracking-widest mb-2">
+    <CardHeader className="pt-8 pb-4">
+      <p className="font-mono text-xs uppercase tracking-wider text-muted-foreground">
         Шаг {step}
       </p>
-      <h1 className="font-display text-3xl font-bold text-void-100 mb-2">{title}</h1>
-      <p className="font-mono text-sm text-void-300 leading-relaxed">{description}</p>
-    </div>
+      <h1 className="font-display text-2xl font-bold text-foreground">{title}</h1>
+      <p className="font-mono text-sm text-muted-foreground leading-relaxed">{description}</p>
+    </CardHeader>
   );
 }
 
@@ -204,22 +207,28 @@ function StepName({ session }: { session: OnboardingSessionRow | null }) {
 
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
-      <StepHeading
-        step="01 / 04"
-        title="Как зовут вашего агента?"
-        description="Придумайте имя для агента — оно будет отображаться в панели управления."
-      />
-      <Input
-        label="Имя агента"
-        placeholder="Например: Алекс, Помощник, My Bot..."
-        value={name}
-        onChange={(e) => setName(e.target.value)}
-        error={error}
-        autoFocus
-      />
-      <Button type="submit" isLoading={save.isPending} size="lg">
-        Продолжить →
-      </Button>
+      <Card padding="none">
+        <StepHeading
+          step="01 / 04"
+          title="Как зовут вашего агента?"
+          description="Придумайте имя для агента — оно будет отображаться в панели управления."
+        />
+        <CardContent>
+          <Input
+            label="Имя агента"
+            placeholder="Например: Алекс, Помощник, My Bot..."
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            error={error}
+            autoFocus
+          />
+        </CardContent>
+        <CardFooter>
+          <Button type="submit" isLoading={save.isPending} size="lg">
+            Продолжить →
+          </Button>
+        </CardFooter>
+      </Card>
     </form>
   );
 }
@@ -255,35 +264,42 @@ function StepSoul({ session }: { session: OnboardingSessionRow | null }) {
 
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
-      <StepHeading
-        step="02 / 04"
-        title="Характер агента"
-        description="Опишите личность, стиль общения и особенности вашего агента. Чем подробнее — тем естественнее поведение."
-      />
-      <div className="p-4 rounded-sm bg-plasma-950/30 border border-plasma-900/50 font-mono text-xs text-plasma-400">
-        💡 SOUL.md — это душа вашего агента. Здесь задаётся всё: от манеры речи до любимых тем.
-      </div>
-      <div className="space-y-2">
-        <div className="flex justify-end">
-          <PresetPicker currentValue={soulPrompt} onApply={setSoulPrompt} />
-        </div>
-        <Textarea
-          label={`SOUL.md — ${session?.agent_name ?? 'Агент'}`}
-          placeholder={placeholder}
-          value={soulPrompt}
-          onChange={(e) => setSoulPrompt(e.target.value)}
-          error={error}
-          className="min-h-[220px]"
-          showCount
-          maxLength={50000}
-          autoFocus
+      <Card padding="none">
+        <StepHeading
+          step="02 / 04"
+          title="Характер агента"
+          description="Опишите личность, стиль общения и особенности вашего агента. Чем подробнее — тем естественнее поведение."
         />
-      </div>
-      <div className="flex gap-3">
-        <Button type="submit" isLoading={save.isPending} size="lg">
-          Продолжить →
-        </Button>
-      </div>
+        <CardContent className="space-y-6">
+          <div className="flex items-start gap-3 rounded-sm border border-plasma-800/60 bg-plasma-950/40 p-4">
+            <Lightbulb className="h-4 w-4 shrink-0 mt-0.5 text-plasma-400" aria-hidden="true" />
+            <p className="font-mono text-xs text-plasma-300 leading-relaxed">
+              SOUL.md — это душа вашего агента. Здесь задаётся всё: от манеры речи до любимых тем.
+            </p>
+          </div>
+          <div className="space-y-2">
+            <div className="flex justify-end">
+              <PresetPicker currentValue={soulPrompt} onApply={setSoulPrompt} />
+            </div>
+            <Textarea
+              label={`SOUL.md — ${session?.agent_name ?? 'Агент'}`}
+              placeholder={placeholder}
+              value={soulPrompt}
+              onChange={(e) => setSoulPrompt(e.target.value)}
+              error={error}
+              className="min-h-[220px]"
+              showCount
+              maxLength={50000}
+              autoFocus
+            />
+          </div>
+        </CardContent>
+        <CardFooter>
+          <Button type="submit" isLoading={save.isPending} size="lg">
+            Продолжить →
+          </Button>
+        </CardFooter>
+      </Card>
     </form>
   );
 }
@@ -321,26 +337,28 @@ function StepTelegramCredentials({ session }: { session: OnboardingSessionRow | 
 
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
-      <StepHeading
-        step="03 / 04"
-        title="Подключение Telegram"
-        description="Авторизуйтесь как пользователь, а не как бот. Введите номер — на него придёт код подтверждения."
-      />
-
-      <div className="space-y-4">
-        <Input
-          label="Номер телефона"
-          type="tel"
-          placeholder="+79991234567"
-          value={values.phone_number}
-          onChange={(e) => setValues((v) => ({ ...v, phone_number: e.target.value }))}
-          error={errors.phone_number}
+      <Card padding="none">
+        <StepHeading
+          step="03 / 04"
+          title="Подключение Telegram"
+          description="Авторизуйтесь как пользователь, а не как бот. Введите номер — на него придёт код подтверждения."
         />
-      </div>
-
-      <Button type="submit" isLoading={startAuth.isPending} size="lg">
-        {startAuth.isPending ? 'Отправка кода...' : 'Получить код →'}
-      </Button>
+        <CardContent>
+          <Input
+            label="Номер телефона"
+            type="tel"
+            placeholder="+79991234567"
+            value={values.phone_number}
+            onChange={(e) => setValues((v) => ({ ...v, phone_number: e.target.value }))}
+            error={errors.phone_number}
+          />
+        </CardContent>
+        <CardFooter>
+          <Button type="submit" isLoading={startAuth.isPending} size="lg">
+            {startAuth.isPending ? 'Отправка кода...' : 'Получить код →'}
+          </Button>
+        </CardFooter>
+      </Card>
     </form>
   );
 }
@@ -403,44 +421,48 @@ function StepTelegramCode({
 
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
-      <StepHeading
-        step="03 / 04"
-        title="Код из Telegram"
-        description={`Telegram отправил код на номер ${session?.phone_number ?? ''}. Введите его ниже.`}
-      />
-      <Input
-        label="Код подтверждения"
-        type="text"
-        inputMode="numeric"
-        placeholder="12345"
-        maxLength={8}
-        value={code}
-        onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))}
-        error={error}
-        autoFocus
-        className="text-center text-xl tracking-[0.5em]"
-      />
-      <div className="flex gap-4">
-        <Button
-          type="button"
-          variant="outline"
-          onClick={handleBack}
-          isLoading={isBacking}
-          disabled={submitCode.isPending}
-          size="lg"
-        >
-          ← Назад
-        </Button>
-        <Button
-          type="submit"
-          isLoading={submitCode.isPending}
-          disabled={isBacking}
-          size="lg"
-          className="flex-1"
-        >
-          Подтвердить →
-        </Button>
-      </div>
+      <Card padding="none">
+        <StepHeading
+          step="03 / 04"
+          title="Код из Telegram"
+          description={`Telegram отправил код на номер ${session?.phone_number ?? ''}. Введите его ниже.`}
+        />
+        <CardContent>
+          <Input
+            label="Код подтверждения"
+            type="text"
+            inputMode="numeric"
+            placeholder="12345"
+            maxLength={8}
+            value={code}
+            onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))}
+            error={error}
+            autoFocus
+            className="text-center text-xl tracking-[0.5em]"
+          />
+        </CardContent>
+        <CardFooter className="gap-4">
+          <Button
+            type="button"
+            variant="outline"
+            onClick={handleBack}
+            isLoading={isBacking}
+            disabled={submitCode.isPending}
+            size="lg"
+          >
+            ← Назад
+          </Button>
+          <Button
+            type="submit"
+            isLoading={submitCode.isPending}
+            disabled={isBacking}
+            size="lg"
+            className="flex-1"
+          >
+            Подтвердить →
+          </Button>
+        </CardFooter>
+      </Card>
     </form>
   );
 }
@@ -497,41 +519,45 @@ function StepTelegram2FA({
 
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
-      <StepHeading
-        step="03 / 04"
-        title="Двухфакторная аутентификация"
-        description="На вашем аккаунте включена 2FA. Введите пароль облачного хранилища Telegram."
-      />
-      <Input
-        label="Пароль 2FA"
-        type="password"
-        placeholder="••••••••"
-        value={password}
-        onChange={(e) => setPassword(e.target.value)}
-        error={error}
-        autoFocus
-      />
-      <div className="flex gap-4">
-        <Button
-          type="button"
-          variant="outline"
-          onClick={handleBack}
-          isLoading={isBacking}
-          disabled={submitCode.isPending}
-          size="lg"
-        >
-          ← Назад
-        </Button>
-        <Button
-          type="submit"
-          isLoading={submitCode.isPending}
-          disabled={isBacking}
-          size="lg"
-          className="flex-1"
-        >
-          Подтвердить →
-        </Button>
-      </div>
+      <Card padding="none">
+        <StepHeading
+          step="03 / 04"
+          title="Двухфакторная аутентификация"
+          description="На вашем аккаунте включена 2FA. Введите пароль облачного хранилища Telegram."
+        />
+        <CardContent>
+          <Input
+            label="Пароль 2FA"
+            type="password"
+            placeholder="••••••••"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            error={error}
+            autoFocus
+          />
+        </CardContent>
+        <CardFooter className="gap-4">
+          <Button
+            type="button"
+            variant="outline"
+            onClick={handleBack}
+            isLoading={isBacking}
+            disabled={submitCode.isPending}
+            size="lg"
+          >
+            ← Назад
+          </Button>
+          <Button
+            type="submit"
+            isLoading={submitCode.isPending}
+            disabled={isBacking}
+            size="lg"
+            className="flex-1"
+          >
+            Подтвердить →
+          </Button>
+        </CardFooter>
+      </Card>
     </form>
   );
 }
@@ -552,33 +578,52 @@ function StepFinalize({ session }: { session: OnboardingSessionRow | null }) {
 
   return (
     <div className="space-y-6">
-      <StepHeading
-        step="04 / 04"
-        title="Всё готово!"
-        description="Проверьте данные агента и запустите его."
-      />
-
-      <div className="space-y-3">
-        {[
-          { label: 'Имя', value: session?.agent_name ?? '—' },
-          { label: 'Telegram', value: session?.phone_number ?? '—' },
-          { label: 'Авторизация', value: session?.authorization_status === 'authorized' ? '✓ Авторизован' : '—' },
-        ].map((row) => (
-          <div key={row.label} className="flex items-center justify-between py-3 border-b border-void-800">
-            <span className="font-mono text-xs text-void-300 uppercase tracking-wider">{row.label}</span>
-            <span className="font-mono text-sm text-void-200">{row.value}</span>
+      <Card padding="none">
+        <StepHeading
+          step="04 / 04"
+          title="Всё готово!"
+          description="Проверьте данные агента и запустите его."
+        />
+        <CardContent>
+          <div className="space-y-1">
+            {[
+              { label: 'Имя', value: session?.agent_name ?? '—' },
+              { label: 'Telegram', value: session?.phone_number ?? '—' },
+              { label: 'Авторизация', value: session?.authorization_status === 'authorized' ? '✓ Авторизован' : '—' },
+            ].map((row) => (
+              <div
+                key={row.label}
+                className="flex items-center justify-between gap-4 py-3 border-b border-border last:border-b-0"
+              >
+                <span className="font-mono text-xs text-muted-foreground uppercase tracking-wider">{row.label}</span>
+                <span
+                  className={cn(
+                    'font-mono text-sm',
+                    row.value === '—'
+                      ? 'text-muted-foreground'
+                      : row.value.startsWith('✓')
+                        ? 'text-success'
+                        : 'text-foreground',
+                  )}
+                >
+                  {row.value}
+                </span>
+              </div>
+            ))}
           </div>
-        ))}
-      </div>
-
-      <Button
-        onClick={handleFinalize}
-        isLoading={finalize.isPending}
-        size="lg"
-        className="w-full"
-      >
-        {finalize.isPending ? 'Создание агента...' : '🚀 Создать агента'}
-      </Button>
+        </CardContent>
+        <CardFooter>
+          <Button
+            onClick={handleFinalize}
+            isLoading={finalize.isPending}
+            size="lg"
+            className="w-full"
+            leftIcon={<Rocket className="h-4 w-4" aria-hidden="true" />}
+          >
+            {finalize.isPending ? 'Создание агента...' : 'Создать агента'}
+          </Button>
+        </CardFooter>
+      </Card>
     </div>
   );
 }
