@@ -63,6 +63,37 @@ async def wait_archived_photo(app: FastAPI, agent_id: str) -> str | None:
     return None
 
 
+async def still_downloadable(checker: Checker, message: Any) -> bool:
+    try:
+        data = await checker.client.download_media(message)
+    except Exception:
+        return False
+    return bool(data)
+
+
+async def telegram_loses_the_file(checker: Checker, phone: str, message: Any) -> str | None:
+    """Заставить Telegram перестать отдавать файл; возвращает механизм.
+
+    Таймер самоуничтожения стартует с просмотра в официальном клиенте, а не
+    с GetFileRequest юзербота, поэтому идём по нарастающей: замена медиа в
+    сообщении инвалидирует file_reference старого файла, удаление сообщения —
+    крайний шаг. Всё, что у Telegram осталось, — архивная копия.
+    """
+    if not await still_downloadable(checker, message):
+        return "уже недоступно"
+
+    replacement = BytesIO(png((200, 40, 40)))
+    replacement.name = "other.png"
+    await checker.client.edit_message(phone, message.id, file=replacement)
+    if not await still_downloadable(checker, message):
+        return "замена медиа"
+
+    await checker.client.delete_messages(phone, [message.id], revoke=True)
+    if not await still_downloadable(checker, message):
+        return "удаление"
+    return None
+
+
 async def test_self_destructing_photo_is_archived_before_telegram_loses_it(
     real_app: tuple[FastAPI, AsyncClient],
     checker: Checker,
@@ -81,17 +112,9 @@ async def test_self_destructing_photo_is_archived_before_telegram_loses_it(
     storage_path = await wait_archived_photo(app, agent_id)
     assert storage_path, "Входящее фото не заархивировалось в Storage"
 
-    # Файл исчезает из Telegram. Таймер самоуничтожения стартует от просмотра
-    # в официальном клиенте, а не от GetFileRequest юзербота, поэтому исчезновение
-    # инициируем удалением сообщения — воспроизводимое «канал потерял файл».
-    await checker.client.delete_messages(phone, [message.id], revoke=True)
-    gone = False
-    try:
-        data = await checker.client.download_media(message)
-        gone = not data
-    except Exception:
-        gone = True
-    assert gone, "Telegram всё ещё отдаёт фото удалённого сообщения"
+    # Файл исчезает из Telegram — остаётся только архивная копия.
+    mechanism = await telegram_loses_the_file(checker, phone, message)
+    assert mechanism, "Telegram продолжает отдавать файл — потеря не воспроизвёлась"
 
     # Архивная копия доступна через API дашборда: Telegram её уже не отдаёт.
     token = await jwt()
