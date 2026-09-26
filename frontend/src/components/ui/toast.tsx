@@ -60,10 +60,10 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
 
 // ── Individual Toast ───────────────────────────────────────────────────────────
 const variantStyles: Record<ToastVariant, string> = {
-  success: 'border-neon-700 bg-neon-950/90 text-neon-200',
-  error:   'border-crimson-700 bg-crimson-950/90 text-crimson-200',
-  warning: 'border-amber-700 bg-amber-950/90 text-amber-200',
-  info:    'border-plasma-700 bg-plasma-950/90 text-plasma-200',
+  success: 'border-success bg-success/10 text-success',
+  error:   'border-destructive bg-destructive/10 text-destructive',
+  warning: 'border-warning bg-warning/10 text-warning',
+  info:    'border-primary bg-primary/10 text-primary',
 };
 
 const variantIcons: Record<ToastVariant, string> = {
