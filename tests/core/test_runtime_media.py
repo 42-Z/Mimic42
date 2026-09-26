@@ -261,6 +261,28 @@ async def test_undownloadable_photo_keeps_a_graceful_marker() -> None:
     assert uploader.uploads == []
 
 
+async def test_unexpected_media_error_keeps_the_message() -> None:
+    """Непредвиденная ошибка скачивания тоже не теряет медиа молча:
+    остаётся маркер, сырая ошибка не уходит в текст."""
+
+    class BrokenClient(FakeClient):
+        async def download_media(
+            self, message: object, file: object = None, **kwargs: object
+        ) -> bytes:
+            raise RuntimeError("boom (caused by GetFileRequest)")
+
+    text, media = await _process_media_and_text(
+        _photo_event_with(BrokenClient()),
+        "подпись",
+        media_uploader=None,
+        media_refs=MediaRefCache(),
+    )
+
+    assert "Фото" in text
+    assert "подпись" in text
+    assert "GetFileRequest" not in text
+
+
 async def test_incoming_photo_retries_after_refetching_the_message() -> None:
     """Протухшую ссылку чиним перечитыванием сообщения, а не отбрасыванием."""
     fresh = MagicMock(spec=types.Message)
@@ -301,5 +323,5 @@ async def test_photo_media_id_is_registered_for_view_image() -> None:
     ref = cache.lookup(media_id)
     assert ref is not None
     assert ref.storage_path == f"{agent_id}/u1/photo.jpeg"
-    assert ref.peer == "-100500"
+    assert ref.peer == -100500
     assert ref.message_id == 55

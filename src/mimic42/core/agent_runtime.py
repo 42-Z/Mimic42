@@ -31,6 +31,7 @@ from mimic42.core.media_download import (
     MediaRefCache,
     MediaUnavailableError,
     download_media_with_refresh,
+    normalize_peer_ref,
 )
 from mimic42.core.memory import MemoryServiceLike, RuntimeMemoryService
 from mimic42.core.model_catalog import DEFAULT_LLM_MODEL
@@ -1902,21 +1903,25 @@ async def _process_media_and_text(
 
     from mimic42.integrations.telegram_tools import format_media_object
 
-    media_id = format_media_object(message)
-    if not media_id:
-        return text, []
-
     media_files: list[MediaFile] = []
-    message_ref = _message_ref_of(event, message)
-    chat, msg_id = message_ref or (None, None)
-    base_ref = MediaRef(
-        peer=str(chat) if chat is not None else None,
-        message_id=msg_id if isinstance(msg_id, int) else None,
-    )
-    if media_refs is not None:
-        # Пока ссылка на файл свежая: тулзы по ней найдут сообщение и
-        # заархивированную копию, когда file_reference протухнет.
-        media_refs.remember(media_id, base_ref)
+    try:
+        media_id = format_media_object(message)
+        if not media_id:
+            return text, []
+        message_ref = _message_ref_of(event, message)
+        chat, msg_id = message_ref or (None, None)
+        base_ref = MediaRef(
+            peer=normalize_peer_ref(chat) if chat is not None else None,
+            message_id=msg_id if isinstance(msg_id, int) else None,
+        )
+        if media_refs is not None:
+            # Пока ссылка на файл свежая: тулзы по ней найдут сообщение и
+            # заархивированную копию, когда file_reference протухнет.
+            media_refs.remember(media_id, base_ref)
+    except Exception:
+        # Подготовка не должна ронять ход: без медиа-ид сообщение живёт дальше.
+        logger.warning("Media processing failed before download", exc_info=True)
+        return text, []
 
     async def _archive(kind: str, filename: str, mime_type: str, data: bytes) -> None:
         """Archive one attachment to Storage; never break the turn on failure."""
@@ -2144,11 +2149,10 @@ async def _process_media_and_text(
     except MediaUnavailableError:
         # Медиа не скачать (протухшая ссылка или самоуничтожившийся файл):
         # сообщение не теряем — агент видит маркер и может ответить на него.
-        return _unavailable_marker(media_id, text), media_files
+        return _media_marker(media_id, UNAVAILABLE_MARKER_TEXT, text), media_files
     except Exception:
         logger.warning("Media processing failed for %s", media_id, exc_info=True)
-        if not text:
-            return "[Медиа (не удалось обработать)]", media_files
+        return _media_marker(media_id, "не удалось обработать", text), media_files
 
     return text, media_files
 
@@ -2162,9 +2166,9 @@ def _message_ref_of(event: Any, message: Any) -> tuple[Any, int] | None:
     return (chat, msg_id) if chat is not None else None
 
 
-def _unavailable_marker(media_id: str, text: str) -> str:
-    """Маркер медиа, которое не удалось скачать: без сырых ошибок Telegram."""
-    parts = media_id.split(":")
+def _media_marker(media_id: str, reason: str, text: str) -> str:
+    """Маркер медиа с причиной вместо сырых ошибок Telegram."""
+    parts = media_id.split(":", 5)
     kind = parts[0]
     if kind == "photo":
         label = "Фото"
@@ -2179,7 +2183,7 @@ def _unavailable_marker(media_id: str, text: str) -> str:
         label = f"Файл name={filename}"
     else:
         label = "Медиа"
-    marker = f"[{label} ({UNAVAILABLE_MARKER_TEXT})]"
+    marker = f"[{label} ({reason})]"
     return marker + (f" {text}" if text else "")
 
 
@@ -2406,11 +2410,7 @@ def _peer_for_send(peer: str) -> str | int:
     телефонов, юзернеймов и инвайтов: «-1001234567890» не нашлось бы ни в
     одном из них. Числовой ID обязан уехать числом; юзернеймы — как есть.
     """
-    if peer.startswith("-") and peer[1:].isdigit():
-        return int(peer)
-    if peer.isdigit():
-        return int(peer)
-    return peer
+    return cast("str | int", normalize_peer_ref(peer))
 
 
 def _is_broadcast_post(event: object) -> bool:

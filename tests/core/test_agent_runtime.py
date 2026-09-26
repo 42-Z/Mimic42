@@ -635,7 +635,7 @@ async def test_incoming_media_registers_a_message_ref_for_tools(
 
     ref = cache.lookup("doc:12345:67890:726566:1:report.txt")
     assert ref is not None
-    assert ref.peer == "12345"
+    assert ref.peer == 12345
     assert ref.message_id == 777
 
 

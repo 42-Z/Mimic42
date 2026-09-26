@@ -20,6 +20,7 @@ from mimic42.core.media_download import (
     MediaRefCache,
     MediaUnavailableError,
     download_media_with_refresh,
+    normalize_peer_ref,
 )
 
 logger = logging.getLogger("mimic42.telegram_tools")
@@ -332,16 +333,23 @@ class TelegramToolbox:
         ref = self._media_refs.lookup(media_id)
         if ref is None or ref.peer is None or not isinstance(ref.message_id, int):
             return None
-        peer: Any = ref.peer
-        if isinstance(peer, str):
-            stripped = peer.strip()
-            if stripped.lstrip("-").isdigit():
-                peer = int(stripped)
-        return (peer, ref.message_id)
+        return (normalize_peer_ref(ref.peer), ref.message_id)
 
     async def _download_by_media_id(self, media_id: str, media_obj: Any, file: Any = bytes) -> Any:
-        """Скачать объект, восстановленный из media_id: при протухшей ссылке
-        перечитать сообщение и повторить (см. download_media_with_refresh)."""
+        """Скачать объект, восстановленный из media_id.
+
+        Сначала — заархивированная при получении копия (единственный
+        источник для самоуничтожившихся медиа), затем — скачивание с
+        обновлением протухшей file_reference через сообщение.
+        """
+        ref = self._media_refs.lookup(media_id) if self._media_refs is not None else None
+        cached = await self._archived_media(ref)
+        if cached is not None:
+            if file is not bytes:
+                write = getattr(file, "write", None)
+                if callable(write):
+                    write(cached)
+            return cached
         return await download_media_with_refresh(
             self._client,
             media_obj,
@@ -593,7 +601,8 @@ class TelegramToolbox:
                         # Запоминаем сообщение: по нему обновится протухшая
                         # file_reference, когда агент вернётся к этой картинке.
                         self._media_refs.remember(
-                            media_id, MediaRef(peer=str(peer), message_id=msg.id)
+                            media_id,
+                            MediaRef(peer=normalize_peer_ref(peer), message_id=msg.id),
                         )
                     if media_id.startswith("photo:"):
                         text = f"[Фото id={media_id}]" + (f" {text}" if text else "")
@@ -875,6 +884,10 @@ class TelegramToolbox:
                         kind=media_type,
                     )
                     storage_path = archived.storage_path if archived else None
+                    if storage_path and self._media_refs is not None:
+                        # Следующий просмотр пойдёт в Storage, а не в Telegram:
+                        # для самоуничтожившихся медиа повторного скачивания нет.
+                        self._media_refs.remember(media_id, MediaRef(storage_path=storage_path))
                 except Exception:
                     logger.warning("view_image media upload failed", exc_info=True)
 
@@ -897,25 +910,15 @@ class TelegramToolbox:
             )
             return items
         except MediaUnavailableError as e:
-            return [
-                {
-                    "type": "text",
-                    "text": str(e),
-                    "success": False,
-                    "error": str(e),
-                    "error_code": type(e).__name__,
-                }
-            ]
+            return [{"type": "text", "text": str(e), **_tool_failure(e)}]
         except Exception as e:
-            # Русский текст вместо сырых ошибок Telegram вида
-            # "caused by GetFileRequest".
+            # Сырые ошибки Telegram («caused by GetFileRequest» и т.п.) в
+            # текст для LLM не уходят — только класс ошибки и русская фраза.
             return [
                 {
                     "type": "text",
-                    "text": f"Не удалось открыть изображение: {e}",
-                    "success": False,
-                    "error": str(e),
-                    "error_code": type(e).__name__,
+                    "text": f"Не удалось открыть изображение ({type(e).__name__})",
+                    **_tool_failure(e),
                 }
             ]
 

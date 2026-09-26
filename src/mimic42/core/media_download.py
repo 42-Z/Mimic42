@@ -11,11 +11,14 @@ logger = logging.getLogger("mimic42.media")
 
 __all__ = [
     "FILE_REFERENCE_ERRORS",
+    "RETRYABLE_DOWNLOAD_ERRORS",
     "UNAVAILABLE_MARKER_TEXT",
+    "UNAVAILABLE_TEXT",
     "MediaRef",
     "MediaRefCache",
     "MediaUnavailableError",
     "download_media_with_refresh",
+    "normalize_peer_ref",
 ]
 
 # Telegram шлёт их, когда file_reference внутри объекта протух: так случается
@@ -27,6 +30,11 @@ FILE_REFERENCE_ERRORS: tuple[type[BaseException], ...] = (
     errors.FileReferenceInvalidError,
     errors.FileReferenceEmptyError,
     errors.FilerefUpgradeNeededError,
+)
+
+# Медиа нет вовсе (или оно заменено) — перечитывание сообщения тоже может помочь.
+RETRYABLE_DOWNLOAD_ERRORS: tuple[type[BaseException], ...] = FILE_REFERENCE_ERRORS + (
+    errors.MediaEmptyError,
 )
 
 UNAVAILABLE_TEXT = "Медиа больше недоступно: ссылка на файл устарела или файл самоуничтожился"
@@ -46,7 +54,7 @@ class MediaUnavailableError(Exception):
 class MediaRef:
     """Где найти свежую ссылку на файл и уже заархивированную копию медиа."""
 
-    peer: str | None = None
+    peer: str | int | None = None
     message_id: int | None = None
     storage_path: str | None = None
 
@@ -58,6 +66,10 @@ class MediaRefCache:
     момента чтения; без сообщения и архивной копии протухшую ссылку
     обновить нечем. Рантайм запоминает сообщение и путь в Storage при
     получении, тулзы — при чтении истории.
+
+    Предположения: кеш живёт в памяти процесса и в одном event loop
+    (память о медиа из прошлых запусков теряется — пока это осознанное
+    ограничение), многопоточности нет, поэтому lock не нужен.
     """
 
     def __init__(self, capacity: int = 512) -> None:
@@ -65,8 +77,18 @@ class MediaRefCache:
         self._entries: OrderedDict[str, MediaRef] = OrderedDict()
 
     def remember(self, media_id: str, ref: MediaRef) -> None:
+        """Запомнить ссылку, не теряя уже известное: повторные регистрации
+        (получение, чтение истории, просмотр) дополняют запись, а не
+        затирают её — иначе архивная копия «исчезает» после get_messages."""
         if not media_id:
             return
+        existing = self._entries.get(media_id)
+        if existing is not None:
+            ref = MediaRef(
+                peer=ref.peer if ref.peer is not None else existing.peer,
+                message_id=ref.message_id if ref.message_id is not None else existing.message_id,
+                storage_path=ref.storage_path or existing.storage_path,
+            )
         self._entries[media_id] = ref
         self._entries.move_to_end(media_id)
         while len(self._entries) > self._capacity:
@@ -77,6 +99,20 @@ class MediaRefCache:
         if ref is not None:
             self._entries.move_to_end(media_id)
         return ref
+
+
+def normalize_peer_ref(peer: Any) -> Any:
+    """Нормализовать адрес чата, чтобы сообщение можно было перечитать.
+
+    Числовые строки становятся int (так их понимает get_messages),
+    "username#123" — "username", прочее — строка без лишних пробелов.
+    """
+    if not isinstance(peer, str):
+        return peer
+    value = peer.split("#", 1)[-1].strip()
+    if value.lstrip("-").isdigit():
+        return int(value)
+    return value
 
 
 def _rewind(file: Any) -> None:
@@ -103,6 +139,14 @@ async def _refetch_message(client: Any, message_ref: tuple[Any, int] | None) -> 
     return message
 
 
+def _media_object_id(obj: Any) -> int | None:
+    """Id объекта (фото/документа) внутри сообщения или самого объекта."""
+    inner = getattr(obj, "media", None) or obj
+    carrier = getattr(inner, "photo", None) or getattr(inner, "document", None) or inner
+    obj_id = getattr(carrier, "id", None)
+    return obj_id if isinstance(obj_id, int) else None
+
+
 async def download_media_with_refresh(
     client: Any,
     media: Any,
@@ -118,12 +162,18 @@ async def download_media_with_refresh(
     """
     try:
         return await client.download_media(media, file=file)
-    except FILE_REFERENCE_ERRORS as exc:
+    except RETRYABLE_DOWNLOAD_ERRORS as exc:
         fresh = await _refetch_message(client, message_ref)
+        original_id = _media_object_id(media)
+        fresh_id = _media_object_id(fresh) if fresh is not None else None
         if fresh is None:
+            raise MediaUnavailableError() from exc
+        if original_id is not None and fresh_id is not None and fresh_id != original_id:
+            # Сообщение отредактировали: под старый media_id чужое медиа
+            # не подсовываем (так же проверяет и Telethon).
             raise MediaUnavailableError() from exc
         _rewind(file)
         try:
             return await client.download_media(fresh, file=file)
-        except FILE_REFERENCE_ERRORS as retry_exc:
+        except RETRYABLE_DOWNLOAD_ERRORS as retry_exc:
             raise MediaUnavailableError() from retry_exc

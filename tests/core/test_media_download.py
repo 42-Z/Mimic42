@@ -119,3 +119,79 @@ def test_media_ref_cache_remembers_and_evicts() -> None:
         peer="-100500", message_id=3, storage_path="c"
     )
     assert cache.lookup("photo:1:1:01:2") is None
+
+
+def test_media_ref_cache_merges_reregistrations() -> None:
+    """Повторная регистрация media_id не должна терять уже известное:
+    путь архива — при перечитывании истории, сообщение — при архивации."""
+    cache = MediaRefCache()
+    cache.remember("photo:1:1:01:2", MediaRef(peer="-100500", message_id=1, storage_path="a"))
+
+    cache.remember("photo:1:1:01:2", MediaRef(peer="-100500", message_id=2))
+    assert cache.lookup("photo:1:1:01:2") == MediaRef(
+        peer="-100500", message_id=2, storage_path="a"
+    )
+
+    cache.remember("photo:1:1:01:2", MediaRef(storage_path="b"))
+    assert cache.lookup("photo:1:1:01:2") == MediaRef(
+        peer="-100500", message_id=2, storage_path="b"
+    )
+
+
+async def test_refresh_rejects_a_replaced_attachment() -> None:
+    """Перечитанное сообщение могли отредактировать: медиа с другим id под
+    старый media_id не подсовываем (как и сам Telethon при обновлении)."""
+    client = ExpiringClient(fresh=_photo_message(media_id=999))
+
+    with pytest.raises(MediaUnavailableError):
+        await download_media_with_refresh(
+            client, _photo_message(media_id=123), message_ref=(-100500, 55)
+        )
+
+    assert len(client.downloads) == 1
+
+
+async def test_media_empty_error_is_also_unavailable() -> None:
+    """Пропавшее медиа Telegram отдаёт как MediaEmptyError — это та же
+    категория «скачать больше нельзя»."""
+
+    class EmptyMediaClient(ExpiringClient):
+        async def download_media(self, message: Any, file: Any = None, **kwargs: Any) -> Any:
+            self.downloads.append(message)
+            raise errors.MediaEmptyError(type("Request", (), {})())
+
+    client = EmptyMediaClient(fresh=None)
+
+    with pytest.raises(MediaUnavailableError):
+        await download_media_with_refresh(client, "gone-media")
+
+
+async def test_retry_rewinds_a_dirty_stream() -> None:
+    """Первая попытка могла записать в поток мусор — повторная пишет начисто."""
+    from io import BytesIO
+
+    class DirtyFirstClient:
+        def __init__(self, fresh: Any) -> None:
+            self.fresh = fresh
+            self.calls = 0
+
+        async def download_media(self, message: Any, file: Any = None, **kwargs: Any) -> Any:
+            self.calls += 1
+            if self.calls == 1:
+                file.write(b"GARBAGE")
+                raise errors.FileReferenceExpiredError(type("Request", (), {})())
+            file.write(b"CLEANDATA")
+            return b"CLEANDATA"
+
+        async def get_messages(self, chat: Any, ids: int) -> Any:
+            return self.fresh
+
+    buffer = BytesIO()
+    await download_media_with_refresh(
+        DirtyFirstClient(_photo_message()),
+        "stale-media",
+        message_ref=(-100500, 55),
+        file=buffer,
+    )
+
+    assert buffer.getvalue() == b"CLEANDATA"

@@ -694,6 +694,21 @@ async def test_view_image_reports_unavailable_media_in_russian() -> None:
 
 
 @pytest.mark.asyncio
+async def test_view_image_hides_raw_telegram_errors_from_the_model() -> None:
+    class BrokenMediaClient(FakeTelethonClient):
+        async def download_media(self, message: Any, file: Any = None, **kwargs: Any) -> Any:
+            raise RuntimeError("The file reference has expired (caused by GetFileRequest)")
+
+    toolbox = TelegramToolbox(BrokenMediaClient())
+
+    result = await toolbox.view_image("photo:123:456:0102:2")
+
+    assert result[0]["success"] is False
+    assert result[0]["error_code"] == "RuntimeError"
+    assert "GetFileRequest" not in result[0]["text"]
+
+
+@pytest.mark.asyncio
 async def test_view_image_refreshes_stale_reference_via_message_ref() -> None:
     client = RefreshingMediaClient()
     cache = MediaRefCache()
@@ -739,6 +754,86 @@ async def test_get_messages_remembers_media_refs() -> None:
     assert ref is not None
     assert ref.peer == "chat"
     assert ref.message_id == 42
+
+
+class PhotoHistoryClient(FakeTelethonClient):
+    """История с одним фото-сообщением."""
+
+    def iter_messages(self, entity: Any, **kwargs: Any) -> Any:
+        async def gen() -> Any:
+            msg = MagicMock(spec=types.Message)
+            msg.id = 42
+            msg.sender_id = 1
+            msg.date = datetime.now()
+            msg.text = ""
+            msg.reply_markup = None
+            photo = MagicMock(spec=types.Photo)
+            photo.id = 123
+            photo.access_hash = 456
+            photo.file_reference = b"\x01\x02"
+            photo.dc_id = 2
+            media = MagicMock(spec=types.MessageMediaPhoto)
+            media.photo = photo
+            msg.media = media
+            yield msg
+
+        return gen()
+
+
+@pytest.mark.asyncio
+async def test_get_messages_stores_a_normalized_peer() -> None:
+    """Peer нормализуется при сохранении: по нему сообщение перечитается
+    позже, даже если агент вызвал get_messages со строкой-числом."""
+    cache = MediaRefCache()
+    toolbox = TelegramToolbox(PhotoHistoryClient(), media_refs=cache)
+
+    await toolbox.get_messages("-100500")
+
+    ref = cache.lookup("photo:123:456:0102:2")
+    assert ref is not None
+    assert ref.peer == -100500
+
+
+@pytest.mark.asyncio
+async def test_view_image_remembers_the_archived_copy() -> None:
+    """После архивации просмотренной картинки путь запоминается: следующий
+    просмотр не пойдёт в Telegram (самоуничтожившееся медиа там уже мертво)."""
+    from uuid import uuid4
+
+    client = FakeTelethonClient()
+    agent_id = uuid4()
+    uploader = FakeMediaUploader()
+    cache = MediaRefCache()
+    toolbox = TelegramToolbox(client, agent_id=agent_id, media_uploader=uploader, media_refs=cache)
+
+    await toolbox.view_image("photo:123:456:0102:2")
+
+    ref = cache.lookup("photo:123:456:0102:2")
+    assert ref is not None
+    assert ref.storage_path == f"{agent_id}/u1/view_photo_123.jpeg"
+
+
+@pytest.mark.asyncio
+async def test_read_document_file_serves_the_archived_copy() -> None:
+    """Тулзы чтения файлов тоже работают по архивной копии, если Telegram
+    больше не отдаёт медиа."""
+    from uuid import uuid4
+
+    client = ExpiringMediaClient()
+    agent_id = uuid4()
+    uploader = FakeMediaUploader()
+    media_id = "doc:12345:67890:726566:1:notes.txt"
+    uploader.files = {f"{agent_id}/u1/notes.txt": b"ARCHIVED CONTENT"}
+    cache = MediaRefCache()
+    cache.remember(
+        media_id, MediaRef(peer="chat", message_id=55, storage_path=f"{agent_id}/u1/notes.txt")
+    )
+    toolbox = TelegramToolbox(client, agent_id=agent_id, media_uploader=uploader, media_refs=cache)
+
+    result = await toolbox.read_document_file(media_id)
+
+    assert result == {"success": True, "content": "ARCHIVED CONTENT"}
+    assert [name for name, _ in client.calls] == []
 
 
 @pytest.mark.asyncio
