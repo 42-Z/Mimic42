@@ -288,7 +288,7 @@ function VariantRow({ agentId, index, variant, showErrors, onPatch, onRemove }: 
           <ImagePreview
             agentId={agentId}
             storagePath={variant.image_path}
-            name={variant.image_name}
+            variantNumber={index + 1}
             onRemove={() => onPatch({ image_path: null, image_name: null })}
           />
         ) : (
@@ -329,21 +329,22 @@ function VariantRow({ agentId, index, variant, showErrors, onPatch, onRemove }: 
 function ImagePreview({
   agentId,
   storagePath,
-  name,
+  variantNumber,
   onRemove,
 }: {
   agentId: string;
   storagePath: string;
-  name: string | null;
+  /** Чья это картинка: вариантов несколько, и у каждого свой крестик. */
+  variantNumber: number;
   onRemove: () => void;
 }) {
   const { url, status } = useMediaUrl(agentId, storagePath);
 
   return (
-    <div className="flex items-center gap-3 min-w-0">
+    <div className="relative h-24 w-24">
       <div
         className={cn(
-          'flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-sm',
+          'flex h-full w-full items-center justify-center overflow-hidden rounded-sm',
           'border border-void-700 bg-void-800'
         )}
       >
@@ -355,20 +356,26 @@ function ImagePreview({
         )}
         {status === 'ready' && url && (
           // eslint-disable-next-line @next/next/no-img-element -- blob URL, next/image не применим
-          <img src={url} alt={name ?? 'Картинка комментария'} className="h-full w-full object-cover" />
+          <img
+            src={url}
+            alt={`Картинка варианта ${variantNumber}`}
+            className="h-full w-full object-cover"
+          />
         )}
       </div>
-      <div className="flex min-w-0 flex-col gap-1">
-        <span className="font-mono text-xs text-void-200 break-all">{name ?? storagePath}</span>
-        <button
-          type="button"
-          onClick={onRemove}
-          className="flex w-fit items-center gap-1 font-mono text-xs text-void-300 transition-colors hover:text-crimson-400 focus:outline-none focus:ring-1 focus:ring-crimson-500"
-        >
-          <X className="h-3 w-3" />
-          Убрать картинку
-        </button>
-      </div>
+      <button
+        type="button"
+        onClick={onRemove}
+        aria-label={`Убрать картинку варианта ${variantNumber}`}
+        className={cn(
+          'absolute right-1 top-1 flex h-6 w-6 items-center justify-center rounded-sm',
+          'border border-void-700 bg-void-950/80 text-void-200 transition-colors',
+          'hover:border-crimson-500 hover:text-crimson-400',
+          'focus:outline-none focus:ring-1 focus:ring-crimson-500'
+        )}
+      >
+        <X className="h-3.5 w-3.5" />
+      </button>
     </div>
   );
 }
