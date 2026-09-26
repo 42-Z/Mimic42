@@ -230,12 +230,15 @@ async def test_image_comment_reuses_the_uploaded_photo(
             second_id = await checker.post(channel_id, "И второй следом")
             seen = await watcher
     finally:
-        # Картинка тестовая: в хранилище агента её не оставляем.
+        # Картинка тестовая: в хранилище агента её не оставляем. Без
+        # сервисного ключа чистить нечего: тестовое хранилище живёт в памяти
+        # процесса и умирает вместе с приложением.
         def remove_image() -> None:
+            service_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+            if not service_key:
+                return
             # with закрывает HTTP-клиент: иначе его сокет всплыл бы под -W error.
-            with storage_client(
-                os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_ROLE_KEY"]
-            ) as storage:
+            with storage_client(os.environ["SUPABASE_URL"], service_key) as storage:
                 storage.from_(BUCKET).remove([image_path])
 
         await asyncio.to_thread(remove_image)
