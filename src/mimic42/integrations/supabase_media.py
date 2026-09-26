@@ -36,8 +36,14 @@ def storage_client(supabase_url: str, service_key: str) -> SyncStorageClient:
     http_client = httpx.Client(
         timeout=DEFAULT_STORAGE_CLIENT_TIMEOUT, follow_redirects=True, http2=True
     )
-    options = ClientOptions(httpx_client=http_client)
-    return create_client(supabase_url, service_key, options=options).storage
+    try:
+        options = ClientOptions(httpx_client=http_client)
+        return create_client(supabase_url, service_key, options=options).storage
+    except BaseException:
+        # Неверный URL или ключ: хранилища не будет, и сокеты этого клиента
+        # закрыть больше некому.
+        http_client.close()
+        raise
 
 
 class SupabaseMediaStorage:
