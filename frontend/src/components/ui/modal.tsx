@@ -1,6 +1,8 @@
 'use client';
 
 import * as React from 'react';
+import * as DialogPrimitive from '@radix-ui/react-dialog';
+import { X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from './button';
 
@@ -30,139 +32,111 @@ export function Modal({
   className,
   size = 'md',
 }: ModalProps) {
-  const panelRef = React.useRef<HTMLDivElement>(null);
+  const contentRef = React.useRef<HTMLDivElement>(null);
   const triggerRef = React.useRef<HTMLElement | null>(null);
   const onCloseRef = React.useRef(onClose);
   React.useEffect(() => {
     onCloseRef.current = onClose;
   }, [onClose]);
 
-  // Close on Escape key
+  // Return focus to the trigger so keyboard users keep their place. Restore is
+  // done here — synchronously on unmount of the open dialog — because radix
+  // defers its own restore to a setTimeout and only targets a <DialogTrigger>,
+  // which this API does not use. Focus is captured once per open (in
+  // onOpenAutoFocus) so parent re-renders never steal the user's Tab position.
   React.useEffect(() => {
     if (!isOpen) return;
 
-    const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onCloseRef.current();
-    };
-    document.addEventListener('keydown', handleKey);
-
-    // Remember what opened the dialog and move focus inside. Focus is set once
-    // per open: depending on `onClose` would re-focus on every parent render
-    // and reset the user's Tab position.
-    triggerRef.current =
-      document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const panel = panelRef.current;
-    panel?.focus();
-    const handleTab = (e: KeyboardEvent) => {
-      if (e.key !== 'Tab' || !panel) return;
-      const focusables = panel.querySelectorAll<HTMLElement>(
-        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
-      );
-      if (focusables.length === 0) return;
-      const first = focusables[0];
-      const last = focusables[focusables.length - 1];
-      if (!first || !last) return;
-      if (e.shiftKey && document.activeElement === first) {
-        e.preventDefault();
-        last.focus();
-      } else if (!e.shiftKey && document.activeElement === last) {
-        e.preventDefault();
-        first.focus();
-      }
-    };
-    document.addEventListener('keydown', handleTab);
-
-    // Lock body scroll, restoring whatever was set before (nested modals,
-    // callers that manage overflow themselves).
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-
     return () => {
-      document.removeEventListener('keydown', handleKey);
-      document.removeEventListener('keydown', handleTab);
-      document.body.style.overflow = previousOverflow;
-
-      // Return focus to the trigger so keyboard users keep their place.
       const trigger = triggerRef.current;
+      triggerRef.current = null;
       if (trigger && document.contains(trigger)) {
         trigger.focus();
       }
-      triggerRef.current = null;
     };
   }, [isOpen]);
 
-  if (!isOpen) return null;
-
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby={title ? 'modal-title' : undefined}
-      aria-describedby={description ? 'modal-description' : undefined}
+    <DialogPrimitive.Root
+      open={isOpen}
+      onOpenChange={(open) => {
+        if (!open) onCloseRef.current();
+      }}
     >
-      {/* Backdrop */}
-      <div
-        className="absolute inset-0 bg-void-950/80 backdrop-blur-sm animate-fade-in"
-        onClick={onClose}
-        aria-hidden="true"
-      />
-
-      {/* Panel */}
-      <div
-        ref={panelRef}
-        tabIndex={-1}
-        className={cn(
-          'relative w-full z-10',
-          'bg-void-800 border border-void-600',
-          'rounded-sm shadow-void-lg',
-          'animate-slide-in-up',
-          // eslint-disable-next-line security/detect-object-injection -- key is typed size union, not user input
-          modalSizes[size],
-          className
-        )}
-      >
-        {/* Scan line decoration */}
-        <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-plasma-500/50 to-transparent" />
-
-        {/* Header */}
-        {(title || description) && (
-          <div className="px-6 pt-6 pb-4 border-b border-void-700">
-            {title && (
-              <h2
-                id="modal-title"
-                className="font-mono text-base font-semibold text-void-100 uppercase tracking-wider"
-              >
-                {title}
-              </h2>
-            )}
-            {description && (
-              <p id="modal-description" className="mt-1 text-sm text-void-400 font-mono">
-                {description}
-              </p>
-            )}
-          </div>
-        )}
-
-        {/* Body */}
-        <div className="p-6">{children}</div>
-
-        {/* Close button */}
-        <button
-          onClick={onClose}
+      <DialogPrimitive.Portal>
+        <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-void-950/80 backdrop-blur-sm animate-fade-in" />
+        <DialogPrimitive.Content
+          ref={contentRef}
+          tabIndex={-1}
+          aria-modal="true"
+          aria-labelledby={title ? 'modal-title' : undefined}
+          aria-describedby={description ? 'modal-description' : undefined}
+          onOpenAutoFocus={(event) => {
+            // Remember what opened the dialog and move focus onto the panel
+            // instead of the first focusable child.
+            triggerRef.current =
+              document.activeElement instanceof HTMLElement ? document.activeElement : null;
+            event.preventDefault();
+            contentRef.current?.focus();
+          }}
+          onCloseAutoFocus={(event) => {
+            // Focus already returned to the trigger above; opt out of radix's
+            // deferred restore (it would target a missing <DialogTrigger>).
+            event.preventDefault();
+          }}
           className={cn(
-            'absolute top-4 right-4',
-            'h-7 w-7 flex items-center justify-center',
-            'text-void-300 hover:text-void-200',
-            'transition-colors duration-150',
-            'font-mono text-lg'
+            'fixed left-1/2 top-1/2 z-50 w-full -translate-x-1/2 -translate-y-1/2',
+            'rounded-sm border border-border bg-card shadow-void-lg animate-slide-in-up',
+            'focus:outline-none',
+            // eslint-disable-next-line security/detect-object-injection -- key is typed size union, not user input
+            modalSizes[size],
+            className
           )}
-          aria-label="Закрыть"
         >
-          ×
-        </button>
-      </div>
-    </div>
+          {/* Scan line decoration */}
+          <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-primary/50 to-transparent" />
+
+          {/* Header */}
+          {(title || description) && (
+            <div className="px-6 pt-6 pb-4 border-b border-border">
+              {title && (
+                <DialogPrimitive.Title
+                  id="modal-title"
+                  className="font-mono text-base font-semibold text-foreground uppercase tracking-wider"
+                >
+                  {title}
+                </DialogPrimitive.Title>
+              )}
+              {description && (
+                <DialogPrimitive.Description
+                  id="modal-description"
+                  className="mt-1 text-sm text-muted-foreground font-mono"
+                >
+                  {description}
+                </DialogPrimitive.Description>
+              )}
+            </div>
+          )}
+
+          {/* Body */}
+          <div className="p-6">{children}</div>
+
+          {/* Close button */}
+          <DialogPrimitive.Close
+            className={cn(
+              'absolute top-4 right-4',
+              'h-7 w-7 flex items-center justify-center',
+              'text-muted-foreground hover:text-foreground',
+              'transition-colors duration-150',
+              'font-mono text-lg'
+            )}
+            aria-label="Закрыть"
+          >
+            <X className="h-4 w-4" />
+          </DialogPrimitive.Close>
+        </DialogPrimitive.Content>
+      </DialogPrimitive.Portal>
+    </DialogPrimitive.Root>
   );
 }
 
