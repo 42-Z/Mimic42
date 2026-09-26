@@ -267,11 +267,17 @@ class DatabaseAgentStore:
         finishes with the context it loaded, and its rows land after the reset.
         The feed event is written in the same transaction as the boundary.
         """
-        reset_at = _now()
         async with self._session_factory() as db_session:
-            agent = await db_session.get(AgentModel, agent_id)
+            # Row lock serializes concurrent resets: the boundary is computed
+            # only after the lock is taken, so it always moves forward. Without
+            # it a slower reset could commit an older mark and bring back the
+            # messages a fresher reset had just hidden.
+            agent = await db_session.scalar(
+                select(AgentModel).where(AgentModel.id == agent_id).with_for_update()
+            )
             if agent is None:
                 raise KeyError(f"Agent {agent_id} does not exist")
+            reset_at = _now()
             agent.context_reset_at = reset_at
             db_session.add(
                 AgentEventModel(

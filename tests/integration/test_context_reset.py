@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
@@ -117,3 +118,24 @@ async def test_reset_of_missing_agent_raises_key_error(
     store = DatabaseAgentStore(db_session_factory)
     with pytest.raises(KeyError):
         await store.reset_context(uuid4(), actor_user_id=clean_slot.persona("twofa").user_id)
+
+
+async def test_concurrent_resets_keep_the_boundary_monotonic(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    """Resets run in parallel must not roll the boundary back: a stale mark
+    would return the messages a fresher reset had just hidden."""
+    owner_id = clean_slot.persona("twofa").user_id
+    agent_id = await _create_agent(db_session_factory, owner_id)
+    store = DatabaseAgentStore(db_session_factory)
+
+    first, second = await asyncio.gather(
+        store.reset_context(agent_id, actor_user_id=owner_id),
+        store.reset_context(agent_id, actor_user_id=owner_id),
+    )
+
+    async with db_session_factory() as session:
+        agent = await session.get(AgentModel, agent_id)
+        assert agent is not None
+        assert agent.context_reset_at == max(first, second)
