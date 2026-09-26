@@ -36,6 +36,23 @@ class Settings(BaseSettings):
         validation_alias="CORS_ALLOW_ORIGINS",
     )
 
+    @field_validator("braintrust_api_key", mode="before")
+    @classmethod
+    def _empty_braintrust_api_key_is_unset(cls, value: object) -> object:
+        # Пустая строка в env (например, скопированный .env.example) значит
+        # «не задано» — так «ключ пуст → трейсинг выключен» держится контрактом,
+        # а не случайной falsy-проверкой.
+        if value == "":
+            return None
+        return value
+
+    @field_validator("braintrust_project", mode="before")
+    @classmethod
+    def _empty_braintrust_project_is_unset(cls, value: object) -> object:
+        if value == "":
+            return "Mimic42"
+        return value
+
     @field_validator("cors_allow_origins", mode="before")
     @classmethod
     def _split_cors_origins(cls, value: object) -> object:
