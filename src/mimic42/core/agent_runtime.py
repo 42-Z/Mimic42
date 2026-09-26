@@ -1904,8 +1904,9 @@ async def _process_media_and_text(
     from mimic42.integrations.telegram_tools import format_media_object
 
     media_files: list[MediaFile] = []
+    media_id = ""
     try:
-        media_id = format_media_object(message)
+        media_id = format_media_object(message) or ""
         if not media_id:
             return text, []
         message_ref = _message_ref_of(event, message)
@@ -1919,9 +1920,10 @@ async def _process_media_and_text(
             # заархивированную копию, когда file_reference протухнет.
             media_refs.remember(media_id, base_ref)
     except Exception:
-        # Подготовка не должна ронять ход: без медиа-ид сообщение живёт дальше.
+        # Подготовка не должна ронять ход: сообщение без подписи иначе
+        # потеряется целиком — оставляем общий маркер медиа.
         logger.warning("Media processing failed before download", exc_info=True)
-        return text, []
+        return _media_marker(media_id or "media", "не удалось обработать", text), []
 
     async def _archive(kind: str, filename: str, mime_type: str, data: bytes) -> None:
         """Archive one attachment to Storage; never break the turn on failure."""

@@ -3,6 +3,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 from uuid import UUID, uuid4
 
+import pytest
 from telethon import types
 
 from mimic42.core.agent_runtime import _process_media_and_text
@@ -281,6 +282,27 @@ async def test_unexpected_media_error_keeps_the_message() -> None:
     assert "Фото" in text
     assert "подпись" in text
     assert "GetFileRequest" not in text
+
+
+async def test_media_marker_survives_a_broken_media_object(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ошибка подготовки media_id не теряет сообщение без подписи:
+    остаётся общий маркер, иначе _format_incoming выбросит ход целиком."""
+
+    def boom(msg: object) -> str:
+        raise RuntimeError("broken media object")
+
+    monkeypatch.setattr("mimic42.integrations.telegram_tools.format_media_object", boom)
+
+    text, media = await _process_media_and_text(
+        _photo_event_with(FakeClient()), "", media_refs=MediaRefCache()
+    )
+
+    assert text
+    assert "Медиа" in text
+    assert "broken media object" not in text
+    assert media == []
 
 
 async def test_incoming_photo_retries_after_refetching_the_message() -> None:
