@@ -925,11 +925,15 @@ class MimicAgentRuntime:
             reply=reply_payload,
         )
 
-        trace.log(output={"text": response_text, "sent": send_any})
+        # sent — факт доставки, а не намерение: send_any остаётся True и после
+        # неудачной отправки (там пишется message.send_failed, sent_message = None).
+        trace.log(output={"text": response_text, "sent": sent_message is not None})
         completed_payload: dict[str, Any] = {"turn_id": turn_id, "peer": trigger.peer}
         completed_trace_url = trace.permalink()
         if completed_trace_url:
             completed_payload["trace_url"] = completed_trace_url
+        # Успешно = конвейер хода завершён, а не «ответ доставлен»: сбой доставки
+        # виден событием message.send_failed, факт доставки — output.sent спана.
         await self._record_event(
             event_type="turn.completed",
             status="succeeded",

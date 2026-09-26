@@ -63,7 +63,8 @@ Issue: https://github.com/42-Z/Mimic42/issues/92
 Каждый ход агента — один trace:
 
 - **Корневой спан `turn`** (type `task`): input — входящее сообщение (`peer`, `text`,
-  признаки reply/медиа), output — текст ответа агента; metadata — `agent_id`, `turn_id`,
+  признаки reply/медиа), output — текст ответа агента и `sent` — факт доставки
+  (`sent_message is not None`, а не намерение `send_any_message`); metadata — `agent_id`, `turn_id`,
   `peer`, модель (`AgentRuntimeConfig.llm_model`), `environment` (`Settings.environment`,
   модуль трейсинга берёт его из `Settings` сам). Исключение хода пишется на этот спан.
 - **Дочерние спаны** из `BraintrustCallbackHandler` (вкладываются автоматически): шаги
@@ -73,6 +74,9 @@ Issue: https://github.com/42-Z/Mimic42/issues/92
   миграция БД не нужна — `agent_events.event_type` это `text`) и **`turn.failed`**
   добавляется **`trace_url`** — `span.permalink()`, чтобы из дашборда прыгать в трейс
   одним кликом. При выключенном трейсинге `trace_url` в payload не попадает.
+  `status="succeeded"` у `turn.completed` означает «конвейер хода завершён», а не
+  «ответ доставлен»: сбой доставки фиксируется событием `message.send_failed`, а факт
+  доставки — полем `output.sent` корневого спана.
   Фронтенд: запись `turn.completed` в каталог событий и ссылка «Трейс» в строке
   события ленты активности.
 

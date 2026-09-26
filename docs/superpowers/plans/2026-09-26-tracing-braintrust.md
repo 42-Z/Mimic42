@@ -683,7 +683,7 @@ Expected: `All checks passed!` дважды, коммит создан.
 
 ---
 
-### Task 4: Включение трейсинга в lifespan приложения
+### Task 4: Включение трейсинга в lifespan приложения ✅ (ea43bc8 + 5a15b75 + 3856de4 + d1339cb; spec ✅, quality ✅)
 
 **Files:**
 - Modify: `src/mimic42/api/app.py`
@@ -805,18 +805,35 @@ TRACE_URL = "https://braintrust.dev/app/p/mimic42/t/turn-1"
 
 
 class FakeSpan:
-    def __init__(self) -> None:
+    """Фейк спана Braintrust: принимает события и помнит порядок вызовов.
+
+    ``calls`` фиксирует границу спана: ``log`` после ``end`` (регрессия,
+    при которой output пишется вне блока ``turn_span``) видна по порядку
+    вызовов. ``permalink_value=None`` изображает спан без permalink.
+    """
+
+    def __init__(self, permalink_value: str | None = TRACE_URL) -> None:
+        self.permalink_value = permalink_value
         self.events: list[dict[str, Any]] = []
+        self.calls: list[str] = []
         self.ended = 0
 
     def log(self, **event: Any) -> None:
+        self.calls.append("log")
         self.events.append(event)
 
+    def set_current(self) -> None:
+        return None
+
+    def unset_current(self) -> None:
+        return None
+
     def end(self) -> None:
+        self.calls.append("end")
         self.ended += 1
 
-    def permalink(self) -> str:
-        return TRACE_URL
+    def permalink(self) -> str | None:
+        return self.permalink_value
 
 
 class FakeLangChainAgent:
@@ -882,19 +899,36 @@ def make_config() -> AgentRuntimeConfig:
 
 
 async def _run_turn(
-    monkeypatch: pytest.MonkeyPatch, *, fail: bool = False, tracing_on: bool = True
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    fail: bool = False,
+    tracing_on: bool = True,
+    spans: list[FakeSpan] | None = None,
+    permalink_value: str | None = TRACE_URL,
+    telegram_client: FakeTelegramClient | None = None,
 ) -> FakeActivity:
     if tracing_on:
         monkeypatch.setattr(tracing.braintrust, "init_logger", lambda **_: object())
         monkeypatch.setattr(tracing, "set_global_handler", lambda _handler: None)
         monkeypatch.setattr(tracing, "BraintrustCallbackHandler", lambda: "handler")
-        monkeypatch.setattr(tracing.braintrust, "start_span", lambda **_: FakeSpan())
+
+        def make_span(**_: Any) -> FakeSpan:
+            span = FakeSpan(permalink_value)
+            if spans is not None:
+                spans.append(span)
+            return span
+
+        monkeypatch.setattr(tracing.braintrust, "start_span", make_span)
         tracing.setup_tracing(
             Settings(_env_file=None, braintrust_api_key="bt-key")
         )
+    if telegram_client is None:
+        account = FakeTelegramAccount()
+        account.authorized = True
+        telegram_client = FakeTelegramClient(account)
     runtime = MimicAgentRuntime(
         config=make_config(),
-        telegram_client=FakeTelegramClient(FakeTelegramAccount()),
+        telegram_client=telegram_client,
         langchain_agent=FakeLangChainAgent(fail=fail),
         memory_service=FakeMemoryService(),  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
     )
@@ -944,6 +978,73 @@ async def test_events_have_no_trace_url_without_tracing(
     assert turn_events, "ход должен записать событие уровня turn"
     for event in turn_events:
         assert "trace_url" not in event["payload"]
+
+
+class FailingSendClient(FakeTelegramClient):
+    """Клиент, у которого доставка сообщения падает."""
+
+    async def send_message(self, entity: str | int, message: str, **kwargs: Any) -> object:
+        raise RuntimeError("send exploded")
+
+
+async def test_turn_span_output_reports_failed_delivery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Сбой доставки: спан не должен врать про отправку (issue #92, ревью)."""
+    spans: list[FakeSpan] = []
+    activity = await _run_turn(
+        monkeypatch, spans=spans, telegram_client=FailingSendClient()
+    )
+
+    # Мы на отлаживаемом пути: доставка упала и видна в ленте событий.
+    assert any(e["event_type"] == "message.send_failed" for e in activity.events)
+    output_events = [e for e in spans[0].events if "output" in e]
+    assert output_events == [{"output": {"text": "reply", "sent": False}}]
+
+
+async def test_turn_span_lifecycle_logs_output_before_end(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Граница спана: input+metadata первыми, output до end(), end ровно раз."""
+    spans: list[FakeSpan] = []
+    activity = await _run_turn(monkeypatch, spans=spans)
+
+    assert len(spans) == 1
+    span = spans[0]
+    assert set(span.events[0]) == {"input", "metadata"}
+    metadata = span.events[0]["metadata"]
+    assert metadata["peer"] == "chat"
+    assert metadata["model"] == "openrouter/free"
+    completed = [e for e in activity.events if e["event_type"] == "turn.completed"]
+    assert metadata["turn_id"] == completed[0]["payload"]["turn_id"]
+    assert span.events[1] == {"output": {"text": "reply", "sent": True}}
+    # Регрессия «output вне with» дала бы ["log", "end", "log"].
+    assert span.calls == ["log", "log", "end"]
+    assert span.ended == 1
+
+
+async def test_turn_completed_omits_trace_url_without_permalink(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spans: list[FakeSpan] = []
+    activity = await _run_turn(monkeypatch, spans=spans, permalink_value=None)
+
+    assert len(spans) == 1
+    completed = [e for e in activity.events if e["event_type"] == "turn.completed"]
+    assert len(completed) == 1
+    assert "trace_url" not in completed[0]["payload"]
+
+
+async def test_turn_failed_omits_trace_url_without_permalink(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spans: list[FakeSpan] = []
+    activity = await _run_turn(monkeypatch, spans=spans, fail=True, permalink_value=None)
+
+    assert len(spans) == 1
+    failed = [e for e in activity.events if e["event_type"] == "turn.failed"]
+    assert len(failed) == 1
+    assert "trace_url" not in failed[0]["payload"]
 ```
 
 - [ ] **Step 2: Запусти тест — он должен упасть**
@@ -951,6 +1052,13 @@ async def test_events_have_no_trace_url_without_tracing(
 Run: `uv run pytest tests/core/test_agent_runtime_tracing.py -q`
 Expected: FAIL — `AssertionError: ход должен записать событие уровня turn` (события
 `turn.completed` ещё нет; тесты с трейсингом падают по `trace_url`).
+
+Блок выше — финальный вид тестов после ревью Task 5: в ревью добавлены
+`test_turn_span_output_reports_failed_delivery` (спан обязан сообщать `sent: false`
+при сбое доставки — см. Step 5), `test_turn_span_lifecycle_logs_output_before_end`
+(граница спана: `output` пишется до `end()`, иначе регрессия «log вне `with`»
+молча теряет output) и два теста на ветку `permalink() -> None` (гарды
+`if trace_url:` в payload событий).
 
 - [ ] **Step 3: Оберни ход в `turn_span`**
 
@@ -1041,11 +1149,15 @@ from mimic42.integrations.tracing import TurnTrace, turn_span
 В конце `_take_turn_inner`, перед `return AgentTriggerResult(`:
 
 ```python
-        trace.log(output={"text": response_text, "sent": send_any})
+        # sent — факт доставки, а не намерение: send_any остаётся True и после
+        # неудачной отправки (там пишется message.send_failed, sent_message = None).
+        trace.log(output={"text": response_text, "sent": sent_message is not None})
         completed_payload: dict[str, Any] = {"turn_id": turn_id, "peer": trigger.peer}
         completed_trace_url = trace.permalink()
         if completed_trace_url:
             completed_payload["trace_url"] = completed_trace_url
+        # Успешно = конвейер хода завершён, а не «ответ доставлен»: сбой доставки
+        # виден событием message.send_failed, факт доставки — output.sent спана.
         await self._record_event(
             event_type="turn.completed",
             status="succeeded",
@@ -1055,10 +1167,17 @@ from mimic42.integrations.tracing import TurnTrace, turn_span
         )
 ```
 
+`sent` в output спана — `sent_message is not None`, а НЕ `send_any`: `send_any`
+сбрасывается только при пустом ответе и закрытом окне отправки, но остаётся `True`
+при исключении из `_humanized_send` (там пишется `message.send_failed`, а
+`sent_message` остаётся `None`). На самом отлаживаемом пути — сбое доставки —
+спан обязан сообщать `{"sent": false}`, чтобы не противоречить
+`AgentTriggerResult.telegram_message_id is None`.
+
 - [ ] **Step 6: Запусти тест — он должен пройти**
 
 Run: `uv run pytest tests/core/test_agent_runtime_tracing.py -q`
-Expected: PASS (3 теста).
+Expected: PASS (7 тестов).
 
 - [ ] **Step 7: Убедись, что рантайм не сломан**
 
