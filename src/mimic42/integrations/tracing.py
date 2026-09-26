@@ -58,7 +58,13 @@ def setup_tracing(settings: Settings) -> None:
 
 
 def flush_tracing() -> None:
-    """Допрашивает очередь логов при остановке приложения (best-effort)."""
+    """Допрашивает очередь логов при остановке приложения (best-effort).
+
+    Зовётся один раз — первой строкой ``finally`` lifespan, до остановки
+    агентов. Спаны, завершающиеся позже (например во время ``manager.shutdown()``),
+    добирает atexit-flush SDK при выходе процесса: это осознанная семантика
+    одного flush в lifespan, а не утечка.
+    """
     if not _enabled:
         return
     try:
@@ -162,11 +168,17 @@ def turn_span(
         trace.log(error=str(exc) or type(exc).__name__)
         raise
     finally:
+        # Закрытие спана безусловное: BaseException из unset_current (например,
+        # отмена) не должен оставлять спан открытым — как и BaseException из
+        # set_current выше. У каждого шага свой guard, end() гарантированно
+        # выполняется во вложенном finally.
         try:
-            span.unset_current()
-        except Exception:
-            logger.warning("Braintrust span unset_current failed", exc_info=True)
-        try:
-            span.end()
-        except Exception:
-            logger.warning("Braintrust span end failed", exc_info=True)
+            try:
+                span.unset_current()
+            except Exception:
+                logger.warning("Braintrust span unset_current failed", exc_info=True)
+        finally:
+            try:
+                span.end()
+            except Exception:
+                logger.warning("Braintrust span end failed", exc_info=True)
