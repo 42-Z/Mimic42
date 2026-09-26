@@ -259,6 +259,40 @@ class DatabaseAgentStore:
             await db_session.execute(delete(AgentModel).where(AgentModel.id == agent_id))
             await db_session.commit()
 
+    async def reset_context(self, agent_id: UUID, *, actor_user_id: UUID) -> datetime:
+        """Move the short-term context boundary to now.
+
+        Message rows are kept for the dashboard; DatabaseShortTermMemory stops
+        loading everything saved before the boundary. A turn already underway
+        finishes with the context it loaded, and its rows land after the reset.
+        The feed event is written in the same transaction as the boundary.
+        """
+        async with self._session_factory() as db_session:
+            # Row lock serializes concurrent resets: the boundary is computed
+            # only after the lock is taken, so it always moves forward. Without
+            # it a slower reset could commit an older mark and bring back the
+            # messages a fresher reset had just hidden.
+            agent = await db_session.scalar(
+                select(AgentModel).where(AgentModel.id == agent_id).with_for_update()
+            )
+            if agent is None:
+                raise KeyError(f"Agent {agent_id} does not exist")
+            reset_at = _now()
+            agent.context_reset_at = reset_at
+            db_session.add(
+                AgentEventModel(
+                    agent_id=agent_id,
+                    actor_user_id=actor_user_id,
+                    event_type="agent.context_reset",
+                    status="succeeded",
+                    payload={},
+                    started_at=reset_at,
+                    completed_at=reset_at,
+                )
+            )
+            await db_session.commit()
+        return reset_at
+
     async def list_messages(
         self, *, agent_id: UUID, limit: int = 50, offset: int = 0
     ) -> list[AgentMessageRecord]:

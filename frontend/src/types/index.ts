@@ -168,6 +168,7 @@ export interface AgentRow {
   settings: Record<string, unknown> | null;
   last_started_at: string | null;
   last_stopped_at: string | null;
+  context_reset_at: string | null; // short-term context starts after it
   created_at: string;
   updated_at: string;
 }

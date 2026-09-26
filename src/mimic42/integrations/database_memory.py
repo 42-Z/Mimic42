@@ -4,10 +4,10 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from mimic42.integrations.database_models import AgentMessageModel
+from mimic42.integrations.database_models import AgentMessageModel, AgentModel
 
 
 class DatabaseShortTermMemory:
@@ -21,6 +21,11 @@ class DatabaseShortTermMemory:
         peer: str,
         since: datetime,
     ) -> list[dict[str, Any]]:
+        # A context reset from the dashboard moves the lower bound: older rows
+        # stay in the transcript but no longer reach the model.
+        reset_at = (
+            select(AgentModel.context_reset_at).where(AgentModel.id == agent_id).scalar_subquery()
+        )
         async with self._session_factory() as db_session:
             result = await db_session.scalars(
                 select(AgentMessageModel)
@@ -28,6 +33,7 @@ class DatabaseShortTermMemory:
                     AgentMessageModel.agent_id == agent_id,
                     AgentMessageModel.payload["peer"].as_string() == peer,
                     AgentMessageModel.created_at >= since,
+                    or_(reset_at.is_(None), AgentMessageModel.created_at > reset_at),
                 )
                 .order_by(AgentMessageModel.created_at.asc())
             )
