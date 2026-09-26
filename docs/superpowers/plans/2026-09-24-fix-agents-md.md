@@ -20,10 +20,10 @@
 - [ ] **Step 1: Обновить main**
 
 ```bash
-git fetch origin main
+git fetch origin
 ```
 
-Expected: выход без ошибок, `origin/main` обновлён.
+Expected: выход без ошибок, `origin/main` обновлён. (`git fetch origin main` тоже обновляет `origin/main` — git оппортунистически двигает remote-tracking ветку, когда refspec её покрывает, — но вариант без refspec не зависит от настроек `remote.origin.fetch`.)
 
 - [ ] **Step 2: Создать worktree с веткой от main**
 
