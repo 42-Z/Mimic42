@@ -21,7 +21,7 @@ function MediaView({
 
   if (!item.storage_path) {
     return (
-      <span className="inline-flex items-center gap-1.5 font-mono text-[10px] text-void-300 border border-void-700 rounded-sm px-2 py-1">
+      <span className="inline-flex items-center gap-1.5 font-mono text-[10px] text-muted-foreground border border-border rounded-sm px-2 py-1">
         <ImageOff className="h-3 w-3" />
         {item.name} (файл не сохранён)
       </span>
@@ -36,7 +36,7 @@ function MediaView({
     );
   }
   if (!url) {
-    return <span className="font-mono text-[10px] text-void-400">Загрузка медиа…</span>;
+    return <span className="font-mono text-[10px] text-muted-foreground">Загрузка медиа…</span>;
   }
 
   if (IMAGE_KINDS.has(item.kind)) {
@@ -49,8 +49,8 @@ function MediaView({
         decoding="async"
         className={
           compact
-            ? 'h-16 w-16 flex-none rounded-sm border border-void-800 object-cover'
-            : 'max-h-40 max-w-56 rounded-sm border border-void-800 object-cover'
+            ? 'h-16 w-16 flex-none rounded-sm border border-border object-cover'
+            : 'max-h-40 max-w-56 rounded-sm border border-border object-cover'
         }
       />
     );
@@ -59,13 +59,13 @@ function MediaView({
     return <audio controls src={url} className="h-9 max-w-full" />;
   }
   if (item.kind === 'round') {
-    return <video controls src={url} className="max-w-40 rounded-sm border border-void-800" />;
+    return <video controls src={url} className="max-w-40 rounded-sm border border-border" />;
   }
   return (
     <a
       href={url}
       download={item.name}
-      className="inline-flex items-center gap-1.5 font-mono text-[10px] text-plasma-400 hover:text-plasma-300 border border-void-800 px-2 py-1 rounded-sm"
+      className="inline-flex items-center gap-1.5 rounded-sm border border-border px-2 py-1 font-mono text-[10px] text-plasma-400 transition-colors hover:text-plasma-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
     >
       <File className="h-3 w-3" />
       {item.name} · {Math.max(1, Math.round(item.size / 1024))} КБ
@@ -131,7 +131,7 @@ export function MediaContent({ agentId, items }: { agentId: string; items: Media
                 event.stopPropagation();
                 setPreviewIndex(i);
               }}
-              className="cursor-zoom-in"
+              className="cursor-zoom-in rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
             >
               <MediaView agentId={agentId} item={item} compact />
             </button>
@@ -146,7 +146,7 @@ export function MediaContent({ agentId, items }: { agentId: string; items: Media
               event.stopPropagation();
               setPreviewIndex(i);
             }}
-            className="cursor-zoom-in"
+            className="cursor-zoom-in rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
           >
             <MediaView agentId={agentId} item={item} />
           </button>
@@ -173,7 +173,7 @@ export function MediaContent({ agentId, items }: { agentId: string; items: Media
                     event.stopPropagation();
                     step(-1);
                   }}
-                  className="absolute left-0 top-1/2 -translate-y-1/2 p-2 text-void-400 hover:text-void-100"
+                  className="absolute left-0 top-1/2 -translate-y-1/2 rounded-sm border border-border bg-card/80 p-2 text-muted-foreground backdrop-blur-sm transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
                 >
                   <ChevronLeft className="h-6 w-6" />
                 </button>
@@ -184,7 +184,7 @@ export function MediaContent({ agentId, items }: { agentId: string; items: Media
                     event.stopPropagation();
                     step(1);
                   }}
-                  className="absolute right-0 top-1/2 -translate-y-1/2 p-2 text-void-400 hover:text-void-100"
+                  className="absolute right-0 top-1/2 -translate-y-1/2 rounded-sm border border-border bg-card/80 p-2 text-muted-foreground backdrop-blur-sm transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
                 >
                   <ChevronRight className="h-6 w-6" />
                 </button>

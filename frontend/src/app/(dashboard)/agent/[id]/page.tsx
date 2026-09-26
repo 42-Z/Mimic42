@@ -92,7 +92,7 @@ function AgentPageContent({
           </div>
           <div>
             <div className="flex items-center gap-3">
-              <h1 className="font-display text-xl font-bold text-void-100">
+              <h1 className="font-display text-xl font-bold text-foreground">
                 {details?.name ?? <Skeleton className="h-6 w-32 inline-block" />}
               </h1>
               {formatTelegramUsername(telegramSession?.username) && (
@@ -110,21 +110,32 @@ function AgentPageContent({
       </div>
 
       {/* Tabs */}
-      <div className="border-b border-void-800">
-        <div className="flex gap-0 overflow-x-auto" data-testid="agent-tabs">
+      <div className="border-b border-border">
+        <div
+          className="flex gap-0 overflow-x-auto"
+          role="tablist"
+          aria-label="Разделы агента"
+          data-testid="agent-tabs"
+        >
           {TABS.map((tab) => (
             <button
               key={tab.id}
+              type="button"
+              role="tab"
+              id={`agent-tab-${tab.id}`}
+              aria-selected={activeTab === tab.id}
+              aria-controls="agent-tabpanel"
               data-testid={`agent-tab-${tab.id}`}
               onClick={() => handleTabChange(tab.id)}
               className={cn(
-                'flex items-center gap-2 px-4 py-3 font-mono text-xs border-b-2 transition-all duration-150 whitespace-nowrap',
+                'flex items-center gap-2 px-4 py-3 font-mono text-xs border-b-2 transition-colors duration-150 whitespace-nowrap',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
                 activeTab === tab.id
-                  ? 'border-plasma-500 text-plasma-400'
-                  : 'border-transparent text-void-300 hover:text-void-100 hover:border-void-700',
+                  ? 'border-primary text-primary'
+                  : 'border-transparent text-muted-foreground hover:text-foreground hover:border-border',
               )}
             >
-              <tab.icon className="h-3.5 w-3.5" />
+              <tab.icon className="h-3.5 w-3.5" aria-hidden="true" />
               {tab.label}
             </button>
           ))}
@@ -132,7 +143,7 @@ function AgentPageContent({
       </div>
 
       {/* Tab content */}
-      <div>
+      <div id="agent-tabpanel" role="tabpanel" aria-labelledby={`agent-tab-${activeTab}`}>
         {activeTab === 'settings'  && <TabSettings  agentId={agentId} />}
         {activeTab === 'logs'      && <TabActivity  agentId={agentId} agentName={details?.name} />}
         {activeTab === 'actions'   && <TabActions    agentId={agentId} />}
@@ -313,14 +324,14 @@ function TabActions({ agentId }: { agentId: string }) {
   return (
     <div className="max-w-2xl space-y-4">
       {actions.map((a) => (
-        <Card key={a.title} variant="glass" padding="md" className={cn('flex items-center justify-between gap-4 border', a.bg)}>
+        <Card key={a.title} variant="glass" padding="md" className={cn('flex items-center justify-between gap-4', a.bg)}>
           <div className="flex items-start gap-4">
-            <div className={cn('h-9 w-9 rounded-sm flex items-center justify-center shrink-0 bg-void-800')}>
+            <div className={cn('h-9 w-9 rounded-sm flex items-center justify-center shrink-0 bg-muted')}>
               <a.icon className={cn('h-4 w-4', a.color)} />
             </div>
             <div>
-              <p className="font-mono text-sm font-medium text-void-200">{a.title}</p>
-              <p className="font-mono text-xs text-void-300 mt-0.5">{a.desc}</p>
+              <p className="font-mono text-sm font-medium text-foreground/90">{a.title}</p>
+              <p className="font-mono text-xs text-muted-foreground mt-0.5">{a.desc}</p>
             </div>
           </div>
           <Button variant={a.variant} size="sm" onClick={a.action} isLoading={a.loading} className="shrink-0">
@@ -414,11 +425,18 @@ function TabActions({ agentId }: { agentId: string }) {
 function TabTelegram({ agentId }: { agentId: string }) {
   const { data: session, isLoading } = useTelegramSession(agentId);
 
-  if (isLoading) return <Spinner className="mt-8" />;
-  if (!session) return (
-    <div className="font-mono text-sm text-void-300 mt-8">
-      Telegram сессия не найдена
+  if (isLoading) return (
+    <div className="flex items-center justify-center py-16">
+      <Spinner />
     </div>
+  );
+  if (!session) return (
+    <Card variant="glass" padding="lg" className="max-w-md text-center">
+      <MessageSquare className="mx-auto h-10 w-10 text-muted-foreground/50" aria-hidden="true" />
+      <p className="mt-4 font-display text-base font-bold text-foreground">
+        Telegram сессия не найдена
+      </p>
+    </Card>
   );
 
   return (
@@ -489,28 +507,28 @@ function TabMemory({ agentId }: TabMemoryProps) {
       {/* Header and Search */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
-          <h2 className="font-display text-lg font-bold text-void-100 flex items-center gap-2">
+          <h2 className="font-display text-lg font-bold text-foreground flex items-center gap-2">
             <Brain className="h-5 w-5 text-plasma-400 animate-pulse" />
             Долгосрочная память
           </h2>
-          <p className="font-mono text-xs text-void-300 mt-1">
+          <p className="font-mono text-xs text-muted-foreground mt-1">
             Список фактов и предпочтений, автоматически выделенных агентом из диалогов.
           </p>
         </div>
 
-        <div className="relative max-w-sm w-full">
-          <Search className="absolute left-3 top-2.5 h-4 w-4 text-void-400" />
+        <div className="w-full max-w-sm">
           <Input
             type="text"
+            aria-label="Поиск воспоминаний"
             placeholder="Поиск воспоминаний..."
             value={searchVal}
             onChange={(e) => setSearchVal(e.target.value)}
-            className="pl-9 bg-void-950/40 border-void-800 text-void-200 placeholder-void-400 focus:border-plasma-500"
+            leftElement={<Search className="h-4 w-4" />}
           />
         </div>
       </div>
 
-      <Divider className="border-void-900" />
+      <Divider />
 
       {/* Content Area */}
       {isLoading ? (
@@ -527,22 +545,22 @@ function TabMemory({ agentId }: TabMemoryProps) {
           </Card>
         </div>
       ) : error ? (
-        <Card variant="bordered" padding="lg" className="border-rose-950/40 bg-rose-950/10 text-center space-y-4">
-          <AlertTriangle className="h-10 w-10 text-rose-500 mx-auto" />
-          <h3 className="font-display text-base font-bold text-rose-400">
+        <Card variant="bordered" padding="lg" className="border-crimson-950/40 bg-crimson-950/10 text-center space-y-4">
+          <AlertTriangle className="h-10 w-10 text-crimson-500 mx-auto" />
+          <h3 className="font-display text-base font-bold text-crimson-400">
             Ошибка при загрузке памяти
           </h3>
-          <p className="font-mono text-sm text-rose-600 max-w-md mx-auto">
+          <p className="font-mono text-sm text-crimson-200/80 max-w-md mx-auto">
             {getCleanErrorMessage(error)}
           </p>
         </Card>
       ) : !memories || memories.length === 0 ? (
-        <Card variant="glass" padding="lg" className="text-center py-12 space-y-4 max-w-md mx-auto border-void-900">
-          <Brain className="h-10 w-10 text-void-700 mx-auto" />
-          <h3 className="font-display text-base font-bold text-void-400">
+        <Card variant="glass" padding="lg" className="text-center py-12 space-y-4 max-w-md mx-auto border-border">
+          <Brain className="h-10 w-10 text-muted-foreground/50 mx-auto" aria-hidden="true" />
+          <h3 className="font-display text-base font-bold text-foreground">
             {searchVal ? 'Ничего не найдено' : 'Память пуста'}
           </h3>
-          <p className="font-mono text-xs text-void-400">
+          <p className="font-mono text-xs text-muted-foreground">
             {searchVal 
               ? 'Попробуйте изменить поисковый запрос.' 
               : 'Агент начнет автоматически формировать память после первых сообщений с пользователями.'}
@@ -555,16 +573,16 @@ function TabMemory({ agentId }: TabMemoryProps) {
               variant="glass"
               padding="md"
               key={mem.id}
-              className="relative group border-void-800/80 hover:border-plasma-500/30 transition-colors flex flex-col justify-between"
+              className="relative group border-border/80 hover:border-primary/30 transition-colors flex flex-col justify-between"
             >
               <div>
-                <p className="text-void-100 text-sm leading-relaxed whitespace-pre-wrap">
+                <p className="text-foreground text-sm leading-relaxed whitespace-pre-wrap">
                   {sanitizeText(mem.memory)}
                 </p>
               </div>
 
-              <div className="mt-4 flex items-center justify-between border-t border-void-900/60 pt-3">
-                <span className="font-mono text-[10px] text-void-400 flex items-center gap-1.5">
+              <div className="mt-4 flex items-center justify-between border-t border-border/60 pt-3">
+                <span className="font-mono text-[10px] text-muted-foreground flex items-center gap-1.5">
                   <Clock className="h-3 w-3" />
                   {mem.created_at 
                     ? format(new Date(mem.created_at), 'dd.MM.yyyy HH:mm', { locale: ru }) 
@@ -575,7 +593,7 @@ function TabMemory({ agentId }: TabMemoryProps) {
                   size="xs"
                   onClick={() => handleShowHistory(mem.id)}
                   leftIcon={<RefreshCw className="h-3 w-3" />}
-                  className="text-void-400 hover:text-plasma-400 hover:bg-void-900/30 transition-all font-mono text-[10px]"
+                  className="text-muted-foreground transition-colors hover:bg-muted/40 hover:text-primary"
                 >
                   История
                 </Button>
@@ -598,27 +616,27 @@ function TabMemory({ agentId }: TabMemoryProps) {
         {isHistoryLoading ? (
           <div className="flex flex-col items-center justify-center py-12 space-y-4">
             <Spinner size="lg" className="text-plasma-500" />
-            <span className="font-mono text-xs text-void-300">Загрузка истории изменений...</span>
+            <span className="font-mono text-xs text-muted-foreground">Загрузка истории изменений...</span>
           </div>
         ) : !history || history.length === 0 ? (
           <div className="text-center py-8 space-y-2">
-            <Clock className="h-8 w-8 text-void-700 mx-auto" />
-            <h4 className="font-display text-sm font-bold text-void-400">История отсутствует</h4>
-            <p className="font-mono text-xs text-void-400">Для данного факта не найдено изменений.</p>
+            <Clock className="h-8 w-8 text-muted-foreground/50 mx-auto" aria-hidden="true" />
+            <h4 className="font-display text-sm font-bold text-foreground">История отсутствует</h4>
+            <p className="font-mono text-xs text-muted-foreground">Для данного факта не найдено изменений.</p>
           </div>
         ) : (
           <div className="space-y-6 py-2 max-h-[450px] overflow-y-auto pr-2 custom-scrollbar">
             {history.map((item, index) => (
               <div key={item.id || index} className="flex gap-4 relative">
                 {index < history.length - 1 && (
-                  <div className="absolute left-[9px] top-6 bottom-0 w-0.5 bg-void-800" />
+                  <div className="absolute left-[9px] top-6 bottom-0 w-0.5 bg-border" />
                 )}
                 
                 <div className={cn(
                   "h-5 w-5 rounded-full border flex items-center justify-center shrink-0 mt-0.5 text-[8px] font-bold font-mono",
-                  item.event_type === 'add' ? "bg-emerald-950/80 border-emerald-500 text-emerald-400" :
-                  item.event_type === 'delete' ? "bg-rose-950/80 border-rose-500 text-rose-400" :
-                  "bg-blue-950/80 border-blue-500 text-blue-400"
+                  item.event_type === 'add' ? "bg-neon-950/80 border-neon-500 text-neon-400" :
+                  item.event_type === 'delete' ? "bg-crimson-950/80 border-crimson-500 text-crimson-400" :
+                  "bg-plasma-950/80 border-plasma-500 text-plasma-400"
                 )}>
                   {item.event_type === 'add' ? 'A' :
                    item.event_type === 'delete' ? 'D' : 'U'}
@@ -628,25 +646,25 @@ function TabMemory({ agentId }: TabMemoryProps) {
                   <div className="flex items-center gap-3">
                     <span className={cn(
                       "font-mono text-[10px] font-bold uppercase tracking-wider",
-                      item.event_type === 'add' ? "text-emerald-400" :
-                      item.event_type === 'delete' ? "text-rose-400" : "text-blue-400"
+                      item.event_type === 'add' ? "text-neon-400" :
+                      item.event_type === 'delete' ? "text-crimson-400" : "text-plasma-400"
                     )}>
                       {item.event_type === 'add' ? 'Создано' :
                        item.event_type === 'delete' ? 'Удалено' : 'Обновлено'}
                     </span>
-                    <span className="font-mono text-[10px] text-void-300">
+                    <span className="font-mono text-[10px] text-muted-foreground">
                       {format(new Date(item.created_at), 'dd MMMM yyyy, HH:mm', { locale: ru })}
                     </span>
                   </div>
 
-                  <p className="text-void-200 text-sm leading-relaxed bg-void-950/30 p-2.5 rounded-[4px] border border-void-900/60 break-words">
+                  <p className="text-foreground/90 text-sm leading-relaxed bg-background/30 p-2.5 rounded-[4px] border border-border/60 break-words">
                     {sanitizeText(item.new_value || item.prev_value || '')}
                   </p>
 
                   {item.prev_value && item.new_value && item.prev_value !== item.new_value && (
-                    <div className="text-xs border-l-2 border-void-800 pl-3 py-1 space-y-1 bg-void-950/20 rounded-r-sm">
-                      <span className="text-void-300 font-mono block text-[10px]">Предыдущее значение:</span>
-                      <span className="text-void-400 line-through block text-xs">{sanitizeText(item.prev_value)}</span>
+                    <div className="text-xs border-l-2 border-border pl-3 py-1 space-y-1 bg-background/20 rounded-r-sm">
+                      <span className="text-muted-foreground font-mono block text-[10px]">Предыдущее значение:</span>
+                      <span className="text-muted-foreground line-through block text-xs">{sanitizeText(item.prev_value)}</span>
                     </div>
                   )}
                 </div>
@@ -655,7 +673,7 @@ function TabMemory({ agentId }: TabMemoryProps) {
           </div>
         )}
         
-        <div className="flex justify-end mt-6 border-t border-void-800/80 pt-4">
+        <div className="flex justify-end mt-6 border-t border-border/80 pt-4">
           <Button type="button" variant="ghost" size="sm" onClick={() => {
             setHistoryModalOpen(false);
             setSelectedMemoryId(null);

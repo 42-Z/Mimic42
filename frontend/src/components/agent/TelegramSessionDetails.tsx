@@ -14,7 +14,7 @@ const STATUS_COLORS: Record<string, string> = {
   authorized: 'text-neon-400',
   code_requested: 'text-plasma-400',
   password_required: 'text-amber-400',
-  not_started: 'text-void-400',
+  not_started: 'text-muted-foreground',
   error: 'text-crimson-400',
   revoked: 'text-crimson-500',
 };
@@ -50,14 +50,14 @@ export function TelegramSessionDetails({ session }: { session: TelegramSessionRo
         <div
           key={row.label}
           className={cn(
-            'flex items-start justify-between px-5 py-4',
-            i < rows.length - 1 && 'border-b border-void-800',
+            'flex items-start justify-between gap-6 px-5 py-4',
+            i < rows.length - 1 && 'border-b border-border',
           )}
         >
-          <span className="font-mono text-xs text-void-400 uppercase tracking-wider">
+          <span className="font-mono text-xs uppercase tracking-wider text-muted-foreground">
             {row.label}
           </span>
-          <span className={cn('font-mono text-sm text-right', row.color ?? 'text-void-200')}>
+          <span className={cn('text-right font-mono text-sm tabular-nums', row.color ?? 'text-foreground/90')}>
             {row.value}
           </span>
         </div>

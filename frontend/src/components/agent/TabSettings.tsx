@@ -5,8 +5,8 @@ import { useAgentDetails, useUpdateAgentSettings } from '@/hooks/useAgent';
 import { useModelReasoning } from '@/hooks/useModelReasoning';
 import { useToast } from '@/components/ui/toast';
 import { Button } from '@/components/ui/button';
-import { Input, Textarea } from '@/components/ui/input';
-import { Skeleton } from '@/components/ui/card';
+import { Input, Textarea, Label } from '@/components/ui/input';
+import { Skeleton, Badge } from '@/components/ui/card';
 import { PresetPicker } from '@/components/agent/PresetPicker';
 import {
   EMPTY_FIRST_COMMENT,
@@ -135,13 +135,12 @@ export function TabSettings({ agentId }: { agentId: string }) {
       </div>
 
       <div className="flex flex-col gap-1.5">
-        <label className="text-xs font-mono font-medium text-void-300 uppercase tracking-wider">
-          Модель
-        </label>
+        <Label htmlFor="agent-model">Модель</Label>
         <select
+          id="agent-model"
           value={values.model}
           onChange={(e) => set('model', e.target.value)}
-          className="flex h-10 w-full rounded-sm bg-void-800 border border-void-600 px-3 py-2 font-mono text-base sm:text-sm text-void-100 placeholder:text-void-400 transition-colors duration-150 focus:outline-none focus:ring-1 focus:ring-plasma-500 focus:border-plasma-600 hover:border-void-500 disabled:cursor-not-allowed disabled:opacity-50"
+          className="flex h-9 w-full rounded-sm border border-border bg-background px-3 py-1 font-mono text-sm text-foreground transition-colors hover:border-primary/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background [&>option]:bg-card [&>option]:text-foreground"
         >
           {optionsIncluding(values.model).map((m) => (
             <option key={m.value} value={m.value}>
@@ -150,7 +149,7 @@ export function TabSettings({ agentId }: { agentId: string }) {
           ))}
         </select>
         {formErrors.model && (
-          <p className="text-xs text-crimson-400 font-mono flex items-center gap-1">
+          <p role="alert" className="text-xs text-crimson-400 font-mono flex items-center gap-1">
             <span aria-hidden="true">✗</span>
             {formErrors.model}
           </p>
@@ -159,13 +158,12 @@ export function TabSettings({ agentId }: { agentId: string }) {
 
       {reasoningOptions !== null && (
         <div className="flex flex-col gap-1.5">
-          <label className="text-xs font-mono font-medium text-void-300 uppercase tracking-wider">
-            Уровень рассуждения
-          </label>
+          <Label htmlFor="agent-reasoning">Уровень рассуждения</Label>
           <select
+            id="agent-reasoning"
             value={values.reasoning_effort ?? ''}
             onChange={(e) => set('reasoning_effort', e.target.value)}
-            className="flex h-10 w-full rounded-sm bg-void-800 border border-void-600 px-3 py-2 font-mono text-base sm:text-sm text-void-100 placeholder:text-void-400 transition-colors duration-150 focus:outline-none focus:ring-1 focus:ring-plasma-500 focus:border-plasma-600 hover:border-void-500 disabled:cursor-not-allowed disabled:opacity-50"
+            className="flex h-9 w-full rounded-sm border border-border bg-background px-3 py-1 font-mono text-sm text-foreground transition-colors hover:border-primary/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background [&>option]:bg-card [&>option]:text-foreground"
           >
             {reasoningOptions.map((effort) => (
               <option key={effort} value={effort}>
@@ -174,7 +172,7 @@ export function TabSettings({ agentId }: { agentId: string }) {
             ))}
           </select>
           {formErrors.reasoning_effort && (
-            <p className="text-xs text-crimson-400 font-mono flex items-center gap-1">
+            <p role="alert" className="text-xs text-crimson-400 font-mono flex items-center gap-1">
               <span aria-hidden="true">✗</span>
               {formErrors.reasoning_effort}
             </p>
@@ -196,9 +194,7 @@ export function TabSettings({ agentId }: { agentId: string }) {
         <Button type="submit" isLoading={update.isPending} disabled={!dirty}>
           Сохранить изменения
         </Button>
-        {dirty && (
-          <span className="font-mono text-xs text-amber-400">● Есть несохранённые изменения</span>
-        )}
+        {dirty && <Badge variant="amber">Есть несохранённые изменения</Badge>}
       </div>
     </form>
   );

@@ -7,6 +7,7 @@ import {
 } from 'recharts';
 import { useAnalyticsData } from '@/hooks/useTelegramSession';
 import { Card, Skeleton } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
 import { TokenUsageCard } from '@/components/agent/TokenUsageCard';
 import { formatDayLabel, formatDayFull } from '@/lib/format';
 import { cn } from '@/lib/utils';
@@ -31,20 +32,23 @@ export function TabAnalytics({ agentId }: { agentId: string }) {
     <div className="space-y-6">
       <TokenUsageCard agentId={agentId} />
 
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2" role="group" aria-label="Период">
         {([7, 30] as const).map((d) => (
-          <button
+          <Button
             key={d}
+            type="button"
+            size="sm"
+            variant="outline"
+            aria-pressed={days === d}
             onClick={() => setDays(d)}
             className={cn(
-              'px-4 py-1.5 rounded-sm font-mono text-xs border transition-colors',
               days === d
-                ? 'bg-plasma-950 border-plasma-800 text-plasma-400'
-                : 'border-void-700 text-void-300 hover:text-void-100',
+                ? 'border-primary/60 bg-primary/10 text-primary hover:border-primary hover:text-primary'
+                : 'border-border text-muted-foreground hover:border-border hover:text-foreground',
             )}
           >
             {d} дней
-          </button>
+          </Button>
         ))}
       </div>
 
@@ -56,7 +60,7 @@ export function TabAnalytics({ agentId }: { agentId: string }) {
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <Card variant="glass" padding="md">
-            <h3 className="font-mono text-xs text-void-400 uppercase tracking-wider mb-4">
+            <h3 className="font-mono text-xs text-muted-foreground uppercase tracking-wider mb-4">
               Активность по дням
             </h3>
             <ResponsiveContainer width="100%" height={220}>
@@ -101,7 +105,7 @@ export function TabAnalytics({ agentId }: { agentId: string }) {
           </Card>
 
           <Card variant="glass" padding="md">
-            <h3 className="font-mono text-xs text-void-400 uppercase tracking-wider mb-4">
+            <h3 className="font-mono text-xs text-muted-foreground uppercase tracking-wider mb-4">
               Ошибки по дням
             </h3>
             <ResponsiveContainer width="100%" height={220}>
