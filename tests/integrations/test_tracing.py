@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterator
 from typing import Any
 from uuid import uuid4
 
+import braintrust
 import pytest
 
 from mimic42.config import Settings
@@ -133,20 +135,31 @@ class FakeSpan:
     def __init__(self) -> None:
         self.events: list[dict[str, Any]] = []
         self.ended = 0
+        self.calls: list[str] = []
         self.start_kwargs: dict[str, Any] = {}
+        self.log_error: BaseException | None = None
         self.permalink_value = "https://braintrust.dev/app/p/mimic42/t/turn-1"
 
     def log(self, **event: Any) -> None:
+        if self.log_error is not None:
+            raise self.log_error
         self.events.append(event)
 
+    def set_current(self) -> None:
+        self.calls.append("set_current")
+
+    def unset_current(self) -> None:
+        self.calls.append("unset_current")
+
     def end(self) -> None:
+        self.calls.append("end")
         self.ended += 1
 
     def permalink(self) -> str:
         return self.permalink_value
 
 
-def _enable_tracing(monkeypatch: pytest.MonkeyPatch) -> list[FakeSpan]:
+def _enable_tracing(monkeypatch: pytest.MonkeyPatch, **settings_kwargs: Any) -> list[FakeSpan]:
     _patch_braintrust(monkeypatch)
     spans: list[FakeSpan] = []
 
@@ -157,7 +170,7 @@ def _enable_tracing(monkeypatch: pytest.MonkeyPatch) -> list[FakeSpan]:
         return span
 
     monkeypatch.setattr(tracing.braintrust, "start_span", start_span)
-    tracing.setup_tracing(_settings(braintrust_api_key="bt-key"))
+    tracing.setup_tracing(_settings(braintrust_api_key="bt-key", **settings_kwargs))
     return spans
 
 
@@ -196,6 +209,7 @@ def test_turn_span_logs_input_metadata_and_output(monkeypatch: pytest.MonkeyPatc
     assert isinstance(metadata["environment"], str) and metadata["environment"]
     assert span.events[1] == {"output": {"text": "ok"}}
     assert span.ended == 1
+    assert span.calls == ["set_current", "unset_current", "end"]
     assert trace.permalink() == span.permalink_value
 
 
@@ -210,6 +224,7 @@ def test_turn_span_records_error_and_reraises(monkeypatch: pytest.MonkeyPatch) -
 
     assert spans[0].events[-1] == {"error": "boom"}
     assert spans[0].ended == 1
+    assert spans[0].calls == ["set_current", "unset_current", "end"]
 
 
 def test_turn_span_survives_start_span_failure(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -226,3 +241,104 @@ def test_turn_span_survives_start_span_failure(monkeypatch: pytest.MonkeyPatch) 
         trace.log(output={"text": "ok"})
 
     assert trace.permalink() is None
+
+
+def test_turn_span_initial_log_failure_keeps_span_alive(monkeypatch: pytest.MonkeyPatch) -> None:
+    spans = _enable_tracing(monkeypatch)
+
+    def start_span_with_broken_log(**kwargs: Any) -> FakeSpan:
+        span = FakeSpan()
+        span.start_kwargs = kwargs
+        span.log_error = RuntimeError("log down")
+        spans.append(span)
+        return span
+
+    monkeypatch.setattr(tracing.braintrust, "start_span", start_span_with_broken_log)
+
+    with tracing.turn_span(
+        agent_id=uuid4(), turn_id="t1", peer="chat", model="m", input=None
+    ) as trace:
+        trace.log(output={"text": "ok"})
+
+    assert len(spans) == 1
+    span = spans[0]
+    # начальный log упал, но спан живой: хэндл рабочий, спан закрыт и снят с current
+    assert trace.permalink() == span.permalink_value
+    assert span.ended == 1
+    assert span.calls == ["set_current", "unset_current", "end"]
+
+
+def test_turn_span_records_base_exception_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    spans = _enable_tracing(monkeypatch)
+
+    with pytest.raises(asyncio.CancelledError):
+        with tracing.turn_span(
+            agent_id=uuid4(), turn_id="t1", peer="chat", model="m", input=None
+        ):
+            raise asyncio.CancelledError()
+
+    assert spans[0].events[-1] == {"error": "CancelledError"}
+    assert spans[0].ended == 1
+    assert spans[0].calls == ["set_current", "unset_current", "end"]
+
+
+def test_turn_span_uses_environment_from_setup(monkeypatch: pytest.MonkeyPatch) -> None:
+    spans = _enable_tracing(monkeypatch, environment="production-test")
+
+    with tracing.turn_span(
+        agent_id=uuid4(), turn_id="t1", peer="chat", model="m", input=None
+    ):
+        pass
+
+    assert spans[0].events[0]["metadata"]["environment"] == "production-test"
+
+
+def test_turn_span_does_not_construct_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    spans = _enable_tracing(monkeypatch)
+
+    class BoomSettings:
+        def __init__(self, *_: Any, **__: Any) -> None:
+            raise AssertionError("Settings must not be constructed during a turn")
+
+    monkeypatch.setattr(tracing, "Settings", BoomSettings)
+
+    with tracing.turn_span(
+        agent_id=uuid4(), turn_id="t1", peer="chat", model="m", input=None
+    ) as trace:
+        trace.log(output={"text": "ok"})
+
+    assert trace.permalink() == spans[0].permalink_value
+    assert spans[0].ended == 1
+
+
+def test_turn_span_is_current_span_for_real_braintrust_machinery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Интеграционная проверка на настоящей span-context машинерии SDK (без сети).
+
+    SDK логинится офлайн по TEST_API_KEY, логи уходят на 127.0.0.1:1 (мгновенный
+    отказ), atexit-flush выключен — ни логина, ни отправки логов в Braintrust.
+    """
+    monkeypatch.setenv("BRAINTRUST_API_URL", "http://127.0.0.1:1")
+    monkeypatch.setenv("BRAINTRUST_PROXY_URL", "http://127.0.0.1:1")
+    monkeypatch.setenv("BRAINTRUST_DISABLE_ATEXIT_FLUSH", "1")
+    # Глушим только установку глобального LangChain-хендлера:
+    # init_logger и start_span — настоящие.
+    monkeypatch.setattr(tracing, "set_global_handler", lambda *_: None)
+    monkeypatch.setattr(tracing, "BraintrustCallbackHandler", lambda: "handler")
+    tracing.setup_tracing(_settings(braintrust_api_key=braintrust.TEST_API_KEY))
+    assert tracing.tracing_enabled() is True
+
+    with tracing.turn_span(
+        agent_id=uuid4(), turn_id="t1", peer="chat", model="m", input={"text": "hi"}
+    ) as trace:
+        current: Any = braintrust.current_span()
+        assert current is trace._span
+        child: Any = braintrust.start_span(name="child")
+        assert child.root_span_id == current.root_span_id
+        assert child.span_id != current.span_id
+        child.end()
+
+    # после выхода из блока спан хода снят с current (остался NOOP-спан)
+    assert braintrust.current_span() is not trace._span
+    assert braintrust.current_span().export() == ""

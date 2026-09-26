@@ -21,6 +21,7 @@ from mimic42.config import Settings
 logger = logging.getLogger("mimic42.tracing")
 
 _enabled = False
+_environment: str | None = None
 
 
 def tracing_enabled() -> bool:
@@ -30,7 +31,7 @@ def tracing_enabled() -> bool:
 
 def setup_tracing(settings: Settings) -> None:
     """Инициализирует Braintrust и глобальный LangChain-хендлер. Идемпотентно."""
-    global _enabled
+    global _enabled, _environment
     if _enabled or not settings.braintrust_api_key:
         return
     try:
@@ -43,6 +44,8 @@ def setup_tracing(settings: Settings) -> None:
         return
     # Состояние фиксируем сразу после init_logger: SDK уже запущен, спаны работают,
     # даже если установка глобального хендлера ниже не удалась.
+    # Окружение кэшируем здесь: в ходе Settings() больше не конструируется.
+    _environment = settings.environment
     _enabled = True
     try:
         # Глушитель ниже — false positive: braintrust.integrations.langchain переопределяет
@@ -67,20 +70,29 @@ def flush_tracing() -> None:
 def reset_tracing() -> None:
     """Сбрасывает состояние модуля — только для тестов.
 
-    Глобальный LangChain-хендлер не снимает: тесты монают ``set_global_handler``,
+    Глобальный LangChain-хендлер не снимает: тесты мокают ``set_global_handler``,
     поэтому снимать его нечего и не нужно.
     """
-    global _enabled
+    global _enabled, _environment
     _enabled = False
+    _environment = None
 
 
 class TurnTrace:
-    """Хэндл корневого спана хода; безопасен при выключенном трейсинге."""
+    """Хэндл корневого спана хода; безопасен при выключенном трейсинге.
+
+    ``log`` зовётся внутри блока ``turn_span``: после выхода из блока спан
+    закрыт, и из хэндла доступен только ``permalink``.
+    """
 
     def __init__(self, span: Any | None) -> None:
         self._span = span
 
     def log(self, **event: Any) -> None:
+        """Пишет событие в спан; зовётся внутри блока ``turn_span``.
+
+        После выхода из блока спан закрыт — из хэндла доступен только ``permalink``.
+        """
         if self._span is None:
             return
         try:
@@ -112,35 +124,48 @@ def turn_span(
     Спан делается current на время хода, поэтому вложенные спаны LangChain
     (модель, инструменты, шаги графа) из BraintrustCallbackHandler
     прикрепляются к нему автоматически.
+
+    ``start_span(..., set_current=True)`` лишь запоминает флаг: контекст ставит
+    только ``with``-блок (``Span.__enter__`` → ``Span.set_current``), поэтому
+    current-пара ``set_current``/``unset_current`` управляется здесь явно.
     """
     if not tracing_enabled():
         yield TurnTrace(None)
         return
     try:
-        span = braintrust.start_span(
-            name=f"turn {peer}", type=SpanTypeAttribute.TASK, set_current=True
-        )
-        span.log(
-            input=input,
-            metadata={
-                "agent_id": str(agent_id),
-                "turn_id": turn_id,
-                "peer": peer,
-                "model": model,
-                "environment": Settings().environment,
-            },
-        )
+        span = braintrust.start_span(name=f"turn {peer}", type=SpanTypeAttribute.TASK)
     except Exception:
         logger.warning("Braintrust start_span failed", exc_info=True)
         yield TurnTrace(None)
         return
+    try:
+        span.set_current()
+    except Exception:
+        logger.warning("Braintrust span set_current failed", exc_info=True)
     trace = TurnTrace(span)
     try:
+        try:
+            span.log(
+                input=input,
+                metadata={
+                    "agent_id": str(agent_id),
+                    "turn_id": turn_id,
+                    "peer": peer,
+                    "model": model,
+                    "environment": _environment,
+                },
+            )
+        except Exception:
+            logger.warning("Braintrust initial span log failed", exc_info=True)
         yield trace
-    except Exception as exc:
-        trace.log(error=str(exc))
+    except BaseException as exc:
+        trace.log(error=str(exc) or type(exc).__name__)
         raise
     finally:
+        try:
+            span.unset_current()
+        except Exception:
+            logger.warning("Braintrust span unset_current failed", exc_info=True)
         try:
             span.end()
         except Exception:

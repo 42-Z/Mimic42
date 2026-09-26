@@ -39,7 +39,7 @@
 
 ---
 
-### Task 1: Зависимость braintrust и поля Settings
+### Task 1: Зависимость braintrust и поля Settings ✅ (4d33ceb + bfbc414; spec ✅, quality ✅)
 
 **Files:**
 - Modify: `pyproject.toml`, `uv.lock` (через `uv add braintrust`)
@@ -260,8 +260,6 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'mimic42.integrations.t
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
-from typing import Any
 
 import braintrust
 from braintrust.integrations.langchain import BraintrustCallbackHandler, set_global_handler
@@ -270,41 +268,46 @@ from mimic42.config import Settings
 
 logger = logging.getLogger("mimic42.tracing")
 
-
-@dataclass
-class _TraceState:
-    logger: Any
-
-
-_state: _TraceState | None = None
+_enabled = False
+_environment: str | None = None
 
 
 def tracing_enabled() -> bool:
     """Трейсинг включён: Braintrust инициализирован и готов принимать спаны."""
-    return _state is not None
+    return _enabled
 
 
 def setup_tracing(settings: Settings) -> None:
     """Инициализирует Braintrust и глобальный LangChain-хендлер. Идемпотентно."""
-    global _state
-    if _state is not None or not settings.braintrust_api_key:
+    global _enabled, _environment
+    if _enabled or not settings.braintrust_api_key:
         return
     try:
-        bt_logger = braintrust.init_logger(
+        braintrust.init_logger(
             project=settings.braintrust_project,
             api_key=settings.braintrust_api_key,
         )
-        set_global_handler(BraintrustCallbackHandler())
     except Exception:
         logger.warning("Braintrust tracing disabled: init failed", exc_info=True)
         return
-    _state = _TraceState(logger=bt_logger)
+    # Состояние фиксируем сразу после init_logger: SDK уже запущен, спаны работают,
+    # даже если установка глобального хендлера ниже не удалась.
+    # Окружение кэшируем здесь: в ходе Settings() больше не конструируется.
+    _environment = settings.environment
+    _enabled = True
+    try:
+        # Глушитель ниже — false positive: braintrust.integrations.langchain переопределяет
+        # BraintrustCallbackHandler в except ImportError (fallback без langchain-core), из-за чего
+        # ty считает результат конструктора union'ом двух классов.
+        set_global_handler(BraintrustCallbackHandler())  # ty: ignore[invalid-argument-type]
+    except Exception:
+        logger.warning("Braintrust global handler not installed", exc_info=True)
     logger.info("Braintrust tracing enabled (project=%s)", settings.braintrust_project)
 
 
 def flush_tracing() -> None:
     """Допрашивает очередь логов при остановке приложения (best-effort)."""
-    if _state is None:
+    if not _enabled:
         return
     try:
         braintrust.flush()
@@ -313,9 +316,14 @@ def flush_tracing() -> None:
 
 
 def reset_tracing() -> None:
-    """Сбрасывает состояние модуля — только для тестов."""
-    global _state
-    _state = None
+    """Сбрасывает состояние модуля — только для тестов.
+
+    Глобальный LangChain-хендлер не снимает: тесты мокают ``set_global_handler``,
+    поэтому снимать его нечего и не нужно.
+    """
+    global _enabled, _environment
+    _enabled = False
+    _environment = None
 ```
 
 - [ ] **Step 4: Запусти тест — он должен пройти**
@@ -347,6 +355,7 @@ Expected: `All checks passed!` дважды, коммит создан.
 Добавь в `tests/integrations/test_tracing.py`:
 
 ```python
+import asyncio
 from uuid import uuid4
 
 
@@ -354,20 +363,31 @@ class FakeSpan:
     def __init__(self) -> None:
         self.events: list[dict[str, Any]] = []
         self.ended = 0
+        self.calls: list[str] = []
         self.start_kwargs: dict[str, Any] = {}
+        self.log_error: BaseException | None = None
         self.permalink_value = "https://braintrust.dev/app/p/mimic42/t/turn-1"
 
     def log(self, **event: Any) -> None:
+        if self.log_error is not None:
+            raise self.log_error
         self.events.append(event)
 
+    def set_current(self) -> None:
+        self.calls.append("set_current")
+
+    def unset_current(self) -> None:
+        self.calls.append("unset_current")
+
     def end(self) -> None:
+        self.calls.append("end")
         self.ended += 1
 
     def permalink(self) -> str:
         return self.permalink_value
 
 
-def _enable_tracing(monkeypatch: pytest.MonkeyPatch) -> list[FakeSpan]:
+def _enable_tracing(monkeypatch: pytest.MonkeyPatch, **settings_kwargs: Any) -> list[FakeSpan]:
     _patch_braintrust(monkeypatch)
     spans: list[FakeSpan] = []
 
@@ -378,7 +398,7 @@ def _enable_tracing(monkeypatch: pytest.MonkeyPatch) -> list[FakeSpan]:
         return span
 
     monkeypatch.setattr(tracing.braintrust, "start_span", start_span)
-    tracing.setup_tracing(_settings(braintrust_api_key="bt-key"))
+    tracing.setup_tracing(_settings(braintrust_api_key="bt-key", **settings_kwargs))
     return spans
 
 
@@ -417,6 +437,7 @@ def test_turn_span_logs_input_metadata_and_output(monkeypatch: pytest.MonkeyPatc
     assert isinstance(metadata["environment"], str) and metadata["environment"]
     assert span.events[1] == {"output": {"text": "ok"}}
     assert span.ended == 1
+    assert span.calls == ["set_current", "unset_current", "end"]
     assert trace.permalink() == span.permalink_value
 
 
@@ -431,6 +452,7 @@ def test_turn_span_records_error_and_reraises(monkeypatch: pytest.MonkeyPatch) -
 
     assert spans[0].events[-1] == {"error": "boom"}
     assert spans[0].ended == 1
+    assert spans[0].calls == ["set_current", "unset_current", "end"]
 
 
 def test_turn_span_survives_start_span_failure(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -447,7 +469,77 @@ def test_turn_span_survives_start_span_failure(monkeypatch: pytest.MonkeyPatch) 
         trace.log(output={"text": "ok"})
 
     assert trace.permalink() is None
+
+
+def test_turn_span_initial_log_failure_keeps_span_alive(monkeypatch: pytest.MonkeyPatch) -> None:
+    spans = _enable_tracing(monkeypatch)
+
+    def start_span_with_broken_log(**kwargs: Any) -> FakeSpan:
+        span = FakeSpan()
+        span.start_kwargs = kwargs
+        span.log_error = RuntimeError("log down")
+        spans.append(span)
+        return span
+
+    monkeypatch.setattr(tracing.braintrust, "start_span", start_span_with_broken_log)
+
+    with tracing.turn_span(
+        agent_id=uuid4(), turn_id="t1", peer="chat", model="m", input=None
+    ) as trace:
+        trace.log(output={"text": "ok"})
+
+    assert len(spans) == 1
+    span = spans[0]
+    # начальный log упал, но спан живой: хэндл рабочий, спан закрыт и снят с current
+    assert trace.permalink() == span.permalink_value
+    assert span.ended == 1
+    assert span.calls == ["set_current", "unset_current", "end"]
+
+
+def test_turn_span_records_base_exception_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    spans = _enable_tracing(monkeypatch)
+
+    with pytest.raises(asyncio.CancelledError):
+        with tracing.turn_span(
+            agent_id=uuid4(), turn_id="t1", peer="chat", model="m", input=None
+        ):
+            raise asyncio.CancelledError()
+
+    assert spans[0].events[-1] == {"error": "CancelledError"}
+    assert spans[0].ended == 1
+    assert spans[0].calls == ["set_current", "unset_current", "end"]
+
+
+def test_turn_span_uses_environment_from_setup(monkeypatch: pytest.MonkeyPatch) -> None:
+    spans = _enable_tracing(monkeypatch, environment="production-test")
+
+    with tracing.turn_span(
+        agent_id=uuid4(), turn_id="t1", peer="chat", model="m", input=None
+    ):
+        pass
+
+    assert spans[0].events[0]["metadata"]["environment"] == "production-test"
+
+
+def test_turn_span_does_not_construct_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    spans = _enable_tracing(monkeypatch)
+
+    class BoomSettings:
+        def __init__(self, *_: Any, **__: Any) -> None:
+            raise AssertionError("Settings must not be constructed during a turn")
+
+    monkeypatch.setattr(tracing, "Settings", BoomSettings)
+
+    with tracing.turn_span(
+        agent_id=uuid4(), turn_id="t1", peer="chat", model="m", input=None
+    ) as trace:
+        trace.log(output={"text": "ok"})
+
+    assert trace.permalink() == spans[0].permalink_value
+    assert spans[0].ended == 1
 ```
+
+Тесты закрепляют current-контракт спана: `set_current` вызывается ровно один раз, `unset_current` — строго до `end`, и на обычном пути (`test_turn_span_logs_input_metadata_and_output`), и на error-путях (`test_turn_span_records_error_and_reraises`, `test_turn_span_records_base_exception_error`). Без этих проверок `turn_span` снова может «забыть» сделать спан current (контекст ставит только `Span.__enter__`/`set_current`, а не `set_current=True` у `start_span`) или не закрыть его.
 
 - [ ] **Step 2: Запусти тест — он должен упасть**
 
@@ -461,14 +553,21 @@ Expected: FAIL — `AttributeError: module 'mimic42.integrations.tracing' has no
 ```python
 from collections.abc import Iterator
 from contextlib import contextmanager
+from typing import Any
 from uuid import UUID
+
+from braintrust.span_types import SpanTypeAttribute
 ```
 
 и после `reset_tracing` — сами класс и функцию:
 
 ```python
 class TurnTrace:
-    """Хэндл корневого спана хода; безопасен при выключенном трейсинге."""
+    """Хэндл корневого спана хода; безопасен при выключенном трейсинге.
+
+    ``log`` зовётся внутри блока ``turn_span``: после выхода из блока спан
+    закрыт, и из хэндла доступен только ``permalink``.
+    """
 
     def __init__(self, span: Any | None) -> None:
         self._span = span
@@ -505,43 +604,69 @@ def turn_span(
     Спан делается current на время хода, поэтому вложенные спаны LangChain
     (модель, инструменты, шаги графа) из BraintrustCallbackHandler
     прикрепляются к нему автоматически.
+
+    ``start_span(..., set_current=True)`` лишь запоминает флаг: контекст ставит
+    только ``with``-блок (``Span.__enter__`` → ``Span.set_current``), поэтому
+    current-пара ``set_current``/``unset_current`` управляется здесь явно.
     """
     if not tracing_enabled():
         yield TurnTrace(None)
         return
     try:
-        span = braintrust.start_span(name=f"turn {peer}", type="task", set_current=True)
-        span.log(
-            input=input,
-            metadata={
-                "agent_id": str(agent_id),
-                "turn_id": turn_id,
-                "peer": peer,
-                "model": model,
-                "environment": Settings().environment,
-            },
-        )
+        span = braintrust.start_span(name=f"turn {peer}", type=SpanTypeAttribute.TASK)
     except Exception:
         logger.warning("Braintrust start_span failed", exc_info=True)
         yield TurnTrace(None)
         return
+    try:
+        span.set_current()
+    except Exception:
+        logger.warning("Braintrust span set_current failed", exc_info=True)
     trace = TurnTrace(span)
     try:
+        try:
+            span.log(
+                input=input,
+                metadata={
+                    "agent_id": str(agent_id),
+                    "turn_id": turn_id,
+                    "peer": peer,
+                    "model": model,
+                    "environment": _environment,
+                },
+            )
+        except Exception:
+            logger.warning("Braintrust initial span log failed", exc_info=True)
         yield trace
-    except Exception as exc:
-        trace.log(error=str(exc))
+    except BaseException as exc:
+        trace.log(error=str(exc) or type(exc).__name__)
         raise
     finally:
+        try:
+            span.unset_current()
+        except Exception:
+            logger.warning("Braintrust span unset_current failed", exc_info=True)
         try:
             span.end()
         except Exception:
             logger.warning("Braintrust span end failed", exc_info=True)
 ```
 
+Обязательные свойства этого варианта (закреплены тестами Task 3, Step 1):
+
+- `start_span` и начальный `span.log` — в **разных** try: упавший начальный log не
+  маскируется под «start_span failed» и не оставляет спан незакрытым.
+- `set_current()`/`unset_current()` вызываются явно и именно в таком порядке
+  вокруг `yield`; `end()` остаётся в `finally`.
+- Ошибка тела (включая `BaseException`: `asyncio.CancelledError`, `GeneratorExit`)
+  пишется на спан как `error`, генератор при этом корректно закрывается.
+- `environment` берётся из `_environment`, закэшированного в `setup_tracing`
+  (Task 2): в ходе `Settings()` не конструируется.
+
 - [ ] **Step 4: Запусти тест — он должен пройти**
 
 Run: `uv run pytest tests/integrations/test_tracing.py -q`
-Expected: PASS (9 тестов).
+Expected: PASS — все тесты файла зелёные (8 тестов `turn_span`, включая проверки `set_current`/`unset_current`).
 
 - [ ] **Step 5: Проверь линтеры и закоммить**
 
