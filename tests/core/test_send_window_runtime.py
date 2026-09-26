@@ -128,6 +128,111 @@ async def test_flush_in_flight_after_stop_does_not_restart_the_runtime() -> None
     assert runtime._state is AgentRuntimeState.STOPPED
 
 
+class GatedAgent(RecordingAgent):
+    """Ход висит, пока тест его не отпустит: видно, что приходит во время хода.
+
+    Агент молчит: перед отправкой ответа ход сам ещё раз проверяет окно, а
+    тесту важны только проверки от сообщений, пришедших во время хода."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def ainvoke(
+        self, input_data: dict[str, object], context: object | None = None
+    ) -> dict[str, object]:
+        self.entered.set()
+        await self.release.wait()
+        await super().ainvoke(input_data, context)
+        return {
+            "messages": [{"role": "assistant", "content": ""}],
+            "structured_response": {"text": "", "send_any_message": False, "reply_to": None},
+        }
+
+
+class CountingTracker(ScriptedTracker):
+    """Считает проверки окна: у настоящего трекера каждая — запрос в Telegram."""
+
+    def __init__(self, window: SendWindow) -> None:
+        super().__init__(window)
+        self.checks = 0
+
+    async def check(self, peer: str, chat: object = None) -> SendWindow:
+        self.checks += 1
+        return self.window
+
+
+class GatedTracker(ScriptedTracker):
+    """Проверка окна висит, пока тест её не отпустит: стоп приходит посреди подготовки хода."""
+
+    def __init__(self) -> None:
+        super().__init__(SendWindow())
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def check(self, peer: str, chat: object = None) -> SendWindow:
+        self.entered.set()
+        await self.release.wait()
+        return self.window
+
+
+async def test_message_queued_behind_a_turn_does_not_restart_a_stopped_runtime() -> None:
+    """Второе сообщение ждёт, пока идёт ход по первому, и тут агента останавливают.
+    Очередь не должна поднять его обратно: он продолжил бы отвечать, а в базе
+    остался бы статус «остановлен». И в Telegram с отключённым клиентом оно не ходит."""
+    account = FakeTelegramAccount()
+    account.authorized = True
+    agent = GatedAgent()
+    tracker = CountingTracker(SendWindow())
+    runtime = MimicAgentRuntime(
+        config=make_config(),
+        telegram_client=cast(Any, FakeTelegramClient(account)),
+        langchain_agent=cast(Any, agent),
+        send_window=tracker,
+    )
+    await runtime.start()
+    first = asyncio.create_task(runtime._dispatch_incoming(cast(Any, [FakeEvent(1, "первое")])))
+    await agent.entered.wait()
+    queued = asyncio.create_task(runtime._dispatch_incoming(cast(Any, [FakeEvent(2, "второе")])))
+
+    await runtime.stop()
+    checks_before_stop = tracker.checks
+    agent.release.set()
+    await asyncio.gather(first, queued)
+
+    assert runtime._state is AgentRuntimeState.STOPPED
+    assert not [text for text in agent.texts if "второе" in text]
+    assert tracker.checks == checks_before_stop
+
+
+async def test_stop_while_a_turn_is_prepared_does_not_restart_the_runtime() -> None:
+    """Стоп пришёл, когда очередь уже пройдена и ход собирается: запускать агента
+    заново ради этого хода нельзя."""
+    account = FakeTelegramAccount()
+    account.authorized = True
+    agent = RecordingAgent()
+    tracker = GatedTracker()
+    runtime = MimicAgentRuntime(
+        config=make_config(),
+        telegram_client=cast(Any, FakeTelegramClient(account)),
+        langchain_agent=cast(Any, agent),
+        send_window=tracker,
+    )
+    await runtime.start()
+    post = asyncio.create_task(
+        runtime._dispatch_incoming(cast(Any, [FakeEvent(1, "пост канала", is_group=False)]))
+    )
+    await tracker.entered.wait()
+
+    await runtime.stop()
+    tracker.release.set()
+    await post
+
+    assert runtime._state is AgentRuntimeState.STOPPED
+    assert agent.texts == []
+
+
 async def test_open_window_runs_the_turn_immediately() -> None:
     runtime, agent, _ = build(SendWindow())
     await dispatch(runtime, FakeEvent(1, "привет"))

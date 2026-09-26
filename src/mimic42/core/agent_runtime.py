@@ -1507,6 +1507,11 @@ class MimicAgentRuntime:
         if await self._is_chat_muted(event, peer):
             return
         async with self._dispatch_lock:
+            # Пока ждали очереди за чужим ходом, агента могли остановить: клиент
+            # отключён, и разбор сообщения только насыпал бы ошибок в ленту.
+            if self._state is not AgentRuntimeState.RUNNING:
+                logger.info("Рантайм остановлен, входящее из чата %s отброшено", peer)
+                return
             await self._gate_and_process(event, events, peer)
 
     async def _gate_and_process(
@@ -1575,7 +1580,7 @@ class MimicAgentRuntime:
             else ""
         )
         try:
-            await self.trigger_message(
+            await self._trigger_while_running(
                 AgentTrigger(
                     peer=peer,
                     text=(
@@ -1640,7 +1645,7 @@ class MimicAgentRuntime:
                 title=last.thread_title,
                 last_message_at=last.msg_date,
             )
-            await self.trigger_message(
+            await self._trigger_while_running(
                 AgentTrigger(
                     peer=peer,
                     text=text,
@@ -1659,6 +1664,19 @@ class MimicAgentRuntime:
             )
         except Exception as e:
             await self._record_incoming_failure(peer, e)
+
+    async def _trigger_while_running(self, trigger: AgentTrigger) -> None:
+        """Ход по событию из Telegram — только у запущенного рантайма.
+
+        trigger_message сам запускает остановленный рантайм: это нужно ручке
+        дашборда, но не событию, которое stop() застал посреди подготовки хода —
+        агент ожил бы и отвечал дальше при статусе «остановлен» в базе. Между
+        проверкой и вызовом нет await, так что stop() между ними не вклинится.
+        """
+        if self._state is not AgentRuntimeState.RUNNING:
+            logger.info("Рантайм остановлен, ход по чату %s отброшен", trigger.peer)
+            return
+        await self.trigger_message(trigger)
 
     async def _record_incoming_failure(self, peer: str, exc: Exception) -> None:
         logger.error("Unhandled exception in incoming message handler", exc_info=exc)
