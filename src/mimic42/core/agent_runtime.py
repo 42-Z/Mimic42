@@ -29,6 +29,7 @@ from mimic42.core.memory import MemoryServiceLike, RuntimeMemoryService
 from mimic42.core.model_catalog import DEFAULT_LLM_MODEL
 from mimic42.core.send_window import SendWindow, SendWindowTracker
 from mimic42.core.telegram_attrs import read_optional_attr
+from mimic42.integrations.tracing import TurnTrace, turn_span
 
 logger = logging.getLogger("mimic42.agent_runtime")
 logger.setLevel(logging.INFO)
@@ -701,12 +702,41 @@ class MimicAgentRuntime:
             return await self._take_turn(trigger)
 
     async def _take_turn(self, trigger: AgentTrigger) -> AgentTriggerResult:
+        """Ход целиком под корневым спаном трейсинга (issue #92)."""
+        turn_id = str(uuid4())
+        started_at = datetime.now(UTC)
+        with turn_span(
+            agent_id=self.config.agent_id,
+            turn_id=turn_id,
+            peer=trigger.peer,
+            model=self.config.llm_model,
+            input={
+                "peer": trigger.peer,
+                "text": trigger.text,
+                "reply_to": trigger.reply_to_message_id,
+                "media": bool(trigger.media),
+            },
+        ) as trace:
+            return await self._take_turn_inner(
+                trigger,
+                turn_id=turn_id,
+                trace=trace,
+                started_at=started_at,
+            )
+
+    async def _take_turn_inner(
+        self,
+        trigger: AgentTrigger,
+        *,
+        turn_id: str,
+        trace: TurnTrace,
+        started_at: datetime,
+    ) -> AgentTriggerResult:
         """Сам ход: модель, отправка ответа, запись. Вызывается под trigger lock."""
         # Вызов мог ждать lock, пока предыдущий ход отозвал сессию.
         if self._session_revoked:
             raise TelegramAuthorizationRequired(REVOKED_SESSION_MESSAGE)
         logger.debug(f"Processing message from {trigger.peer}: {trigger.text[:100]}")
-        turn_id = str(uuid4())
         turn_context = TurnContext(turn_id=turn_id, peer=trigger.peer)
         reply_payload = (
             {
@@ -731,16 +761,20 @@ class MimicAgentRuntime:
             )
         except Exception as e:
             logger.error(f"Error invoking agent: {e}", exc_info=True)
+            payload: dict[str, Any] = {
+                "turn_id": turn_id,
+                "peer": trigger.peer,
+                "error_code": type(e).__name__,
+            }
+            trace_url = trace.permalink()
+            if trace_url:
+                payload["trace_url"] = trace_url
             await self._record_event(
                 event_type="turn.failed",
                 status="failed",
-                payload={
-                    "turn_id": turn_id,
-                    "peer": trigger.peer,
-                    "error_code": type(e).__name__,
-                },
+                payload=payload,
                 error=str(e),
-                started_at=datetime.now(UTC),
+                started_at=started_at,
                 completed_at=datetime.now(UTC),
             )
             # Keep the incoming message in the transcript even though the
@@ -889,6 +923,19 @@ class MimicAgentRuntime:
             thread_id=trigger.thread_id,
             media=trigger.media or None,
             reply=reply_payload,
+        )
+
+        trace.log(output={"text": response_text, "sent": send_any})
+        completed_payload: dict[str, Any] = {"turn_id": turn_id, "peer": trigger.peer}
+        completed_trace_url = trace.permalink()
+        if completed_trace_url:
+            completed_payload["trace_url"] = completed_trace_url
+        await self._record_event(
+            event_type="turn.completed",
+            status="succeeded",
+            payload=completed_payload,
+            started_at=started_at,
+            completed_at=datetime.now(UTC),
         )
 
         return AgentTriggerResult(
