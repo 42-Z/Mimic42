@@ -64,14 +64,17 @@ Issue: https://github.com/42-Z/Mimic42/issues/92
 
 - **Корневой спан `turn`** (type `task`): input — входящее сообщение (`peer`, `text`,
   признаки reply/медиа), output — текст ответа агента; metadata — `agent_id`, `turn_id`,
-  `peer`, модель (`AgentRuntimeConfig.llm_model`), `environment`
-  (`Settings.environment`). Исключение хода пишется на этот спан.
+  `peer`, модель (`AgentRuntimeConfig.llm_model`), `environment` (`Settings.environment`,
+  модуль трейсинга берёт его из `Settings` сам). Исключение хода пишется на этот спан.
 - **Дочерние спаны** из `BraintrustCallbackHandler` (вкладываются автоматически): шаги
   графа LangGraph, каждый LLM-вызов (сообщения промпта, ответ, токены, латентность),
   каждый инструмент (имя, аргументы, результат) — то есть все телеграм-инструменты.
-- В payload событий `turn.completed` / `turn.failed` (наша БД) добавляется
-  **`trace_url`** — `span.permalink()`, чтобы из дашборда прыгать в трейс одним кликом.
-  При выключенном трейсинге `trace_url` в payload не попадает.
+- В payload событий **`turn.completed`** (новый тип события на успешный исход хода;
+  миграция БД не нужна — `agent_events.event_type` это `text`) и **`turn.failed`**
+  добавляется **`trace_url`** — `span.permalink()`, чтобы из дашборда прыгать в трейс
+  одним кликом. При выключенном трейсинге `trace_url` в payload не попадает.
+  Фронтенд: запись `turn.completed` в каталог событий и ссылка «Трейс» в строке
+  события ленты активности.
 
 ### 3. Точки интеграции
 
@@ -80,7 +83,7 @@ Issue: https://github.com/42-Z/Mimic42/issues/92
   - `setup_tracing(settings)` — идемпотентно: без ключа ничего не делает; с ключом —
     `init_logger` + `set_global_handler(BraintrustCallbackHandler())`;
   - `tracing_enabled()` — признак «трейсинг включён»;
-  - `turn_span(*, agent_id, turn_id, peer, model, environment, input)` —
+  - `turn_span(*, agent_id, turn_id, peer, model, input)` —
     async-контекстный менеджер корневого спана хода; возвращает хэндл с `log(...)`
     (прокси к `span.log`) и `permalink()`; при выключенном трейсинге — no-op-хэндл с тем
     же интерфейсом.
@@ -107,8 +110,8 @@ Issue: https://github.com/42-Z/Mimic42/issues/92
 
 ## Проверка
 
-- `tests/core/test_tracing.py` (без сети; `braintrust` подменяется фейком через
-  monkeypatch):
+- `tests/integrations/test_tracing.py` и `tests/core/test_agent_runtime_tracing.py`
+  (без сети; `braintrust` подменяется фейком через monkeypatch):
   - без ключа: `setup_tracing` — no-op, `turn_span` возвращает no-op-хэндл, ход проходит;
   - с ключом: `init_logger` вызван с нашими `project`/`api_key`, `set_global_handler`
     получил `BraintrustCallbackHandler`;
