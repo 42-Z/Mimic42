@@ -1,3 +1,56 @@
+# Rewrite AGENTS.md Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Переписать `AGENTS.md` (и синхронизировать `CLAUDE.md`), сохранив видение и правила качества проекта, добавив фактический стек, карту структуры, команды разработки/pre-PR, конвенции кода, bash-правила и анти-паттерны агента — в одном файле, без вложенных уровней (проект один, монорепы нет).
+
+**Architecture:** Один корневой `AGENTS.md` остаётся единственным входом для агента. Секции Modrinth, переносимые в наш проект: «Стек», «Структура проекта» (таблица), «Команды» (dev + pre-PR, зеркалящие CI), «Конвенции», «Bash», «Анти-паттерны». Секции-наследники Modrinth, которые НЕ переносим: вложенные AGENTS.md, таблицы apps/packages монорепы, Turborepo/pnpm. Правила «Изучай документацию», «БД», «Баги», «Git» остаются с сохранением авторского тона, но с исправленными опечатками.
+
+**Tech Stack:** Markdown, uv/Ruff/ty/pytest (backend), Bun/Next.js/Playwright (frontend), GitHub Actions CI как источник истины для pre-PR команд.
+
+---
+
+### Task 1: Подготовка ветки
+
+**Files:**
+- None modified (git только)
+
+Контекст: текущая ветка `feat/unified-activity-tab` с незакоммиченными изменениями — переключаться на ней нельзя, изменения уедут в чужую ветку. Работаем в worktree от `main`.
+
+- [ ] **Step 1: Обновить main**
+
+```bash
+git fetch origin main
+```
+
+Expected: выход без ошибок, `origin/main` обновлён.
+
+- [ ] **Step 2: Создать worktree с веткой от main**
+
+```bash
+git worktree add /home/sasha42/vscode/Mimic42-agents-md -b docs/rewrite-agents-md origin/main
+```
+
+Expected: `Preparing worktree` + `Switched to a new branch 'docs/rewrite-agents-md'`.
+
+- [ ] **Step 3: Переместить сессию в worktree**
+
+Use `tools.opencode.session_move` (via `execute`) with `directory: /home/sasha42/vscode/Mimic42-agents-md`.
+
+Expected: `{"sessionID": "...", "directory": "/home/sasha42/vscode/Mimic42-agents-md"}`.
+
+---
+
+### Task 2: Переписать AGENTS.md
+
+**Files:**
+- Modify: `AGENTS.md` (полная замена содержимого)
+
+Документ — не код, TDD неприменим; проверка — Task 4 (команды из документа реально работают) + Task 5 (ревью).
+
+- [ ] **Step 1: Записать новый `AGENTS.md` целиком**
+
+```markdown
 # Mimic 42
 
 Максимально реалистичный ИИ-агент, который имитирует человека
@@ -183,3 +236,105 @@ GitHub Project: https://github.com/orgs/42-Z/projects/2/
 ### UI
 
 При работе с UI скилл Impeccable всегда
+```
+
+- [ ] **Step 2: Проверить, что файл записан полностью**
+
+Run: `wc -l AGENTS.md && tail -3 AGENTS.md`
+Expected: последняя строка — `При работе с UI скилл Impeccable всегда`, число строк ~170.
+
+---
+
+### Task 3: Заменить CLAUDE.md симлинком
+
+`CLAUDE.md` сейчас — байтовая копия `AGENTS.md`, которая уже разошлась с источником (в main появились новые секции). Вместо синхронизации копий делаем `AGENTS.md` единственным источником правды, а `CLAUDE.md` — симлинком на него (git сохраняет симлинки, читатели следуют по ним).
+
+- [ ] **Step 1: Заменить файл симлинком**
+
+```bash
+rm CLAUDE.md && ln -s AGENTS.md CLAUDE.md
+```
+
+- [ ] **Step 2: Проверить**
+
+Run: `ls -la CLAUDE.md && head -1 CLAUDE.md`
+Expected: `CLAUDE.md -> AGENTS.md`, первая строка `# Mimic 42`
+
+---
+
+### Task 4: Верификация команд из документа
+
+Команды в AGENTS.md должны работать именно так, как записаны.
+
+- [ ] **Step 1: Бэкенд-набор (в worktree)**
+
+```bash
+uv sync --locked --all-groups && uv run ruff check . && uv run ruff format --check . && uv run ty check && uv run pytest -m "not db and not e2e and not real_tg and not real_llm" -W error -q
+```
+
+Expected: exit code 0, все пять шагов зелёные. Если что-то упало — это баг проекта, почини до коммита (правило «Баги»).
+
+- [ ] **Step 2: Фронтенд-набор**
+
+```bash
+cd frontend && bun install --frozen-lockfile && bunx next lint && bun run typecheck && bun test
+```
+
+Expected: exit code 0.
+
+- [ ] **Step 3: Проверить битые ссылки секции ресурсов**
+
+Run: `grep -oE 'https://[^ )]+' AGENTS.md | while read u; do code=$(curl -s -o /dev/null -w '%{http_code}' -L --max-time 15 "$u"); echo "$code $u"; done`
+Expected: все ответы `200` (или `403` для док, которые закрыты ботам — тогда заменить URL и перепроверить). Исключение — ссылка на приватный GitHub Project (`https://github.com/orgs/42-Z/projects/2/`): без авторизации она отдаёт `404` (GitHub так маскирует приватные проекты), и это норма; проверять её следует с токеном, имеющим scope `read:project`.
+
+- [ ] **Step 4: Проверить, что старые опечатки исчезли**
+
+Run: `grep -nE 'упралять|иммитирует|инструемнта|Приложениие|измненеия|кмпьютере|Дэшборд' AGENTS.md CLAUDE.md`
+Expected: пустой вывод, exit code 1.
+
+---
+
+### Task 5: Коммит, push, PR, CI
+
+- [ ] **Step 1: Коммит**
+
+```bash
+git add AGENTS.md CLAUDE.md
+git commit -m "docs: rewrite AGENTS.md with stack, structure, commands and agent guardrails"
+```
+
+Expected: `[docs/rewrite-agents-md <sha>] docs: rewrite ...`, 2 files changed.
+
+- [ ] **Step 2: Push**
+
+```bash
+git push -u origin docs/rewrite-agents-md
+```
+
+Expected: remote branch создан.
+
+- [ ] **Step 3: Создать PR**
+
+```bash
+gh pr create --title "docs: rewrite AGENTS.md" --body "Rewrites AGENTS.md (and syncs CLAUDE.md): factual stack, project structure table, dev/pre-PR commands mirroring CI, code conventions, bash output rules, anti-patterns. Fixes typos and the broken Impeccable skill reference note. No nested AGENTS.md levels — single project."
+```
+
+Expected: URL PR.
+
+- [ ] **Step 4: Проверить CI**
+
+Run: `gh pr checks <PR number>`
+Expected: все проверки зелёные. Если красные — `gh run view <run_id> --log-failed`, починить, закоммитить, push, повторить.
+
+- [ ] **Step 5: Проверить состояние PR**
+
+Run: `gh pr view <PR number> --json mergeable,mergeStateStatus`
+Expected: `"mergeable": true`, `"mergeStateStatus": "CLEAN"`.
+
+---
+
+## Self-Review (выполнен автором плана)
+
+- **Spec coverage:** видение и правила качества сохранены ✓; исправлены опечатки ✓; битая ссылка на скилл заменена на рабочую (Task 2, секция «Фронтенд» — Impeccable сохранён осознанно: это имя скилла из пользовательского конфига автора, вне установленного каталога; если скилл переименован — заменить на фактический id) ✓; вложенные уровни НЕ добавлены (по требованию) ✓; команды/структура/стек/конвенции/bash/анти-паттерны добавлены ✓.
+- **Placeholders:** нет TBD/TODO; все команды и полный текст файла зафиксированы в Task 2 ✓.
+- **Consistency:** команды Task 4 совпадают с секцией «Pre-PR» Task 2 и с `.github/workflows/ci.yml`; пути из таблицы структуры проверены `ls` ✓.
