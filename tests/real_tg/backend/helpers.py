@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any
 from uuid import UUID
 
 import asyncpg
@@ -106,3 +107,55 @@ async def disable_auto_restore(dsn: str, owner_id: UUID) -> None:
         )
     finally:
         await conn.close()
+
+
+class MemoryMediaStorage:
+    """MediaUploader в памяти: настоящий Telegram, но без зависимости от Storage.
+
+    real_tg-джоба исторически не имеет SUPABASE_SERVICE_ROLE_KEY, а без него
+    SupabaseMediaStorage не строится — архивация медиа молча отключалась, и
+    сценарий issue #98 («архив переживает потерю файла») был недостижим.
+    """
+
+    def __init__(self) -> None:
+        self._files: dict[str, bytes] = {}
+
+    async def upload(
+        self,
+        *,
+        agent_id: UUID,
+        filename: str,
+        data: bytes,
+        mime_type: str,
+        kind: str = "doc",
+    ) -> Any:
+        from mimic42.core.media import MediaFile, safe_filename
+
+        if not data:
+            return None
+        name = safe_filename(filename)
+        path = f"{agent_id}/memory/{name}"
+        self._files[path] = bytes(data)
+        return MediaFile(
+            kind=kind, name=name, mime_type=mime_type, size=len(data), storage_path=path
+        )
+
+    async def open(self, path: str) -> bytes | None:
+        return self._files.get(path)
+
+    async def remove_prefix(self, agent_id: UUID) -> None:
+        prefix = f"{agent_id}/"
+        for key in [key for key in self._files if key.startswith(prefix)]:
+            del self._files[key]
+
+
+def media_storage() -> Any:
+    """Настоящий Supabase Storage при наличии ключа, иначе хранилище в памяти."""
+    service_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+    if service_key:
+        from mimic42.integrations.supabase_media import SupabaseMediaStorage
+
+        return SupabaseMediaStorage(
+            supabase_url=os.environ["SUPABASE_URL"], service_key=service_key
+        )
+    return MemoryMediaStorage()

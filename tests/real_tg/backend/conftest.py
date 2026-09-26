@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parents[3]
 load_dotenv(ROOT / ".env", override=True)
 
 from mimic42.api.app import create_app  # noqa: E402
+from tests.real_tg.backend.helpers import media_storage  # noqa: E402
 
 
 @pytest_asyncio.fixture
@@ -33,7 +34,10 @@ async def real_app() -> AsyncIterator[tuple[FastAPI, AsyncClient]]:
         mem0_api_key=None,  # Mem0 в тестах не дёргаем
         restore_running_agents=False,  # чужие RUNNING-агенты не поднимаем
     )
-    app = create_app(settings=settings)
+    # Медиа-архив: настоящий Storage при SUPABASE_SERVICE_ROLE_KEY, иначе
+    # хранилище в памяти — сценарий «архив переживает потерю файла» (#98)
+    # должен быть достижим и без сервисного ключа.
+    app = create_app(settings=settings, media_uploader=media_storage())
     async with app.router.lifespan_context(app):
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://testserver"
