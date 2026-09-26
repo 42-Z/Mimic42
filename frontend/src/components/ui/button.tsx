@@ -46,7 +46,7 @@ const Spinner = ({ className }: { className?: string }) => (
 );
 
 const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
-  ({ className, variant, size, isLoading, leftIcon, rightIcon, children, disabled, asChild = false, ...props }, ref) => {
+  ({ className, variant, size, isLoading, loading: _loading, leftIcon, rightIcon, children, disabled, asChild = false, ...props }, ref) => {
     const isDisabled = disabled || isLoading;
     const Comp = asChild ? Slot : 'button';
     return (

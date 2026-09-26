@@ -4,9 +4,9 @@ import { cn } from '@/lib/utils';
 
 // ── Card ──────────────────────────────────────────────────────────────────────
 // Пропсы variant/padding сохранены ради существующих вызывающих мест.
-// Токены схлопнули нейтральные различия вариантов: bordered и elevated теперь
-// совпадают с default (их старые цвета void-600/void-700 оба отображаются в
-// border-border), glass остаётся полупрозрачным.
+// Токены схлопнули цветовые различия вариантов (старые void-600/void-700 оба
+// отображаются в border-border), поэтому bordered совпадает с default, но
+// elevated сохраняет shadow-void, а glass остаётся полупрозрачным.
 interface CardProps extends React.HTMLAttributes<HTMLDivElement> {
   variant?: 'default' | 'bordered' | 'elevated' | 'glass';
   padding?: 'none' | 'sm' | 'md' | 'lg';
@@ -17,7 +17,7 @@ const Card = React.forwardRef<HTMLDivElement, CardProps>(
     const variants = {
       default: '',
       bordered: '',
-      elevated: '',
+      elevated: 'shadow-void',
       glass: 'bg-card/60 border-border/60 backdrop-blur-sm',
     };
 
@@ -32,7 +32,7 @@ const Card = React.forwardRef<HTMLDivElement, CardProps>(
       <div
         ref={ref}
         className={cn(
-          'rounded-sm border border-border bg-card text-card-foreground shadow-void',
+          'rounded-sm border border-border bg-card text-card-foreground',
           // eslint-disable-next-line security/detect-object-injection -- keys are typed variant/padding unions
           variants[variant],
           // eslint-disable-next-line security/detect-object-injection -- keys are typed variant/padding unions

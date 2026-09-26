@@ -64,7 +64,7 @@ export function Modal({
       }}
     >
       <DialogPrimitive.Portal>
-        <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-void-950/80 backdrop-blur-sm animate-fade-in" />
+        <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-background/80 backdrop-blur-sm animate-fade-in" />
         <DialogPrimitive.Content
           ref={contentRef}
           tabIndex={-1}
