@@ -1,9 +1,9 @@
 """Медиа в реальном Telegram: архив переживает исчезновение файла (issue #98).
 
 Живой сценарий «нескачиваемой картинки»: мимику приходит фото с таймером
-самоуничтожения (как капча бота верификации). Повторно скачать такой файл
-Telegram не даёт — но байты должны быть заархивированы при получении и
-доступны через API дашборда.
+самоуничтожения (как капча бота верификации), байты архивируются при
+получении, а после исчезновения файла из Telegram (сообщение удаляют —
+как капчу) копия остаётся доступной через API дашборда.
 
 Тест намеренно не ждёт ответов LLM: архив пишется при получении сообщения,
 до хода модели, а ходы бесплатных моделей в общем прогоне могут быть
@@ -75,19 +75,23 @@ async def test_self_destructing_photo_is_archived_before_telegram_loses_it(
     stream = BytesIO(png((60, 160, 90)))
     stream.name = "verify.png"
     message = cast(Any, await checker.client.send_file(phone, stream, ttl=TTL_SECONDS))
+    # Фото действительно самоуничтожающееся — как капча бота верификации.
+    assert getattr(getattr(message, "media", None), "ttl_seconds", None) == TTL_SECONDS
 
     storage_path = await wait_archived_photo(app, agent_id)
     assert storage_path, "Входящее фото не заархивировалось в Storage"
 
-    # Таймер самоуничтожения пошёл с просмотра: ждём, пока Telegram перестанет
-    # отдавать файл (то самое «cannot be resent» из issue #98).
-    await asyncio.sleep(TTL_SECONDS + 5)
+    # Файл исчезает из Telegram. Таймер самоуничтожения стартует от просмотра
+    # в официальном клиенте, а не от GetFileRequest юзербота, поэтому исчезновение
+    # инициируем удалением сообщения — воспроизводимое «канал потерял файл».
+    await checker.client.delete_messages(phone, [message.id], revoke=True)
     gone = False
     try:
-        await checker.client.download_media(message)
+        data = await checker.client.download_media(message)
+        gone = not data
     except Exception:
         gone = True
-    assert gone, "Telegram всё ещё отдаёт самоуничтожившееся фото — сценарий не воспроизвёлся"
+    assert gone, "Telegram всё ещё отдаёт фото удалённого сообщения"
 
     # Архивная копия доступна через API дашборда: Telegram её уже не отдаёт.
     token = await jwt()
