@@ -43,6 +43,11 @@ DEFER_MARGIN_SECONDS = 0.25
 # отправки). Так же ждёт медленный режим обсуждения, если посты идут подряд.
 # Короткое ожидание — всё ещё «сразу»; дольше комментарий уже не первый.
 FIRST_COMMENT_FLOOD_WAIT_LIMIT = 10
+# Столько close() ждёт ходы по альбомам и отложенным сообщениям, а оставшиеся
+# отменяет: следом закрываются клиент модели и пул базы, и ход-сирота открыл бы
+# соединение, которое уже никто не закроет. Менеджер закрывает агентов разом,
+# так что это ожидание укладывается в 10 секунд, которые Docker даёт на остановку.
+CLOSE_GRACE_SECONDS = 5.0
 
 
 class TelegramAuthorizationRequired(RuntimeError):
@@ -535,9 +540,31 @@ class MimicAgentRuntime:
         shutdown); a plain stop keeps the agent's HTTP client for a restart.
         """
         await self.stop()
+        await self._settle_in_flight()
         close_agent = getattr(self._langchain_agent, "aclose", None)
         if close_agent is not None:
             await close_agent()
+
+    async def _settle_in_flight(self) -> None:
+        """Дать начавшимся ходам по альбомам и отложенным закончиться, остальные отменить.
+
+        stop() их не обрывает: ответ мог уже уйти, и запись хода не должна
+        потеряться. Но после close() рантайм больше никто не закроет."""
+        in_flight = self._album_grouper.in_flight | self._deferred_inbox.in_flight
+        if not in_flight:
+            return
+        _, pending = await asyncio.wait(in_flight, timeout=CLOSE_GRACE_SECONDS)
+        if not pending:
+            return
+        logger.warning(
+            "Агент %s закрывается: %d ход(ов) не успели за %.0f с и отменены",
+            self.config.agent_id,
+            len(pending),
+            CLOSE_GRACE_SECONDS,
+        )
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
 
     async def _humanized_send(
         self,
@@ -671,194 +698,198 @@ class MimicAgentRuntime:
         # Контексты выходят в обратном порядке: сначала снимается trigger lock,
         # затем finally отключает revoked-клиент даже при ошибке сохранения хода.
         async with self._disconnect_revoked_client_after_turn(), self._trigger_lock:
-            # Вызов мог ждать lock, пока предыдущий ход отозвал сессию.
-            if self._session_revoked:
-                raise TelegramAuthorizationRequired(REVOKED_SESSION_MESSAGE)
-            logger.debug(f"Processing message from {trigger.peer}: {trigger.text[:100]}")
-            turn_id = str(uuid4())
-            turn_context = TurnContext(turn_id=turn_id, peer=trigger.peer)
-            reply_payload = (
+            return await self._take_turn(trigger)
+
+    async def _take_turn(self, trigger: AgentTrigger) -> AgentTriggerResult:
+        """Сам ход: модель, отправка ответа, запись. Вызывается под trigger lock."""
+        # Вызов мог ждать lock, пока предыдущий ход отозвал сессию.
+        if self._session_revoked:
+            raise TelegramAuthorizationRequired(REVOKED_SESSION_MESSAGE)
+        logger.debug(f"Processing message from {trigger.peer}: {trigger.text[:100]}")
+        turn_id = str(uuid4())
+        turn_context = TurnContext(turn_id=turn_id, peer=trigger.peer)
+        reply_payload = (
+            {
+                "message_id": trigger.reply_to_message_id,
+                "preview": trigger.reply_preview,
+            }
+            if trigger.reply_to_message_id is not None
+            else None
+        )
+        messages = await self._memory_service.build_messages(
+            agent_id=self.config.agent_id,
+            peer=trigger.peer,
+            user_text=trigger.text,
+        )
+        logger.debug(f"Built {len(messages)} messages for context")
+        try:
+            response = await self._langchain_agent.ainvoke(
                 {
-                    "message_id": trigger.reply_to_message_id,
-                    "preview": trigger.reply_preview,
-                }
-                if trigger.reply_to_message_id is not None
-                else None
+                    "messages": messages,
+                },
+                context=turn_context,
             )
-            messages = await self._memory_service.build_messages(
-                agent_id=self.config.agent_id,
-                peer=trigger.peer,
-                user_text=trigger.text,
+        except Exception as e:
+            logger.error(f"Error invoking agent: {e}", exc_info=True)
+            await self._record_event(
+                event_type="turn.failed",
+                status="failed",
+                payload={
+                    "turn_id": turn_id,
+                    "peer": trigger.peer,
+                    "error_code": type(e).__name__,
+                },
+                error=str(e),
+                started_at=datetime.now(UTC),
+                completed_at=datetime.now(UTC),
             )
-            logger.debug(f"Built {len(messages)} messages for context")
+            # Keep the incoming message in the transcript even though the
+            # turn crashed — the dashboard card must show what was asked.
             try:
-                response = await self._langchain_agent.ainvoke(
-                    {
-                        "messages": messages,
-                    },
-                    context=turn_context,
+                await self._memory_service.save_messages(
+                    agent_id=self.config.agent_id,
+                    peer=trigger.peer,
+                    input_messages=messages,
+                    output_messages=[],
+                    raw_user_text=trigger.raw_text,
+                    turn_id=turn_id,
+                    thread_id=trigger.thread_id,
+                    media=trigger.media or None,
+                    reply=reply_payload,
                 )
-            except Exception as e:
-                logger.error(f"Error invoking agent: {e}", exc_info=True)
+            except Exception:
+                logger.warning(
+                    "Failed to persist incoming message after turn failure", exc_info=True
+                )
+            # Mark the exception so the handler-level catch-all does not
+            # record turn.failed a second time (the event above already
+            # carries the turn_id).
+            # Marker for the handler catch-all: turn.failed was already
+            # recorded with the turn_id, so it must not be recorded twice.
+            e._mimic_turn_failed_recorded = True  # ty: ignore[unresolved-attribute]
+            raise
+
+        output_messages = _messages_to_dicts(response)
+
+        structured = _extract_structured_response(response)
+        if structured is not None:
+            send_any = bool(structured.get("send_any_message", True))
+            response_text = structured.get("text", "")
+            reply_to = structured.get("reply_to")
+        else:
+            send_any, response_text, reply_to = _interpret_agent_response(response)
+
+        # Don't send empty messages
+        if send_any and not response_text:
+            logger.info("Agent generated empty response, not sending")
+            send_any = False
+
+        if send_any and trigger.require_reply_to and reply_to is None:
+            reply_to = trigger.fallback_reply_to
+            logger.info("Модель не указала reply_to на схлопнутой пачке, ставим %s", reply_to)
+
+        # Между решением и отправкой прошло время генерации: слот мог закрыться.
+        if send_any and self._send_window is not None:
+            window = await self._send_window.check(trigger.peer)
+            now = datetime.now(UTC)
+            if not window.is_open(now):
+                logger.info(
+                    "Окно отправки в %s закрыто (%s), ответ не уходит",
+                    trigger.peer,
+                    window.reason,
+                )
                 await self._record_event(
-                    event_type="turn.failed",
+                    event_type="message.blocked",
+                    status="cancelled",
+                    payload={
+                        "turn_id": turn_id,
+                        "peer": trigger.peer,
+                        "reason": window.reason,
+                        "retry_after_seconds": window.retry_after(now),
+                    },
+                    started_at=now,
+                    completed_at=datetime.now(UTC),
+                )
+                send_any = False
+
+        peer_id_for_send = _peer_for_send(trigger.peer)
+        # Mark incoming message as read immediately after deciding to reply,
+        # before the typing delay, so the order is: read -> typing -> send.
+        if send_any and trigger.message_id is not None:
+            try:
+                from telethon.tl import functions
+
+                read_entity = peer_id_for_send
+                get_input_entity = getattr(self._telegram_client, "get_input_entity", None)
+                if callable(get_input_entity):
+                    try:
+                        read_entity = await get_input_entity(peer_id_for_send)
+                    except Exception:
+                        pass
+                await self._telegram_client(
+                    functions.messages.ReadHistoryRequest(
+                        peer=cast(Any, read_entity),
+                        max_id=trigger.message_id,
+                    )
+                )
+                logger.debug(
+                    "Marked message %s as read in peer %s",
+                    trigger.message_id,
+                    trigger.peer,
+                )
+            except Exception:
+                logger.warning("Failed to mark message as read", exc_info=True)
+
+        sent_message = None
+        if send_any:
+            logger.info(f"Sending response to {peer_id_for_send}: {response_text[:100]}")
+            try:
+                sent_message = await self._humanized_send(
+                    peer_id_for_send,
+                    response_text,
+                    reply_to=reply_to,
+                )
+                logger.info(f"Message sent successfully to {peer_id_for_send}")
+                if self._send_window is not None:
+                    self._send_window.note_sent(trigger.peer)
+            except Exception as e:
+                if self._send_window is not None:
+                    self._send_window.note_error(trigger.peer, e)
+                # The turn must not crash on a delivery failure, but the
+                # silence must be visible in the dashboard, not only in logs.
+                logger.exception("Failed to send Telegram message to %s", peer_id_for_send)
+                dead_session = _is_dead_session_error(e)
+                if dead_session:
+                    await self._revoke_dead_session()
+                await self._record_event(
+                    event_type="message.send_failed",
                     status="failed",
                     payload={
                         "turn_id": turn_id,
                         "peer": trigger.peer,
                         "error_code": type(e).__name__,
                     },
-                    error=str(e),
+                    error=REVOKED_SESSION_MESSAGE if dead_session else str(e),
                     started_at=datetime.now(UTC),
                     completed_at=datetime.now(UTC),
                 )
-                # Keep the incoming message in the transcript even though the
-                # turn crashed — the dashboard card must show what was asked.
-                try:
-                    await self._memory_service.save_messages(
-                        agent_id=self.config.agent_id,
-                        peer=trigger.peer,
-                        input_messages=messages,
-                        output_messages=[],
-                        raw_user_text=trigger.raw_text,
-                        turn_id=turn_id,
-                        thread_id=trigger.thread_id,
-                        media=trigger.media or None,
-                        reply=reply_payload,
-                    )
-                except Exception:
-                    logger.warning(
-                        "Failed to persist incoming message after turn failure", exc_info=True
-                    )
-                # Mark the exception so the handler-level catch-all does not
-                # record turn.failed a second time (the event above already
-                # carries the turn_id).
-                # Marker for the handler catch-all: turn.failed was already
-                # recorded with the turn_id, so it must not be recorded twice.
-                e._mimic_turn_failed_recorded = True  # ty: ignore[unresolved-attribute]
-                raise
+        else:
+            logger.debug("Agent decided not to send message (send_any=False)")
 
-            output_messages = _messages_to_dicts(response)
-
-            structured = _extract_structured_response(response)
-            if structured is not None:
-                send_any = bool(structured.get("send_any_message", True))
-                response_text = structured.get("text", "")
-                reply_to = structured.get("reply_to")
-            else:
-                send_any, response_text, reply_to = _interpret_agent_response(response)
-
-            # Don't send empty messages
-            if send_any and not response_text:
-                logger.info("Agent generated empty response, not sending")
-                send_any = False
-
-            if send_any and trigger.require_reply_to and reply_to is None:
-                reply_to = trigger.fallback_reply_to
-                logger.info("Модель не указала reply_to на схлопнутой пачке, ставим %s", reply_to)
-
-            # Между решением и отправкой прошло время генерации: слот мог закрыться.
-            if send_any and self._send_window is not None:
-                window = await self._send_window.check(trigger.peer)
-                now = datetime.now(UTC)
-                if not window.is_open(now):
-                    logger.info(
-                        "Окно отправки в %s закрыто (%s), ответ не уходит",
-                        trigger.peer,
-                        window.reason,
-                    )
-                    await self._record_event(
-                        event_type="message.blocked",
-                        status="cancelled",
-                        payload={
-                            "turn_id": turn_id,
-                            "peer": trigger.peer,
-                            "reason": window.reason,
-                            "retry_after_seconds": window.retry_after(now),
-                        },
-                        started_at=now,
-                        completed_at=datetime.now(UTC),
-                    )
-                    send_any = False
-
-            peer_id_for_send = _peer_for_send(trigger.peer)
-            # Mark incoming message as read immediately after deciding to reply,
-            # before the typing delay, so the order is: read -> typing -> send.
-            if send_any and trigger.message_id is not None:
-                try:
-                    from telethon.tl import functions
-
-                    read_entity = peer_id_for_send
-                    get_input_entity = getattr(self._telegram_client, "get_input_entity", None)
-                    if callable(get_input_entity):
-                        try:
-                            read_entity = await get_input_entity(peer_id_for_send)
-                        except Exception:
-                            pass
-                    await self._telegram_client(
-                        functions.messages.ReadHistoryRequest(
-                            peer=cast(Any, read_entity),
-                            max_id=trigger.message_id,
-                        )
-                    )
-                    logger.debug(
-                        "Marked message %s as read in peer %s",
-                        trigger.message_id,
-                        trigger.peer,
-                    )
-                except Exception:
-                    logger.warning("Failed to mark message as read", exc_info=True)
-
-            sent_message = None
-            if send_any:
-                logger.info(f"Sending response to {peer_id_for_send}: {response_text[:100]}")
-                try:
-                    sent_message = await self._humanized_send(
-                        peer_id_for_send,
-                        response_text,
-                        reply_to=reply_to,
-                    )
-                    logger.info(f"Message sent successfully to {peer_id_for_send}")
-                    if self._send_window is not None:
-                        self._send_window.note_sent(trigger.peer)
-                except Exception as e:
-                    if self._send_window is not None:
-                        self._send_window.note_error(trigger.peer, e)
-                    # The turn must not crash on a delivery failure, but the
-                    # silence must be visible in the dashboard, not only in logs.
-                    logger.exception("Failed to send Telegram message to %s", peer_id_for_send)
-                    dead_session = _is_dead_session_error(e)
-                    if dead_session:
-                        await self._revoke_dead_session()
-                    await self._record_event(
-                        event_type="message.send_failed",
-                        status="failed",
-                        payload={
-                            "turn_id": turn_id,
-                            "peer": trigger.peer,
-                            "error_code": type(e).__name__,
-                        },
-                        error=REVOKED_SESSION_MESSAGE if dead_session else str(e),
-                        started_at=datetime.now(UTC),
-                        completed_at=datetime.now(UTC),
-                    )
-            else:
-                logger.debug("Agent decided not to send message (send_any=False)")
-
-            await self._memory_service.save_messages(
-                agent_id=self.config.agent_id,
-                peer=trigger.peer,
-                input_messages=messages,
-                output_messages=output_messages,
-                structured_response=structured,
-                peer_name=trigger.peer_name,
-                agent_name=self.config.name,
-                raw_user_text=trigger.raw_text,
-                turn_id=turn_id,
-                thread_id=trigger.thread_id,
-                media=trigger.media or None,
-                reply=reply_payload,
-            )
+        await self._memory_service.save_messages(
+            agent_id=self.config.agent_id,
+            peer=trigger.peer,
+            input_messages=messages,
+            output_messages=output_messages,
+            structured_response=structured,
+            peer_name=trigger.peer_name,
+            agent_name=self.config.name,
+            raw_user_text=trigger.raw_text,
+            turn_id=turn_id,
+            thread_id=trigger.thread_id,
+            media=trigger.media or None,
+            reply=reply_payload,
+        )
 
         return AgentTriggerResult(
             agent_id=self.config.agent_id,
@@ -1509,10 +1540,24 @@ class MimicAgentRuntime:
         async with self._dispatch_lock:
             # Пока ждали очереди за чужим ходом, агента могли остановить: клиент
             # отключён, и разбор сообщения только насыпал бы ошибок в ленту.
-            if self._state is not AgentRuntimeState.RUNNING:
-                logger.info("Рантайм остановлен, входящее из чата %s отброшено", peer)
+            if not await self._running_once_started():
+                logger.info(
+                    "Рантайм не запущен (%s), входящее из чата %s отброшено", self._state, peer
+                )
                 return
             await self._gate_and_process(event, events, peer)
+
+    async def _running_once_started(self) -> bool:
+        """Запущен ли рантайм; идущий запуск сначала дожидаемся.
+
+        Telethon доставляет апдейты уже внутри connect(), пока start() не
+        закончен: после Стоп → Старт такое сообщение адресовано запускаемому
+        агенту и не должно теряться. Если за запуском в очереди стоит stop(),
+        замок отдаст его раньше нас, и мы увидим уже остановленный рантайм."""
+        if self._state is AgentRuntimeState.STARTING:
+            async with self._lifecycle_lock:
+                pass
+        return self._state is AgentRuntimeState.RUNNING
 
     async def _gate_and_process(
         self, event: TelegramEventLike, events: list[TelegramEventLike], peer: str
@@ -1601,8 +1646,10 @@ class MimicAgentRuntime:
         async with self._dispatch_lock:
             # Слив в полёте stop() не отменяет, а trigger_message на остановленном
             # рантайме запустил бы его заново и ответил бы в чат после остановки.
-            if self._state is not AgentRuntimeState.RUNNING:
-                logger.info("Рантайм остановлен, отложенное из чата %s отброшено", peer)
+            if not await self._running_once_started():
+                logger.info(
+                    "Рантайм не запущен (%s), отложенное из чата %s отброшено", self._state, peer
+                )
                 return
             if self._send_window is not None:
                 now = datetime.now(UTC)
@@ -1670,13 +1717,17 @@ class MimicAgentRuntime:
 
         trigger_message сам запускает остановленный рантайм: это нужно ручке
         дашборда, но не событию, которое stop() застал посреди подготовки хода —
-        агент ожил бы и отвечал дальше при статусе «остановлен» в базе. Между
-        проверкой и вызовом нет await, так что stop() между ними не вклинится.
+        агент ожил бы и отвечал дальше при статусе «остановлен» в базе. Состояние
+        проверяется уже под замком хода: пока ход ждал чужой, агента могли
+        остановить, и звать модель с инструментами ему больше незачем.
         """
-        if self._state is not AgentRuntimeState.RUNNING:
-            logger.info("Рантайм остановлен, ход по чату %s отброшен", trigger.peer)
-            return
-        await self.trigger_message(trigger)
+        async with self._disconnect_revoked_client_after_turn(), self._trigger_lock:
+            if not await self._running_once_started():
+                logger.info(
+                    "Рантайм не запущен (%s), ход по чату %s отброшен", self._state, trigger.peer
+                )
+                return
+            await self._take_turn(trigger)
 
     async def _record_incoming_failure(self, peer: str, exc: Exception) -> None:
         logger.error("Unhandled exception in incoming message handler", exc_info=exc)
