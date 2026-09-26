@@ -119,3 +119,6 @@ scratch/
 # Docker / deployment local overrides
 docker-compose.override.yml
 render.local.yaml
+
+# Local git worktrees
+.worktrees/
