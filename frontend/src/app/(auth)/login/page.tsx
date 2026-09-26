@@ -7,6 +7,7 @@ import { getSupabaseClient } from '@/lib/supabase/client';
 import { loginSchema, type LoginFormValues } from '@/lib/validators';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Card, CardHeader, CardTitle, CardContent, CardFooter } from '@/components/ui/card';
 import { useToast } from '@/components/ui/toast';
 import { Zap, Eye, EyeOff } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -98,9 +99,9 @@ function LoginContent() {
   };
 
   return (
-    <div className="min-h-dvh bg-void-950 flex">
+    <div className="min-h-dvh flex">
       {/* Left: terminal panel */}
-      <div className="hidden lg:flex w-1/2 flex-col justify-between p-12 bg-void-900 border-r border-void-800 relative overflow-hidden">
+      <div className="hidden lg:flex w-1/2 flex-col justify-between p-12 bg-void-900 border-r border-border relative overflow-hidden">
         <div className="absolute inset-0 bg-plasma-glow opacity-30" />
         <div className="absolute inset-0 scanline" />
 
@@ -113,10 +114,10 @@ function LoginContent() {
             </div>
           </div>
           <div>
-            <div className="font-mono font-bold text-xl text-void-100 tracking-wider">
+            <div className="font-mono font-bold text-xl text-foreground tracking-wider">
               MIMIC<span className="text-plasma-400">42</span>
             </div>
-            <div className="font-mono text-[11px] text-void-300 tracking-widest uppercase">
+            <div className="font-mono text-[11px] text-muted-foreground tracking-widest uppercase">
               Панель управления агентом
             </div>
           </div>
@@ -129,101 +130,105 @@ function LoginContent() {
               key={i}
               className={cn(
                 'text-neon-400 animate-fade-in',
-                i === terminalLines.length - 1 && 'text-void-200'
+                i === terminalLines.length - 1 && 'text-foreground'
               )}
             >
               {line}
               {i === terminalLines.length - 1 && (
-                <span className="inline-block w-2 h-4 bg-void-200 ml-1 animate-blink align-text-bottom" />
+                <span className="inline-block w-2 h-4 bg-foreground ml-1 animate-blink align-text-bottom" />
               )}
             </p>
           ))}
         </div>
 
         {/* Bottom tag */}
-        <p className="relative font-mono text-xs text-void-400">
+        <p className="relative font-mono text-xs text-muted-foreground/70">
           v0.1.0 — Реалистичный ИИ-агент для Telegram
         </p>
       </div>
 
       {/* Right: login form */}
-      <div className="flex-1 flex flex-col items-center justify-center p-8">
-        <div className="w-full max-w-sm space-y-8">
+      <div className="flex-1 flex flex-col items-center justify-center p-6 sm:p-8">
+        <div className="w-full max-w-md space-y-6">
           {/* Mobile logo */}
-          <div className="lg:hidden flex items-center gap-2 mb-8">
+          <div className="lg:hidden flex items-center gap-2">
             <Zap className="h-6 w-6 text-plasma-400" />
-            <span className="font-mono font-bold text-lg">
+            <span className="font-mono font-bold text-lg text-foreground">
               MIMIC<span className="text-plasma-400">42</span>
             </span>
           </div>
 
-          <div>
-            <h1 className="font-display text-2xl font-bold text-void-100">
-              Вход в систему
-            </h1>
-            <p className="mt-1 text-sm font-mono text-void-300">
-              Управляйте своим агентом
-            </p>
-          </div>
+          <Card padding="none" className="w-full">
+            <CardHeader className="pb-4">
+              <CardTitle className="text-2xl font-display normal-case tracking-normal text-foreground">
+                Вход в систему
+              </CardTitle>
+              <p className="text-sm font-mono text-muted-foreground">Управляйте своим агентом</p>
+            </CardHeader>
+            <CardContent>
+              <form onSubmit={handleSubmit} className="space-y-4" noValidate>
+                <Input
+                  label="Email"
+                  type="email"
+                  autoComplete="email"
+                  placeholder="you@example.com"
+                  value={values.email}
+                  onChange={(e) => setValues((v) => ({ ...v, email: e.target.value }))}
+                  error={errors.email}
+                  disabled={isLoading}
+                />
 
-          <form onSubmit={handleSubmit} className="space-y-4" noValidate>
-            <Input
-              label="Email"
-              type="email"
-              autoComplete="email"
-              placeholder="you@example.com"
-              value={values.email}
-              onChange={(e) => setValues((v) => ({ ...v, email: e.target.value }))}
-              error={errors.email}
-              disabled={isLoading}
-            />
+                <Input
+                  label="Пароль"
+                  type={showPassword ? 'text' : 'password'}
+                  autoComplete="current-password"
+                  placeholder="••••••••"
+                  value={values.password}
+                  onChange={(e) => setValues((v) => ({ ...v, password: e.target.value }))}
+                  error={errors.password}
+                  disabled={isLoading}
+                  rightElement={
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon-sm"
+                      onClick={() => setShowPassword((v) => !v)}
+                      aria-label={showPassword ? 'Скрыть пароль' : 'Показать пароль'}
+                    >
+                      {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    </Button>
+                  }
+                />
 
-            <Input
-              label="Пароль"
-              type={showPassword ? 'text' : 'password'}
-              autoComplete="current-password"
-              placeholder="••••••••"
-              value={values.password}
-              onChange={(e) => setValues((v) => ({ ...v, password: e.target.value }))}
-              error={errors.password}
-              disabled={isLoading}
-              rightElement={
-                <button
-                  type="button"
-                  onClick={() => setShowPassword((v) => !v)}
-                  className="text-void-300 hover:text-void-100 transition-colors p-2 -m-1"
-                  aria-label={showPassword ? 'Скрыть пароль' : 'Показать пароль'}
+                <div className="flex justify-end">
+                  <Link
+                    href="/reset-password"
+                    className="font-mono text-xs text-muted-foreground hover:text-primary transition-colors py-2"
+                  >
+                    Забыли пароль?
+                  </Link>
+                </div>
+
+                <Button
+                  type="submit"
+                  variant="default"
+                  className="w-full"
+                  size="lg"
+                  isLoading={isLoading}
                 >
-                  {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                </button>
-              }
-            />
-
-            <div className="flex justify-end">
-              <Link
-                href="/reset-password"
-                className="font-mono text-xs text-void-300 hover:text-plasma-300 transition-colors py-2"
-              >
-                Забыли пароль?
-              </Link>
-            </div>
-
-            <Button
-              type="submit"
-              className="w-full"
-              size="lg"
-              isLoading={isLoading}
-            >
-              {isLoading ? 'Вход...' : 'Войти'}
-            </Button>
-          </form>
-
-          <p className="text-center font-mono text-sm text-void-300">
-            Нет аккаунта?{' '}
-            <Link href="/register" className="text-plasma-400 hover:text-plasma-300 transition-colors inline-block py-2">
-              Зарегистрироваться
-            </Link>
-          </p>
+                  {isLoading ? 'Вход...' : 'Войти'}
+                </Button>
+              </form>
+            </CardContent>
+            <CardFooter className="justify-center">
+              <p className="text-xs font-mono text-muted-foreground">
+                Нет аккаунта?{' '}
+                <Link href="/register" className="text-primary hover:underline">
+                  Зарегистрироваться
+                </Link>
+              </p>
+            </CardFooter>
+          </Card>
         </div>
       </div>
     </div>
@@ -232,7 +237,7 @@ function LoginContent() {
 
 export default function LoginPage() {
   return (
-    <Suspense fallback={<div className="min-h-dvh bg-void-950 flex items-center justify-center font-mono text-void-300">Загрузка...</div>}>
+    <Suspense fallback={<div className="min-h-dvh flex items-center justify-center font-mono text-sm text-muted-foreground">Загрузка...</div>}>
       <LoginContent />
     </Suspense>
   );
