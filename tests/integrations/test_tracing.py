@@ -223,9 +223,7 @@ def test_turn_span_records_error_and_reraises(monkeypatch: pytest.MonkeyPatch) -
     spans = _enable_tracing(monkeypatch)
 
     with pytest.raises(RuntimeError, match="boom"):
-        with tracing.turn_span(
-            agent_id=uuid4(), turn_id="t1", peer="chat", model="m", input=None
-        ):
+        with tracing.turn_span(agent_id=uuid4(), turn_id="t1", peer="chat", model="m", input=None):
             raise RuntimeError("boom")
 
     assert spans[0].events[-1] == {"error": "boom"}
@@ -278,9 +276,7 @@ def test_turn_span_records_base_exception_error(monkeypatch: pytest.MonkeyPatch)
     spans = _enable_tracing(monkeypatch)
 
     with pytest.raises(asyncio.CancelledError):
-        with tracing.turn_span(
-            agent_id=uuid4(), turn_id="t1", peer="chat", model="m", input=None
-        ):
+        with tracing.turn_span(agent_id=uuid4(), turn_id="t1", peer="chat", model="m", input=None):
             raise asyncio.CancelledError()
 
     assert spans[0].events[-1] == {"error": "CancelledError"}
@@ -301,14 +297,10 @@ def test_turn_span_set_current_base_exception_still_closes_span(
         spans.append(span)
         return span
 
-    monkeypatch.setattr(
-        tracing.braintrust, "start_span", start_span_with_cancellable_set_current
-    )
+    monkeypatch.setattr(tracing.braintrust, "start_span", start_span_with_cancellable_set_current)
 
     with pytest.raises(asyncio.CancelledError):
-        with tracing.turn_span(
-            agent_id=uuid4(), turn_id="t1", peer="chat", model="m", input=None
-        ):
+        with tracing.turn_span(agent_id=uuid4(), turn_id="t1", peer="chat", model="m", input=None):
             pytest.fail("тело хода не должно выполняться")
 
     span = spans[0]
@@ -330,14 +322,10 @@ def test_turn_span_unset_current_base_exception_still_ends_span(
         spans.append(span)
         return span
 
-    monkeypatch.setattr(
-        tracing.braintrust, "start_span", start_span_with_cancellable_unset_current
-    )
+    monkeypatch.setattr(tracing.braintrust, "start_span", start_span_with_cancellable_unset_current)
 
     with pytest.raises(asyncio.CancelledError):
-        with tracing.turn_span(
-            agent_id=uuid4(), turn_id="t1", peer="chat", model="m", input=None
-        ):
+        with tracing.turn_span(agent_id=uuid4(), turn_id="t1", peer="chat", model="m", input=None):
             pass
 
     span = spans[0]
@@ -348,9 +336,7 @@ def test_turn_span_unset_current_base_exception_still_ends_span(
 def test_turn_span_uses_environment_from_setup(monkeypatch: pytest.MonkeyPatch) -> None:
     spans = _enable_tracing(monkeypatch, environment="production-test")
 
-    with tracing.turn_span(
-        agent_id=uuid4(), turn_id="t1", peer="chat", model="m", input=None
-    ):
+    with tracing.turn_span(agent_id=uuid4(), turn_id="t1", peer="chat", model="m", input=None):
         pass
 
     assert spans[0].events[0]["metadata"]["environment"] == "production-test"

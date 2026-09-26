@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -11,16 +12,24 @@ from mimic42.integrations import tracing
 from tests.api.fakes import FakeAgentManager
 
 
-def test_api_tests_neutralize_braintrust_key_from_developer_env() -> None:
-    """API-тесты герметичны: ключ Braintrust разработчика не доходит до Settings.
+def test_api_tests_neutralize_braintrust_key_from_developer_env(tmp_path: Path) -> None:
+    """API-тесты герметичны: ключ Braintrust из .env разработчика не доходит до Settings.
 
     Без этого create_app через lifespan звал бы настоящий setup_tracing: логин
     в Braintrust, процесс-глобальный LangChain-хендлер и atexit-flush прямо в
-    pytest. Пустая строка (а не отсутствие переменной) важна: она перебивает
-    слой .env в pydantic-settings, а валидатор трактует её как «не задано».
+    pytest. Утечка моделируется настоящим dotenv-файлом, а не пустым окружением:
+    пустая строка в env (действие фикстуры no_real_tracing) перебивает слой .env
+    в pydantic-settings, а валидатор трактует её как «не задано».
     """
+    env_file = tmp_path / ".env"
+    env_file.write_text("BRAINTRUST_API_KEY=leak\n")
+
+    # Фикстура no_real_tracing выставляет пустой ключ поверх .env: без неё
+    # dotenv-утечка ниже проходила бы в Settings.
     assert os.environ.get("BRAINTRUST_API_KEY") == ""
-    assert Settings().braintrust_api_key is None
+
+    settings = Settings(_env_file=env_file)  # ty: ignore[unknown-argument]
+    assert settings.braintrust_api_key is None
 
 
 async def test_api_tests_do_not_enable_real_tracing() -> None:

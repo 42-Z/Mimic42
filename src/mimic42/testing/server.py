@@ -89,10 +89,13 @@ def _test_settings() -> Settings:
         telegram_api_id=int(os.environ.get("TELEGRAM_API_ID", "1")),
         telegram_api_hash=os.environ.get("TELEGRAM_API_HASH", "test-api-hash"),
         cors_allow_origins=cors_allow_origins,
-        # Явно отключает Mem0: без этого Settings() подхватил бы боевой
-        # MEM0_API_KEY из .env разработчика, и тесты били бы по настоящему
-        # внешнему сервису. Память подменяется FakeLongTermMemory ниже.
+        # Явно отключает Mem0 и Braintrust: без этого Settings() подхватил бы
+        # боевые ключи из .env разработчика, и тесты били бы по настоящим
+        # внешним сервисам (для Braintrust — ещё логинились, ставили
+        # процесс-глобальный LangChain-хендлер и atexit-flush). Память
+        # подменяется FakeLongTermMemory ниже, трейсинг тестам не нужен.
         mem0_api_key=None,
+        braintrust_api_key=None,
     )
 
 
@@ -102,6 +105,14 @@ def build_test_app(
     auth_verifier: AuthVerifier | None = None,
 ) -> FastAPI:
     app_settings = settings or _test_settings()
+    # Тестовый контур никогда не ходит во внешние сервисы: ключи обнуляются
+    # всегда — и у сборщика _test_settings, и у настроек, пришедших сюда мимо
+    # него (например Settings(restore_running_agents=False) в tests/integration).
+    # Без этого тесты с кастомными настройками звали бы настоящие Mem0 и
+    # Braintrust из .env разработчика.
+    app_settings = app_settings.model_copy(
+        update={"mem0_api_key": None, "braintrust_api_key": None}
+    )
     # Заслон стоит здесь, а не только в _test_settings: сюда можно передать
     # произвольные настройки мимо env, и они тоже обязаны указывать на Dev.
     assert_test_project(app_settings.database_connection_string, app_settings.supabase_url)
