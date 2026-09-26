@@ -135,6 +135,26 @@ class TestAgentPage:
         dialog.get_by_role("button", name="Отправить", exact=True).click()
         expect(page.get_by_test_id("toast-container")).to_contain_text("Сообщение отправлено")
 
+    def test_reset_context_confirm_dialog(
+        self, persona_page: Callable[..., Page], api: httpx.Client, users: dict
+    ) -> None:
+        agent_id = _new_agent(api, users, "Сброс контекста", "running")
+        script_agent_reply(api, agent_id, "Здравствуйте!")
+        deliver_message(api, agent_id, PEER_CHAT_ID, "Привет")
+        page = persona_page("full")
+        page.goto(f"/agent/{agent_id}?tab=actions")
+        page.get_by_role("button", name="Сбросить", exact=True).first.click()
+        dialog = page.get_by_role("dialog")
+        expect(dialog.get_by_text("Сбросить контекст?")).to_be_visible()
+        dialog.get_by_role("button", name="Сбросить", exact=True).click()
+        expect(page.get_by_test_id("toast-container")).to_contain_text("Контекст сброшен")
+        # История остаётся, а сам сброс виден в ленте событий.
+        # Ищем внутри ленты: тот же текст ещё живёт в тосте.
+        page.get_by_test_id("agent-tab-logs").click()
+        feed = page.get_by_test_id("activity-feed")
+        expect(feed.get_by_text("Привет")).to_be_visible()
+        expect(feed.get_by_text("Контекст сброшен")).to_be_visible()
+
     def test_preset_fills_soul_prompt(
         self, persona_page: Callable[..., Page], api: httpx.Client, users: dict
     ) -> None:
