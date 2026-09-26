@@ -257,6 +257,7 @@ export type Database = {
       }
       agents: {
         Row: {
+          context_reset_at: string | null
           created_at: string
           id: string
           last_started_at: string | null
@@ -270,6 +271,7 @@ export type Database = {
           updated_at: string
         }
         Insert: {
+          context_reset_at?: string | null
           created_at?: string
           id?: string
           last_started_at?: string | null
@@ -283,6 +285,7 @@ export type Database = {
           updated_at?: string
         }
         Update: {
+          context_reset_at?: string | null
           created_at?: string
           id?: string
           last_started_at?: string | null

@@ -6,6 +6,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mimic42.api.app import create_app
+from mimic42.config import Settings
 from mimic42.core.agent_runtime import MimicAgentRuntime
 from mimic42.core.manager import AgentManager
 from mimic42.core.onboarding import OnboardingSession, TelegramLoginStatus
@@ -50,6 +51,8 @@ async def test_get_agent_returns_404_after_real_deletion(
         manager=manager,
         agent_store=store,
         auth_verifier=FakeAuthVerifier(owner_id),
+        # Без хранилища: иначе удаление агента пошло бы чистить его папку в Dev.
+        settings=Settings(supabase_url=None, supabase_service_key=None),
     )
 
     async with AsyncClient(

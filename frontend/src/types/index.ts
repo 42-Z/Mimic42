@@ -168,6 +168,7 @@ export interface AgentRow {
   settings: Record<string, unknown> | null;
   last_started_at: string | null;
   last_stopped_at: string | null;
+  context_reset_at: string | null; // short-term context starts after it
   created_at: string;
   updated_at: string;
 }
@@ -331,6 +332,32 @@ export interface AnalyticsDataPoint {
   messages: number;
   actions: number;
   errors: number;
+}
+
+/**
+ * POST /api/v1/agents/:id/media — ответ на загрузку картинки
+ */
+export interface UploadedMedia {
+  storage_path: string;
+  name: string;
+  mime_type: string;
+  size: number;
+}
+
+/**
+ * Один вариант «Первого комментария»: текст и/или картинка.
+ * Хранится в agents.settings.first_comment — зеркало FirstCommentVariant
+ * из src/mimic42/core/first_comment.py.
+ */
+export interface FirstCommentVariant {
+  text: string;
+  image_path: string | null;
+  image_name: string | null;
+}
+
+export interface FirstCommentSettings {
+  enabled: boolean;
+  variants: FirstCommentVariant[];
 }
 
 /**

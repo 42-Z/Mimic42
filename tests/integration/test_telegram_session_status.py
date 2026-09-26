@@ -243,7 +243,7 @@ async def test_dead_session_error_on_connect_marks_session_revoked(
 class FailingSendClient(FakeTelegramClient):
     """Клиент, который теряет авторизацию уже во время отправки."""
 
-    async def send_message(self, entity: str, message: str, **kwargs: Any) -> object:
+    async def send_message(self, entity: str | int, message: str, **kwargs: Any) -> object:
         raise errors.UnauthorizedError(request=None, message="401: Unauthorized")
 
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Protocol
 from uuid import UUID, uuid4
 
@@ -113,6 +113,10 @@ class AgentStore(Protocol):
 
     async def delete_agent(self, agent_id: UUID) -> None: ...
 
+    async def reset_context(self, agent_id: UUID, *, actor_user_id: UUID) -> datetime:
+        """Start the agent's short-term context afresh; returns the reset moment."""
+        ...
+
     async def list_messages(
         self,
         *,
@@ -173,6 +177,7 @@ class InMemoryAgentStore:
     ) -> None:
         self._agents = {agent.agent_id: agent for agent in agents or []}
         self._configs: dict[UUID, AgentRuntimeConfig] = {}
+        self.context_resets: dict[UUID, datetime] = {}
         self._telegram_accounts: dict[UUID, tuple[int, str, str | None]] = {}
         # @username хранится рядом с аккаунтом, но вне его ключа: он меняется
         # при перепривязке и не участвует в проверке «тот же ли аккаунт».
@@ -288,6 +293,13 @@ class InMemoryAgentStore:
         self._configs.pop(agent_id, None)
         self._telegram_accounts.pop(agent_id, None)
         self._telegram_usernames.pop(agent_id, None)
+
+    async def reset_context(self, agent_id: UUID, *, actor_user_id: UUID) -> datetime:
+        if agent_id not in self._agents:
+            raise KeyError(f"Agent {agent_id} does not exist")
+        reset_at = datetime.now(UTC)
+        self.context_resets[agent_id] = reset_at
+        return reset_at
 
     async def list_messages(
         self, *, agent_id: UUID, limit: int = 50, offset: int = 0

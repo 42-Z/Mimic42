@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from uuid import UUID, uuid4
 
 import pytest
@@ -197,6 +198,72 @@ async def test_delete_agent_returns_404_for_foreign_agent() -> None:
 
     assert response.status_code == 404
     assert manager.removed == []
+
+
+@pytest.mark.asyncio
+async def test_reset_context_moves_the_boundary_for_owner() -> None:
+    owner_id = uuid4()
+    agent_id = uuid4()
+    store = InMemoryAgentStore(
+        agents=[
+            AgentRecord(
+                agent_id=agent_id,
+                owner_id=owner_id,
+                name="Mimic",
+                state=AgentRuntimeState.RUNNING,
+            )
+        ]
+    )
+    app = create_app(
+        manager=FakeAgentManager(),
+        agent_store=store,
+        auth_verifier=FakeAuthVerifier(owner_id),
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        response = await client.post(
+            f"/api/v1/agents/{agent_id}/context/reset",
+            headers=AUTH_HEADERS,
+        )
+
+    assert response.status_code == 200
+    returned = datetime.fromisoformat(response.json()["context_reset_at"])
+    assert returned == store.context_resets[agent_id]
+
+
+@pytest.mark.asyncio
+async def test_reset_context_returns_404_for_foreign_agent() -> None:
+    foreign_agent_id = uuid4()
+    store = InMemoryAgentStore(
+        agents=[
+            AgentRecord(
+                agent_id=foreign_agent_id,
+                owner_id=uuid4(),
+                name="Someone else's",
+                state=AgentRuntimeState.RUNNING,
+            )
+        ]
+    )
+    app = create_app(
+        manager=FakeAgentManager(),
+        agent_store=store,
+        auth_verifier=FakeAuthVerifier(uuid4()),
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        response = await client.post(
+            f"/api/v1/agents/{foreign_agent_id}/context/reset",
+            headers=AUTH_HEADERS,
+        )
+
+    assert response.status_code == 404
+    assert store.context_resets == {}
 
 
 @pytest.mark.asyncio

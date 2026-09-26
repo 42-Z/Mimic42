@@ -6,6 +6,12 @@ from typing import Any, Protocol
 from uuid import UUID
 
 MAX_MEDIA_BYTES = 20 * 1024 * 1024
+# Предел Telegram для фото: больше уйдёт только документом, а не картинкой.
+MAX_PHOTO_BYTES = 10 * 1024 * 1024
+
+# Форматы, которые Telethon шлёт фотографией (`telethon.utils.is_image`
+# смотрит на расширение): Pillow-формат → (mime, расширение).
+_PHOTO_FORMATS = {"JPEG": ("image/jpeg", "jpg"), "PNG": ("image/png", "png")}
 
 _UNSAFE_FILENAME_CHARS = re.compile(r"[^A-Za-z0-9._-]+")
 _MAX_FILENAME = 120
@@ -27,6 +33,27 @@ def safe_filename(name: str) -> str:
     if dot and len(ext) <= 10:
         return f"{stem[: _MAX_FILENAME - len(ext) - 1]}.{ext}"
     return cleaned[:_MAX_FILENAME]
+
+
+def detect_photo_type(data: bytes) -> tuple[str, str] | None:
+    """(mime, расширение) по содержимому файла, ``None`` — не JPEG и не PNG.
+
+    Заявленному клиентом типу верить нельзя: под видом картинки придёт что
+    угодно, и Telethon отправит это документом на каждый пост. Pillow
+    читает заголовок и проверяет целостность, не декодируя всё изображение.
+    """
+    from io import BytesIO
+
+    from PIL import Image
+
+    try:
+        with Image.open(BytesIO(data), formats=list(_PHOTO_FORMATS)) as image:
+            image_format = image.format
+            image.verify()
+    except Exception:
+        # verify() сообщает о битом файле разными исключениями — любое значит «не фото».
+        return None
+    return _PHOTO_FORMATS.get(image_format or "")
 
 
 @dataclass(slots=True)

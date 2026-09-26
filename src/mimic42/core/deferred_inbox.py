@@ -76,6 +76,11 @@ class DeferredInbox:
         self._deadlines[peer] = now + max(delay, 0.0)
         self._tasks[peer] = asyncio.create_task(self._flush_after(peer))
 
+    @property
+    def in_flight(self) -> frozenset[asyncio.Task[None]]:
+        """Начавшиеся сливы: close() их не трогает, дождаться или отменить — дело владельца."""
+        return frozenset(self._flushing)
+
     async def close(self) -> None:
         """Отменить ожидающие буферы; слив в полёте не обрывается."""
         tasks = list(self._tasks.values())

@@ -2,19 +2,48 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
 from mimic42.core.media import MAX_MEDIA_BYTES, MediaFile, safe_filename
 
+if TYPE_CHECKING:
+    from storage3 import SyncStorageClient
+
 logger = logging.getLogger("mimic42.media")
 
-__all__ = ["BUCKET", "MAX_MEDIA_BYTES", "SupabaseMediaStorage"]
+__all__ = ["BUCKET", "MAX_MEDIA_BYTES", "SupabaseMediaStorage", "storage_client"]
 
 BUCKET = "agent-media"
 _LIST_PAGE = 1000
 _REMOVE_CHUNK = 1000
 _MAX_DEPTH = 8
+
+
+def storage_client(supabase_url: str, service_key: str) -> SyncStorageClient:
+    """Клиент Supabase Storage с service-ключом.
+
+    Без своего HTTP-клиента supabase-py сам передаёт в storage3 устаревшие
+    timeout и verify, а тот отвечает DeprecationWarning. Под -W error это
+    исключение, и приложение молча оставалось без хранилища. storage3 просит
+    настраивать таймаут на HTTP-клиенте — так и делаем, с прежним значением.
+    """
+    import httpx
+    from supabase.lib.client_options import DEFAULT_STORAGE_CLIENT_TIMEOUT
+
+    from supabase import ClientOptions, create_client
+
+    http_client = httpx.Client(
+        timeout=DEFAULT_STORAGE_CLIENT_TIMEOUT, follow_redirects=True, http2=True
+    )
+    try:
+        options = ClientOptions(httpx_client=http_client)
+        return create_client(supabase_url, service_key, options=options).storage
+    except BaseException:
+        # Неверный URL или ключ: хранилища не будет, и сокеты этого клиента
+        # закрыть больше некому.
+        http_client.close()
+        raise
 
 
 class SupabaseMediaStorage:
@@ -27,9 +56,11 @@ class SupabaseMediaStorage:
     """
 
     def __init__(self, *, supabase_url: str, service_key: str) -> None:
-        from supabase import create_client
+        self._storage = storage_client(supabase_url, service_key)
 
-        self._storage = create_client(supabase_url, service_key).storage
+    def close(self) -> None:
+        """Закрыть соединения с Storage: HTTP-клиент создан здесь, другим он не нужен."""
+        self._storage.session.close()
 
     def _bucket(self) -> Any:
         return self._storage.from_(BUCKET)

@@ -27,6 +27,11 @@ class IncomingMessage:
     reply_to_msg_id: int | None = None
     grouped_id: int | None = None
     order: int = 0
+    # Пост вещательного канала: в Telethon у него is_channel без is_group.
+    is_channel: bool = False
+    is_group: bool = False
+    # Channel.has_link: есть ли у канала группа обсуждения (куда идут комментарии).
+    has_link: bool | None = None
 
 
 class _FakeReplyTo:
@@ -54,13 +59,19 @@ class FakeIncomingEvent:
         self.text = message.text
         self.raw_text = message.text
         self.message = _FakeMessage(message.reply_to_msg_id)
-        self.is_private = True
+        self.is_channel = message.is_channel
+        self.is_group = message.is_group
+        self.is_private = not (message.is_channel or message.is_group)
         self.client = client
         self.grouped_id = message.grouped_id
         self._reply_to_msg_id = message.reply_to_msg_id
+        self._has_link = message.has_link
 
     async def get_chat(self) -> object:
-        return type("Chat", (), {"id": self.chat_id, "username": None})()
+        attrs: dict[str, object] = {"id": self.chat_id, "username": None}
+        if self._has_link is not None:
+            attrs["has_link"] = self._has_link
+        return type("Chat", (), attrs)()
 
     async def get_reply_message(self) -> object | None:
         if self._reply_to_msg_id is None:
@@ -108,6 +119,30 @@ class FakeTelegramAccount:
             text=text,
             sender_id=sender_id,
             order=self.next_order(),
+        )
+        self.incoming.append(message)
+        for handler in list(self.handlers):
+            await handler(FakeIncomingEvent(message, client=self))
+
+    async def deliver_post(
+        self,
+        *,
+        chat_id: int,
+        text: str,
+        grouped_id: int | None = None,
+        has_link: bool = True,
+    ) -> None:
+        """Новый пост вещательного канала; ``has_link`` — открыты ли комментарии."""
+        self._next_message_id += 1
+        message = IncomingMessage(
+            chat_id=chat_id,
+            message_id=self._next_message_id,
+            text=text,
+            sender_id=chat_id,
+            order=self.next_order(),
+            grouped_id=grouped_id,
+            is_channel=True,
+            has_link=has_link,
         )
         self.incoming.append(message)
         for handler in list(self.handlers):

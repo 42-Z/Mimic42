@@ -211,7 +211,7 @@ async def test_update_app_error_is_not_rewritten_as_revoked_session() -> None:
 @pytest.mark.asyncio
 async def test_dead_session_on_send_stops_runtime_and_blocks_restart() -> None:
     class RevokedSendClient(FakeTelegramClient):
-        async def send_message(self, entity: str, message: str, **kwargs: Any) -> object:
+        async def send_message(self, entity: str | int, message: str, **kwargs: Any) -> object:
             raise errors.AuthKeyDuplicatedError(request=None)
 
     telegram = RevokedSendClient()
@@ -249,7 +249,7 @@ async def test_dead_session_on_send_stops_runtime_and_blocks_restart() -> None:
 @pytest.mark.asyncio
 async def test_dead_session_disconnects_after_failed_turn_persistence() -> None:
     class RevokedSendClient(FakeTelegramClient):
-        async def send_message(self, entity: str, message: str, **kwargs: Any) -> object:
+        async def send_message(self, entity: str | int, message: str, **kwargs: Any) -> object:
             raise errors.AuthKeyDuplicatedError(request=None)
 
     telegram = RevokedSendClient()
@@ -453,7 +453,8 @@ async def test_runtime_registers_incoming_message_handler_and_replies() -> None:
     await runtime.start()
     await telegram.account.deliver(chat_id=99, text="incoming")
 
-    assert len(telegram.handlers) == 1
+    # Две регистрации: первый комментарий и ИИ-ветка — в этом порядке.
+    assert len(telegram.handlers) == 2
     assert telegram.sent_messages == [("99", "reply to incoming")]
 
 
@@ -712,7 +713,7 @@ async def test_runtime_triggers_unmuted_chats(monkeypatch: pytest.MonkeyPatch) -
 @pytest.mark.asyncio
 async def test_trigger_handles_telegram_permission_errors_gracefully() -> None:
     class FailingTelegramClient(FakeTelegramClient):
-        async def send_message(self, entity: str, message: str, **kwargs: Any) -> object:
+        async def send_message(self, entity: str | int, message: str, **kwargs: Any) -> object:
             from telethon.errors import ChatAdminRequiredError
             from telethon.tl.functions.messages import SendMessageRequest
 
@@ -1253,7 +1254,7 @@ async def test_send_failure_is_reported_to_the_window() -> None:
     from mimic42.core.send_window import SendWindow
 
     class FailingClient(FakeTelegramClient):
-        async def send_message(self, entity: str, message: str, **kwargs: Any) -> object:
+        async def send_message(self, entity: str | int, message: str, **kwargs: Any) -> object:
             raise RuntimeError("telegram said no")
 
     window = _ScriptedSendWindow(SendWindow())

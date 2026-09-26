@@ -29,6 +29,9 @@ const ERROR_CATALOG: Record<string, string> = {
   ChatAdminInviteRequiredError: 'Требуются права администратора',
   RightForbiddenError: 'Недостаточно прав для этого действия',
   MessageIdInvalidError: 'Сообщение не найдено или устарело',
+  // Ответ на этот код от Telegram при `comment_to`: у канала нет привязанной
+  // группы обсуждения, то есть комментарии к постам просто выключены.
+  MsgIdInvalidError: 'Сообщение не найдено или у канала нет группы обсуждения',
   MessageDeleteForbiddenError: 'Нельзя удалить это сообщение',
   MessageTooLongError: 'Сообщение слишком длинное',
   MessageEmptyError: 'Сообщение пустое',

@@ -70,6 +70,11 @@ class AlbumGrouper:
         self._deadlines[key] = now + self._quiet
         self._tasks[key] = asyncio.create_task(self._flush_after(key))
 
+    @property
+    def in_flight(self) -> frozenset[asyncio.Task[None]]:
+        """Начавшиеся сливы: close() их не трогает, дождаться или отменить — дело владельца."""
+        return frozenset(self._flushing)
+
     async def close(self) -> None:
         """Отменить ждущие буферы. Уже начавшийся flush не обрывается: ответ
         мог уйти в Telegram, а отмена посреди хода теряет его запись."""
