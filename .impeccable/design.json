@@ -1,0 +1,157 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-27T00:00:00.000Z",
+  "title": "Design System: Mimic42",
+  "extensions": {
+    "colorMeta": {
+      "primary": {
+        "role": "primary",
+        "displayName": "Plasma Blue",
+        "canonical": "#1a7fff",
+        "tonalRamp": ["#001847", "#002d73", "#003d99", "#004dbf", "#0062e6", "#1a7fff", "#3d9bff", "#70b8ff"]
+      },
+      "destructive": {
+        "role": "state",
+        "displayName": "Crimson Rose",
+        "canonical": "#f43f5e",
+        "tonalRamp": ["#4c0519", "#881337", "#9f1239", "#be123c", "#e11d48", "#f43f5e", "#fb7185", "#fecdd3"]
+      },
+      "success": {
+        "role": "state",
+        "displayName": "Neon Green",
+        "canonical": "#00e070",
+        "tonalRamp": ["#00291a", "#004f2a", "#006b37", "#008f48", "#00b85c", "#00e070", "#24f98a", "#6effb0"]
+      },
+      "warning": {
+        "role": "state",
+        "displayName": "Signal Amber",
+        "canonical": "#f59e0b",
+        "tonalRamp": ["#451a03", "#78350f", "#92400e", "#b45309", "#d97706", "#f59e0b", "#fbbf24", "#fcd34d"]
+      },
+      "background": {
+        "role": "neutral",
+        "displayName": "Void Ground",
+        "canonical": "#05050e",
+        "tonalRamp": ["#05050e", "#0a0a16", "#121220", "#1a1a28", "#252535", "#3a3a4a", "#606075", "#9090a0"]
+      },
+      "foreground": {
+        "role": "neutral",
+        "displayName": "Void Text",
+        "canonical": "#e0e0e5",
+        "tonalRamp": ["#252535", "#3a3a4a", "#606075", "#9090a0", "#c0c0cc", "#e0e0e5", "#f0f0f2", "#f7f7f9"]
+      }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Syne", "purpose": "Page titles, headings, product voice — one h1 per page state." },
+      "body": { "displayName": "Syne", "purpose": "Reading copy, descriptions, chat text." },
+      "label": { "displayName": "Space Mono", "purpose": "Uppercase labels, IDs, timestamps, counts, chat handles." }
+    },
+    "shadows": [
+      { "name": "shadow-plasma-sm", "value": "0 0 10px rgba(26, 127, 255, 0.2)", "purpose": "Hover glow under active/selected cards and primary actions." },
+      { "name": "shadow-plasma", "value": "0 0 20px rgba(26, 127, 255, 0.3), 0 0 60px rgba(26, 127, 255, 0.1)", "purpose": "Strong plasma emphasis on featured/selected surfaces." },
+      { "name": "shadow-neon", "value": "0 0 20px rgba(0, 224, 112, 0.3)", "purpose": "Running/OK status emphasis." },
+      { "name": "shadow-crimson", "value": "0 0 20px rgba(244, 63, 94, 0.3)", "purpose": "Destructive hover and failed status." },
+      { "name": "shadow-void", "value": "0 4px 30px rgba(0, 0, 0, 0.5)", "purpose": "Resting lift for cards, dropdowns, toasts." },
+      { "name": "shadow-void-lg", "value": "0 8px 60px rgba(0, 0, 0, 0.7)", "purpose": "Modal and toast elevation over the ground." }
+    ],
+    "motion": [
+      { "name": "spring", "value": "cubic-bezier(0.16, 1, 0.3, 1)", "purpose": "Entrances and slide-ins (modal, toast, drawers)." },
+      { "name": "smooth", "value": "cubic-bezier(0.4, 0, 0.2, 1)", "purpose": "Default easing for state transitions." },
+      { "name": "duration-fast", "value": "150ms", "purpose": "Hover/focus color and border changes." },
+      { "name": "duration-entrance", "value": "300ms", "purpose": "Modal, toast, and panel entrances." }
+    ],
+    "breakpoints": [
+      { "name": "sm", "value": "640px" },
+      { "name": "md", "value": "768px" },
+      { "name": "lg", "value": "1024px" },
+      { "name": "xl", "value": "1280px" },
+      { "name": "2xl", "value": "1536px" },
+      { "name": "3xl", "value": "1920px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The single primary action per view. Bright plasma fill, dark foreground for AA contrast.",
+      "html": "<button class=\"ds-btn-primary\">SAVE CHANGES</button>",
+      "css": ".ds-btn-primary { background: rgb(26 127 255); color: rgb(5 5 14); font-family: 'Syne', system-ui, sans-serif; font-size: 0.875rem; font-weight: 600; padding: 0 16px; height: 40px; border: 1px solid transparent; border-radius: 0.25rem; cursor: pointer; transition: background 150ms cubic-bezier(0.4, 0, 0.2, 1), transform 150ms cubic-bezier(0.4, 0, 0.2, 1), box-shadow 150ms; } .ds-btn-primary:hover { background: rgb(0 98 230); box-shadow: 0 0 10px rgba(26, 127, 255, 0.2); } .ds-btn-primary:focus-visible { outline: none; box-shadow: 0 0 0 2px rgb(5 5 14), 0 0 0 4px rgb(26 127 255); } .ds-btn-primary:active { transform: scale(0.97); } .ds-btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }"
+    },
+    {
+      "name": "Ghost Button",
+      "kind": "button",
+      "refersTo": "button-ghost",
+      "description": "Quiet secondary action; fills with the accent surface on hover.",
+      "html": "<button class=\"ds-btn-ghost\">CANCEL</button>",
+      "css": ".ds-btn-ghost { background: transparent; color: rgb(224 224 229); font-family: 'Syne', system-ui, sans-serif; font-size: 0.875rem; font-weight: 500; padding: 0 16px; height: 40px; border: 1px solid transparent; border-radius: 0.25rem; cursor: pointer; transition: background 150ms cubic-bezier(0.4, 0, 0.2, 1), color 150ms; } .ds-btn-ghost:hover { background: rgb(37 37 53); } .ds-btn-ghost:focus-visible { outline: none; box-shadow: 0 0 0 2px rgb(5 5 14), 0 0 0 4px rgb(26 127 255); } .ds-btn-ghost:active { transform: scale(0.97); }"
+    },
+    {
+      "name": "Destructive Button",
+      "kind": "button",
+      "refersTo": "button-destructive",
+      "description": "Irreversible actions (kill session, unbind, delete). Crimson fill, dark foreground.",
+      "html": "<button class=\"ds-btn-destructive\">KILL SESSION</button>",
+      "css": ".ds-btn-destructive { background: rgb(244 63 94); color: rgb(5 5 14); font-family: 'Syne', system-ui, sans-serif; font-size: 0.875rem; font-weight: 600; padding: 0 16px; height: 40px; border: 1px solid transparent; border-radius: 0.25rem; cursor: pointer; transition: background 150ms cubic-bezier(0.4, 0, 0.2, 1), box-shadow 150ms, transform 150ms; } .ds-btn-destructive:hover { background: rgb(225 29 72); box-shadow: 0 0 20px rgba(244, 63, 94, 0.3); } .ds-btn-destructive:focus-visible { outline: none; box-shadow: 0 0 0 2px rgb(5 5 14), 0 0 0 4px rgb(244 63 94); } .ds-btn-destructive:active { transform: scale(0.97); }"
+    },
+    {
+      "name": "Text Input",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Terminal-style field: void ground, hairline border, plasma focus ring.",
+      "html": "<div class=\"ds-input-wrap\"><label class=\"ds-input-label\">API ID</label><input class=\"ds-input\" placeholder=\"1234567\" value=\"\"></div>",
+      "css": ".ds-input-wrap { display: flex; flex-direction: column; gap: 6px; font-family: 'Syne', system-ui, sans-serif; } .ds-input-label { font-family: 'Space Mono', monospace; font-size: 0.75rem; letter-spacing: 0.08em; text-transform: uppercase; color: rgb(144 144 160); } .ds-input { background: rgb(18 18 32); color: rgb(224 224 229); border: 1px solid rgb(37 37 53); border-radius: 0.25rem; height: 40px; padding: 0 12px; font-size: 0.875rem; transition: border-color 150ms, box-shadow 150ms; } .ds-input::placeholder { color: rgb(96 96 117); } .ds-input:hover { border-color: rgb(58 58 74); } .ds-input:focus { outline: none; border-color: rgb(26 127 255); box-shadow: 0 0 0 2px rgba(26, 127, 255, 0.25); }"
+    },
+    {
+      "name": "Card",
+      "kind": "card",
+      "refersTo": "card",
+      "description": "Base surface for every panel: one tonal step above the ground with a hairline border.",
+      "html": "<div class=\"ds-card\"><div class=\"ds-card-title\">SESSION</div><div class=\"ds-card-desc\">Telethon StringSession · verified</div><div class=\"ds-card-body\">CardHeader / CardContent compose inside; pass padding=\"none\".</div></div>",
+      "css": ".ds-card { background: rgb(18 18 32); border: 1px solid rgb(37 37 53); border-radius: 0.25rem; padding: 24px; box-shadow: 0 4px 30px rgba(0, 0, 0, 0.5); font-family: 'Syne', system-ui, sans-serif; color: rgb(224 224 229); } .ds-card-title { font-family: 'Space Mono', monospace; font-size: 0.75rem; letter-spacing: 0.08em; text-transform: uppercase; color: rgb(144 144 160); margin-bottom: 4px; } .ds-card-desc { font-size: 0.8125rem; color: rgb(144 144 160); } .ds-card-body { font-size: 0.875rem; margin-top: 12px; line-height: 1.6; }"
+    },
+    {
+      "name": "Status Chip",
+      "kind": "chip",
+      "refersTo": "status-running",
+      "description": "Semantic status badge — success/destructive/warning/muted only, mono uppercase label.",
+      "html": "<span class=\"ds-chip ds-chip-running\"><span class=\"ds-chip-dot\"></span>RUNNING</span>",
+      "css": ".ds-chip { display: inline-flex; align-items: center; gap: 6px; font-family: 'Space Mono', monospace; font-size: 0.6875rem; letter-spacing: 0.08em; text-transform: uppercase; padding: 3px 8px; border-radius: 0.125rem; border: 1px solid; } .ds-chip-dot { width: 6px; height: 6px; border-radius: 9999px; background: currentColor; } .ds-chip-running { color: rgb(0 224 112); background: rgba(0, 224, 112, 0.1); border-color: rgba(0, 224, 112, 0.35); } .ds-chip-running .ds-chip-dot { animation: ds-chip-pulse 2s ease-in-out infinite; } .ds-chip-failed { color: rgb(244 63 94); background: rgba(244, 63, 94, 0.1); border-color: rgba(244, 63, 94, 0.35); } .ds-chip-idle { color: rgb(245 158 11); background: rgba(245, 158, 11, 0.1); border-color: rgba(245, 158, 11, 0.35); } @keyframes ds-chip-pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.7; transform: scale(1.1); } }"
+    },
+    {
+      "name": "Side Nav Item",
+      "kind": "nav",
+      "refersTo": "nav-active",
+      "description": "Rail navigation item; active state is a plasma left accent plus accent text.",
+      "html": "<nav class=\"ds-nav\"><a class=\"ds-nav-item\" href=\"#\">Agents</a><a class=\"ds-nav-item ds-nav-active\" href=\"#\">Dashboard</a><a class=\"ds-nav-item\" href=\"#\">Activity</a></nav>",
+      "css": ".ds-nav { display: flex; flex-direction: column; gap: 2px; background: rgb(10 10 22); border-right: 1px solid rgb(37 37 53); padding: 12px 8px; width: 272px; } .ds-nav-item { display: block; font-family: 'Syne', system-ui, sans-serif; font-size: 0.875rem; font-weight: 500; color: rgb(144 144 160); text-decoration: none; padding: 9px 12px; border-radius: 0.25rem; border-left: 2px solid transparent; transition: background 150ms, color 150ms, border-color 150ms; } .ds-nav-item:hover { background: rgb(26 26 40); color: rgb(224 224 229); } .ds-nav-item:focus-visible { outline: none; box-shadow: 0 0 0 2px rgb(5 5 14), 0 0 0 4px rgb(26 127 255); } .ds-nav-active, .ds-nav-active:hover { color: rgb(112 184 255); background: rgba(26, 127, 255, 0.1); border-left-color: rgb(26 127 255); }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Operator Terminal",
+    "overview": "Mimic42 is a control console for AI Telegram agents, so the interface behaves like a piece of operator hardware: a near-black indigo ground with a faint blueprint grid, sharp corners, monospace telemetry, and light that only appears when something means something. shadcn/ui is the component vocabulary; its semantic tokens are mapped over the void/plasma/neon/crimson palette, so the app reads as one dark world with a component library inside it — never a generic shadcn template and never a light theme. Density is deliberate: quiet surfaces, hairline borders, color reserved for state and action. Glow is a reward, not decoration — plasma for action/active, neon for running/OK, crimson for destruction/failure, amber for idle/warning.",
+    "keyCharacteristics": [
+      "Dark ground, sharp corners (radius 0.25rem), 40x40 blueprint grid + scan-line texture",
+      "Syne for voice/headings, Space Mono for data/labels/IDs/timestamps",
+      "Bright accent fills with dark void-950 foregrounds — WCAG AA on every filled control",
+      "Status color is semantic and exclusive: success / destructive / warning / muted",
+      "Icons are lucide-react only; Telegram secrets never render"
+    ],
+    "rules": [
+      { "name": "The Dark Ground Rule", "body": "No light surface, ever. New components take their ground from --background/--card, never a hex of their own.", "section": "colors" },
+      { "name": "The State-Only Rule", "body": "plasma/neon/crimson/amber mean action or state. Decoration borrows border, muted, and opacity — never an accent hue.", "section": "colors" },
+      { "name": "The One H1 Rule", "body": "Exactly one h1 per rendered page state; use CardTitle as=\"h1\" for a page's main title.", "section": "typography" },
+      { "name": "The Glow-Is-State Rule", "body": "Glow appears only for interaction or status; at rest a surface is flat and matte.", "section": "elevation" }
+    ],
+    "dos": [
+      "Do take ground, border, text, and status color from semantic tokens (bg-card, border-border, text-muted-foreground, text-success/text-destructive).",
+      "Do keep one h1 per page state and reserve Space Mono for machine-like text.",
+      "Do pass padding=\"none\" when a Card wraps its own header/content sub-components."
+    ],
+    "donts": [
+      "Don't introduce a light surface, a foreign hue, or emoji/unicode glyphs as controls (use lucide-react).",
+      "Don't render Telegram secrets (api_hash, phone_code_hash, session strings).",
+      "Don't pad a Card that already wraps its own header/content sub-components."
+    ]
+  }
+}
