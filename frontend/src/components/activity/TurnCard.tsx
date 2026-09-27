@@ -13,7 +13,7 @@ import {
 } from 'lucide-react';
 import type { ActivityItem, ActivityAction, ActivityMessagePart } from '@/lib/activity/normalize';
 import { incomingBody } from '@/lib/activity/normalize';
-import { ActionRow } from './ActionRow';
+import { ActionRow, isExpandableAction } from './ActionRow';
 import { ActivityDetails } from './ActivityDetails';
 import { MediaContent } from './MediaContent';
 import { sanitizeText } from '@/lib/sanitize';
@@ -110,7 +110,12 @@ function MessageRow({
   );
 }
 
-/** One tool call: click expands this tool's details only. */
+/**
+ * One action row of a turn. Rows with details expand on click; leaf rows
+ * (lifecycle events without args/result) render as a plain line — they have
+ * nothing to expand into and carry the trace link, which must not live inside
+ * the expand button (nested-interactive).
+ */
 function ToolEntry({
   action,
   item,
@@ -123,9 +128,12 @@ function ToolEntry({
   forceOpen: boolean;
 }) {
   const [selfOpen, setSelfOpen] = useState(false);
-  const expanded = !chatOnly && (forceOpen || selfOpen);
+  const expandable = isExpandableAction(action);
+  const expanded = expandable && !chatOnly && (forceOpen || selfOpen);
 
   if (chatOnly) return null;
+
+  if (!expandable) return <ActionRow action={action} />;
 
   return (
     <div>
@@ -203,6 +211,7 @@ export function TurnCard({
   );
 
   // Lifecycle rows (start/stop/timer events) render as a single compact line.
+  // No trace link here on purpose — parity with the turn rows is a separate task.
   if (item.kind === 'lifecycle') {
     const action = item.actions[0];
     if (!action) return null;

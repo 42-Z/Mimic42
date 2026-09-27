@@ -14,6 +14,24 @@ function formatDuration(startedAt: string | null, completedAt: string | null): s
   return `${(ms / 1000).toFixed(1)} с`;
 }
 
+function hasBody(value: Record<string, unknown> | null | undefined): boolean {
+  return value != null && Object.keys(value).length > 0;
+}
+
+/**
+ * Can this row expand into its details panel?
+ *
+ * Leaf rows — lifecycle events without args/result (`turn.completed`,
+ * `turn.failed`) — have nothing to expand into and carry the trace link, which
+ * must never sit inside the expand button (nested-interactive). A row with a
+ * trace link therefore always renders as a plain line; if tool events ever get
+ * trace links, move the link outside the button instead.
+ */
+export function isExpandableAction(action: ActivityAction): boolean {
+  if (action.traceUrl) return false;
+  return hasBody(action.args) || hasBody(action.result);
+}
+
 export function ActionRow({ action }: { action: ActivityAction }) {
   const isTool = action.eventType.startsWith('tool.');
   const meta = isTool
@@ -24,12 +42,16 @@ export function ActionRow({ action }: { action: ActivityAction }) {
   const running = action.status === 'running' || action.status === 'pending';
   const duration = formatDuration(action.startedAt, action.completedAt);
   const resultSummary = summarizeResult(action.result);
+  // Leaf rows cannot expand, so their hint must stay readable at every width.
+  const expandable = isExpandableAction(action);
 
   return (
-    <div
+    // A span (not a div) with display:flex: the row also lives inside the
+    // expand <button>, whose content model allows only phrasing content.
+    <span
       className={cn(
         'flex items-center gap-2.5 py-1.5 px-2 rounded-[2px]',
-        failed ? 'bg-crimson-950/25' : 'hover:bg-void-800/40',
+        failed ? 'bg-crimson-950/25' : expandable && 'hover:bg-void-800/40',
       )}
     >
       {Icon && (
@@ -41,7 +63,12 @@ export function ActionRow({ action }: { action: ActivityAction }) {
         {action.label}
       </span>
       {action.hint && (
-        <span className="hidden md:inline text-[11px] text-crimson-400 truncate max-w-[45%]">
+        <span
+          className={cn(
+            'text-[11px] text-crimson-400 truncate max-w-[45%]',
+            expandable && 'hidden md:inline',
+          )}
+        >
           {action.hint}
         </span>
       )}
@@ -58,6 +85,7 @@ export function ActionRow({ action }: { action: ActivityAction }) {
           className="shrink-0 inline-flex items-center gap-1 text-[11px] text-plasma-400 hover:text-plasma-300 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-plasma-500 rounded-[2px]"
         >
           Трейс
+          <span className="sr-only">(откроется в новой вкладке)</span>
           <ExternalLink aria-hidden="true" className="h-3 w-3" />
         </a>
       )}
@@ -69,7 +97,7 @@ export function ActionRow({ action }: { action: ActivityAction }) {
       ) : (
         <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-neon-700" />
       )}
-    </div>
+    </span>
   );
 }
 

@@ -2,7 +2,7 @@ import {
   Play,
   Square,
   AlertTriangle,
-  CheckCircle2,
+  Flag,
   MessageSquareX,
   MessageSquarePlus,
   Timer,
@@ -28,7 +28,9 @@ export const EVENT_CATALOG: Record<string, EventMeta> = {
   'agent.context_reset': { ru: 'Контекст сброшен', icon: RotateCcw },
   'model.failed': { ru: 'Модель не ответила', icon: AlertTriangle },
   'turn.failed': { ru: 'Ход завершился ошибкой', icon: AlertTriangle },
-  'turn.completed': { ru: 'Ход завершён', icon: CheckCircle2 },
+  // Finish flag, not a check: ActionRow already ends every line with the
+  // CheckCircle2 status icon — one glyph twice in the busiest feed row.
+  'turn.completed': { ru: 'Ход завершён', icon: Flag },
   'message.send_failed': { ru: 'Не удалось отправить ответ', icon: MessageSquareX },
   'message.deferred': { ru: 'Ответ отложен: медленный режим', icon: Hourglass },
   'message.write_forbidden': { ru: 'Нет права писать в чате', icon: Ban },
