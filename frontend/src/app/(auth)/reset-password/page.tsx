@@ -98,7 +98,7 @@ export default function ResetPasswordPage() {
               <Input
                 label="Email"
                 type="email"
-                placeholder="you@example.com"
+                placeholder="Email"
                 value={email}
                 onChange={(e) => {
                   setEmail(e.target.value);

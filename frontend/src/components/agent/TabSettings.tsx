@@ -194,7 +194,7 @@ export function TabSettings({ agentId }: { agentId: string }) {
         <Button type="submit" isLoading={update.isPending} disabled={!dirty}>
           Сохранить изменения
         </Button>
-        {dirty && <Badge variant="amber">Есть несохранённые изменения</Badge>}
+        {dirty && <Badge variant="amber">● Есть несохранённые изменения</Badge>}
       </div>
     </form>
   );
