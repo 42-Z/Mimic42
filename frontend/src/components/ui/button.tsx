@@ -14,13 +14,13 @@ const buttonVariants = cva(
   {
     variants: {
       variant: {
-        default: ['bg-primary border-primary text-primary-foreground', 'hover:bg-primary/90 hover:shadow-plasma-sm'],
+        default: ['bg-primary border-primary text-primary-foreground', 'hover:bg-plasma-400 hover:shadow-plasma-sm'],
         secondary: ['bg-secondary border-border text-secondary-foreground', 'hover:bg-muted'],
         ghost: ['bg-transparent border-transparent text-muted-foreground', 'hover:bg-muted hover:text-foreground'],
-        danger: ['bg-destructive border-destructive text-destructive-foreground', 'hover:bg-destructive/90 hover:shadow-crimson'],
+        danger: ['bg-destructive border-destructive text-destructive-foreground', 'hover:bg-crimson-400 hover:shadow-crimson'],
         success: ['bg-success border-success text-success-foreground', 'hover:bg-success/90 hover:shadow-neon-sm'],
         outline: ['bg-transparent border-border text-foreground', 'hover:bg-muted hover:border-primary/60 hover:text-primary'],
-        'plasma-outline': ['bg-transparent border-primary/50 text-primary', 'hover:bg-primary/10 hover:border-primary hover:text-primary/90 hover:shadow-plasma-sm'],
+        'plasma-outline': ['bg-transparent border-primary/50 text-primary', 'hover:bg-primary/10 hover:border-primary hover:text-primary hover:shadow-plasma-sm'],
       },
       size: {
         xs: 'h-6 px-2 text-xs', sm: 'h-8 px-3 text-xs', md: 'h-9 px-4', lg: 'h-11 px-6 text-base',

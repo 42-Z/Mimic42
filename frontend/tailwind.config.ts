@@ -120,6 +120,7 @@ const config: Config = {
         'blink': 'blink 1.2s step-end infinite',
         'slide-in-right': 'slideInRight 0.3s cubic-bezier(0.16, 1, 0.3, 1)',
         'slide-in-up': 'slideInUp 0.3s cubic-bezier(0.16, 1, 0.3, 1)',
+        'dialog-in': 'dialogIn 0.3s cubic-bezier(0.16, 1, 0.3, 1)',
         'fade-in': 'fadeIn 0.2s ease-out',
         'shimmer': 'shimmer 2s linear infinite',
         'scan': 'scan 8s linear infinite',
@@ -138,6 +139,12 @@ const config: Config = {
         slideInUp: {
           '0%': { transform: 'translateY(20px)', opacity: '0' },
           '100%': { transform: 'translateY(0)', opacity: '1' },
+        },
+        // Центрированная панель диалога: кейфреймы обязаны повторять
+        // translate(-50%, -50%), иначе анимация перекрывает центрирование.
+        dialogIn: {
+          '0%': { transform: 'translate(-50%, calc(-50% + 20px))', opacity: '0' },
+          '100%': { transform: 'translate(-50%, -50%)', opacity: '1' },
         },
         fadeIn: {
           '0%': { opacity: '0' },

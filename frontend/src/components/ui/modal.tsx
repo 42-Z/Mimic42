@@ -80,7 +80,7 @@ export function Modal({
           }}
           className={cn(
             'fixed left-1/2 top-1/2 z-50 w-full -translate-x-1/2 -translate-y-1/2',
-            'rounded-sm border border-border bg-card shadow-void-lg animate-slide-in-up',
+            'rounded-sm border border-border bg-card shadow-void-lg animate-dialog-in',
             'focus:outline-none',
             // eslint-disable-next-line security/detect-object-injection -- key is typed size union, not user input
             modalSizes[size],

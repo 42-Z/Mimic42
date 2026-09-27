@@ -76,7 +76,7 @@
       "refersTo": "button-primary",
       "description": "The single primary action per view. Bright plasma fill, dark foreground for AA contrast.",
       "html": "<button class=\"ds-btn-primary\">SAVE CHANGES</button>",
-      "css": ".ds-btn-primary { background: rgb(26 127 255); color: rgb(5 5 14); font-family: 'Syne', system-ui, sans-serif; font-size: 0.875rem; font-weight: 600; padding: 0 16px; height: 40px; border: 1px solid transparent; border-radius: 0.25rem; cursor: pointer; transition: background 150ms cubic-bezier(0.4, 0, 0.2, 1), transform 150ms cubic-bezier(0.4, 0, 0.2, 1), box-shadow 150ms; } .ds-btn-primary:hover { background: rgb(0 98 230); box-shadow: 0 0 10px rgba(26, 127, 255, 0.2); } .ds-btn-primary:focus-visible { outline: none; box-shadow: 0 0 0 2px rgb(5 5 14), 0 0 0 4px rgb(26 127 255); } .ds-btn-primary:active { transform: scale(0.97); } .ds-btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }"
+      "css": ".ds-btn-primary { background: rgb(26 127 255); color: rgb(5 5 14); font-family: 'Syne', system-ui, sans-serif; font-size: 0.875rem; font-weight: 600; padding: 0 16px; height: 40px; border: 1px solid transparent; border-radius: 0.25rem; cursor: pointer; transition: background 150ms cubic-bezier(0.4, 0, 0.2, 1), transform 150ms cubic-bezier(0.4, 0, 0.2, 1), box-shadow 150ms; } .ds-btn-primary:hover { background: rgb(61 155 255); box-shadow: 0 0 10px rgba(26, 127, 255, 0.2); } .ds-btn-primary:focus-visible { outline: none; box-shadow: 0 0 0 2px rgb(5 5 14), 0 0 0 4px rgb(26 127 255); } .ds-btn-primary:active { transform: scale(0.97); } .ds-btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }"
     },
     {
       "name": "Ghost Button",
@@ -92,7 +92,7 @@
       "refersTo": "button-destructive",
       "description": "Irreversible actions (kill session, unbind, delete). Crimson fill, dark foreground.",
       "html": "<button class=\"ds-btn-destructive\">KILL SESSION</button>",
-      "css": ".ds-btn-destructive { background: rgb(244 63 94); color: rgb(5 5 14); font-family: 'Syne', system-ui, sans-serif; font-size: 0.875rem; font-weight: 600; padding: 0 16px; height: 40px; border: 1px solid transparent; border-radius: 0.25rem; cursor: pointer; transition: background 150ms cubic-bezier(0.4, 0, 0.2, 1), box-shadow 150ms, transform 150ms; } .ds-btn-destructive:hover { background: rgb(225 29 72); box-shadow: 0 0 20px rgba(244, 63, 94, 0.3); } .ds-btn-destructive:focus-visible { outline: none; box-shadow: 0 0 0 2px rgb(5 5 14), 0 0 0 4px rgb(244 63 94); } .ds-btn-destructive:active { transform: scale(0.97); }"
+      "css": ".ds-btn-destructive { background: rgb(244 63 94); color: rgb(5 5 14); font-family: 'Syne', system-ui, sans-serif; font-size: 0.875rem; font-weight: 600; padding: 0 16px; height: 40px; border: 1px solid transparent; border-radius: 0.25rem; cursor: pointer; transition: background 150ms cubic-bezier(0.4, 0, 0.2, 1), box-shadow 150ms, transform 150ms; } .ds-btn-destructive:hover { background: rgb(251 113 133); box-shadow: 0 0 20px rgba(244, 63, 94, 0.3); } .ds-btn-destructive:focus-visible { outline: none; box-shadow: 0 0 0 2px rgb(5 5 14), 0 0 0 4px rgb(244 63 94); } .ds-btn-destructive:active { transform: scale(0.97); }"
     },
     {
       "name": "Text Input",

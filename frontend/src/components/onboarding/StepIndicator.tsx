@@ -52,7 +52,14 @@ export function StepIndicator({ currentStep, className }: StepIndicatorProps) {
                 isActive && 'bg-primary border-primary text-primary-foreground shadow-plasma-sm',
                 !isDone && !isActive && 'bg-muted border-border text-muted-foreground',
               )}>
-                {isDone ? <Check className="h-4 w-4" aria-hidden="true" /> : step.short}
+                {isDone ? (
+                  <>
+                    <Check className="h-4 w-4" aria-hidden="true" />
+                    <span className="sr-only">Завершено</span>
+                  </>
+                ) : (
+                  step.short
+                )}
               </div>
               <span className={cn(
                 'font-mono text-[10px] mt-1.5 text-center w-14 sm:w-16 leading-tight',
