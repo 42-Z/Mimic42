@@ -280,7 +280,8 @@ function AgentCard({ agent, details }: { agent: AgentRecord; details?: AgentDeta
         </div>
       </Card>
 
-      {/* Outside the card: its backdrop-blur would trap the fixed modal inside it. */}
+      {/* Вне карточки ради ясности разметки: диалог портируется в document.body (radix),
+          поэтому backdrop-blur и стекинг стеклянной карточки на него не влияют. */}
       <ResetContextDialog
         agentId={agent.agent_id}
         agentName={agent.name}

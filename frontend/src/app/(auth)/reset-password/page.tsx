@@ -86,7 +86,7 @@ export default function ResetPasswordPage() {
 
         <Card padding="none" className="w-full">
           <CardHeader className="pb-4">
-            <CardTitle className="text-2xl font-display normal-case tracking-normal text-foreground">
+            <CardTitle as="h1" className="text-2xl font-display normal-case tracking-normal text-foreground">
               Восстановление пароля
             </CardTitle>
             <p className="text-sm font-mono text-muted-foreground">

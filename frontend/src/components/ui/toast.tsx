@@ -98,8 +98,10 @@ function ToastItem({ toast, onDismiss }: ToastItemProps) {
           ? 'animate-[fadeOut_0.2s_ease-in_forwards]'
           : 'animate-slide-in-right',
       )}
-      role="alert"
-      aria-live="assertive"
+      // role="alert" несёт неявный aria-live="assertive", поэтому для
+      // не-ошибок берём role="status" + polite и не перебиваем речь.
+      role={toast.variant === 'error' ? 'alert' : 'status'}
+      aria-live={toast.variant === 'error' ? 'assertive' : 'polite'}
       aria-atomic="true"
     >
       <span className="shrink-0 font-bold mt-px" aria-hidden="true">
@@ -131,6 +133,7 @@ function ToastContainer({
     <div
       data-testid="toast-container"
       className="fixed bottom-4 right-4 z-[9999] flex flex-col gap-2 pointer-events-none"
+      role="log"
       aria-label="Уведомления"
     >
       {toasts.map((t) => (

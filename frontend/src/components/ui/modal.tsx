@@ -65,7 +65,6 @@ export function Modal({
           ref={contentRef}
           tabIndex={-1}
           aria-modal="true"
-          aria-label={title ? undefined : 'Диалог'}
           onOpenAutoFocus={(event) => {
             // Remember what opened the dialog and move focus onto the panel
             // instead of the first focusable child.
@@ -90,6 +89,12 @@ export function Modal({
         >
           {/* Scan line decoration */}
           <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-primary/50 to-transparent" />
+
+          {/* Диалог всегда имеет заголовок: без видимого title рендерим скрытый,
+              чтобы aria-имя не зависело от запасного aria-label. */}
+          {!title && (
+            <DialogPrimitive.Title className="sr-only">Диалог</DialogPrimitive.Title>
+          )}
 
           {/* Header */}
           {(title || description) && (

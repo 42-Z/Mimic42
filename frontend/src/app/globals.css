@@ -18,7 +18,7 @@
     --popover: 18 18 32;
     --popover-foreground: 224 224 229;
     --primary: 26 127 255;           /* plasma-500 */
-    --primary-foreground: 255 255 255;
+    --primary-foreground: 5 5 14;      /* void-950: тёмный текст на яркой заливке (WCAG AA) */
     --secondary: 37 37 53;           /* void-600 */
     --secondary-foreground: 224 224 229;
     --muted: 26 26 40;               /* void-700 */
@@ -26,9 +26,9 @@
     --accent: 37 37 53;
     --accent-foreground: 224 224 229;
     --destructive: 244 63 94;        /* crimson-500 */
-    --destructive-foreground: 255 255 255;
+    --destructive-foreground: 5 5 14;  /* void-950: тёмный текст на яркой заливке (WCAG AA) */
     --success: 0 224 112;            /* neon-500 */
-    --success-foreground: 255 255 255;
+    --success-foreground: 5 5 14;      /* void-950: тёмный текст на яркой заливке (WCAG AA) */
     --warning: 245 158 11;           /* amber-500 */
     --border: 37 37 53;
     --input: 37 37 53;

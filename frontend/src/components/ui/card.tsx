@@ -7,6 +7,7 @@ import { cn } from '@/lib/utils';
 // Токены схлопнули цветовые различия вариантов (старые void-600/void-700 оба
 // отображаются в border-border), поэтому bordered совпадает с default, но
 // elevated сохраняет shadow-void, а glass остаётся полупрозрачным.
+// Правило padding: внутри Card с CardHeader/CardContent/CardFooter передавай padding="none" — иначе p-6 задвоится.
 interface CardProps extends React.HTMLAttributes<HTMLDivElement> {
   variant?: 'default' | 'bordered' | 'elevated' | 'glass';
   padding?: 'none' | 'sm' | 'md' | 'lg';
@@ -55,9 +56,14 @@ const CardHeader = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDiv
 );
 CardHeader.displayName = 'CardHeader';
 
-const CardTitle = React.forwardRef<HTMLHeadingElement, React.HTMLAttributes<HTMLHeadingElement>>(
-  ({ className, ...props }, ref) => (
-    <h3
+interface CardTitleProps extends React.HTMLAttributes<HTMLHeadingElement> {
+  /** Уровень заголовка: по умолчанию h3, как в shadcn/ui. */
+  as?: 'h1' | 'h2' | 'h3' | 'h4';
+}
+
+const CardTitle = React.forwardRef<HTMLHeadingElement, CardTitleProps>(
+  ({ as: Tag = 'h3', className, ...props }, ref) => (
+    <Tag
       ref={ref}
       className={cn('font-mono text-base font-semibold uppercase tracking-wider text-foreground', className)}
       {...props}
