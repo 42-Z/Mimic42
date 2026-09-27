@@ -69,6 +69,41 @@ async def test_whitespace_only_assistant_content_replaced_by_structured_text(
         assert row.content == "Привет! Рада, что реальный тест идёт гладко 😊"
 
 
+async def test_none_structured_text_stored_as_empty_not_none_literal(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    """text=None не должен превращаться в строку «None» в ленте."""
+    owner_id = clean_slot.persona("twofa").user_id
+    agent_id = await _create_agent(db_session_factory, owner_id)
+    store = DatabaseShortTermMemory(db_session_factory)
+
+    await store.save_messages(
+        agent_id=agent_id,
+        peer="12345",
+        messages=[{"role": "assistant", "content": ""}],
+        raw_user_text="Привет",
+        turn_id="turn-none",
+        structured_response={
+            "text": None,
+            "reply_to": None,
+            "send_any_message": False,
+        },
+    )
+
+    async with db_session_factory() as session:
+        row = await session.scalar(
+            select(AgentMessageModel)
+            .where(AgentMessageModel.agent_id == agent_id)
+            .where(AgentMessageModel.role == "assistant")
+            .order_by(AgentMessageModel.created_at.desc())
+            .limit(1)
+        )
+        assert row is not None
+        assert row.content != "None"
+        assert row.content == ""
+
+
 async def test_whitespace_only_assistant_content_without_structured_skipped(
     db_session_factory: async_sessionmaker[AsyncSession],
     clean_slot: Slot,

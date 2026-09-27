@@ -46,18 +46,22 @@ async def archived_files(uploader: Any, agent_id: str) -> list[str]:
     return [path for path in files if path.startswith(f"{agent_id}/")]
 
 
-async def wait_archived_photo(app: FastAPI, agent_id: str) -> str | None:
+async def wait_archived_photo(app: FastAPI, agent_id: str, previous_paths: set[str]) -> str | None:
     """Ждёт, пока входящее фото мимика окажется в хранилище.
 
     Проверяет само хранилище, а не запись в БД: строка `agent_messages`
     появляется только после полного хода LLM, а архив — сразу при получении.
+    Среди путей берётся только появившийся после отправки: прошлые прогоны
+    могли оставить собственные `photo.jpeg`.
     """
     loop = asyncio.get_running_loop()
     deadline = loop.time() + ARCHIVE_TIMEOUT_SECONDS
     uploader = app.state.media_uploader
     while loop.time() < deadline:
         paths = await archived_files(uploader, agent_id)
-        photos = [path for path in paths if path.endswith("photo.jpeg")]
+        photos = [
+            path for path in paths if path.endswith("photo.jpeg") and path not in previous_paths
+        ]
         if photos:
             return photos[0]
         await asyncio.sleep(2)
@@ -109,6 +113,7 @@ async def test_self_destructing_photo_is_archived_before_telegram_loses_it(
     agent_id, phone = started_mimics[0]
     app, client = real_app
     await checker.import_contact(phone)
+    previous_paths = set(await archived_files(app.state.media_uploader, agent_id))
 
     stream = BytesIO(png((60, 160, 90)))
     stream.name = "verify.png"
@@ -116,7 +121,7 @@ async def test_self_destructing_photo_is_archived_before_telegram_loses_it(
     # Фото действительно самоуничтожающееся — как капча бота верификации.
     assert getattr(getattr(message, "media", None), "ttl_seconds", None) == TTL_SECONDS
 
-    storage_path = await wait_archived_photo(app, agent_id)
+    storage_path = await wait_archived_photo(app, agent_id, previous_paths)
     assert storage_path, "Входящее фото не заархивировалось в Storage"
 
     # Файл пытаются потерять в Telegram — диагноз попадает в лог прогона.

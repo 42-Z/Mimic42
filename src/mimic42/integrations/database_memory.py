@@ -197,9 +197,14 @@ class DatabaseShortTermMemory:
                     # paragraph in the feed, so treat it as empty too.
                     human_text = ""
                     if structured_response is not None:
-                        human_text = structured_response.get("text", "")
-                        if not isinstance(human_text, str):
-                            human_text = str(human_text)
+                        raw_text = structured_response.get("text")
+                        # None — пустой текст: str(None) дал бы «None» в ленте.
+                        if raw_text is None:
+                            human_text = ""
+                        elif not isinstance(raw_text, str):
+                            human_text = str(raw_text)
+                        else:
+                            human_text = raw_text
                         human_text = human_text.strip()
 
                     if content.startswith("Returning structured response:") or not content.strip():
