@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from pathlib import Path
 from typing import Any
@@ -99,3 +100,37 @@ async def test_lifespan_flushes_tracing_before_manager_shutdown(
     assert calls["flush"] == [True]
     assert calls["shutdown"] == [True]
     assert calls["setup"][0] is settings
+
+
+async def test_lifespan_shutdown_survives_flush_cancellation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Отмена на await flush не отменяет shutdown агентов и cleanup.
+
+    flush — первая точка отмены в finally: при остановке приложения снаружи
+    (CancelledError приходит именно на этот await) агенты обязаны остановиться
+    иначе рантаймы останутся висеть в памяти процесса.
+    """
+    calls: dict[str, list[Any]] = {"flush": [], "shutdown": []}
+
+    async def cancelled_flush() -> None:
+        calls["flush"].append(True)
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr("mimic42.api.app.setup_tracing", lambda _settings: None)
+    monkeypatch.setattr("mimic42.api.app.flush_tracing", cancelled_flush)
+
+    class ShutdownRecordingManager(FakeAgentManager):
+        async def shutdown(self) -> None:
+            calls["shutdown"].append(True)
+
+    app = create_app(
+        manager=ShutdownRecordingManager(),
+        settings=Settings(database_connection_string=None),
+    )
+    with pytest.raises(asyncio.CancelledError):
+        async with app.router.lifespan_context(app):
+            pass
+
+    assert calls["flush"] == [True]
+    assert calls["shutdown"] == [True], "cancelled flush must not skip agent shutdown"

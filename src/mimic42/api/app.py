@@ -402,13 +402,17 @@ def create_app(
                     logger.exception(f"[lifespan] Failed to restore running agents: {exc}")
             yield
         finally:
-            await flush_tracing()
-            await _get_agent_manager(app).shutdown()
-            if owned_media_storage is not None:
-                # После остановки агентов: до неё они ещё читают из хранилища картинки.
-                owned_media_storage.close()
-            if database_engine is not None:
-                await database_engine.dispose()
+            # flush не должен отменять остановку агентов и cleanup: отмена
+            # lifespan-таска приходит именно на этот первый await в finally.
+            try:
+                await flush_tracing()
+            finally:
+                await _get_agent_manager(app).shutdown()
+                if owned_media_storage is not None:
+                    # После остановки агентов: до неё они ещё читают из хранилища картинки.
+                    owned_media_storage.close()
+                if database_engine is not None:
+                    await database_engine.dispose()
 
     app = FastAPI(title="Mimic42 API", version="0.1.0", lifespan=lifespan)
     app.add_middleware(

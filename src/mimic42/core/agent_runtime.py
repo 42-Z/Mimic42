@@ -805,7 +805,9 @@ class MimicAgentRuntime:
                 context=turn_context,
             )
         except Exception as e:
-            logger.error(f"Error invoking agent: {e}", exc_info=True)
+            # Traceback у исхода хода логирует _take_turn_inner (Turn ... failed) —
+            # здесь только стадия, чтобы не дублировать стек в двух ERROR-записях.
+            logger.error(f"Error invoking agent: {e}")
             # Keep the incoming message in the transcript even though the
             # turn crashed — the dashboard card must show what was asked.
             # turn.failed itself is recorded by _take_turn_inner with the
@@ -1837,11 +1839,12 @@ class MimicAgentRuntime:
         )
 
     async def _record_incoming_failure(self, peer: str, exc: Exception) -> None:
-        logger.error("Unhandled exception in incoming message handler", exc_info=exc)
         if getattr(exc, "_mimic_turn_failed_recorded", False):
             # _take_turn_inner already recorded turn.failed with the
-            # turn_id — a second row would double the error KPI.
+            # turn_id and logged it — a second row would double the error KPI,
+            # a second ERROR with traceback would only duplicate the log.
             return
+        logger.error("Unhandled exception in incoming message handler", exc_info=exc)
         await self._record_event(
             event_type="turn.failed",
             status="failed",

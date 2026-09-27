@@ -53,7 +53,7 @@ Issue: https://github.com/42-Z/Mimic42/issues/92
 - Зависимость `braintrust` в `pyproject.toml`.
 - `.env.example`: новый блок (комментарий + `BRAINTRUST_API_KEY=` и
   `BRAINTRUST_PROJECT=Mimic42`); README — абзац «Трейсинг»: как включить и проверить.
-- Старт приложения (`main.py`, lifespan): `setup_tracing(settings)` —
+- Старт приложения (lifespan в `src/mimic42/api/app.py`): `setup_tracing(settings)` —
   `braintrust.init_logger(project=settings.braintrust_project, api_key=...)` и
   `set_global_handler(BraintrustCallbackHandler())`. На остановке — best-effort
   `braintrust.flush()`.
@@ -99,7 +99,8 @@ Issue: https://github.com/42-Z/Mimic42/issues/92
   (`turn.completed`, `turn.failed`) кладётся `trace_url`.
 - `src/mimic42/integrations/langchain_agent.py` **не меняется**: колбэки подхватываются
   глобально через `set_global_handler`, `create_agent` и `ainvoke` остаются как есть.
-- `src/mimic42/main.py`: вызов `setup_tracing` на старте, `flush()` на остановке.
+- `src/mimic42/api/app.py` (lifespan): `setup_tracing` на старте, `await flush_tracing()`
+  (async, таймаут 5 с) на остановке.
 
 ### 4. Ошибки и краевые случаи
 

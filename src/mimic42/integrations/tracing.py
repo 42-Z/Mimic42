@@ -64,11 +64,13 @@ async def flush_tracing(timeout: float = 5.0) -> None:
     Зовётся одной строкой ``await`` первой строкой ``finally`` lifespan, до
     остановки агентов. СDK-flush синхронный и таймаута не принимает, поэтому
     идёт в ``asyncio.to_thread`` под ``wait_for``: зависший ``braintrust.flush``
-    отпускает shutdown по ``timeout``, а не вешает его.
+    не задерживает остановку агентов и cleanup — lifespan отпускается по
+    ``timeout``.
 
-    Спаны, завершающиеся позже (например во время ``manager.shutdown()``),
-    добирает atexit-flush SDK при выходе процесса: это осознанная семантика
-    одного flush в lifespan, а не утечка.
+    Сам поток flush при этом продолжает работать: к выходу процесса его ждут
+    join executor-потоков и atexit-flush SDK. Это осознанно — дождаться
+    отправки спанов важнее, чем мгновенно закрыть процесс, и это отдельный
+    контракт от таймаута lifespan.
     """
     if not _enabled:
         return
