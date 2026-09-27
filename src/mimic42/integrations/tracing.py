@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -57,18 +58,24 @@ def setup_tracing(settings: Settings) -> None:
     logger.info("Braintrust tracing enabled (project=%s)", settings.braintrust_project)
 
 
-def flush_tracing() -> None:
+async def flush_tracing(timeout: float = 5.0) -> None:
     """Допрашивает очередь логов при остановке приложения (best-effort).
 
-    Зовётся один раз — первой строкой ``finally`` lifespan, до остановки
-    агентов. Спаны, завершающиеся позже (например во время ``manager.shutdown()``),
+    Зовётся одной строкой ``await`` первой строкой ``finally`` lifespan, до
+    остановки агентов. СDK-flush синхронный и таймаута не принимает, поэтому
+    идёт в ``asyncio.to_thread`` под ``wait_for``: зависший ``braintrust.flush``
+    отпускает shutdown по ``timeout``, а не вешает его.
+
+    Спаны, завершающиеся позже (например во время ``manager.shutdown()``),
     добирает atexit-flush SDK при выходе процесса: это осознанная семантика
     одного flush в lifespan, а не утечка.
     """
     if not _enabled:
         return
     try:
-        braintrust.flush()
+        await asyncio.wait_for(asyncio.to_thread(braintrust.flush), timeout)
+    except TimeoutError:
+        logger.warning("Braintrust flush timed out after %.1fs", timeout)
     except Exception:
         logger.warning("Braintrust flush failed", exc_info=True)
 

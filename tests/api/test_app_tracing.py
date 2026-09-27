@@ -47,7 +47,7 @@ async def test_lifespan_sets_up_and_flushes_tracing(monkeypatch: pytest.MonkeyPa
     def fake_setup(settings: Settings) -> None:
         calls["setup"].append(settings)
 
-    def fake_flush() -> None:
+    async def fake_flush() -> None:
         calls["flush"].append(True)
 
     monkeypatch.setattr("mimic42.api.app.setup_tracing", fake_setup)
@@ -76,7 +76,7 @@ async def test_lifespan_flushes_tracing_before_manager_shutdown(
         calls["setup"].append(settings)
         calls["order"].append("setup")
 
-    def fake_flush() -> None:
+    async def fake_flush() -> None:
         calls["flush"].append(True)
         calls["order"].append("flush")
 

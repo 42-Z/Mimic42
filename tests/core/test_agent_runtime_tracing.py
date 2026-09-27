@@ -84,6 +84,22 @@ class FakeMemoryService:
         return None
 
 
+class BuildFailingMemory(FakeMemoryService):
+    """Сборка контекста падает (например, отказ Mem0)."""
+
+    async def build_messages(
+        self, *, agent_id: UUID, peer: str, user_text: str
+    ) -> list[dict[str, Any]]:
+        raise RuntimeError("memory exploded")
+
+
+class SaveFailingMemory(FakeMemoryService):
+    """Запись хода падает в хвосте, после отправки ответа."""
+
+    async def save_messages(self, **_: Any) -> None:
+        raise RuntimeError("storage exploded")
+
+
 class FakeActivity:
     def __init__(self) -> None:
         self.events: list[dict[str, Any]] = []
@@ -112,6 +128,10 @@ def make_config() -> AgentRuntimeConfig:
     )
 
 
+def _settings(**kwargs: Any) -> Settings:
+    return Settings(_env_file=None, **kwargs)  # ty: ignore[unknown-argument]
+
+
 async def _run_turn(
     monkeypatch: pytest.MonkeyPatch,
     *,
@@ -120,7 +140,11 @@ async def _run_turn(
     spans: list[FakeSpan] | None = None,
     permalink_value: str | None = TRACE_URL,
     telegram_client: FakeTelegramClient | None = None,
+    memory_service: FakeMemoryService | None = None,
+    expect_error: str | None = None,
+    activity: Any | None = None,
 ) -> FakeActivity:
+    """Прогоняет один ход. ``expect_error`` — ход обязан упасть с этим текстом."""
     if tracing_on:
         monkeypatch.setattr(tracing.braintrust, "init_logger", lambda **_: object())
         monkeypatch.setattr(tracing, "set_global_handler", lambda _handler: None)
@@ -133,12 +157,7 @@ async def _run_turn(
             return span
 
         monkeypatch.setattr(tracing.braintrust, "start_span", make_span)
-        tracing.setup_tracing(
-            Settings(
-                _env_file=None,  # ty: ignore[unknown-argument]
-                braintrust_api_key="bt-key",
-            )
-        )
+        tracing.setup_tracing(_settings(braintrust_api_key="bt-key"))
     if telegram_client is None:
         account = FakeTelegramAccount()
         account.authorized = True  # ход должен пройти: сессия уже прошла онбординг
@@ -147,15 +166,15 @@ async def _run_turn(
         config=make_config(),
         telegram_client=telegram_client,
         langchain_agent=FakeLangChainAgent(fail=fail),
-        memory_service=FakeMemoryService(),  # type: ignore[arg-type]
+        memory_service=memory_service or FakeMemoryService(),  # type: ignore[arg-type]
     )
-    activity = FakeActivity()
+    activity = activity or FakeActivity()
     # Тестовый шов вместо БД: события пишутся в список, а поле типизировано
     # как ActivityRecorder — отсюда invalid-assignment у заглушки.
     runtime._activity = activity  # ty: ignore[invalid-assignment]
     await runtime.start()
-    if fail:
-        with pytest.raises(RuntimeError, match="model exploded"):
+    if expect_error is not None:
+        with pytest.raises(RuntimeError, match=expect_error):
             await runtime.trigger_message(AgentTrigger(peer="chat", text="hi"))
     else:
         await runtime.trigger_message(AgentTrigger(peer="chat", text="hi"))
@@ -177,7 +196,7 @@ async def test_turn_completed_event_carries_trace_url(
 
 
 async def test_turn_failed_event_carries_trace_url(monkeypatch: pytest.MonkeyPatch) -> None:
-    activity = await _run_turn(monkeypatch, fail=True)
+    activity = await _run_turn(monkeypatch, fail=True, expect_error="model exploded")
 
     failed = [e for e in activity.events if e["event_type"] == "turn.failed"]
     assert len(failed) == 1
@@ -257,9 +276,84 @@ async def test_turn_failed_omits_trace_url_without_permalink(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     spans: list[FakeSpan] = []
-    activity = await _run_turn(monkeypatch, spans=spans, fail=True, permalink_value=None)
+    activity = await _run_turn(
+        monkeypatch,
+        spans=spans,
+        fail=True,
+        permalink_value=None,
+        expect_error="model exploded",
+    )
 
     assert len(spans) == 1
     failed = [e for e in activity.events if e["event_type"] == "turn.failed"]
     assert len(failed) == 1
     assert "trace_url" not in failed[0]["payload"]
+
+
+async def test_build_messages_failure_records_turn_failed_with_trace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Сбой сборки контекста — ошибка хода с turn_id и ссылкой на трейс (ревью).
+
+    Отказ Mem0 случается до попытки вызвать модель: событие уровня хода должно
+    писаться и здесь, а не только в catch-all без turn_id/trace_url.
+    """
+    activity = await _run_turn(
+        monkeypatch,
+        memory_service=BuildFailingMemory(),  # type: ignore[arg-type]
+        expect_error="memory exploded",
+    )
+
+    failed = [e for e in activity.events if e["event_type"] == "turn.failed"]
+    assert len(failed) == 1
+    assert failed[0]["payload"]["trace_url"] == TRACE_URL
+    assert failed[0]["payload"]["error_code"] == "RuntimeError"
+    assert isinstance(failed[0]["payload"]["turn_id"], str) and failed[0]["payload"]["turn_id"]
+    assert not [e for e in activity.events if e["event_type"] == "turn.completed"]
+
+
+async def test_tail_save_failure_records_turn_failed_with_trace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Сбой записи в хвосте хода: событие уровня хода, turn.completed не пишется."""
+    activity = await _run_turn(
+        monkeypatch,
+        memory_service=SaveFailingMemory(),  # type: ignore[arg-type]
+        expect_error="storage exploded",
+    )
+
+    failed = [e for e in activity.events if e["event_type"] == "turn.failed"]
+    assert len(failed) == 1
+    assert failed[0]["payload"]["trace_url"] == TRACE_URL
+    assert failed[0]["payload"]["error_code"] == "RuntimeError"
+    assert isinstance(failed[0]["payload"]["turn_id"], str) and failed[0]["payload"]["turn_id"]
+    assert not [e for e in activity.events if e["event_type"] == "turn.completed"]
+
+
+class BrokenActivity:
+    """Рекордер ломается только на записи turn.failed — как упавшая БД в момент сбоя хода."""
+
+    def __init__(self) -> None:
+        self.events: list[dict[str, Any]] = []
+
+    async def record(self, **event: Any) -> None:
+        if event["event_type"] == "turn.failed":
+            raise RuntimeError("activity db down")
+        self.events.append(event)
+
+
+async def test_event_recording_failure_does_not_mask_turn_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Сбой записи turn.failed не подменяет исходную ошибку хода.
+
+    Иначе падение БД в момент записи события превращало бы понятный сбой модели
+    в «activity db down» — логи и вызывающий код теряли настоящую причину.
+    """
+    with pytest.raises(RuntimeError, match="model exploded"):
+        await _run_turn(
+            monkeypatch,
+            fail=True,
+            expect_error=None,
+            activity=BrokenActivity(),  # type: ignore[arg-type]
+        )

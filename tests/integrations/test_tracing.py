@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import threading
+import time
 from collections.abc import Iterator
 from typing import Any
 from uuid import uuid4
@@ -106,7 +108,7 @@ def test_setup_tracing_handler_failure_keeps_tracing_enabled(
     assert tracing.tracing_enabled() is True
 
 
-def test_flush_tracing_swallows_flush_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_flush_tracing_swallows_flush_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_braintrust(monkeypatch)
 
     def boom() -> None:
@@ -115,20 +117,49 @@ def test_flush_tracing_swallows_flush_failure(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(tracing.braintrust, "flush", boom)
 
     tracing.setup_tracing(_settings(braintrust_api_key="bt-key"))
-    tracing.flush_tracing()
+    await tracing.flush_tracing()
 
     assert tracing.tracing_enabled() is True
 
 
-def test_flush_tracing_only_when_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_flush_tracing_only_when_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
     fake = _patch_braintrust(monkeypatch)
 
-    tracing.flush_tracing()
+    await tracing.flush_tracing()
     assert fake.flush_calls == 0
 
     tracing.setup_tracing(_settings(braintrust_api_key="bt-key"))
-    tracing.flush_tracing()
+    await tracing.flush_tracing()
     assert fake.flush_calls == 1
+
+
+async def test_flush_tracing_gives_up_after_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Зависший flush() не задерживает остановку: таймаут отпускает lifespan.
+
+    SDK-flush гоняется в ``asyncio.to_thread``, а ``braintrust.flush`` таймаута
+    не принимает — ограничение ставится снаружи, через ``wait_for``.
+    """
+    fake = _patch_braintrust(monkeypatch)
+    release = threading.Event()
+
+    def blocking_flush() -> None:
+        fake.flush_calls += 1
+        # Возвращается только когда тест отпустит поток — до таймаута.
+        release.wait(timeout=5)
+
+    monkeypatch.setattr(tracing.braintrust, "flush", blocking_flush)
+    tracing.setup_tracing(_settings(braintrust_api_key="bt-key"))
+
+    try:
+        started = time.monotonic()
+        await tracing.flush_tracing(timeout=0.05)
+        elapsed = time.monotonic() - started
+    finally:
+        release.set()
+
+    assert elapsed < 2, "flush_tracing must not wait for a hung SDK flush"
+    assert fake.flush_calls == 1
+    assert tracing.tracing_enabled() is True
 
 
 class FakeSpan:

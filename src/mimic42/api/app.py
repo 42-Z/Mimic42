@@ -402,7 +402,7 @@ def create_app(
                     logger.exception(f"[lifespan] Failed to restore running agents: {exc}")
             yield
         finally:
-            flush_tracing()
+            await flush_tracing()
             await _get_agent_manager(app).shutdown()
             if owned_media_storage is not None:
                 # После остановки агентов: до неё они ещё читают из хранилища картинки.
