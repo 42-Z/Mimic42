@@ -62,7 +62,8 @@ Issue: https://github.com/42-Z/Mimic42/issues/92
 
 Каждый ход агента — один trace:
 
-- **Корневой спан `turn`** (type `task`): input — входящее сообщение (`peer`, `text`,
+- **Корневой спан `turn {peer}`** (type `task`, имя — `f"turn {peer}"`): input — входящее
+  сообщение (`peer`, `text`,
   признаки reply/медиа), output — текст ответа агента и `sent` — факт доставки
   (`sent_message is not None`, а не намерение `send_any_message`); `sent: true` означает
   «ответ доставлен целиком»: если первая часть длинного ответа ушла, а вторая упала —
@@ -129,7 +130,7 @@ Issue: https://github.com/42-Z/Mimic42/issues/92
   чистые.
 - Команды: `uv run pytest`, `uv run ruff check .`, `uv run ty check`.
 - Ручная проверка: `BRAINTRUST_API_KEY` в `.env`, один ход агента в Dev, в UI Braintrust
-  виден trace хода (спан `turn`, LLM-спаны, инструменты, токены), ссылка `trace_url` из
+  виден trace хода (спан `turn {peer}`, LLM-спаны, инструменты, токены), ссылка `trace_url` из
   события открывает этот трейс.
 
 ## Вне скоупа

@@ -77,24 +77,24 @@ that cannot be forced to call it answers in plain text and never finishes the tu
 
 ## Tracing (Braintrust)
 
-Трейсинг ходов агента выключен по умолчанию и включается ключом:
+Agent turn tracing is off by default and enabled with a key:
 
 ```bash
-BRAINTRUST_API_KEY=...        # ключ проекта Braintrust
-BRAINTRUST_PROJECT=Mimic42    # Prod и Dev держат разные проекты
+BRAINTRUST_API_KEY=...        # Braintrust project key
+BRAINTRUST_PROJECT=Mimic42    # Prod and Dev keep separate projects
 ```
 
-С ключом каждый ход агента попадает в Braintrust одним trace: корневой спан `turn`
-(входящее сообщение, ответ, `agent_id`, `turn_id`, `peer`, модель) и под ним вызовы
-модели (токены, латентность) и телеграм-инструменты. События `turn.completed` и
-`turn.failed` в дашборде несут `trace_url` — ссылку прямо в трейс.
+With the key, every agent turn lands in Braintrust as a single trace: the root span
+`turn {peer}` (incoming message, reply, `agent_id`, `turn_id`, `peer`, model) with model
+calls (tokens, latency) and Telegram tools nested under it. The `turn.completed` and
+`turn.failed` dashboard events carry `trace_url` — a link straight into the trace.
 
-Без ключа модуль трейсинга — no-op: агент работает как раньше, ничего никуда не
-отправляется. Сбои Braintrust не роняют ход агента.
+Without a key the tracing module is a no-op: the agent works as before and nothing is
+sent anywhere. Braintrust failures never fail an agent turn.
 
-Ручная проверка: положи `BRAINTRUST_API_KEY` в `.env`, запусти агента в Dev, отправь
-ему сообщение и открой проект в UI Braintrust — должен появиться trace хода со спанами
-`turn`, LLM-вызова и инструментов.
+Manual check: put `BRAINTRUST_API_KEY` into `.env`, run the agent in Dev, send it a
+message and open the project in the Braintrust UI — a turn trace should appear with the
+`turn {peer}`, LLM call, and tool spans.
 
 ## Tests
 

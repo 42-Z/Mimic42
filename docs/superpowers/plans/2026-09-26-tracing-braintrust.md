@@ -230,14 +230,14 @@ def test_setup_tracing_init_failure_disables_tracing(monkeypatch: pytest.MonkeyP
     assert tracing.tracing_enabled() is False
 
 
-def test_flush_tracing_only_when_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_flush_tracing_only_when_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
     fake = _patch_braintrust(monkeypatch)
 
-    tracing.flush_tracing()
+    await tracing.flush_tracing()
     assert fake.flush_calls == 0
 
     tracing.setup_tracing(_settings(braintrust_api_key="bt-key"))
-    tracing.flush_tracing()
+    await tracing.flush_tracing()
     assert fake.flush_calls == 1
 ```
 
@@ -310,12 +310,18 @@ def setup_tracing(settings: Settings) -> None:
     logger.info("Braintrust tracing enabled (project=%s)", settings.braintrust_project)
 
 
-def flush_tracing() -> None:
-    """Допрашивает очередь логов при остановке приложения (best-effort)."""
+async def flush_tracing(timeout: float = 5.0) -> None:
+    """Допрашивает очередь логов при остановке приложения (best-effort).
+
+    SDK-flush синхронный и таймаута не принимает, поэтому идёт в
+    ``asyncio.to_thread`` под ``wait_for``: зависший flush отпускает shutdown.
+    """
     if not _enabled:
         return
     try:
-        braintrust.flush()
+        await asyncio.wait_for(asyncio.to_thread(braintrust.flush), timeout)
+    except TimeoutError:
+        logger.warning("Braintrust flush timed out after %.1fs", timeout)
     except Exception:
         logger.warning("Braintrust flush failed", exc_info=True)
 
@@ -715,7 +721,7 @@ async def test_lifespan_sets_up_and_flushes_tracing(monkeypatch: pytest.MonkeyPa
     def fake_setup(settings: Settings) -> None:
         calls["setup"].append(settings)
 
-    def fake_flush() -> None:
+    async def fake_flush() -> None:
         calls["flush"].append(True)
 
     monkeypatch.setattr("mimic42.api.app.setup_tracing", fake_setup)
@@ -752,7 +758,7 @@ from mimic42.integrations.tracing import flush_tracing, setup_tracing
 3. Первой строкой блока `finally:` (перед `await _get_agent_manager(app).shutdown()`):
 
 ```python
-            flush_tracing()
+            await flush_tracing()
 ```
 
 - [x] **Step 4: Запусти тест — он должен пройти**
@@ -1530,7 +1536,7 @@ BRAINTRUST_API_KEY=...        # ключ проекта Braintrust
 BRAINTRUST_PROJECT=Mimic42    # Prod и Dev держат разные проекты
 ```
 
-С ключом каждый ход агента попадает в Braintrust одним trace: корневой спан `turn`
+С ключом каждый ход агента попадает в Braintrust одним trace: корневой спан `turn {peer}`
 (входящее сообщение, ответ, `agent_id`, `turn_id`, `peer`, модель) и под ним вызовы
 модели (токены, латентность) и телеграм-инструменты. События `turn.completed` и
 `turn.failed` в дашборде несут `trace_url` — ссылку прямо в трейс.
