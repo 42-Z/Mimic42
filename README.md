@@ -75,6 +75,27 @@ Nemotron 3.5 Lightning, all through OpenRouter. A catalog model must support too
 required tool choice: the agent's structured reply is returned through a tool call, and a model
 that cannot be forced to call it answers in plain text and never finishes the turn.
 
+## Tracing (Braintrust)
+
+Трейсинг ходов агента выключен по умолчанию и включается ключом:
+
+```bash
+BRAINTRUST_API_KEY=...        # ключ проекта Braintrust
+BRAINTRUST_PROJECT=Mimic42    # Prod и Dev держат разные проекты
+```
+
+С ключом каждый ход агента попадает в Braintrust одним trace: корневой спан `turn`
+(входящее сообщение, ответ, `agent_id`, `turn_id`, `peer`, модель) и под ним вызовы
+модели (токены, латентность) и телеграм-инструменты. События `turn.completed` и
+`turn.failed` в дашборде несут `trace_url` — ссылку прямо в трейс.
+
+Без ключа модуль трейсинга — no-op: агент работает как раньше, ничего никуда не
+отправляется. Сбои Braintrust не роняют ход агента.
+
+Ручная проверка: положи `BRAINTRUST_API_KEY` в `.env`, запусти агента в Dev, отправь
+ему сообщение и открой проект в UI Braintrust — должен появиться trace хода со спанами
+`turn`, LLM-вызова и инструментов.
+
 ## Tests
 
 ```bash

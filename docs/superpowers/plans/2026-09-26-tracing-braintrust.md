@@ -47,7 +47,7 @@
 - Modify: `.env.example`
 - Test: `tests/core/test_config_tracing.py`
 
-- [ ] **Step 1: Добавь зависимость**
+- [x] **Step 1: Добавь зависимость**
 
 Run:
 ```bash
@@ -55,7 +55,7 @@ uv add braintrust
 ```
 Expected: `braintrust` появляется в `[project] dependencies` `pyproject.toml`, `uv.lock` обновлён.
 
-- [ ] **Step 2: Напиши падающий тест**
+- [x] **Step 2: Напиши падающий тест**
 
 Создай `tests/core/test_config_tracing.py`:
 
@@ -88,12 +88,12 @@ def test_braintrust_settings_read_env(monkeypatch: pytest.MonkeyPatch) -> None:
 `_env_file=None` отключает чтение `.env` разработчика: тесты детерминированы даже если в
 `.env` уже лежит рабочий ключ Braintrust.
 
-- [ ] **Step 3: Запусти тест — он должен упасть**
+- [x] **Step 3: Запусти тест — он должен упасть**
 
 Run: `uv run pytest tests/core/test_config_tracing.py -q`
 Expected: FAIL — `AttributeError`/`ValidationError`: полей `braintrust_api_key` нет.
 
-- [ ] **Step 4: Добавь поля в Settings**
+- [x] **Step 4: Добавь поля в Settings**
 
 В `src/mimic42/config.py`, сразу после `telegram_api_hash` (строка 27):
 
@@ -102,12 +102,12 @@ Expected: FAIL — `AttributeError`/`ValidationError`: полей `braintrust_ap
     braintrust_project: str = Field(default="Mimic42", validation_alias="BRAINTRUST_PROJECT")
 ```
 
-- [ ] **Step 5: Запусти тест — он должен пройти**
+- [x] **Step 5: Запусти тест — он должен пройти**
 
 Run: `uv run pytest tests/core/test_config_tracing.py -q`
 Expected: PASS (2 теста).
 
-- [ ] **Step 6: Задокументируй env**
+- [x] **Step 6: Задокументируй env**
 
 В `.env.example`, в блоке переменных бэкенда (после `MEM0_API_KEY` / `OPENROUTER_API_KEY`):
 
@@ -117,7 +117,7 @@ BRAINTRUST_API_KEY=
 BRAINTRUST_PROJECT=Mimic42
 ```
 
-- [ ] **Step 7: Проверь линтеры и закоммить**
+- [x] **Step 7: Проверь линтеры и закоммить**
 
 Run:
 ```bash
@@ -130,13 +130,13 @@ Expected: `All checks passed!` дважды, коммит создан.
 
 ---
 
-### Task 2: `tracing.py` — setup, flush, состояние
+### Task 2: `tracing.py` — setup, flush, состояние ✅ (41853c2 + a700007; spec ✅, quality ✅)
 
 **Files:**
 - Create: `src/mimic42/integrations/tracing.py`
 - Test: `tests/integrations/test_tracing.py`
 
-- [ ] **Step 1: Напиши падающий тест**
+- [x] **Step 1: Напиши падающий тест**
 
 Создай `tests/integrations/test_tracing.py`:
 
@@ -241,12 +241,17 @@ def test_flush_tracing_only_when_enabled(monkeypatch: pytest.MonkeyPatch) -> Non
     assert fake.flush_calls == 1
 ```
 
-- [ ] **Step 2: Запусти тест — он должен упасть**
+В блоке выше — 5 из 7 setup/flush-тестов; ревью (a700007) добавило ещё два:
+`test_setup_tracing_handler_failure_keeps_tracing_enabled` (сбой
+`set_global_handler` не выключает трейсинг) и `test_flush_tracing_swallows_flush_failure`
+(сбой `flush()` не поднимается наружу).
+
+- [x] **Step 2: Запусти тест — он должен упасть**
 
 Run: `uv run pytest tests/integrations/test_tracing.py -q`
 Expected: FAIL — `ModuleNotFoundError: No module named 'mimic42.integrations.tracing'`.
 
-- [ ] **Step 3: Создай модуль**
+- [x] **Step 3: Создай модуль**
 
 Создай `src/mimic42/integrations/tracing.py`:
 
@@ -326,12 +331,12 @@ def reset_tracing() -> None:
     _environment = None
 ```
 
-- [ ] **Step 4: Запусти тест — он должен пройти**
+- [x] **Step 4: Запусти тест — он должен пройти**
 
 Run: `uv run pytest tests/integrations/test_tracing.py -q`
 Expected: PASS (5 тестов).
 
-- [ ] **Step 5: Проверь линтеры и закоммить**
+- [x] **Step 5: Проверь линтеры и закоммить**
 
 Run:
 ```bash
@@ -350,7 +355,7 @@ Expected: `All checks passed!` дважды, коммит создан.
 - Modify: `src/mimic42/integrations/tracing.py`
 - Test: `tests/integrations/test_tracing.py` (добавить)
 
-- [ ] **Step 1: Напиши падающий тест**
+- [x] **Step 1: Напиши падающий тест**
 
 Добавь в `tests/integrations/test_tracing.py`:
 
@@ -541,14 +546,14 @@ def test_turn_span_does_not_construct_settings(monkeypatch: pytest.MonkeyPatch) 
 
 Тесты закрепляют current-контракт спана: `set_current` вызывается ровно один раз, `unset_current` — строго до `end`, и на обычном пути (`test_turn_span_logs_input_metadata_and_output`), и на error-путях (`test_turn_span_records_error_and_reraises`, `test_turn_span_records_base_exception_error`). Без этих проверок `turn_span` снова может «забыть» сделать спан current (контекст ставит только `Span.__enter__`/`set_current`, а не `set_current=True` у `start_span`) или не закрыть его.
 
-В блоке выше — 8 из 10 тестов `turn_span`; при реализации добавлены ещё два: `test_turn_span_is_current_span_for_real_braintrust_machinery` (интеграционный: настоящая span-context машинерия SDK, без сети) и `test_turn_span_set_current_base_exception_still_closes_span` (ревью-фикс: `BaseException` внутри `set_current` не оставляет спан незакрытым).
+В блоке выше — 8 из 11 тестов `turn_span`; при реализации и ревью добавлены ещё три: `test_turn_span_is_current_span_for_real_braintrust_machinery` (интеграционный: настоящая span-context машинерия SDK, без сети), `test_turn_span_set_current_base_exception_still_closes_span` (ревью-фикс: `BaseException` внутри `set_current` не оставляет спан незакрытым) и `test_turn_span_unset_current_base_exception_still_ends_span` (то же для `unset_current`: `end()` вызывается и после сбоя снятия current).
 
-- [ ] **Step 2: Запусти тест — он должен упасть**
+- [x] **Step 2: Запусти тест — он должен упасть**
 
 Run: `uv run pytest tests/integrations/test_tracing.py -q`
 Expected: FAIL — `AttributeError: module 'mimic42.integrations.tracing' has no attribute 'turn_span'`.
 
-- [ ] **Step 3: Реализуй `turn_span` и `TurnTrace`**
+- [x] **Step 3: Реализуй `turn_span` и `TurnTrace`**
 
 В `src/mimic42/integrations/tracing.py` добавь новые импорты:
 
@@ -665,12 +670,12 @@ def turn_span(
 - `environment` берётся из `_environment`, закэшированного в `setup_tracing`
   (Task 2): в ходе `Settings()` не конструируется.
 
-- [ ] **Step 4: Запусти тест — он должен пройти**
+- [x] **Step 4: Запусти тест — он должен пройти**
 
 Run: `uv run pytest tests/integrations/test_tracing.py -q`
-Expected: PASS — все тесты файла зелёные (10 тестов `turn_span`, включая проверки `set_current`/`unset_current`).
+Expected: PASS — все тесты файла зелёные (11 тестов `turn_span`, включая проверки `set_current`/`unset_current`).
 
-- [ ] **Step 5: Проверь линтеры и закоммить**
+- [x] **Step 5: Проверь линтеры и закоммить**
 
 Run:
 ```bash
@@ -689,7 +694,7 @@ Expected: `All checks passed!` дважды, коммит создан.
 - Modify: `src/mimic42/api/app.py`
 - Test: `tests/api/test_app_tracing.py`
 
-- [ ] **Step 1: Напиши падающий тест**
+- [x] **Step 1: Напиши падающий тест**
 
 Создай `tests/api/test_app_tracing.py`:
 
@@ -724,12 +729,12 @@ async def test_lifespan_sets_up_and_flushes_tracing(monkeypatch: pytest.MonkeyPa
     assert calls["flush"] == [True]
 ```
 
-- [ ] **Step 2: Запусти тест — он должен упасть**
+- [x] **Step 2: Запусти тест — он должен упасть**
 
 Run: `uv run pytest tests/api/test_app_tracing.py -q`
 Expected: FAIL — `AttributeError: <module 'mimic42.api.app'> has no attribute 'setup_tracing'`.
 
-- [ ] **Step 3: Подключи модуль к lifespan**
+- [x] **Step 3: Подключи модуль к lifespan**
 
 В `src/mimic42/api/app.py`:
 1. Добавь импорт к остальным импортам mimic42:
@@ -750,17 +755,17 @@ from mimic42.integrations.tracing import flush_tracing, setup_tracing
             flush_tracing()
 ```
 
-- [ ] **Step 4: Запусти тест — он должен пройти**
+- [x] **Step 4: Запусти тест — он должен пройти**
 
 Run: `uv run pytest tests/api/test_app_tracing.py -q`
 Expected: PASS.
 
-- [ ] **Step 5: Убедись, что соседние слои не сломаны**
+- [x] **Step 5: Убедись, что соседние слои не сломаны**
 
 Run: `uv run pytest tests/api -q`
 Expected: PASS (все тесты api-слоя).
 
-- [ ] **Step 6: Проверь линтеры и закоммить**
+- [x] **Step 6: Проверь линтеры и закоммить**
 
 Run:
 ```bash
@@ -773,13 +778,13 @@ Expected: `All checks passed!` дважды, коммит создан.
 
 ---
 
-### Task 5: Корневой спан в `_take_turn`, событие `turn.completed`, `trace_url`
+### Task 5: Корневой спан в `_take_turn`, событие `turn.completed`, `trace_url` ✅ (aea27b3 + 8ebb906; spec ✅, quality ✅)
 
 **Files:**
 - Modify: `src/mimic42/core/agent_runtime.py`
 - Test: `tests/core/test_agent_runtime_tracing.py`
 
-- [ ] **Step 1: Напиши падающий тест**
+- [x] **Step 1: Напиши падающий тест**
 
 Создай `tests/core/test_agent_runtime_tracing.py`:
 
@@ -920,20 +925,25 @@ async def _run_turn(
 
         monkeypatch.setattr(tracing.braintrust, "start_span", make_span)
         tracing.setup_tracing(
-            Settings(_env_file=None, braintrust_api_key="bt-key")
+            Settings(
+                _env_file=None,  # ty: ignore[unknown-argument]
+                braintrust_api_key="bt-key",
+            )
         )
     if telegram_client is None:
         account = FakeTelegramAccount()
-        account.authorized = True
+        account.authorized = True  # ход должен пройти: сессия уже прошла онбординг
         telegram_client = FakeTelegramClient(account)
     runtime = MimicAgentRuntime(
         config=make_config(),
         telegram_client=telegram_client,
         langchain_agent=FakeLangChainAgent(fail=fail),
-        memory_service=FakeMemoryService(),  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
+        memory_service=FakeMemoryService(),  # type: ignore[arg-type]
     )
     activity = FakeActivity()
-    runtime._activity = activity  # ty: ignore[unresolved-attribute]
+    # Тестовый шов вместо БД: события пишутся в список, а поле типизировано
+    # как ActivityRecorder — отсюда invalid-assignment у заглушки.
+    runtime._activity = activity  # ty: ignore[invalid-assignment]
     await runtime.start()
     if fail:
         with pytest.raises(RuntimeError, match="model exploded"):
@@ -992,10 +1002,9 @@ async def test_turn_span_output_reports_failed_delivery(
 ) -> None:
     """Сбой доставки: спан не должен врать про отправку (issue #92, ревью)."""
     spans: list[FakeSpan] = []
-    activity = await _run_turn(
-        monkeypatch, spans=spans, telegram_client=FailingSendClient()
-    )
+    activity = await _run_turn(monkeypatch, spans=spans, telegram_client=FailingSendClient())
 
+    assert len(spans) == 1
     # Мы на отлаживаемом пути: доставка упала и видна в ленте событий.
     assert any(e["event_type"] == "message.send_failed" for e in activity.events)
     output_events = [e for e in spans[0].events if "output" in e]
@@ -1047,7 +1056,7 @@ async def test_turn_failed_omits_trace_url_without_permalink(
     assert "trace_url" not in failed[0]["payload"]
 ```
 
-- [ ] **Step 2: Запусти тест — он должен упасть**
+- [x] **Step 2: Запусти тест — он должен упасть**
 
 Run: `uv run pytest tests/core/test_agent_runtime_tracing.py -q`
 Expected: FAIL — `AssertionError: ход должен записать событие уровня turn` (события
@@ -1060,7 +1069,7 @@ Expected: FAIL — `AssertionError: ход должен записать соб�
 молча теряет output) и два теста на ветку `permalink() -> None` (гарды
 `if trace_url:` в payload событий).
 
-- [ ] **Step 3: Оберни ход в `turn_span`**
+- [x] **Step 3: Оберни ход в `turn_span`**
 
 В `src/mimic42/core/agent_runtime.py`:
 
@@ -1119,7 +1128,7 @@ from mimic42.integrations.tracing import TurnTrace, turn_span
             )
 ```
 
-- [ ] **Step 4: Прокинь `trace_url` в `turn.failed`**
+- [x] **Step 4: Прокинь `trace_url` в `turn.failed`**
 
 В `_take_turn_inner` блок `except Exception as e:` (тот, что пишет `turn.failed`) замени на:
 
@@ -1144,7 +1153,7 @@ from mimic42.integrations.tracing import TurnTrace, turn_span
             )
 ```
 
-- [ ] **Step 5: Запиши `turn.completed` перед возвратом результата**
+- [x] **Step 5: Запиши `turn.completed` перед возвратом результата**
 
 В конце `_take_turn_inner`, перед `return AgentTriggerResult(`:
 
@@ -1174,17 +1183,17 @@ from mimic42.integrations.tracing import TurnTrace, turn_span
 спан обязан сообщать `{"sent": false}`, чтобы не противоречить
 `AgentTriggerResult.telegram_message_id is None`.
 
-- [ ] **Step 6: Запусти тест — он должен пройти**
+- [x] **Step 6: Запусти тест — он должен пройти**
 
 Run: `uv run pytest tests/core/test_agent_runtime_tracing.py -q`
 Expected: PASS (7 тестов).
 
-- [ ] **Step 7: Убедись, что рантайм не сломан**
+- [x] **Step 7: Убедись, что рантайм не сломан**
 
 Run: `uv run pytest tests/core tests/integrations tests/testing -q`
 Expected: PASS (все существующие тесты).
 
-- [ ] **Step 8: Проверь линтеры и закоммить**
+- [x] **Step 8: Проверь линтеры и закоммить**
 
 Run:
 ```bash
@@ -1197,7 +1206,7 @@ Expected: `All checks passed!` дважды, коммит создан.
 
 ---
 
-### Task 6: Фронтенд — событие `turn.completed` и ссылка «Трейс»
+### Task 6: Фронтенд — событие `turn.completed` и ссылка «Трейс» ✅ (52815af + c40234f; spec ✅, quality ✅)
 
 Перед правкой UI загрузи скилл `impeccable` (AGENTS.md требует его для всего
 фронтенда) и держись существующих паттернов `ActionRow`.
@@ -1206,9 +1215,9 @@ Expected: `All checks passed!` дважды, коммит создан.
 - Modify: `frontend/src/lib/activity/eventCatalog.ts`
 - Modify: `frontend/src/lib/activity/normalize.ts`
 - Modify: `frontend/src/components/activity/ActionRow.tsx`
-- Test: `frontend/src/__tests__/activity-trace-link.test.ts`, `frontend/src/__tests__/action-row-trace-link.test.tsx`
+- Test: `frontend/src/__tests__/activity-trace-link.test.ts`, `frontend/src/__tests__/action-row-trace-link.test.tsx`, `frontend/src/__tests__/turn-card-trace-link.test.tsx`
 
-- [ ] **Step 1: Напиши падающие тесты**
+- [x] **Step 1: Напиши падающие тесты**
 
 Создай `frontend/src/__tests__/activity-trace-link.test.ts`:
 
@@ -1244,13 +1253,63 @@ describe('trace links', () => {
       ],
     );
 
-    expect(item.actions[0]?.traceUrl).toBe('https://braintrust.dev/app/p/mimic42/t/turn-1');
+    expect(item?.actions[0]?.traceUrl).toBe('https://braintrust.dev/app/p/mimic42/t/turn-1');
   });
 
   test('actions without trace_url have traceUrl null', () => {
     const [item] = buildActivityFeed([], [evt({ payload: { turn_id: 't1', peer: '123' } })]);
 
-    expect(item.actions[0]?.traceUrl).toBeNull();
+    expect(item?.actions[0]?.traceUrl).toBeNull();
+  });
+
+  test('trace_url не http(s) и пустые значения отбрасываются', () => {
+    for (const trace_url of ['javascript:alert(1)', 'data:text/html,x', '   ', '']) {
+      const [item] = buildActivityFeed(
+        [],
+        [evt({ payload: { turn_id: 't1', peer: '123', trace_url } })],
+      );
+
+      expect(item?.actions[0]?.traceUrl).toBeNull();
+    }
+  });
+
+  test('http:// тоже принимается, пробелы по краям срезаются', () => {
+    const [item] = buildActivityFeed(
+      [],
+      [
+        evt({
+          payload: {
+            turn_id: 't1',
+            peer: '123',
+            trace_url: '  http://braintrust.local/t/turn-1  ',
+          },
+        }),
+      ],
+    );
+
+    expect(item?.actions[0]?.traceUrl).toBe('http://braintrust.local/t/turn-1');
+  });
+
+  test('turn.failed несёт и hint, и trace_url', () => {
+    const [item] = buildActivityFeed(
+      [],
+      [
+        evt({
+          event_type: 'turn.failed',
+          status: 'failed',
+          error: 'boom',
+          payload: {
+            turn_id: 't1',
+            peer: '123',
+            error_code: 'SessionRevokedError',
+            trace_url: 'https://braintrust.dev/app/p/mimic42/t/turn-1',
+          },
+        }),
+      ],
+    );
+
+    expect(item?.actions[0]?.hint).toBe('Сессия отозвана, требуется переподключение');
+    expect(item?.actions[0]?.traceUrl).toBe('https://braintrust.dev/app/p/mimic42/t/turn-1');
   });
 });
 ```
@@ -1263,7 +1322,7 @@ import { render, screen } from '@testing-library/react';
 import { ActionRow } from '@/components/activity/ActionRow';
 import type { ActivityAction } from '@/lib/activity/normalize';
 
-const action = (over: Partial<ActivityAction>): ActivityAction => ({
+const action = (over: Partial<ActivityAction> = {}): ActivityAction => ({
   id: 'a1',
   eventType: 'turn.completed',
   status: 'succeeded',
@@ -1296,24 +1355,66 @@ describe('ActionRow trace link', () => {
 
     expect(screen.queryByRole('link')).toBeNull();
   });
+
+  test('у failed-строки видны и hint, и ссылка «Трейс»', () => {
+    render(
+      <ActionRow
+        action={action({
+          eventType: 'turn.failed',
+          status: 'failed',
+          label: 'Ход завершился ошибкой',
+          hint: 'Сессия отозвана, требуется переподключение',
+          traceUrl: 'https://braintrust.dev/app/p/mimic42/t/turn-1',
+        })}
+      />,
+    );
+
+    const hint = screen.getByText('Сессия отозвана, требуется переподключение');
+    expect(hint).toBeTruthy();
+    expect(screen.getByRole('link', { name: /Трейс/ })).toBeTruthy();
+    // У строк без раскрытия hint виден и на узких экранах — раскрыть их нельзя.
+    expect(hint.className).not.toContain('hidden');
+  });
+
+  test('ссылка «Трейс» объявляет новую вкладку скринридеру', () => {
+    render(
+      <ActionRow action={action({ traceUrl: 'https://braintrust.dev/app/p/mimic42/t/turn-1' })} />,
+    );
+
+    const link = screen.getByRole('link', { name: /Трейс/ });
+    expect(link.textContent).toContain('откроется в новой вкладке');
+  });
 });
 ```
 
-- [ ] **Step 2: Запусти тесты — они должны упасть**
+В ревью добавлен и третий, интеграционный файл — `frontend/src/__tests__/turn-card-trace-link.test.tsx`
+(5 тестов в `TurnCard`): ссылка «Трейс» не живёт внутри `<button>`
+(`link.closest('button') === null`), листовые строки со ссылкой не получают кнопку
+раскрытия, тул-строки с args по-прежнему раскрываются, у строки с сырым JSON нет
+тупика «Детали недоступны», тул-строка со ссылкой тоже остаётся листовой. И в
+`activity-trace-link.test.ts` есть проверки валидации `urlOf`: `javascript:` / `data:` /
+пустые значения отбрасываются в `null`, `http(s)` принимается со срезанием пробелов.
 
-Run: `cd frontend && bun test src/__tests__/activity-trace-link.test.ts src/__tests__/action-row-trace-link.test.tsx`
+- [x] **Step 2: Запусти тесты — они должны упасть**
+
+Run: `cd frontend && bun test src/__tests__/activity-trace-link.test.ts src/__tests__/action-row-trace-link.test.tsx src/__tests__/turn-card-trace-link.test.tsx`
 Expected: FAIL — `traceUrl` не существует в `ActivityAction`, `getEventMeta('turn.completed')` возвращает `null`, ссылки нет.
 
-- [ ] **Step 3: Добавь событие в каталог**
+- [x] **Step 3: Добавь событие в каталог**
 
-В `frontend/src/lib/activity/eventCatalog.ts` добавь импорт `CheckCircle2` в список
+В `frontend/src/lib/activity/eventCatalog.ts` добавь импорт `Flag` в список
 импортов `lucide-react` и строку в `EVENT_CATALOG` (после `'turn.failed'`):
 
 ```typescript
-  'turn.completed': { ru: 'Ход завершён', icon: CheckCircle2 },
+  // Finish flag, not a check: ActionRow already ends every line with the
+  // CheckCircle2 status icon — one glyph twice in the busiest feed row.
+  'turn.completed': { ru: 'Ход завершён', icon: Flag },
 ```
 
-- [ ] **Step 4: Прокинь `traceUrl` в `ActivityAction`**
+Глиф — `Flag`, а не `CheckCircle2`: строка ActionRow уже заканчивается статусной
+галочкой, вторая галочка дублировала её в самой нагруженной строке ленты.
+
+- [x] **Step 4: Прокинь `traceUrl` в `ActivityAction`**
 
 В `frontend/src/lib/activity/normalize.ts`:
 
@@ -1323,15 +1424,33 @@ Expected: FAIL — `traceUrl` не существует в `ActivityAction`, `ge
   traceUrl: string | null;
 ```
 
-2. В функции `toAction` вычисли значение (после `const payload = event.payload ?? null;`):
+2. Добавь хелпер валидации рядом с `turnIdOf` — значение попадает прямо в `href` в
+   мультиарендном дашборде, поэтому схема проверяется в одной точке:
 
 ```typescript
-  const traceUrl = typeof payload?.trace_url === 'string' ? (payload.trace_url as string) : null;
+/**
+ * Non-empty http(s) URL out of a raw payload value — anything else (empty
+ * strings, whitespace, `javascript:` and friends) becomes null. The value is
+ * rendered straight into `href` in a multi-tenant dashboard, so the scheme
+ * check is the single validation point.
+ */
+function urlOf(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const url = value.trim();
+  if (!url) return null;
+  return /^https?:\/\//i.test(url) ? url : null;
+}
+```
+
+3. В функции `toAction` вычисли значение (после `const payload = event.payload ?? null;`):
+
+```typescript
+  const traceUrl = urlOf(payload?.trace_url);
 ```
 
 и добавь `traceUrl,` в возвращаемый объект (после `completedAt`).
 
-- [ ] **Step 5: Нарисуй ссылку в `ActionRow`**
+- [x] **Step 5: Нарисуй ссылку в `ActionRow`**
 
 В `frontend/src/components/activity/ActionRow.tsx`:
 
@@ -1347,25 +1466,33 @@ Expected: FAIL — `traceUrl` не существует в `ActivityAction`, `ge
           className="shrink-0 inline-flex items-center gap-1 text-[11px] text-plasma-400 hover:text-plasma-300 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-plasma-500 rounded-[2px]"
         >
           Трейс
-          <ExternalLink className="h-3 w-3" />
+          <span className="sr-only">(откроется в новой вкладке)</span>
+          <ExternalLink aria-hidden="true" className="h-3 w-3" />
         </a>
       )}
 ```
 
-- [ ] **Step 6: Запусти тесты — они должны пройти**
+Инвариант: строка с `traceUrl` рендерится **без кнопки раскрытия** — `<a>` не может
+жить внутри `<button>` (nested-interactive). Это держит `isExpandableAction` в
+`ActionRow.tsx`: `if (action.traceUrl) return false`, на неё опираются и `ActionRow`,
+и `ToolEntry` в `TurnCard.tsx`. Корневой тег строки — `span` (она же живёт внутри
+кнопки раскрытия у тул-строк, content model кнопки допускает только phrasing
+content), так что ссылка — валидный флекс-ребёнок строки.
 
-Run: `cd frontend && bun test src/__tests__/activity-trace-link.test.ts src/__tests__/action-row-trace-link.test.tsx`
-Expected: PASS (5 тестов).
+- [x] **Step 6: Запусти тесты — они должны пройти**
 
-- [ ] **Step 7: Прогони весь фронтенд**
+Run: `cd frontend && bun test src/__tests__/activity-trace-link.test.ts src/__tests__/action-row-trace-link.test.tsx src/__tests__/turn-card-trace-link.test.tsx`
+Expected: PASS (15 тестов: 6 + 4 + 5).
+
+- [x] **Step 7: Прогони весь фронтенд**
 
 Run:
 ```bash
 cd frontend && bunx tsc --noEmit && bun test
 ```
-Expected: `tsc` без ошибок, все тесты PASS.
+Expected: `tsc` без ошибок, `188 passed`.
 
-- [ ] **Step 8: Закоммить**
+- [x] **Step 8: Закоммить**
 
 Run:
 ```bash
@@ -1377,16 +1504,21 @@ git commit -m "feat(frontend): link Braintrust traces in activity feed (issue #9
 ```
 Expected: коммит создан.
 
+Ревью-фикс этого же таска (c40234f) доправил `TurnCard.tsx` (раскрытие строк) и
+`ActivityDetails.tsx` и добавил `turn-card-trace-link.test.tsx`: ссылка «Трейс» не
+попадает внутрь кнопки раскрытия, `urlOf` валидирует `trace_url` (см. Step 4–5).
+
 ---
 
-### Task 7: README и финальная проверка
+### Task 7: README и финальная проверка ✅ (docs: Braintrust tracing README and doc sync (issue #92); spec ✅, quality ✅)
 
 **Files:**
 - Modify: `README.md`
 
-- [ ] **Step 1: Добавь раздел в README**
+- [x] **Step 1: Добавь раздел в README**
 
-В `README.md` после раздела про переменные окружения (после блока с `SECRET_KEY`):
+В `README.md` после раздела про переменные окружения (после блока с `SECRET_KEY` и
+относящегося к нему абзаца про каталог моделей, перед `## Tests`):
 
 ```markdown
 ## Tracing (Braintrust)
@@ -1411,23 +1543,24 @@ BRAINTRUST_PROJECT=Mimic42    # Prod и Dev держат разные проек
 `turn`, LLM-вызова и инструментов.
 ```
 
-- [ ] **Step 2: Финальный прогон бэкенда**
+- [x] **Step 2: Финальный прогон бэкенда**
 
 Run:
 ```bash
 uv run pytest -q
+uv run ruff format --check .
 uv run ruff check .
 uv run ty check
 ```
-Expected: `379 + новые тесты passed`, `All checks passed!` дважды.
+Expected: `415 passed, 147 deselected`, ruff (format + check) и ty чистые.
 
-- [ ] **Step 3: Финальный прогон фронтенда**
+- [x] **Step 3: Финальный прогон фронтенда**
 
 Run:
 ```bash
-cd frontend && bunx tsc --noEmit && bun test
+cd frontend && bunx tsc --noEmit && bun test && bunx next lint
 ```
-Expected: без ошибок, все тесты PASS.
+Expected: `tsc` без ошибок, `188 passed`, `next lint` без ошибок.
 
 - [ ] **Step 4: Ручная живая проверка (если есть ключ)**
 
@@ -1445,8 +1578,9 @@ Expected: trace виден, ссылка работает. Если ключа �
 
 Run:
 ```bash
-git add README.md
-git commit -m "docs: Braintrust tracing section in README (issue #92)"
+git add README.md docs/superpowers/plans/2026-09-26-tracing-braintrust.md \
+  docs/superpowers/specs/2026-09-26-tracing-braintrust-design.md
+git commit -m "docs: Braintrust tracing README and doc sync (issue #92)"
 git push -u origin feat/issue-92-tracing
 ```
 Expected: ветка запушена.
