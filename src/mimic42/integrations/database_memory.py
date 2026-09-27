@@ -192,13 +192,20 @@ class DatabaseShortTermMemory:
                 # ── Clean assistant content ──────────────────────────────────────
                 if role == "assistant":
                     # Structured output often leaves content empty or dumps the
-                    # raw repr.  Prefer the human-readable text.
+                    # raw repr.  Prefer the human-readable text.  Content can be
+                    # whitespace-only ("\n") — truthy, but renders as an empty
+                    # paragraph in the feed, so treat it as empty too.
                     human_text = ""
                     if structured_response is not None:
                         human_text = structured_response.get("text", "")
+                        if not isinstance(human_text, str):
+                            human_text = str(human_text)
+                        human_text = human_text.strip()
 
-                    if content.startswith("Returning structured response:") or not content:
+                    if content.startswith("Returning structured response:") or not content.strip():
                         content = human_text
+                    else:
+                        content = content.strip()
 
                     # If this is an intermediate AIMessage that only contains
                     # tool_calls with no human-readable text, skip it entirely.
