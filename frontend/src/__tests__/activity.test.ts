@@ -128,6 +128,22 @@ describe('buildActivityFeed', () => {
     expect(items[0]?.response?.content).toBe('Привет!');
   });
 
+  test('whitespace-only response content falls back to structured text', () => {
+    const items = buildActivityFeed(
+      [
+        msg({
+          id: 's1',
+          role: 'assistant',
+          direction: 'agent_response',
+          content: '\n',
+          payload: { turn_id: 't1', structured_response: { text: 'Привет!' } },
+        }),
+      ],
+      [],
+    );
+    expect(items[0]?.response?.content).toBe('Привет!');
+  });
+
   test('falls back to a successful send_text_message tool call', () => {
     const items = buildActivityFeed(
       [msg({ id: 'in', payload: { turn_id: 't2' } })],
