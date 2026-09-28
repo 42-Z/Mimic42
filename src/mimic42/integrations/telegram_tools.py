@@ -157,6 +157,15 @@ def _tool_failure_list(exc: Exception) -> list[dict[str, Any]]:
     return [_tool_failure(exc)]
 
 
+def _safe_failure(exc: Exception, message: str) -> dict[str, Any]:
+    """_tool_failure с безопасным текстом: результат целиком попадает в
+    ToolMessage.content, который читает модель, — сырые ошибки Telegram
+    («caused by GetFileRequest» и т.п.) ей показывать нельзя."""
+    failure = _tool_failure(exc)
+    failure["error"] = message
+    return failure
+
+
 def parse_media_id(media_id: str) -> tuple[str, int, int, bytes, int]:
     """Parse media ID in format type:id:access_hash:file_reference_hex:dc_id."""
     parts = media_id.split(":")
@@ -866,7 +875,17 @@ class TelegramToolbox:
             else:
                 data = await self._download_by_media_id(media_id, media_obj, file=bytes)
             if not data:
-                return [{"type": "text", "text": "Не удалось скачать медиа."}]
+                # Пустой файл — это отказ, а не успех: лента активности
+                # читает success, а не текст.
+                return [
+                    {
+                        "type": "text",
+                        "text": "Не удалось скачать медиа.",
+                        "success": False,
+                        "error": "Не удалось скачать медиа.",
+                        "error_code": "MediaEmptyError",
+                    }
+                ]
 
             base64_str = base64.b64encode(data).decode("utf-8")
 
@@ -915,13 +934,11 @@ class TelegramToolbox:
             # Сырые ошибки Telegram («caused by GetFileRequest» и т.п.) не
             # уходят ни в текст, ни в поле error: результат целиком попадает
             # в ToolMessage.content, который читает модель.
-            failure = _tool_failure(e)
-            failure["error"] = "Не удалось открыть изображение."
             return [
                 {
                     "type": "text",
                     "text": f"Не удалось открыть изображение ({type(e).__name__})",
-                    **failure,
+                    **_safe_failure(e, "Не удалось открыть изображение."),
                 }
             ]
 
@@ -968,8 +985,10 @@ class TelegramToolbox:
             uploaded_file = await self._client.upload_file(photo_bytes)
             await self._client(functions.photos.UploadProfilePhotoRequest(file=uploaded_file))
             return {"success": True}
-        except Exception as e:
+        except MediaUnavailableError as e:
             return _tool_failure(e)
+        except Exception as e:
+            return _safe_failure(e, "Не удалось поставить фото профиля.")
 
     async def send_voice_note(
         self,
@@ -2197,8 +2216,10 @@ class TelegramToolbox:
                 data, f"audio.{ext}", mime_type
             )
             return {"success": True, "transcription": text}
-        except Exception as e:
+        except MediaUnavailableError as e:
             return _tool_failure(e)
+        except Exception as e:
+            return _safe_failure(e, "Не удалось расшифровать голосовое сообщение.")
 
     async def read_document_file(self, media_id: str) -> dict[str, Any]:
         """Read and extract contents from a document/file programmatically (docx, xlsx, txt)."""
@@ -2282,8 +2303,10 @@ class TelegramToolbox:
                             "success": False,
                             "error": "Не удалось декодировать текстовый файл.",
                         }
-        except Exception as e:
+        except MediaUnavailableError as e:
             return _tool_failure(e)
+        except Exception as e:
+            return _safe_failure(e, "Не удалось прочитать документ.")
 
     def _extract_docx(self, file_bytes: bytes) -> str:
         import io

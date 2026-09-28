@@ -711,6 +711,48 @@ async def test_view_image_hides_raw_telegram_errors_from_the_model() -> None:
     assert "GetFileRequest" not in result[0]["error"]
 
 
+class RawErrorMediaClient(FakeTelethonClient):
+    """Скачивание падает с сырым текстом ошибки Telegram."""
+
+    async def download_media(self, message: Any, file: Any = None, **kwargs: Any) -> Any:
+        raise RuntimeError("The file reference has expired (caused by GetFileRequest)")
+
+
+@pytest.mark.asyncio
+async def test_media_tools_hide_raw_telegram_errors_from_the_model() -> None:
+    """Соседние медиа-тулзы тоже не отдают модели сырой текст исключения."""
+    toolbox = TelegramToolbox(RawErrorMediaClient())
+
+    results = [
+        await toolbox.transcribe_voice_note("voice:123:456:0102:2"),
+        await toolbox.read_document_file("doc:123:456:0102:2:notes.txt"),
+        await toolbox.set_profile_photo("photo:123:456:0102:2"),
+    ]
+
+    for result in results:
+        assert result["success"] is False
+        assert result["error_code"] == "RuntimeError"
+        assert "GetFileRequest" not in result["error"]
+
+
+class EmptyDownloadClient(FakeTelethonClient):
+    """Скачивание отдаёт пустой файл."""
+
+    async def download_media(self, message: Any, file: Any = None, **kwargs: Any) -> Any:
+        return b""
+
+
+@pytest.mark.asyncio
+async def test_view_image_reports_an_empty_download_as_failure() -> None:
+    """Пустой файл — отказ, а не успех: лента активности читает success."""
+    toolbox = TelegramToolbox(EmptyDownloadClient())
+
+    result = await toolbox.view_image("photo:123:456:0102:2")
+
+    assert result[0]["success"] is False
+    assert result[0]["error_code"] == "MediaEmptyError"
+
+
 @pytest.mark.asyncio
 async def test_view_image_refreshes_stale_reference_via_message_ref() -> None:
     client = RefreshingMediaClient()
@@ -723,40 +765,6 @@ async def test_view_image_refreshes_stale_reference_via_message_ref() -> None:
     assert result[0]["type"] == "image_url"
     assert base64.b64encode(b"fresh_image_data").decode() in result[0]["image_url"]["url"]
     assert ("get_messages", {"entity": "chat", "kwargs": {"ids": 55}}) in client.calls
-
-
-@pytest.mark.asyncio
-async def test_get_messages_remembers_media_refs() -> None:
-    class PhotoHistoryClient(FakeTelethonClient):
-        def iter_messages(self, entity: Any, **kwargs: Any) -> Any:
-            async def gen() -> Any:
-                msg = MagicMock(spec=types.Message)
-                msg.id = 42
-                msg.sender_id = 1
-                msg.date = datetime.now()
-                msg.text = ""
-                msg.reply_markup = None
-                photo = MagicMock(spec=types.Photo)
-                photo.id = 123
-                photo.access_hash = 456
-                photo.file_reference = b"\x01\x02"
-                photo.dc_id = 2
-                media = MagicMock(spec=types.MessageMediaPhoto)
-                media.photo = photo
-                msg.media = media
-                yield msg
-
-            return gen()
-
-    cache = MediaRefCache()
-    toolbox = TelegramToolbox(PhotoHistoryClient(), media_refs=cache)
-
-    await toolbox.get_messages("chat")
-
-    ref = cache.lookup("photo:123:456:0102:2")
-    assert ref is not None
-    assert ref.peer == "chat"
-    assert ref.message_id == 42
 
 
 class PhotoHistoryClient(FakeTelethonClient):
@@ -781,6 +789,19 @@ class PhotoHistoryClient(FakeTelethonClient):
             yield msg
 
         return gen()
+
+
+@pytest.mark.asyncio
+async def test_get_messages_remembers_media_refs() -> None:
+    cache = MediaRefCache()
+    toolbox = TelegramToolbox(PhotoHistoryClient(), media_refs=cache)
+
+    await toolbox.get_messages("chat")
+
+    ref = cache.lookup("photo:123:456:0102:2")
+    assert ref is not None
+    assert ref.peer == "chat"
+    assert ref.message_id == 42
 
 
 @pytest.mark.asyncio
