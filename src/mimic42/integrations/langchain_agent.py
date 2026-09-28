@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
+from braintrust.integrations.langchain import BraintrustCallbackHandler
+from braintrust.integrations.langchain.context import get_global_handler
 from langchain.agents import create_agent
 from langchain.agents.middleware import ModelCallLimitMiddleware
 from langchain_core.tools import BaseTool
@@ -17,6 +20,9 @@ from mimic42.core.token_usage import TokenUsageRecorder
 from mimic42.integrations.activity_middleware import ActivityMiddleware
 from mimic42.integrations.agent_response_schema import AgentResponse
 from mimic42.integrations.token_usage_middleware import TokenUsageMiddleware
+from mimic42.integrations.tracing import tracing_enabled
+
+logger = logging.getLogger("mimic42.tracing")
 
 # A request stuck at the provider otherwise holds the agent's turn forever; the
 # client retries a timed-out request itself (max_retries).
@@ -54,9 +60,18 @@ class LangChainGraphAgent:
         input_data: dict[str, object],
         context: object | None = None,
     ) -> object:
+        config = None
+        if tracing_enabled():
+            try:
+                # Uvicorn's lifespan and request tasks have separate ContextVar contexts.
+                # Restored agents already inherit the global handler; API-created ones may not.
+                if get_global_handler() is None:
+                    config = {"callbacks": [BraintrustCallbackHandler()]}
+            except Exception:
+                logger.warning("Braintrust graph callback unavailable", exc_info=True)
         if context is not None:
-            return await self._graph.ainvoke(input_data, context=context)
-        return await self._graph.ainvoke(input_data)
+            return await self._graph.ainvoke(input_data, config=config, context=context)
+        return await self._graph.ainvoke(input_data, config=config)
 
 
 def build_chat_model(
