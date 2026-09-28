@@ -37,6 +37,7 @@ from mimic42.core.memory import MemoryServiceLike, RuntimeMemoryService
 from mimic42.core.model_catalog import DEFAULT_LLM_MODEL
 from mimic42.core.send_window import SendWindow, SendWindowTracker
 from mimic42.core.telegram_attrs import read_optional_attr
+from mimic42.integrations.tracing import TurnTrace, turn_span
 
 logger = logging.getLogger("mimic42.agent_runtime")
 logger.setLevel(logging.INFO)
@@ -713,12 +714,86 @@ class MimicAgentRuntime:
             return await self._take_turn(trigger)
 
     async def _take_turn(self, trigger: AgentTrigger) -> AgentTriggerResult:
-        """Сам ход: модель, отправка ответа, запись. Вызывается под trigger lock."""
+        """Ход целиком под корневым спаном трейсинга (issue #92)."""
+        turn_id = str(uuid4())
+        started_at = datetime.now(UTC)
+        with turn_span(
+            agent_id=self.config.agent_id,
+            turn_id=turn_id,
+            peer=trigger.peer,
+            model=self.config.llm_model,
+            input={
+                "peer": trigger.peer,
+                "text": trigger.text,
+                "reply_to": trigger.reply_to_message_id,
+                "media": bool(trigger.media),
+            },
+        ) as trace:
+            return await self._take_turn_inner(
+                trigger,
+                turn_id=turn_id,
+                trace=trace,
+                started_at=started_at,
+            )
+
+    async def _take_turn_inner(
+        self,
+        trigger: AgentTrigger,
+        *,
+        turn_id: str,
+        trace: TurnTrace,
+        started_at: datetime,
+    ) -> AgentTriggerResult:
+        """Сам ход: модель, отправка ответа, запись. Вызывается под trigger lock.
+
+        Ошибка на любом шаге хода — сборка контекста, модель, запись — получает
+        событие turn.failed с turn_id и ссылкой на трейс, как успех получает
+        turn.completed; исключение пробрасывается наружу.
+        """
+        try:
+            return await self._run_turn_body(
+                trigger,
+                turn_id=turn_id,
+                trace=trace,
+                started_at=started_at,
+            )
+        except Exception as e:
+            if not getattr(e, "_mimic_turn_failed_recorded", False):
+                logger.error(f"Turn {turn_id} failed: {e}", exc_info=True)
+                try:
+                    await self._record_turn_failed(
+                        turn_id=turn_id,
+                        peer=trigger.peer,
+                        exc=e,
+                        trace=trace,
+                        started_at=started_at,
+                    )
+                except Exception:
+                    # Сбой записи события не подменяет исходную ошибку хода:
+                    # иначе падение БД превратило бы сбой модели в «db down».
+                    # Маркер не ставим: событие не записано, catch-all хендлера
+                    # сможет попытаться ещё раз (без turn_id, но не без события).
+                    logger.warning("Failed to record turn.failed event", exc_info=True)
+                else:
+                    # Marker for the handler catch-all (_record_incoming_failure):
+                    # turn.failed is already recorded with the turn_id — a second
+                    # row would double the error KPI.
+                    e._mimic_turn_failed_recorded = True  # ty: ignore[unresolved-attribute]
+            raise
+
+    async def _run_turn_body(
+        self,
+        trigger: AgentTrigger,
+        *,
+        turn_id: str,
+        trace: TurnTrace,
+        started_at: datetime,
+    ) -> AgentTriggerResult:
+        """Тело хода; исход события (turn.failed) пишет _take_turn_inner."""
         # Вызов мог ждать lock, пока предыдущий ход отозвал сессию.
         if self._session_revoked:
             raise TelegramAuthorizationRequired(REVOKED_SESSION_MESSAGE)
         logger.debug(f"Processing message from {trigger.peer}: {trigger.text[:100]}")
-        turn_id = str(uuid4())
         turn_context = TurnContext(turn_id=turn_id, peer=trigger.peer)
         reply_payload = (
             {
@@ -742,21 +817,13 @@ class MimicAgentRuntime:
                 context=turn_context,
             )
         except Exception as e:
-            logger.error(f"Error invoking agent: {e}", exc_info=True)
-            await self._record_event(
-                event_type="turn.failed",
-                status="failed",
-                payload={
-                    "turn_id": turn_id,
-                    "peer": trigger.peer,
-                    "error_code": type(e).__name__,
-                },
-                error=str(e),
-                started_at=datetime.now(UTC),
-                completed_at=datetime.now(UTC),
-            )
+            # Traceback у исхода хода логирует _take_turn_inner (Turn ... failed) —
+            # здесь только стадия, чтобы не дублировать стек в двух ERROR-записях.
+            logger.error(f"Error invoking agent: {e}")
             # Keep the incoming message in the transcript even though the
             # turn crashed — the dashboard card must show what was asked.
+            # turn.failed itself is recorded by _take_turn_inner with the
+            # turn_id and the trace link.
             try:
                 await self._memory_service.save_messages(
                     agent_id=self.config.agent_id,
@@ -773,12 +840,6 @@ class MimicAgentRuntime:
                 logger.warning(
                     "Failed to persist incoming message after turn failure", exc_info=True
                 )
-            # Mark the exception so the handler-level catch-all does not
-            # record turn.failed a second time (the event above already
-            # carries the turn_id).
-            # Marker for the handler catch-all: turn.failed was already
-            # recorded with the turn_id, so it must not be recorded twice.
-            e._mimic_turn_failed_recorded = True  # ty: ignore[unresolved-attribute]
             raise
 
         output_messages = _messages_to_dicts(response)
@@ -901,6 +962,23 @@ class MimicAgentRuntime:
             thread_id=trigger.thread_id,
             media=trigger.media or None,
             reply=reply_payload,
+        )
+
+        # sent — факт доставки, а не намерение: send_any остаётся True и после
+        # неудачной отправки (там пишется message.send_failed, sent_message = None).
+        trace.log(output={"text": response_text, "sent": sent_message is not None})
+        completed_payload: dict[str, Any] = {"turn_id": turn_id, "peer": trigger.peer}
+        completed_trace_url = trace.permalink()
+        if completed_trace_url:
+            completed_payload["trace_url"] = completed_trace_url
+        # Успешно = конвейер хода завершён, а не «ответ доставлен»: сбой доставки
+        # виден событием message.send_failed, факт доставки — output.sent спана.
+        await self._record_event(
+            event_type="turn.completed",
+            status="succeeded",
+            payload=completed_payload,
+            started_at=started_at,
+            completed_at=datetime.now(UTC),
         )
 
         return AgentTriggerResult(
@@ -1742,12 +1820,44 @@ class MimicAgentRuntime:
                 return
             await self._take_turn(trigger)
 
+    async def _record_turn_failed(
+        self,
+        *,
+        turn_id: str,
+        peer: str,
+        exc: Exception,
+        trace: TurnTrace,
+        started_at: datetime,
+    ) -> None:
+        """Исход хода — turn.failed с turn_id и ссылкой на трейс (issue #92).
+
+        Единственная точка записи события: ошибки хода без него уходили в
+        catch-all `_record_incoming_failure` без `turn_id` и `trace_url`.
+        """
+        payload: dict[str, Any] = {
+            "turn_id": turn_id,
+            "peer": peer,
+            "error_code": type(exc).__name__,
+        }
+        trace_url = trace.permalink()
+        if trace_url:
+            payload["trace_url"] = trace_url
+        await self._record_event(
+            event_type="turn.failed",
+            status="failed",
+            payload=payload,
+            error=str(exc),
+            started_at=started_at,
+            completed_at=datetime.now(UTC),
+        )
+
     async def _record_incoming_failure(self, peer: str, exc: Exception) -> None:
-        logger.error("Unhandled exception in incoming message handler", exc_info=exc)
         if getattr(exc, "_mimic_turn_failed_recorded", False):
-            # trigger_message already recorded turn.failed with the
-            # turn_id — a second row would double the error KPI.
+            # _take_turn_inner already recorded turn.failed with the
+            # turn_id and logged it — a second row would double the error KPI,
+            # a second ERROR with traceback would only duplicate the log.
             return
+        logger.error("Unhandled exception in incoming message handler", exc_info=exc)
         await self._record_event(
             event_type="turn.failed",
             status="failed",

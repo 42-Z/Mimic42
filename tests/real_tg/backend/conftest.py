@@ -11,7 +11,6 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from mimic42.config import Settings
 from mimic42.testing.real_tg.checker import Checker
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -20,20 +19,12 @@ ROOT = Path(__file__).resolve().parents[3]
 load_dotenv(ROOT / ".env", override=True)
 
 from mimic42.api.app import create_app  # noqa: E402
-from tests.real_tg.backend.helpers import media_storage  # noqa: E402
+from tests.real_tg.backend.helpers import media_storage, real_app_settings  # noqa: E402
 
 
 @pytest_asyncio.fixture
 async def real_app() -> AsyncIterator[tuple[FastAPI, AsyncClient]]:
-    settings = Settings(
-        database_connection_string=os.environ["DATABASE_CONNECTION_STRING"],
-        supabase_url=os.environ["SUPABASE_URL"],
-        secret_key=os.environ["SECRET_KEY"],
-        telegram_api_id=int(os.environ["TELEGRAM_API_ID"]),
-        telegram_api_hash=os.environ["TELEGRAM_API_HASH"],
-        mem0_api_key=None,  # Mem0 в тестах не дёргаем
-        restore_running_agents=False,  # чужие RUNNING-агенты не поднимаем
-    )
+    settings = real_app_settings()
     # Медиа-архив: настоящий Storage при SUPABASE_SERVICE_ROLE_KEY, иначе
     # хранилище в памяти — сценарий «архив переживает потерю файла» (#98)
     # должен быть достижим и без сервисного ключа.

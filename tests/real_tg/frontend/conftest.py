@@ -71,6 +71,13 @@ def real_servers() -> Iterator[None]:
     # Чужие RUNNING-агенты (реальные агенты разработчика в Dev) не поднимаем:
     # параллельный старт ломает их Telegram-сессии (AuthKeyDuplicated).
     env["RESTORE_RUNNING_AGENTS"] = "false"
+    # .env разработчика грузится в приложение с override=True, так что боевой
+    # BRAINTRUST_API_KEY утёк бы в тестовый прогон: реальный app логинится в
+    # Braintrust и пишет спаны тестовых запусков в настоящий проект. Пустая
+    # строка (валидатор Settings трактует её как «не задано») перебивает .env:
+    # real_tg проверяет Telegram, а не наблюдаемость — в Braintrust тесты
+    # не пишут.
+    env["BRAINTRUST_API_KEY"] = ""
     # CORS бэкенда должен знать фактический порт фронта (он может быть
     # переопределён через E2E_APP_PORT, если 3000 занят).
     env["CORS_ALLOW_ORIGINS"] = f"http://127.0.0.1:{APP_PORT},http://localhost:{APP_PORT}"
