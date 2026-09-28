@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+import asyncio
+from contextvars import Context
 from typing import Any
 from uuid import uuid4
 
 import pytest
+from braintrust.integrations.langchain import BraintrustCallbackHandler
+from braintrust.integrations.langchain.context import set_global_handler
 from langchain.agents.middleware import ModelCallLimitMiddleware
 from langchain_openrouter import ChatOpenRouter
 from pydantic import SecretStr
 
 import mimic42.integrations.langchain_agent as langchain_agent_module
 from mimic42.core.agent_runtime import AgentRuntimeConfig
+from mimic42.integrations import tracing
 from mimic42.integrations.langchain_agent import (
     MODEL_CALLS_PER_TURN,
     REQUEST_TIMEOUT_MS,
@@ -202,6 +207,66 @@ def test_build_langchain_agent_limits_model_calls_with_session_factory(
 def test_request_timeout_is_two_minutes() -> None:
     # Без таймаута зависший у провайдера запрос держит ход агента бесконечно.
     assert REQUEST_TIMEOUT_MS == 120_000
+
+
+@pytest.mark.parametrize("with_context", [False, True])
+async def test_graph_agent_traces_when_lifespan_handler_is_not_in_request_context(
+    monkeypatch: pytest.MonkeyPatch, with_context: bool
+) -> None:
+    class Graph:
+        async def ainvoke(self, input_data: Any, **kwargs: Any) -> Any:
+            return input_data, kwargs
+
+    monkeypatch.setattr(tracing, "_enabled", True)
+    Context().run(
+        set_global_handler,
+        BraintrustCallbackHandler(),  # ty: ignore[invalid-argument-type]
+    )
+    agent = LangChainGraphAgent(Graph())
+
+    async def invoke() -> Any:
+        return await agent.ainvoke({"messages": []}, context="turn" if with_context else None)
+
+    _, kwargs = await asyncio.create_task(invoke(), context=Context())
+
+    assert len(kwargs["config"]["callbacks"]) == 1
+    assert isinstance(kwargs["config"]["callbacks"][0], BraintrustCallbackHandler)
+    assert kwargs.get("context") == ("turn" if with_context else None)
+
+
+async def test_graph_agent_does_not_duplicate_global_braintrust_handler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Graph:
+        async def ainvoke(self, input_data: Any, **kwargs: Any) -> Any:
+            return kwargs
+
+    monkeypatch.setattr(tracing, "_enabled", True)
+    agent = LangChainGraphAgent(Graph())
+
+    async def invoke() -> Any:
+        set_global_handler(BraintrustCallbackHandler())  # ty: ignore[invalid-argument-type]
+        return await agent.ainvoke({"messages": []})
+
+    kwargs = await asyncio.create_task(invoke(), context=Context())
+
+    assert "config" not in kwargs or kwargs["config"] is None
+
+
+async def test_graph_agent_does_not_create_handler_when_tracing_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Graph:
+        async def ainvoke(self, input_data: Any, **kwargs: Any) -> Any:
+            return kwargs
+
+    monkeypatch.setattr(tracing, "_enabled", False)
+    agent = LangChainGraphAgent(Graph())
+    kwargs: dict[str, Any] = await asyncio.create_task(
+        agent.ainvoke({"messages": []}), context=Context()
+    )  # ty: ignore[invalid-assignment]
+
+    assert "config" not in kwargs or kwargs["config"] is None
 
 
 async def test_graph_agent_closes_the_openrouter_http_client() -> None:

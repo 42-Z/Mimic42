@@ -1,4 +1,4 @@
-"""Помощники реальных TG-тестов бэкенда: логин, owner id и поиск агентов."""
+"""Помощники реальных TG-тестов бэкенда: настройки, логин, owner id и поиск агентов."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import asyncpg
 import httpx
 import jwt as pyjwt
 
+from mimic42.config import Settings
 from mimic42.core.model_catalog import DEFAULT_LLM_MODEL, resolve_model_chain
 from mimic42.testing.slots import plain_dsn
 
@@ -93,6 +94,25 @@ async def ensure_free_model(dsn: str, agent_id: str) -> None:
             f"У мимика {agent_id} выбрана модель {model!r} без бесплатного варианта: "
             "открой настройки агента и выбери Ling 3.0 Flash VL"
         )
+
+
+def real_app_settings() -> Settings:
+    """Настройки настоящего приложения real_tg: боевой .env поверх тестовых заглушек.
+
+    real_tg работает с боевой конфигурацией (.env грузится поверх тестовых
+    переопределений), но внешние сервисы, которые тестам не нужны, выключаются
+    явно — иначе Settings() подхватил бы боевые ключи разработчика.
+    """
+    return Settings(
+        database_connection_string=os.environ["DATABASE_CONNECTION_STRING"],
+        supabase_url=os.environ["SUPABASE_URL"],
+        secret_key=os.environ["SECRET_KEY"],
+        telegram_api_id=int(os.environ["TELEGRAM_API_ID"]),
+        telegram_api_hash=os.environ["TELEGRAM_API_HASH"],
+        mem0_api_key=None,  # Mem0 в тестах не дёргаем
+        braintrust_api_key=None,  # и в Braintrust тесты не пишут
+        restore_running_agents=False,  # чужие RUNNING-агенты не поднимаем
+    )
 
 
 async def disable_auto_restore(dsn: str, owner_id: UUID) -> None:

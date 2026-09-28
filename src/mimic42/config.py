@@ -25,6 +25,8 @@ class Settings(BaseSettings):
     secret_key: str | None = Field(default=None, validation_alias="SECRET_KEY")
     telegram_api_id: int | None = Field(default=None, validation_alias="TELEGRAM_API_ID")
     telegram_api_hash: str | None = Field(default=None, validation_alias="TELEGRAM_API_HASH")
+    braintrust_api_key: str | None = Field(default=None, validation_alias="BRAINTRUST_API_KEY")
+    braintrust_project: str = Field(default="Mimic42", validation_alias="BRAINTRUST_PROJECT")
     # Поднимать ли RUNNING-агентов из базы при старте приложения. Тесты
     # real_tg выключают: иначе поднялся бы чужой агент (и Telegram убил бы
     # его сессию за параллельное использование).
@@ -33,6 +35,23 @@ class Settings(BaseSettings):
         default=["http://localhost:3000", "http://127.0.0.1:3000"],
         validation_alias="CORS_ALLOW_ORIGINS",
     )
+
+    @field_validator("braintrust_api_key", mode="before")
+    @classmethod
+    def _empty_braintrust_api_key_is_unset(cls, value: object) -> object:
+        # Пустая строка в env (например, скопированный .env.example) значит
+        # «не задано» — так «ключ пуст → трейсинг выключен» держится контрактом,
+        # а не случайной falsy-проверкой.
+        if value == "":
+            return None
+        return value
+
+    @field_validator("braintrust_project", mode="before")
+    @classmethod
+    def _empty_braintrust_project_is_unset(cls, value: object) -> object:
+        if value == "":
+            return "Mimic42"
+        return value
 
     @field_validator("cors_allow_origins", mode="before")
     @classmethod
