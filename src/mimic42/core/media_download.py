@@ -105,7 +105,8 @@ def normalize_peer_ref(peer: Any) -> Any:
     """Нормализовать адрес чата, чтобы сообщение можно было перечитать.
 
     Числовые строки становятся int (так их понимает get_messages),
-    "username#123" — "username", прочее — строка без лишних пробелов.
+    "username#123" — 123 (id после #, как в _resolve_peer), прочее —
+    строка без лишних пробелов.
     """
     if not isinstance(peer, str):
         return peer
