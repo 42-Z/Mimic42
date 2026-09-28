@@ -71,19 +71,22 @@ async def wait_archived_photo(app: FastAPI, agent_id: str, previous_paths: set[s
     return None
 
 
-async def recipient_side(
-    app: FastAPI, agent_id: str, sender_id: int, message_id: int
-) -> tuple[Any, Any]:
+async def recipient_side(app: FastAPI, agent_id: str, sender_id: int) -> tuple[Any, Any]:
     """Клиент мимика и его копия входящего фото.
 
-    У получателя свой file_reference: отказ Telegram из issue #98 («ссылка
-    протухла или медиа самоуничтожилось и не может быть переслано») приходит
-    именно ему, а не отправителю.
+    В приватном чате id сообщения у каждого аккаунта свой (core.telegram.org/api/updates,
+    «Message ID sequences»: ids «will not be the same for different accounts»),
+    поэтому фото ищем в истории мимика — последнее сообщение с
+    самоуничтожающимся фото. Его id нужен и для readMessageContents, который
+    запускает таймер, и для повторного скачивания.
     """
     runtime = await app.state.agent_manager.get_agent(UUID(agent_id))
     client = runtime._telegram_client
-    received = await client.get_messages(sender_id, ids=message_id)
-    return client, received
+    async for message in client.iter_messages(sender_id, limit=10):
+        media = getattr(message, "media", None)
+        if media is not None and getattr(media, "ttl_seconds", None) == TTL_SECONDS:
+            return client, message
+    return client, None
 
 
 async def recipient_can_download(client: Any, message: Any) -> bool:
@@ -95,29 +98,29 @@ async def recipient_can_download(client: Any, message: Any) -> bool:
 
 
 async def telegram_loses_the_file(
-    checker: Checker, mimic_client: Any, received: Any, phone: str, message_id: int
+    checker: Checker, mimic_client: Any, received: Any, phone: str, sender_message_id: int
 ) -> str:
     """Пытается заставить Telegram потерять файл у получателя; диагноз.
 
     Файл теряет получатель: по core.telegram.org/api/views («Non-secret
-    expiring media») таймер самоуничтожения стартует с
-    messages.readMessageContents, после чего старый file_reference мимика
-    перестаёт работать. Копия отправителя остаётся живой, поэтому проверяем
-    сторону мимика — тот самый отказ из issue #98.
+    expiring media») таймер самоуничтожения запускает messages.readMessageContents
+    с id сообщения получателя, после чего его file_reference перестаёт
+    работать. Копия отправителя остаётся живой, поэтому проверяем сторону
+    мимика — тот самый отказ из issue #98.
     """
     if not await recipient_can_download(mimic_client, received):
         return "уже недоступно"
 
     # Получатель открывает медиа — таймер самоуничтожения стартует.
     try:
-        await mimic_client(functions.messages.ReadMessageContentsRequest(id=[message_id]))
+        await mimic_client(functions.messages.ReadMessageContentsRequest(id=[received.id]))
     except Exception:
         pass
     await asyncio.sleep(TTL_SECONDS + 5)
     if not await recipient_can_download(mimic_client, received):
         return "просмотр получателем + таймер TTL"
 
-    await checker.client.delete_messages(phone, [message_id], revoke=True)
+    await checker.client.delete_messages(phone, [sender_message_id], revoke=True)
     if not await recipient_can_download(mimic_client, received):
         return "удаление сообщения"
     return "файл ещё доступен"
@@ -142,8 +145,8 @@ async def test_self_destructing_photo_is_archived_before_telegram_loses_it(
     storage_path = await wait_archived_photo(app, agent_id, previous_paths)
     assert storage_path, "Входящее фото не заархивировалось в Storage"
 
-    mimic_client, received = await recipient_side(app, agent_id, await checker.my_id(), message.id)
-    assert received is not None and received.media is not None, "Мимик не видит входящее фото"
+    mimic_client, received = await recipient_side(app, agent_id, await checker.my_id())
+    assert received is not None, "Мимик не видит входящее самоуничтожающееся фото"
 
     # Файл пытаются потерять в Telegram — диагноз попадает в лог прогона.
     mechanism = await telegram_loses_the_file(checker, mimic_client, received, phone, message.id)
