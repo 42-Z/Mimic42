@@ -19,11 +19,15 @@ cd "$DEPLOY"
 #    sessions, otherwise no agent resumes after a restart.
 #    DATABASE_CONNECTION_STRING uses the asyncpg driver:
 #      postgresql+asyncpg://postgres:PASSWORD@db.xxx.supabase.co:5432/postgres
+#    BRAINTRUST_API_KEY enables turn tracing (off while empty);
+#    BRAINTRUST_PROJECT keeps Prod and Dev in separate projects.
 cat > /etc/mimic42.env <<'EOF'
 SUPABASE_URL=
 DATABASE_CONNECTION_STRING=
 MEM0_API_KEY=
 OPENROUTER_API_KEY=
+BRAINTRUST_API_KEY=
+BRAINTRUST_PROJECT=Mimic42 Prod
 SECRET_KEY=
 TELEGRAM_API_ID=
 TELEGRAM_API_HASH=

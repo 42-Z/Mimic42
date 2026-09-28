@@ -131,7 +131,9 @@ export function ActivityDetails({
           {resultRows.length > 0 && <KVTable rows={resultRows} />}
         </>
       )}
-      {!hasStructured && !action.hint && (
+      {/* The dead-end note only when there is truly nothing: no rows, no hint,
+          and no raw JSON either. */}
+      {!hasStructured && !action.hint && !action.args && !action.result && (
         <p className="font-mono text-[10px] text-muted-foreground">Детали недоступны</p>
       )}
       <RawJson title="Аргументы JSON" value={args} />

@@ -38,6 +38,7 @@ export interface ActivityAction {
   result: Record<string, unknown> | null;
   startedAt: string | null;
   completedAt: string | null;
+  traceUrl: string | null;
 }
 
 export interface ActivityMessagePart {
@@ -76,6 +77,19 @@ function turnIdOf(payload: Record<string, unknown> | null | undefined): string |
   return typeof value === 'string' && value.length > 0 ? value : null;
 }
 
+/**
+ * Non-empty http(s) URL out of a raw payload value — anything else (empty
+ * strings, whitespace, `javascript:` and friends) becomes null. The value is
+ * rendered straight into `href` in a multi-tenant dashboard, so the scheme
+ * check is the single validation point.
+ */
+function urlOf(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const url = value.trim();
+  if (!url) return null;
+  return /^https?:\/\//i.test(url) ? url : null;
+}
+
 function peerOf(message: MessageLike): string {
   if (typeof message.peer === 'string' && message.peer) return message.peer;
   const value = message.payload?.peer;
@@ -101,6 +115,7 @@ function toAction(event: EventLike): ActivityAction {
   const meta = isTool ? getToolMeta(event.event_type.slice('tool.'.length)) : null;
   const lifecycle = getEventMeta(event.event_type);
   const label = meta ? meta.ru : lifecycle ? lifecycle.ru : event.event_type;
+  const traceUrl = urlOf(payload?.trace_url);
   return {
     id: event.id ?? event.created_at,
     eventType: event.event_type,
@@ -116,6 +131,7 @@ function toAction(event: EventLike): ActivityAction {
     result: event.result ?? null,
     startedAt: event.started_at ?? null,
     completedAt: event.completed_at ?? null,
+    traceUrl,
   };
 }
 

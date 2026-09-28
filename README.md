@@ -75,6 +75,27 @@ Nemotron 3.5 Lightning, all through OpenRouter. A catalog model must support too
 required tool choice: the agent's structured reply is returned through a tool call, and a model
 that cannot be forced to call it answers in plain text and never finishes the turn.
 
+## Tracing (Braintrust)
+
+Agent turn tracing is off by default and enabled with a key:
+
+```bash
+BRAINTRUST_API_KEY=...        # Braintrust project key
+BRAINTRUST_PROJECT=Mimic42    # Prod and Dev keep separate projects
+```
+
+With the key, every agent turn lands in Braintrust as a single trace: the root span
+`turn {peer}` (incoming message, reply, `agent_id`, `turn_id`, `peer`, model) with model
+calls (tokens, latency) and Telegram tools nested under it. The `turn.completed` and
+`turn.failed` dashboard events carry `trace_url` — a link straight into the trace.
+
+Without a key the tracing module is a no-op: the agent works as before and nothing is
+sent anywhere. Braintrust failures never fail an agent turn.
+
+Manual check: put `BRAINTRUST_API_KEY` into `.env`, run the agent in Dev, send it a
+message and open the project in the Braintrust UI — a turn trace should appear with the
+`turn {peer}`, LLM call, and tool spans.
+
 ## Tests
 
 ```bash
