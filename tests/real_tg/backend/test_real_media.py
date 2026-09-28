@@ -2,8 +2,9 @@
 
 Живой сценарий «нескачиваемой картинки»: мимику приходит фото с таймером
 самоуничтожения (как капча бота верификации), байты архивируются при
-получении, а после исчезновения файла из Telegram (сообщение удаляют —
-как капчу) копия остаётся доступной через API дашборда.
+получении, а после исчезновения файла из Telegram (таймер самоуничтожения
+или удаление сообщения — как капчу) копия остаётся доступной через API
+дашборда.
 
 Тест намеренно не ждёт ответов LLM: архив пишется при получении сообщения,
 до хода модели, а ходы бесплатных моделей в общем прогоне могут быть
@@ -15,6 +16,7 @@ from __future__ import annotations
 import asyncio
 from io import BytesIO
 from typing import Any, cast
+from uuid import UUID
 
 import pytest
 from fastapi import FastAPI
@@ -76,11 +78,29 @@ async def still_downloadable(checker: Checker, message: Any) -> bool:
     return bool(data)
 
 
-async def telegram_loses_the_file(checker: Checker, phone: str, message: Any) -> str:
+async def mark_viewed_by_recipient(app: FastAPI, agent_id: str, message_id: int) -> bool:
+    """Отметить фото просмотренным от лица мимика-получателя.
+
+    Таймер самоуничтожения запускает именно ReadMessageContents получателя
+    (так делает openMessageContent в TDLib); у отправителя — клиента
+    проверяющего — этот запрос медиа не открывает.
+    """
+    runtime = await app.state.agent_manager.get_agent(UUID(agent_id))
+    client = runtime._telegram_client
+    try:
+        await client(functions.messages.ReadMessageContentsRequest(id=[message_id]))
+    except Exception:
+        return False
+    return True
+
+
+async def telegram_loses_the_file(
+    checker: Checker, app: FastAPI, agent_id: str, phone: str, message: Any
+) -> str:
     """Пытается заставить Telegram потерять файл; возвращает диагноз.
 
     Юзербот-API не умеет гарантированно убить файл: таймер TTL стартует от
-    просмотра в официальном клиенте, TTL-сообщения нельзя редактировать
+    просмотра получателем, TTL-сообщения нельзя редактировать
     (MediaTtlInvalidError), а удаление сообщения не инвалидирует
     file_reference немедленно. Поэтому идём по нарастающей и честно
     сообщаем, что сработало: обработка отказов Telegram покрыта
@@ -89,15 +109,12 @@ async def telegram_loses_the_file(checker: Checker, phone: str, message: Any) ->
     if not await still_downloadable(checker, message):
         return "уже недоступно"
 
-    # Просмотр содержимого — серверное «медиа открыто»: для TTL запускает
-    # таймер самоуничтожения.
-    try:
-        await checker.client(functions.messages.ReadMessageContentsRequest(id=[message.id]))
-    except Exception:
-        pass
-    await asyncio.sleep(TTL_SECONDS + 5)
-    if not await still_downloadable(checker, message):
-        return "просмотр + таймер TTL"
+    # Просмотр содержимого получателем — серверное «медиа открыто»: только
+    # он запускает таймер самоуничтожения.
+    if await mark_viewed_by_recipient(app, agent_id, message.id):
+        await asyncio.sleep(TTL_SECONDS + 5)
+        if not await still_downloadable(checker, message):
+            return "просмотр получателем + таймер TTL"
 
     await checker.client.delete_messages(phone, [message.id], revoke=True)
     if not await still_downloadable(checker, message):
@@ -125,7 +142,7 @@ async def test_self_destructing_photo_is_archived_before_telegram_loses_it(
     assert storage_path, "Входящее фото не заархивировалось в Storage"
 
     # Файл пытаются потерять в Telegram — диагноз попадает в лог прогона.
-    mechanism = await telegram_loses_the_file(checker, phone, message)
+    mechanism = await telegram_loses_the_file(checker, app, agent_id, phone, message)
     print("потеря файла из Telegram:", mechanism)  # noqa: T201 — диагностика живого прогона
 
     # Главное живое свойство: байты реального Telegram-файла переживают
