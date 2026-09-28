@@ -3,8 +3,9 @@
 Живой сценарий «нескачиваемой картинки»: мимику приходит фото с таймером
 самоуничтожения (как капча бота верификации), байты архивируются при
 получении, а после исчезновения файла из Telegram (таймер самоуничтожения
-или удаление сообщения — как капчу) копия остаётся доступной через API
-дашборда.
+запускает получатель; или удаление сообщения — как капчу) копия остаётся
+доступной через API дашборда. Отказ Telegram проверяется на стороне
+мимика-получателя: у отправителя своя копия файла и она не исчезает.
 
 Тест намеренно не ждёт ответов LLM: архив пишется при получении сообщения,
 до хода модели, а ходы бесплатных моделей в общем прогоне могут быть
@@ -70,54 +71,54 @@ async def wait_archived_photo(app: FastAPI, agent_id: str, previous_paths: set[s
     return None
 
 
-async def still_downloadable(checker: Checker, message: Any) -> bool:
+async def recipient_side(
+    app: FastAPI, agent_id: str, sender_id: int, message_id: int
+) -> tuple[Any, Any]:
+    """Клиент мимика и его копия входящего фото.
+
+    У получателя свой file_reference: отказ Telegram из issue #98 («ссылка
+    протухла или медиа самоуничтожилось и не может быть переслано») приходит
+    именно ему, а не отправителю.
+    """
+    runtime = await app.state.agent_manager.get_agent(UUID(agent_id))
+    client = runtime._telegram_client
+    received = await client.get_messages(sender_id, ids=message_id)
+    return client, received
+
+
+async def recipient_can_download(client: Any, message: Any) -> bool:
     try:
-        data = await checker.client.download_media(message)
+        data = await client.download_media(message)
     except Exception:
         return False
     return bool(data)
 
 
-async def mark_viewed_by_recipient(app: FastAPI, agent_id: str, message_id: int) -> bool:
-    """Отметить фото просмотренным от лица мимика-получателя.
-
-    Таймер самоуничтожения запускает именно ReadMessageContents получателя
-    (так делает openMessageContent в TDLib); у отправителя — клиента
-    проверяющего — этот запрос медиа не открывает.
-    """
-    runtime = await app.state.agent_manager.get_agent(UUID(agent_id))
-    client = runtime._telegram_client
-    try:
-        await client(functions.messages.ReadMessageContentsRequest(id=[message_id]))
-    except Exception:
-        return False
-    return True
-
-
 async def telegram_loses_the_file(
-    checker: Checker, app: FastAPI, agent_id: str, phone: str, message: Any
+    checker: Checker, mimic_client: Any, received: Any, phone: str, message_id: int
 ) -> str:
-    """Пытается заставить Telegram потерять файл; возвращает диагноз.
+    """Пытается заставить Telegram потерять файл у получателя; диагноз.
 
-    Юзербот-API не умеет гарантированно убить файл: таймер TTL стартует от
-    просмотра получателем, TTL-сообщения нельзя редактировать
-    (MediaTtlInvalidError), а удаление сообщения не инвалидирует
-    file_reference немедленно. Поэтому идём по нарастающей и честно
-    сообщаем, что сработало: обработка отказов Telegram покрыта
-    юнит-тестами (FileReferenceExpiredError/MediaEmptyError → архив).
+    Файл теряет получатель: по core.telegram.org/api/views («Non-secret
+    expiring media») таймер самоуничтожения стартует с
+    messages.readMessageContents, после чего старый file_reference мимика
+    перестаёт работать. Копия отправителя остаётся живой, поэтому проверяем
+    сторону мимика — тот самый отказ из issue #98.
     """
-    if not await still_downloadable(checker, message):
+    if not await recipient_can_download(mimic_client, received):
         return "уже недоступно"
 
-    # Просмотр содержимого получателем — серверное «медиа открыто»: только
-    # он запускает таймер самоуничтожения.
-    if await mark_viewed_by_recipient(app, agent_id, message.id):
-        await asyncio.sleep(TTL_SECONDS + 5)
-        if not await still_downloadable(checker, message):
-            return "просмотр получателем + таймер TTL"
+    # Получатель открывает медиа — таймер самоуничтожения стартует.
+    try:
+        await mimic_client(functions.messages.ReadMessageContentsRequest(id=[message_id]))
+    except Exception:
+        pass
+    await asyncio.sleep(TTL_SECONDS + 5)
+    if not await recipient_can_download(mimic_client, received):
+        return "просмотр получателем + таймер TTL"
 
-    await checker.client.delete_messages(phone, [message.id], revoke=True)
-    if not await still_downloadable(checker, message):
+    await checker.client.delete_messages(phone, [message_id], revoke=True)
+    if not await recipient_can_download(mimic_client, received):
         return "удаление сообщения"
     return "файл ещё доступен"
 
@@ -141,8 +142,11 @@ async def test_self_destructing_photo_is_archived_before_telegram_loses_it(
     storage_path = await wait_archived_photo(app, agent_id, previous_paths)
     assert storage_path, "Входящее фото не заархивировалось в Storage"
 
+    mimic_client, received = await recipient_side(app, agent_id, await checker.my_id(), message.id)
+    assert received is not None and received.media is not None, "Мимик не видит входящее фото"
+
     # Файл пытаются потерять в Telegram — диагноз попадает в лог прогона.
-    mechanism = await telegram_loses_the_file(checker, app, agent_id, phone, message)
+    mechanism = await telegram_loses_the_file(checker, mimic_client, received, phone, message.id)
     print("потеря файла из Telegram:", mechanism)  # noqa: T201 — диагностика живого прогона
     assert mechanism != "файл ещё доступен", (
         "Telegram продолжает отдавать файл: сценарий «нескачиваемой картинки» не воспроизвёлся"
