@@ -144,6 +144,9 @@ async def test_self_destructing_photo_is_archived_before_telegram_loses_it(
     # Файл пытаются потерять в Telegram — диагноз попадает в лог прогона.
     mechanism = await telegram_loses_the_file(checker, app, agent_id, phone, message)
     print("потеря файла из Telegram:", mechanism)  # noqa: T201 — диагностика живого прогона
+    assert mechanism != "файл ещё доступен", (
+        "Telegram продолжает отдавать файл: сценарий «нескачиваемой картинки» не воспроизвёлся"
+    )
 
     # Главное живое свойство: байты реального Telegram-файла переживают
     # исчезновение сообщения и отдаются через API дашборда.
