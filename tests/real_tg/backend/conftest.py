@@ -28,12 +28,21 @@ async def real_app() -> AsyncIterator[tuple[FastAPI, AsyncClient]]:
     # Медиа-архив: настоящий Storage при SUPABASE_SERVICE_ROLE_KEY, иначе
     # хранилище в памяти — сценарий «архив переживает потерю файла» (#98)
     # должен быть достижим и без сервисного ключа.
-    app = create_app(settings=settings, media_uploader=media_storage())
-    async with app.router.lifespan_context(app):
-        async with AsyncClient(
-            transport=ASGITransport(app=app), base_url="http://testserver"
-        ) as client:
-            yield app, client
+    media = media_storage()
+    app = create_app(settings=settings, media_uploader=media)
+    try:
+        async with app.router.lifespan_context(app):
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://testserver"
+            ) as client:
+                yield app, client
+    finally:
+        # Переданное снаружи хранилище приложение не закрывает: незакрытый
+        # httpx-клиент Supabase иначе всплывает ResourceWarning, а с -W error
+        # это ошибка прогона.
+        close = getattr(media, "close", None)
+        if callable(close):
+            close()
 
 
 @pytest_asyncio.fixture
