@@ -912,13 +912,16 @@ class TelegramToolbox:
         except MediaUnavailableError as e:
             return [{"type": "text", "text": str(e), **_tool_failure(e)}]
         except Exception as e:
-            # Сырые ошибки Telegram («caused by GetFileRequest» и т.п.) в
-            # текст для LLM не уходят — только класс ошибки и русская фраза.
+            # Сырые ошибки Telegram («caused by GetFileRequest» и т.п.) не
+            # уходят ни в текст, ни в поле error: результат целиком попадает
+            # в ToolMessage.content, который читает модель.
+            failure = _tool_failure(e)
+            failure["error"] = "Не удалось открыть изображение."
             return [
                 {
                     "type": "text",
                     "text": f"Не удалось открыть изображение ({type(e).__name__})",
-                    **_tool_failure(e),
+                    **failure,
                 }
             ]
 

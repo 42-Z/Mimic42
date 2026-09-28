@@ -706,6 +706,9 @@ async def test_view_image_hides_raw_telegram_errors_from_the_model() -> None:
     assert result[0]["success"] is False
     assert result[0]["error_code"] == "RuntimeError"
     assert "GetFileRequest" not in result[0]["text"]
+    # LangChain сериализует весь результат в ToolMessage.content, поэтому
+    # сырой текст исключения не должен переживать и в поле error.
+    assert "GetFileRequest" not in result[0]["error"]
 
 
 @pytest.mark.asyncio
