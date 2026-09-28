@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import asyncpg
 import httpx
@@ -154,7 +154,9 @@ class MemoryMediaStorage:
         if not data:
             return None
         name = safe_filename(filename)
-        path = f"{agent_id}/memory/{name}"
+        # uuid4 — как в SupabaseMediaStorage: две загрузки с одним именем
+        # не должны затирать байты друг друга.
+        path = f"{agent_id}/{uuid4()}/{name}"
         self._files[path] = bytes(data)
         return MediaFile(
             kind=kind, name=name, mime_type=mime_type, size=len(data), storage_path=path
