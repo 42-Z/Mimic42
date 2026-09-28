@@ -90,8 +90,9 @@ async def recipient_side(app: FastAPI, agent_id: str, sender_id: int) -> tuple[A
 
 
 async def recipient_can_download(client: Any, message: Any) -> bool:
+    # file=bytes — в память: без него Telethon складывает фото в рабочий каталог.
     try:
-        data = await client.download_media(message)
+        data = await client.download_media(message, file=bytes)
     except Exception:
         return False
     return bool(data)
