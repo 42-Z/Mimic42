@@ -2896,7 +2896,11 @@ def build_telegram_langchain_tools(
         StructuredTool.from_function(
             coroutine=toolbox.get_messages,
             name="get_messages",
-            description="Get message history (annotated with Media IDs: photo, sticker, doc).",
+            description=(
+                "Get message history (annotated with Media IDs: photo, sticker, doc). "
+                "A [Фото id=...] marker means the picture itself can be opened with "
+                "view_image — do that when its content matters."
+            ),
         ),
         StructuredTool.from_function(
             coroutine=toolbox.get_dialogs,
@@ -2941,8 +2945,10 @@ def build_telegram_langchain_tools(
             coroutine=view_image_for_agent,
             name="view_image",
             description=(
-                "View an image or sticker by its Media ID. Returns "
-                "base64 image data in LangChain multimodal format."
+                "View an image or sticker by its Media ID. The actual picture is delivered "
+                "to you as an image block — read it from what you see. If a bot message "
+                "(captcha, verification) shows a photo and has buttons, view the image "
+                "BEFORE get_message_buttons/click_inline_button and never guess its content."
             ),
             response_format="content_and_artifact",
         ),
@@ -3299,7 +3305,9 @@ def build_telegram_langchain_tools(
                 "Get inline or reply keyboard buttons from a message. "
                 "CRITICAL: The 'peer' argument MUST be the chat/bot where the message is "
                 "located, not the current chat! "
-                "Returns list of buttons with text, type, data, URL, etc."
+                "Returns list of buttons with text, type, data, URL, etc. "
+                "When the message has a photo (captcha), view it with view_image first "
+                "and pick the button whose text matches the picture."
             ),
         ),
         StructuredTool.from_function(
@@ -3307,7 +3315,10 @@ def build_telegram_langchain_tools(
             name="click_inline_button",
             description=(
                 "Click an inline callback button on a message. "
-                "Use button_data (bytes as string) or button_index to identify the button."
+                "Use button_data (bytes as string) copied exactly from get_message_buttons "
+                "or button_index (zero-based order as returned there). "
+                "If the right answer comes from a picture, make sure you have viewed it "
+                "and solved it first — a wrong click can be irreversible (captcha bans)."
             ),
         ),
         StructuredTool.from_function(
