@@ -167,6 +167,33 @@ async def test_old_whitespace_response_with_null_structured_text_stays_a_string(
     assert all(isinstance(record.content, str) for record in records)
 
 
+async def test_old_whitespace_response_text_reaches_the_messages_list(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    """Список сообщений читает тот же старый ответ, что и лента: пробельный
+    content с сохранённым текстом не должен потерять текст и там."""
+    owner_id = clean_slot.persona("twofa").user_id
+    agent_id = await _seed(db_session_factory, owner_id, datetime(2026, 5, 19, tzinfo=UTC))
+    async with db_session_factory() as session:
+        msg = await session.scalar(
+            select(AgentMessageModel).where(
+                AgentMessageModel.agent_id == agent_id,
+                AgentMessageModel.role == "assistant",
+                AgentMessageModel.content == "reply-0",
+            )
+        )
+        assert msg is not None
+        msg.content = " \n "
+        msg.payload = {**msg.payload, "structured_response": {"text": "текст из списка"}}
+        await session.commit()
+
+    records = await DatabaseAgentStore(db_session_factory).list_messages(
+        agent_id=agent_id, limit=10
+    )
+    assert any(record.content == "текст из списка" for record in records)
+
+
 async def test_incoming_media_surfaces_on_turn(
     db_session_factory: async_sessionmaker[AsyncSession],
     clean_slot: Slot,

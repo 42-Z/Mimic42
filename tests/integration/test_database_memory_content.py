@@ -129,3 +129,31 @@ async def test_whitespace_only_assistant_content_without_structured_skipped(
             )
         )
         assert rows == []
+
+
+async def test_nonempty_assistant_content_keeps_its_formatting(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    """Пустой ответ подменяется, а непустой сохраняется как был: крайние
+    переводы строк и отступы — часть сообщения, strip() только для проверки."""
+    owner_id = clean_slot.persona("twofa").user_id
+    agent_id = await _create_agent(db_session_factory, owner_id)
+    store = DatabaseShortTermMemory(db_session_factory)
+
+    await store.save_messages(
+        agent_id=agent_id,
+        peer="12345",
+        messages=[{"role": "assistant", "content": "С ответом\n\nот меня"}],
+        raw_user_text="Привет",
+        turn_id="turn-keep",
+    )
+
+    async with db_session_factory() as session:
+        row = await session.scalar(
+            select(AgentMessageModel)
+            .where(AgentMessageModel.agent_id == agent_id)
+            .where(AgentMessageModel.role == "assistant")
+        )
+        assert row is not None
+        assert row.content == "С ответом\n\nот меня"

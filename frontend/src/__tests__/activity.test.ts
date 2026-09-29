@@ -144,6 +144,22 @@ describe('buildActivityFeed', () => {
     expect(items[0]?.response?.content).toBe('Привет!');
   });
 
+  test('non-empty response content keeps its formatting', () => {
+    const items = buildActivityFeed(
+      [
+        msg({
+          id: 's1',
+          role: 'assistant',
+          direction: 'agent_response',
+          content: '  С ответом  \n',
+          payload: { turn_id: 't1' },
+        }),
+      ],
+      [],
+    );
+    expect(items[0]?.response?.content).toBe('  С ответом  \n');
+  });
+
   test('falls back to a successful send_text_message tool call', () => {
     const items = buildActivityFeed(
       [msg({ id: 'in', payload: { turn_id: 't2' } })],

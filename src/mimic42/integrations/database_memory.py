@@ -49,6 +49,14 @@ class DatabaseShortTermMemory:
                     msg_type = "ai"
 
                 content = model.content
+                if role == "assistant" and not content.strip():
+                    # Старая запись с пустым ответом хранит текст в схеме:
+                    # модели он нужен, а не пробельный ход в истории.
+                    structured = model.payload.get("structured_response")
+                    if isinstance(structured, dict):
+                        text = structured.get("text", "")
+                        if isinstance(text, str):
+                            content = text
 
                 msg: dict[str, Any] = {"type": msg_type, "content": content}
                 if msg_type == "tool" or role == "tool":
@@ -209,8 +217,6 @@ class DatabaseShortTermMemory:
 
                     if content.startswith("Returning structured response:") or not content.strip():
                         content = human_text
-                    else:
-                        content = content.strip()
 
                     # If this is an intermediate AIMessage that only contains
                     # tool_calls with no human-readable text, skip it entirely.

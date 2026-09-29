@@ -220,8 +220,8 @@ function buildTurn(
   // tool call actually delivered (tool-only turns have no response row).
   // Whitespace-only content ("\n" from structured output) counts as empty:
   // it would render as a blank paragraph instead of the structured text.
-  let responseContent = responseMsg ? responseMsg.content.trim() : '';
-  if (!responseContent && responseMsg) responseContent = structuredTextOf(responseMsg);
+  let responseContent = responseMsg?.content ?? '';
+  if (!responseContent.trim() && responseMsg) responseContent = structuredTextOf(responseMsg);
   let responseCreatedAt = responseMsg?.created_at ?? null;
   if (!responseContent) {
     const sentTool = sortedEvents.find(

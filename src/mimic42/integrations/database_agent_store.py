@@ -323,7 +323,7 @@ class DatabaseAgentStore:
                 content = message.content
                 # With structured output the assistant message content is empty.
                 # Present the human-readable text from the stored schema instead.
-                if not content and message.role == "assistant":
+                if not content.strip() and message.role == "assistant":
                     content = _stored_structured_text(message)
                 records.append(
                     AgentMessageRecord(

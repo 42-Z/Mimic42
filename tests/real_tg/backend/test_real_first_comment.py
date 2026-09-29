@@ -265,6 +265,13 @@ async def test_image_comment_reuses_the_uploaded_photo(
     assert len(second) + len(refusals) == 1, (
         f"под вторым постом что-то ещё: комментарии {second}, отказы {refusals}"
     )
+    # Прочие ошибки — не погода: проверяются до раннего выхода при отказе.
+    refused_post_ids = {e.get("post_id") for e in refusals}
+    assert not [
+        e
+        for e in events
+        if e["event_type"] == "first_comment.failed" and e.get("post_id") not in refused_post_ids
+    ], events
     if not second:
         return
     print(  # noqa: T201
@@ -275,9 +282,3 @@ async def test_image_comment_reuses_the_uploaded_photo(
         "картинка загружена заново, а не переиспользована"
     )
     assert second[0].arrived - second_at < FAST_SECONDS
-    refused_post_ids = {e.get("post_id") for e in refusals}
-    assert not [
-        e
-        for e in events
-        if e["event_type"] == "first_comment.failed" and e.get("post_id") not in refused_post_ids
-    ], events
