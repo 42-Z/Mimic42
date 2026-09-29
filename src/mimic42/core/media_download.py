@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-import logging
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any
 
-from telethon import errors
-
-logger = logging.getLogger("mimic42.media")
+from telethon import errors, types
 
 __all__ = [
     "FILE_REFERENCE_ERRORS",
@@ -57,6 +54,29 @@ class MediaRef:
     peer: str | int | None = None
     message_id: int | None = None
     storage_path: str | None = None
+    mime_type: str | None = None
+    attributes: tuple[types.DocumentAttributeAudio | types.DocumentAttributeVideo, ...] = ()
+
+    @classmethod
+    def from_message(
+        cls, message: Any, *, peer: str | int | None = None, message_id: int | None = None
+    ) -> MediaRef:
+        """Keep original document metadata needed to upload an archived copy."""
+        media = getattr(message, "media", None)
+        document = media.document if isinstance(media, types.MessageMediaDocument) else None
+        if not isinstance(document, types.Document):
+            return cls(peer=peer, message_id=message_id)
+        attributes = tuple(
+            attr
+            for attr in document.attributes
+            if isinstance(attr, (types.DocumentAttributeAudio, types.DocumentAttributeVideo))
+        )
+        return cls(
+            peer=peer,
+            message_id=message_id,
+            mime_type=document.mime_type,
+            attributes=attributes,
+        )
 
 
 class MediaRefCache:
@@ -84,15 +104,34 @@ class MediaRefCache:
             return
         existing = self._entries.get(media_id)
         if existing is not None:
+            # Peer and message id identify one message; never mix halves from
+            # separate registrations of the same media_id.
+            message_ref = (
+                (ref.peer, ref.message_id)
+                if ref.peer is not None and ref.message_id is not None
+                else (existing.peer, existing.message_id)
+            )
             ref = MediaRef(
-                peer=ref.peer if ref.peer is not None else existing.peer,
-                message_id=ref.message_id if ref.message_id is not None else existing.message_id,
+                peer=message_ref[0],
+                message_id=message_ref[1],
                 storage_path=ref.storage_path or existing.storage_path,
+                mime_type=ref.mime_type or existing.mime_type,
+                attributes=ref.attributes or existing.attributes,
             )
         self._entries[media_id] = ref
         self._entries.move_to_end(media_id)
         while len(self._entries) > self._capacity:
-            self._entries.popitem(last=False)
+            # Message references can be recovered from Telegram; TTL media
+            # whose only surviving copy is in Storage cannot.
+            victim = next(
+                (
+                    key
+                    for key, value in self._entries.items()
+                    if key != media_id and not value.storage_path
+                ),
+                next((key for key in self._entries if key != media_id), media_id),
+            )
+            del self._entries[victim]
 
     def lookup(self, media_id: str) -> MediaRef | None:
         ref = self._entries.get(media_id)
@@ -118,11 +157,18 @@ def normalize_peer_ref(peer: Any) -> Any:
 
 def _rewind(file: Any) -> None:
     """Подготовить поток к повторной записи после неудачной попытки."""
+    if file is bytes:
+        return
     seek = getattr(file, "seek", None)
     truncate = getattr(file, "truncate", None)
-    if callable(seek) and callable(truncate):
+    if not callable(seek) or not callable(truncate):
+        raise OSError("Повторная загрузка требует потока с seek и truncate")
+    try:
         seek(0)
         truncate()
+    except (OSError, ValueError) as exc:
+        # Retrying into a dirty, non-seekable stream would corrupt bytes.
+        raise OSError("Не удалось подготовить поток для повторной загрузки") from exc
 
 
 async def _refetch_message(client: Any, message_ref: tuple[Any, int] | None) -> Any | None:
@@ -130,22 +176,27 @@ async def _refetch_message(client: Any, message_ref: tuple[Any, int] | None) -> 
     if message_ref is None:
         return None
     chat, msg_id = message_ref
-    try:
-        message = await client.get_messages(chat, ids=msg_id)
-    except Exception:
-        logger.warning("Failed to refetch message %s in %s", msg_id, chat, exc_info=True)
-        return None
+    message = await client.get_messages(chat, ids=msg_id)
     if message is None or getattr(message, "media", None) is None:
         return None
     return message
 
 
-def _media_object_id(obj: Any) -> int | None:
-    """Id объекта (фото/документа) внутри сообщения или самого объекта."""
+def _media_object_identity(obj: Any) -> tuple[str, int] | None:
+    """Вид и id объекта внутри сообщения либо объекта, восстановленного из media_id."""
     inner = getattr(obj, "media", None) or obj
-    carrier = getattr(inner, "photo", None) or getattr(inner, "document", None) or inner
+    if isinstance(inner, types.MessageMediaPhoto):
+        carrier, kind = inner.photo, "photo"
+    elif isinstance(inner, types.MessageMediaDocument):
+        carrier, kind = inner.document, "document"
+    elif isinstance(inner, (types.Photo, types.InputPhoto)):
+        carrier, kind = inner, "photo"
+    elif isinstance(inner, (types.Document, types.InputDocument)):
+        carrier, kind = inner, "document"
+    else:
+        return None
     obj_id = getattr(carrier, "id", None)
-    return obj_id if isinstance(obj_id, int) else None
+    return (kind, obj_id) if isinstance(obj_id, int) else None
 
 
 async def download_media_with_refresh(
@@ -165,11 +216,11 @@ async def download_media_with_refresh(
         return await client.download_media(media, file=file)
     except RETRYABLE_DOWNLOAD_ERRORS as exc:
         fresh = await _refetch_message(client, message_ref)
-        original_id = _media_object_id(media)
-        fresh_id = _media_object_id(fresh) if fresh is not None else None
+        original_id = _media_object_identity(media)
+        fresh_id = _media_object_identity(fresh) if fresh is not None else None
         if fresh is None:
             raise MediaUnavailableError() from exc
-        if original_id is not None and fresh_id is not None and fresh_id != original_id:
+        if original_id is not None and fresh_id != original_id:
             # Сообщение отредактировали: под старый media_id чужое медиа
             # не подсовываем (так же проверяет и Telethon).
             raise MediaUnavailableError() from exc

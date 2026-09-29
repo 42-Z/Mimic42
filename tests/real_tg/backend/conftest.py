@@ -28,9 +28,10 @@ async def real_app() -> AsyncIterator[tuple[FastAPI, AsyncClient]]:
     # Медиа-архив: настоящий Storage при SUPABASE_SERVICE_ROLE_KEY, иначе
     # хранилище в памяти — сценарий «архив переживает потерю файла» (#98)
     # должен быть достижим и без сервисного ключа.
-    media = media_storage()
-    app = create_app(settings=settings, media_uploader=media)
+    media = None
     try:
+        media = media_storage()
+        app = create_app(settings=settings, media_uploader=media)
         async with app.router.lifespan_context(app):
             async with AsyncClient(
                 transport=ASGITransport(app=app), base_url="http://testserver"
@@ -52,9 +53,11 @@ async def checker() -> AsyncIterator[Checker]:
         api_hash=os.environ["TG_CHECKER_API_HASH"],
         session_string=os.environ["TG_CHECKER_SESSION"],
     )
-    await instance.start()
-    yield instance
-    await instance.stop()
+    try:
+        await instance.start()
+        yield instance
+    finally:
+        await instance.stop()
 
 
 @pytest_asyncio.fixture

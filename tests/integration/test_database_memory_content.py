@@ -100,7 +100,6 @@ async def test_none_structured_text_stored_as_empty_not_none_literal(
             .limit(1)
         )
         assert row is not None
-        assert row.content != "None"
         assert row.content == ""
 
 

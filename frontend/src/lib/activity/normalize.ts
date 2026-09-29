@@ -431,7 +431,7 @@ export function turnToActivityItem(turn: ConversationTurn): ActivityItem {
           reply: turn.incoming_reply ?? null,
         }
       : null,
-    response: turn.outgoing
+    response: turn.outgoing?.trim()
       ? { id: `${turn.id}-out`, content: turn.outgoing, createdAt }
       : null,
     trigger: null,

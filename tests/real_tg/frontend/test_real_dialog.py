@@ -17,8 +17,6 @@
 
 from __future__ import annotations
 
-import asyncio
-import concurrent.futures
 import time
 
 import httpx
@@ -26,29 +24,22 @@ import pytest
 from playwright.sync_api import Browser, expect
 
 from mimic42.testing.real_tg.checker import SyncChecker
-from tests.real_tg.backend.helpers import jwt
 from tests.real_tg.frontend.conftest import (
     ACTION_TIMEOUT_MS,
     API_URL,
     APP_URL,
     NAVIGATION_TIMEOUT_MS,
 )
+from tests.real_tg.frontend.helpers import fetch_token
 
 pytestmark = pytest.mark.real_tg
 
 WAIT_STORED_SECONDS = 180
 
 
-def _fetch_token() -> str:
-    """JWT в отдельном потоке: pytest-луп main-потока занят SyncChecker."""
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        token = pool.submit(asyncio.run, jwt()).result(timeout=60)
-    return str(token)
-
-
 def _wait_for_stored_reply(agent_id: str, marker: str) -> str:
     """Ждёт, пока турн с маркером сохранится, и возвращает текст ответа."""
-    token = _fetch_token()
+    token = fetch_token()
     deadline = time.monotonic() + WAIT_STORED_SECONDS
     while time.monotonic() < deadline:
         response = httpx.get(

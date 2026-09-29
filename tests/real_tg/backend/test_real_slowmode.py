@@ -63,9 +63,14 @@ async def say_and_watch(
 ) -> list[SeenMessage]:
     """Слушатель поднимается ДО отправки: иначе первые ответы можно пропустить."""
     watcher = asyncio.ensure_future(checker.collect_messages(group, seconds=watch))
-    await asyncio.sleep(1)
-    await checker.send_many(group, texts, pause=pause)
-    return await watcher
+    try:
+        await asyncio.sleep(1)
+        await checker.send_many(group, texts, pause=pause)
+        return await watcher
+    finally:
+        if not watcher.done():
+            watcher.cancel()
+            await asyncio.gather(watcher, return_exceptions=True)
 
 
 async def test_flood_under_slow_mode_never_hits_a_slow_mode_error(

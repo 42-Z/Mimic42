@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 from uuid import UUID, uuid4
 
@@ -178,6 +179,57 @@ async def test_small_document_is_read_and_archived() -> None:
     assert uploader.uploads == [("notes.txt", b"JPEGDATA", "text/plain", "doc")]
 
 
+async def test_incoming_document_preserves_mime_for_archived_resend() -> None:
+    refs = MediaRefCache()
+    await _process_media_and_text(
+        _doc_event(10), "", media_uploader=FakeUploader(), agent_id=uuid4(), media_refs=refs
+    )
+
+    ref = refs.lookup("doc:1:2:01:2:notes.txt")
+    assert ref is not None and ref.storage_path is not None
+    assert ref.mime_type == "text/plain"
+
+
+async def test_incoming_voice_keeps_original_telegram_duration_and_waveform(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("mimic42.config.Settings", lambda: SimpleNamespace(openrouter_api_key=""))
+    event = _doc_event(10)
+    original = types.DocumentAttributeAudio(duration=25, voice=True, waveform=b"\x10")
+    event.message.document.attributes = [original]
+    event.message.document.mime_type = "audio/ogg"
+    refs = MediaRefCache()
+
+    await _process_media_and_text(event, "", media_refs=refs)
+
+    ref = refs.lookup("voice:1:2:01:2")
+    assert ref is not None and ref.attributes == (original,)
+    assert ref.mime_type == "audio/ogg"
+
+
+@pytest.mark.parametrize(("kind", "mime"), [("voice", "audio/ogg"), ("round", "video/mp4")])
+async def test_incoming_notes_archive_even_without_transcription_key(
+    monkeypatch: pytest.MonkeyPatch, kind: str, mime: str
+) -> None:
+    monkeypatch.setattr("mimic42.config.Settings", lambda: SimpleNamespace(openrouter_api_key=""))
+    event = _doc_event(10)
+    event.message.document.attributes = [
+        types.DocumentAttributeAudio(duration=25, voice=True)
+        if kind == "voice"
+        else types.DocumentAttributeVideo(duration=25, w=240, h=240, round_message=True)
+    ]
+    event.message.document.mime_type = mime
+    uploader = FakeUploader()
+
+    text, media = await _process_media_and_text(
+        event, "", media_uploader=uploader, agent_id=uuid4()
+    )
+
+    assert "OPENROUTER_API_KEY" in text
+    assert len(media) == 1 and media[0].kind == kind
+    assert uploader.uploads[0][2:] == (mime, kind)
+
+
 async def test_oversized_document_is_not_downloaded() -> None:
     """Кап размера — до скачивания в память, а не только в ветке «нельзя
     открыть»: огромный txt иначе тянется целиком в память и в LLM."""
@@ -260,6 +312,25 @@ async def test_undownloadable_photo_keeps_a_graceful_marker() -> None:
     assert "GetFileRequest" not in text
     assert media == []
     assert uploader.uploads == []
+
+
+async def test_archiving_failure_does_not_lose_downloaded_photo() -> None:
+    class FailingUploader(FakeUploader):
+        async def upload(
+            self, *, agent_id: UUID, filename: str, data: bytes, mime_type: str, kind: str = "doc"
+        ) -> MediaFile | None:
+            raise ConnectionError("storage offline")
+
+    text, media = await _process_media_and_text(
+        _photo_event_with(FakeClient()),
+        "подпись",
+        media_uploader=FailingUploader(),
+        agent_id=uuid4(),
+    )
+
+    assert "[Фото id=" in text
+    assert "подпись" in text
+    assert media == []
 
 
 async def test_unexpected_media_error_keeps_the_message() -> None:

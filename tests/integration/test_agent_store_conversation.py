@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mimic42.core.agent_runtime import AgentRuntimeState
@@ -110,6 +111,60 @@ async def test_turns_are_newest_first_with_turn_identity(
     assert all(turn.outgoing for turn in page.turns)
     # Страница неполная — продолжения нет.
     assert page.next_before is None
+
+
+async def test_old_whitespace_response_uses_structured_text(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    owner_id = clean_slot.persona("twofa").user_id
+    agent_id = await _seed(db_session_factory, owner_id, datetime(2026, 5, 19, tzinfo=UTC))
+    async with db_session_factory() as session:
+        msg = await session.scalar(
+            select(AgentMessageModel).where(
+                AgentMessageModel.agent_id == agent_id,
+                AgentMessageModel.role == "assistant",
+            )
+        )
+        assert msg is not None
+        msg.content = " \n "
+        msg.payload = {**msg.payload, "structured_response": {"text": "сохранённый ответ"}}
+        await session.commit()
+
+    page = await DatabaseAgentStore(db_session_factory).get_conversation(
+        agent_id=agent_id, limit=10
+    )
+    assert any(turn.outgoing == "сохранённый ответ" for turn in page.turns)
+
+
+async def test_old_whitespace_response_with_null_structured_text_stays_a_string(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    """text=null в старой записи нельзя подставлять в outgoing: в модели это
+    строка, и такое значение ломает валидацию ответа API при чтении ленты."""
+    owner_id = clean_slot.persona("twofa").user_id
+    agent_id = await _seed(db_session_factory, owner_id, datetime(2026, 5, 19, tzinfo=UTC))
+    async with db_session_factory() as session:
+        msg = await session.scalar(
+            select(AgentMessageModel).where(
+                AgentMessageModel.agent_id == agent_id,
+                AgentMessageModel.role == "assistant",
+                AgentMessageModel.content == "reply-0",
+            )
+        )
+        assert msg is not None
+        msg.content = " \n "
+        msg.payload = {**msg.payload, "structured_response": {"text": None}}
+        await session.commit()
+
+    store = DatabaseAgentStore(db_session_factory)
+    page = await store.get_conversation(agent_id=agent_id, limit=10)
+    assert all(isinstance(turn.outgoing, str) for turn in page.turns)
+    assert any(turn.outgoing == "" for turn in page.turns)
+
+    records = await store.list_messages(agent_id=agent_id, limit=10)
+    assert all(isinstance(record.content, str) for record in records)
 
 
 async def test_incoming_media_surfaces_on_turn(

@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 from datetime import datetime
+from io import BytesIO
 from typing import Any, cast
 from unittest.mock import MagicMock
 
@@ -681,6 +682,42 @@ async def test_view_image_serves_archived_copy_when_telegram_media_is_gone() -> 
 
 
 @pytest.mark.asyncio
+async def test_view_image_retries_telegram_once_when_archive_is_empty() -> None:
+    from uuid import uuid4
+
+    agent_id = uuid4()
+    path = f"{agent_id}/photo.jpeg"
+    uploader = FakeMediaUploader()
+    uploader.files[path] = b""
+    cache = MediaRefCache()
+    cache.remember("photo:123:456:0102:2", MediaRef(storage_path=path))
+    client = FakeTelethonClient()
+    toolbox = TelegramToolbox(client, agent_id=agent_id, media_uploader=uploader, media_refs=cache)
+
+    result = await toolbox.view_image("photo:123:456:0102:2")
+
+    assert result[-1]["type"] == "image_url"
+    assert len([name for name, _ in client.calls if name == "download_media"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_download_by_media_id_writes_archived_copy_to_stream() -> None:
+    uploader = FakeMediaUploader()
+    uploader.files["saved/photo.jpeg"] = b"ARCHIVED"
+    cache = MediaRefCache()
+    cache.remember("photo:123:456:0102:2", MediaRef(storage_path="saved/photo.jpeg"))
+    client = ExpiringMediaClient()
+    toolbox = TelegramToolbox(client, media_uploader=uploader, media_refs=cache)
+    stream = BytesIO()
+
+    data = await toolbox._download_by_media_id("photo:123:456:0102:2", object(), file=stream)
+
+    assert data == b"ARCHIVED"
+    assert stream.getvalue() == b"ARCHIVED"
+    assert client.calls == []
+
+
+@pytest.mark.asyncio
 async def test_view_image_reports_unavailable_media_in_russian() -> None:
     client = ExpiringMediaClient()
     toolbox = TelegramToolbox(client)
@@ -695,11 +732,7 @@ async def test_view_image_reports_unavailable_media_in_russian() -> None:
 
 @pytest.mark.asyncio
 async def test_view_image_hides_raw_telegram_errors_from_the_model() -> None:
-    class BrokenMediaClient(FakeTelethonClient):
-        async def download_media(self, message: Any, file: Any = None, **kwargs: Any) -> Any:
-            raise RuntimeError("The file reference has expired (caused by GetFileRequest)")
-
-    toolbox = TelegramToolbox(BrokenMediaClient())
+    toolbox = TelegramToolbox(RawErrorMediaClient())
 
     result = await toolbox.view_image("photo:123:456:0102:2")
 
@@ -716,6 +749,275 @@ class RawErrorMediaClient(FakeTelethonClient):
 
     async def download_media(self, message: Any, file: Any = None, **kwargs: Any) -> Any:
         raise RuntimeError("The file reference has expired (caused by GetFileRequest)")
+
+
+class BrokenSendClient(FakeTelethonClient):
+    async def send_file(self, entity: Any, file: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("The file reference has expired (caused by SendMediaRequest)")
+
+
+class ExpiringSendClient(FakeTelethonClient):
+    async def send_file(self, entity: Any, file: Any, **kwargs: Any) -> Any:
+        self.calls.append(("send_file", {"entity": entity, "file": file, "kwargs": kwargs}))
+        if isinstance(file, (types.InputPhoto, types.InputDocument)):
+            from telethon import errors
+
+            raise errors.FileReferenceExpiredError(type("Request", (), {})())
+        msg = MagicMock(spec=types.Message)
+        msg.id = 999
+        return msg
+
+
+@pytest.mark.parametrize(
+    ("media_id", "method", "filename", "flag"),
+    [
+        ("photo:123:456:0102:2", "send_file", "photo.jpeg", None),
+        ("doc:123:456:0102:2:notes.txt", "send_file", "notes.txt", "force_document"),
+        ("voice:123:456:0102:2", "send_voice_note", "voice.ogg", "voice_note"),
+        ("round:123:456:0102:2", "send_video_note", "video.mp4", "video_note"),
+        ("sticker:123:456:0102:2:🙂", "send_sticker", "sticker.webp", None),
+    ],
+)
+async def test_send_media_uploads_archived_bytes_after_reference_expires(
+    media_id: str, method: str, filename: str, flag: str | None
+) -> None:
+    cache = MediaRefCache()
+    path = f"saved/{filename}"
+    cache.remember(media_id, MediaRef(peer="chat", message_id=55, storage_path=path))
+    uploader = FakeMediaUploader()
+    uploader.files[path] = b"ARCHIVED"
+    client = ExpiringSendClient()
+    toolbox = TelegramToolbox(client, media_refs=cache, media_uploader=uploader)
+
+    result = await getattr(toolbox, method)("chat", media_id)
+
+    assert result == {"success": True, "message_id": 999}
+    sends = [call for name, call in client.calls if name == "send_file"]
+    assert len(sends) == 2
+    assert isinstance(sends[1]["file"], BytesIO)
+    assert sends[1]["file"].getvalue() == b"ARCHIVED"
+    assert sends[1]["file"].name == filename
+    if flag:
+        assert sends[1]["kwargs"][flag] is True
+    if method == "send_sticker":
+        assert any(
+            isinstance(attr, types.DocumentAttributeSticker)
+            for attr in sends[1]["kwargs"]["attributes"]
+        )
+
+
+async def test_archived_document_keeps_original_filename_and_mime_type() -> None:
+    media_id = "doc:123:456:0102:2:Отчёт.docx"
+    cache = MediaRefCache()
+    cache.remember(
+        media_id,
+        MediaRef(
+            storage_path="saved/docx",
+            mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ),
+    )
+    uploader = FakeMediaUploader()
+    uploader.files["saved/docx"] = b"DOCX"
+    client = ExpiringSendClient()
+
+    result = await TelegramToolbox(client, media_refs=cache, media_uploader=uploader).send_file(
+        "chat", media_id
+    )
+
+    assert result["success"] is True
+    sent = [call for name, call in client.calls if name == "send_file"][-1]
+    assert sent["file"].name == "Отчёт.docx"
+    assert sent["kwargs"]["mime_type"] == (
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    )
+
+
+@pytest.mark.parametrize(
+    ("media_id", "method", "attribute"),
+    [
+        (
+            "voice:123:456:0102:2",
+            "send_voice_note",
+            types.DocumentAttributeAudio(duration=37, voice=True, waveform=b"\x07"),
+        ),
+        (
+            "round:123:456:0102:2",
+            "send_video_note",
+            types.DocumentAttributeVideo(duration=19, w=240, h=240, round_message=True),
+        ),
+    ],
+)
+async def test_archived_notes_keep_telegram_attributes(
+    media_id: str, method: str, attribute: Any
+) -> None:
+    cache = MediaRefCache()
+    cache.remember(
+        media_id,
+        MediaRef(
+            storage_path="saved/media",
+            mime_type="audio/ogg" if method == "send_voice_note" else "video/mp4",
+            attributes=(attribute,),
+        ),
+    )
+    uploader = FakeMediaUploader()
+    uploader.files["saved/media"] = b"NOTE"
+    client = ExpiringSendClient()
+
+    result = await getattr(
+        TelegramToolbox(client, media_refs=cache, media_uploader=uploader), method
+    )("chat", media_id)
+
+    assert result["success"] is True
+    sent = [call for name, call in client.calls if name == "send_file"][-1]
+    assert attribute in sent["kwargs"]["attributes"]
+    assert sent["kwargs"]["mime_type"] == (
+        "audio/ogg" if method == "send_voice_note" else "video/mp4"
+    )
+
+
+async def test_archived_five_part_document_id_sends_without_a_filename() -> None:
+    """Архив под 5-частным doc-медиа_id отправляется с именем из Storage:
+    крайний вариант id без имени файла не ломает путь повторной отправки."""
+    cache = MediaRefCache()
+    cache.remember("doc:123:456:0102:2", MediaRef(storage_path="saved/file"))
+    uploader = FakeMediaUploader()
+    uploader.files["saved/file"] = b"ARCHIVED"
+    client = ExpiringSendClient()
+
+    result = await TelegramToolbox(client, media_refs=cache, media_uploader=uploader).send_file(
+        "chat", "doc:123:456:0102:2"
+    )
+
+    assert result["success"] is True
+    sent = [call for name, call in client.calls if name == "send_file"][-1]
+    assert sent["file"].name == "file"
+
+
+async def test_sticker_set_stays_sendable_after_its_reference_expires() -> None:
+    class StickerSetClient(ExpiringSendClient):
+        async def __call__(self, request: object) -> Any:
+            self.requests.append(request)
+            assert isinstance(request, functions.messages.GetStickerSetRequest)
+            assert isinstance(request.stickerset, types.InputStickerSetShortName)
+            assert request.stickerset.short_name == "pepe"
+            document = types.Document(
+                id=333,
+                access_hash=444,
+                file_reference=b"\x09",
+                date=datetime.now(),
+                mime_type="image/webp",
+                size=1,
+                dc_id=1,
+                attributes=[
+                    types.DocumentAttributeSticker(
+                        alt="🔥", stickerset=types.InputStickerSetShortName(short_name="pepe")
+                    )
+                ],
+            )
+            result = MagicMock(spec=types.messages.StickerSet)
+            result.documents = [document]
+            return result
+
+    client = StickerSetClient()
+    toolbox = TelegramToolbox(client)
+    result = await toolbox.send_sticker("chat", "sticker:333:444:01:1:🔥:pepe")
+
+    assert result["success"] is True
+    sent = [call for name, call in client.calls if name == "send_file"]
+    assert len(sent) == 2
+    assert isinstance(sent[1]["file"], types.Document)
+    assert sent[1]["file"].file_reference == b"\x09"
+
+
+async def test_send_file_refreshes_original_message_when_no_archive_exists() -> None:
+    from datetime import UTC
+
+    photo = types.Photo(
+        id=123,
+        access_hash=456,
+        file_reference=b"fresh",
+        date=datetime.now(UTC),
+        sizes=[types.PhotoSize(type="x", w=1, h=1, size=1)],
+        dc_id=2,
+    )
+    fresh = types.Message(
+        id=55,
+        peer_id=types.PeerUser(42),
+        out=False,
+        date=datetime.now(UTC),
+        message="",
+        media=types.MessageMediaPhoto(photo=photo),
+    )
+
+    class RefetchingSendClient(ExpiringSendClient):
+        async def get_messages(self, entity: Any, **kwargs: Any) -> Any:
+            self.calls.append(("get_messages", {"entity": entity, "kwargs": kwargs}))
+            return fresh
+
+    client = RefetchingSendClient()
+    cache = MediaRefCache()
+    cache.remember("photo:123:456:0102:2", MediaRef(peer="42", message_id=55))
+    toolbox = TelegramToolbox(client, media_refs=cache)
+
+    result = await toolbox.send_file("chat", "photo:123:456:0102:2", caption="Подпись")
+
+    assert result["success"] is True
+    sends = [call for name, call in client.calls if name == "send_file"]
+    assert len(sends) == 2
+    assert sends[1]["file"] is fresh.media
+    assert sends[1]["kwargs"]["caption"] == "Подпись"
+
+
+async def test_send_file_never_resends_replaced_media_with_same_id() -> None:
+    from datetime import UTC
+
+    doc = types.Document(
+        id=123,
+        access_hash=456,
+        file_reference=b"fresh",
+        date=datetime.now(UTC),
+        mime_type="text/plain",
+        size=1,
+        dc_id=2,
+        attributes=[],
+    )
+    fresh = types.Message(
+        id=55,
+        peer_id=types.PeerUser(42),
+        out=False,
+        date=datetime.now(UTC),
+        message="",
+        media=types.MessageMediaDocument(document=doc),
+    )
+
+    class ReplacedSendClient(ExpiringSendClient):
+        async def get_messages(self, entity: Any, **kwargs: Any) -> Any:
+            return fresh
+
+    client = ReplacedSendClient()
+    cache = MediaRefCache()
+    cache.remember("photo:123:456:0102:2", MediaRef(peer="42", message_id=55))
+    toolbox = TelegramToolbox(client, media_refs=cache)
+
+    result = await toolbox.send_file("chat", "photo:123:456:0102:2")
+
+    assert result["success"] is False
+    assert result["error_code"] == "MediaUnavailableError"
+    assert len([call for name, call in client.calls if name == "send_file"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_send_media_tools_hide_raw_telegram_errors() -> None:
+    toolbox = TelegramToolbox(BrokenSendClient())
+    results = [
+        await toolbox.send_file("chat", "photo:123:456:0102:2"),
+        await toolbox.send_voice_note("chat", "voice:123:456:0102:2"),
+        await toolbox.send_video_note("chat", "round:123:456:0102:2"),
+        await toolbox.send_sticker("chat", "sticker:123:456:0102:2"),
+    ]
+    assert all(result["success"] is False for result in results)
+    assert all(result["error_code"] == "RuntimeError" for result in results)
+    assert all("SendMediaRequest" not in result["error"] for result in results)
 
 
 @pytest.mark.asyncio
@@ -816,6 +1118,40 @@ async def test_get_messages_stores_a_normalized_peer() -> None:
     ref = cache.lookup("photo:123:456:0102:2")
     assert ref is not None
     assert ref.peer == -100500
+
+
+async def test_get_messages_keeps_sticker_emoji_separate_from_pack_name() -> None:
+    class StickerHistoryClient(PhotoHistoryClient):
+        def iter_messages(self, entity: Any, **kwargs: Any) -> Any:
+            async def gen() -> Any:
+                doc = types.Document(
+                    id=123,
+                    access_hash=456,
+                    file_reference=b"\x01\x02",
+                    date=datetime.now(),
+                    mime_type="image/webp",
+                    size=1,
+                    dc_id=2,
+                    attributes=[
+                        types.DocumentAttributeSticker(
+                            alt="🙂", stickerset=types.InputStickerSetShortName(short_name="pepe")
+                        )
+                    ],
+                )
+                msg = MagicMock(spec=types.Message)
+                msg.id = 42
+                msg.sender_id = 1
+                msg.date = datetime.now()
+                msg.text = ""
+                msg.reply_markup = None
+                msg.media = types.MessageMediaDocument(document=doc)
+                yield msg
+
+            return gen()
+
+    messages = await TelegramToolbox(StickerHistoryClient()).get_messages("chat")
+
+    assert messages[0]["text"].startswith("[Стикер 🙂 id=sticker:123:456:0102:2:🙂:pepe]")
 
 
 @pytest.mark.asyncio
@@ -1239,6 +1575,7 @@ async def test_remaining_sticker_tools() -> None:
     res = await toolbox.get_stickers_in_set("pepe")
     assert len(res) == 1
     assert "sticker:333:444:09:1" in res[0]["media_id"]
+    assert res[0]["media_id"].endswith(":🔥:pepe")
 
     # search_sticker_sets
     res = await toolbox.search_sticker_sets("pepe")
@@ -1334,19 +1671,27 @@ async def test_remaining_group_and_channel_tools() -> None:
 
 
 @pytest.mark.asyncio
-async def test_transcribe_and_read_file_tools() -> None:
+async def test_transcribe_and_read_file_tools(monkeypatch: pytest.MonkeyPatch) -> None:
     client = FakeTelethonClient()
     toolbox = TelegramToolbox(client)
+
+    async def transcribe(data: bytes, filename: str, mime_type: str) -> str:
+        assert data == b"fake_image_data"
+        assert (filename, mime_type) == ("audio.ogg", "audio/ogg")
+        return "Расшифровка голосового сообщения"
+
+    monkeypatch.setattr(toolbox, "_transcribe_audio_via_openrouter_whisper", transcribe)
 
     # Test transcribe_voice_note
     res_trans = await toolbox.transcribe_voice_note("voice:123:456:0102:2")
     assert res_trans["success"] is True
-    assert "расшифровка" in res_trans["transcription"]
+    assert res_trans["transcription"] == "Расшифровка голосового сообщения"
 
     # Test read_document_file
     res_read = await toolbox.read_document_file("doc:123:456:0102:2:info.txt")
     assert res_read["success"] is True
-    assert "содержимое" in res_read["content"]
+    assert res_read["content"] == "fake_image_data"
+    assert len([name for name, _ in client.calls if name == "download_media"]) == 2
 
 
 @pytest.mark.asyncio
@@ -1772,10 +2117,14 @@ async def test_send_media_as_comment() -> None:
     )
     assert res_sticker["success"] is True
 
-    res_voice = await toolbox.send_voice_note("channel", media_id, comment_to_msg_id=42)
+    res_voice = await toolbox.send_voice_note(
+        "channel", "voice:123:456:0102:2", comment_to_msg_id=42
+    )
     assert res_voice["success"] is True
 
-    res_round = await toolbox.send_video_note("channel", media_id, comment_to_msg_id=42)
+    res_round = await toolbox.send_video_note(
+        "channel", "round:123:456:0102:2", comment_to_msg_id=42
+    )
     assert res_round["success"] is True
 
     send_file_calls = [c for c in client.calls if c[0] == "send_file"]

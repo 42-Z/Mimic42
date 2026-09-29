@@ -64,8 +64,11 @@ async def test_trigger_message_arrives_in_telegram(
         },
     )
     assert response.status_code == 200, response.text
-    # Модель обязана отправить ответ (а не промолчать) — иначе ждать доставку
-    # бессмысленно, и это видно сразу по ответу API.
-    assert response.json()["telegram_message_id"] is not None, response.text
+    # Модель обязана что-то сказать или доставить (а не промолчать) — иначе
+    # ждать доставку бессмысленно, и это видно сразу по ответу API. id может
+    # быть пустым (send_any=False), но полностью пустой ход — промах.
+    turn_result = response.json()
+    if turn_result["telegram_message_id"] is None and not turn_result["response_text"].strip():
+        pytest.fail(f"Мимик промолчал на ручной триггер: {response.text}")
     text = await incoming
     assert text and text.strip()

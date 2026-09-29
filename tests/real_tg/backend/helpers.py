@@ -132,9 +132,8 @@ async def disable_auto_restore(dsn: str, owner_id: UUID) -> None:
 class MemoryMediaStorage:
     """MediaUploader в памяти: настоящий Telegram, но без зависимости от Storage.
 
-    real_tg-джоба исторически не имеет SUPABASE_SERVICE_ROLE_KEY, а без него
-    SupabaseMediaStorage не строится — архивация медиа молча отключалась, и
-    сценарий issue #98 («архив переживает потерю файла») был недостижим.
+    Без SUPABASE_SERVICE_ROLE_KEY SupabaseMediaStorage не строится, но
+    сценарий issue #98 должен оставаться доступным в живом тесте.
     """
 
     def __init__(self) -> None:

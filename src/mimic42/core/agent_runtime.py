@@ -185,6 +185,8 @@ class TelegramEventClientLike(Protocol):
 
     async def download_media(self, message: Any, file: Any = None, **kwargs: Any) -> Any: ...
 
+    async def get_messages(self, entity: Any, **kwargs: Any) -> Any: ...
+
 
 class TelegramEventLike(Protocol):
     """Structural type for Telethon NewMessage events used by the runtime."""
@@ -2011,17 +2013,18 @@ async def _process_media_and_text(
     if not message or not getattr(message, "media", None):
         return text, []
 
-    from mimic42.integrations.telegram_tools import format_media_object
-
     media_files: list[MediaFile] = []
     media_id = ""
     try:
+        from mimic42.integrations.telegram_tools import format_media_object
+
         media_id = format_media_object(message) or ""
         if not media_id:
             return text, []
         message_ref = _message_ref_of(event, message)
         chat, msg_id = message_ref or (None, None)
-        base_ref = MediaRef(
+        base_ref = MediaRef.from_message(
+            message,
             peer=normalize_peer_ref(chat) if chat is not None else None,
             message_id=msg_id if isinstance(msg_id, int) else None,
         )
@@ -2081,16 +2084,6 @@ async def _process_media_and_text(
         elif media_id.startswith(("voice:", "round:")):
             from io import BytesIO
 
-            import httpx
-
-            from mimic42.config import Settings
-
-            settings = Settings()
-            api_key = settings.openrouter_api_key
-            if not api_key:
-                err_msg = "[Голосовое сообщение (ошибка: OPENROUTER_API_KEY не установлен)]"
-                return err_msg + (f" {text}" if text else ""), media_files
-
             buffer = BytesIO()
             await download_media_with_refresh(
                 event.client, message, message_ref=message_ref, file=buffer
@@ -2109,7 +2102,16 @@ async def _process_media_and_text(
                 file_bytes,
             )
 
+            from mimic42.config import Settings
+
+            api_key = Settings().openrouter_api_key
+            if not api_key:
+                err_msg = "[Голосовое сообщение (ошибка: OPENROUTER_API_KEY не установлен)]"
+                return err_msg + (f" {text}" if text else ""), media_files
+
             try:
+                import httpx
+
                 client = http_client
                 if client is None:
                     client = httpx.AsyncClient(timeout=30.0)

@@ -249,6 +249,26 @@ describe('buildActivityFeed', () => {
 });
 
 describe('turnToActivityItem', () => {
+  test('does not render a whitespace-only historical response', () => {
+    const turn = {
+      id: 'm-whitespace', agent_id: 'agent-1', timestamp: '2026-01-01T00:00:00Z',
+      turn_id: 't-whitespace', peer_id: '1', peer_name: 'Аня', agent_name: 'Мими',
+      incoming: 'Привет', outgoing: ' \n ', direction: 'both', incoming_media: [], tools: [],
+    } as unknown as ConversationTurn;
+
+    expect(turnToActivityItem(turn).response).toBeNull();
+  });
+
+  test('preserves the formatting of a nonempty historical response', () => {
+    const turn = {
+      id: 'm-indented', agent_id: 'agent-1', timestamp: '2026-01-01T00:00:00Z',
+      turn_id: 't-indented', peer_id: '1', peer_name: 'Аня', agent_name: 'Мими',
+      incoming: 'Привет', outgoing: '  Привет\n', direction: 'both', incoming_media: [], tools: [],
+    } as unknown as ConversationTurn;
+
+    expect(turnToActivityItem(turn).response?.content).toBe('  Привет\n');
+  });
+
   test('maps reply fields from a backend turn', () => {
     const turn = {
       id: 'm-reply',
