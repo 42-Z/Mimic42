@@ -266,11 +266,8 @@ async def test_image_comment_reuses_the_uploaded_photo(
         f"под вторым постом что-то ещё: комментарии {second}, отказы {refusals}"
     )
     # Прочие ошибки — не погода: проверяются до раннего выхода при отказе.
-    refused_post_ids = {e.get("post_id") for e in refusals}
     assert not [
-        e
-        for e in events
-        if e["event_type"] == "first_comment.failed" and e.get("post_id") not in refused_post_ids
+        e for e in events if e["event_type"] == "first_comment.failed" and e not in refusals
     ], events
     if not second:
         return
