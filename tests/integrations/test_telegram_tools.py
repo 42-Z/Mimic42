@@ -8,6 +8,7 @@ from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
+from langchain_core.messages import ToolMessage
 from telethon import functions, types
 
 from mimic42.core.agent_runtime import TelegramClientLike, _extract_incoming_text
@@ -455,6 +456,7 @@ class FakeTelethonClient(FakeTelegramClient):
         dialog.unread_count = 0
         dialog.entity = MagicMock()
         dialog.entity.username = "test_group"
+        dialog.entity.is_self = False
         return [dialog]
 
 
@@ -563,6 +565,32 @@ async def test_view_image() -> None:
     assert "data:image/jpeg;base64," in result[0]["image_url"]["url"]
 
 
+@pytest.mark.asyncio
+async def test_view_image_tool_sends_image_block_to_model_without_archive() -> None:
+    client = FakeTelethonClient()
+    tool = next(
+        t
+        for t in build_telegram_langchain_tools(cast(TelethonRequestClient, client))
+        if t.name == "view_image"
+    )
+
+    message = await tool.ainvoke(
+        {
+            "name": "view_image",
+            "args": {"media_id": "photo:123:456:0102:2"},
+            "id": "call-1",
+            "type": "tool_call",
+        }
+    )
+
+    assert isinstance(message, ToolMessage)
+    assert isinstance(message.content, list)
+    assert len(message.content) == 1
+    assert message.content[0]["type"] == "image_url"
+    assert message.content[0]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+    assert message.artifact is None
+
+
 class FakeMediaUploader:
     def __init__(self) -> None:
         self.uploads: list[tuple[str, bytes, str, str]] = []
@@ -608,10 +636,54 @@ async def test_view_image_archives_media_when_uploader_configured() -> None:
 
     assert len(result) == 2
     assert result[0]["type"] == "media_ref"
+    assert result[0]["kind"] == "photo"
     assert result[0]["storage_path"] == f"{agent_id}/u1/view_photo_123.jpeg"
     assert result[0]["mime_type"] == "image/jpeg"
     assert result[1]["type"] == "image_url"
     assert uploader.uploads == [("view_photo_123.jpeg", b"fake_image_data", "image/jpeg", "photo")]
+
+
+@pytest.mark.asyncio
+async def test_view_image_tool_keeps_archive_out_of_model_content() -> None:
+    from uuid import uuid4
+
+    agent_id = uuid4()
+    uploader = FakeMediaUploader()
+    tool = next(
+        t
+        for t in build_telegram_langchain_tools(
+            cast(TelethonRequestClient, FakeTelethonClient()),
+            agent_id=agent_id,
+            media_uploader=uploader,
+        )
+        if t.name == "view_image"
+    )
+
+    message = await tool.ainvoke(
+        {
+            "name": "view_image",
+            "args": {"media_id": "photo:123:456:0102:2"},
+            "id": "call-1",
+            "type": "tool_call",
+        }
+    )
+
+    assert isinstance(message, ToolMessage)
+    assert isinstance(message.content, list)
+    assert [block["type"] for block in message.content] == ["image_url"]
+    assert message.artifact == {
+        "items": [
+            {
+                "type": "media_ref",
+                "kind": "photo",
+                "storage_path": f"{agent_id}/u1/view_photo_123.jpeg",
+                "mime_type": "image/jpeg",
+                "size": len(b"fake_image_data"),
+                "name": "view_photo_123",
+            }
+        ]
+    }
+    assert "base64" not in str(message.artifact)
 
 
 class ExpiringMediaClient(FakeTelethonClient):
@@ -682,6 +754,46 @@ async def test_view_image_serves_archived_copy_when_telegram_media_is_gone() -> 
 
 
 @pytest.mark.asyncio
+async def test_view_image_tool_sends_archived_copy_as_image_without_redownload() -> None:
+    from uuid import uuid4
+
+    agent_id = uuid4()
+    path = f"{agent_id}/u1/photo.jpeg"
+    uploader = FakeMediaUploader()
+    uploader.files[path] = b"ARCHIVED"
+    cache = MediaRefCache()
+    cache.remember("photo:123:456:0102:2", MediaRef(storage_path=path))
+    client = ExpiringMediaClient()
+    tool = next(
+        t
+        for t in build_telegram_langchain_tools(
+            cast(TelethonRequestClient, client),
+            agent_id=agent_id,
+            media_uploader=uploader,
+            media_refs=cache,
+        )
+        if t.name == "view_image"
+    )
+
+    message = await tool.ainvoke(
+        {
+            "name": "view_image",
+            "args": {"media_id": "photo:123:456:0102:2"},
+            "id": "call-1",
+            "type": "tool_call",
+        }
+    )
+
+    assert isinstance(message, ToolMessage)
+    assert isinstance(message.content, list)
+    assert [block["type"] for block in message.content] == ["image_url"]
+    assert base64.b64encode(b"ARCHIVED").decode() in message.content[0]["image_url"]["url"]
+    assert message.artifact["items"][0]["kind"] == "photo"
+    assert message.artifact["items"][0]["storage_path"] == path
+    assert client.calls == []
+
+
+@pytest.mark.asyncio
 async def test_view_image_retries_telegram_once_when_archive_is_empty() -> None:
     from uuid import uuid4
 
@@ -728,6 +840,30 @@ async def test_view_image_reports_unavailable_media_in_russian() -> None:
     assert result[0]["error_code"] == "MediaUnavailableError"
     assert "недоступно" in result[0]["text"]
     assert "GetFileRequest" not in result[0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_view_image_tool_keeps_failure_visible_to_model() -> None:
+    tool = next(
+        t
+        for t in build_telegram_langchain_tools(cast(TelethonRequestClient, ExpiringMediaClient()))
+        if t.name == "view_image"
+    )
+
+    message = await tool.ainvoke(
+        {
+            "name": "view_image",
+            "args": {"media_id": "photo:123:456:0102:2"},
+            "id": "call-1",
+            "type": "tool_call",
+        }
+    )
+
+    assert isinstance(message, ToolMessage)
+    content = json.loads(message.content) if isinstance(message.content, str) else message.content
+    assert content[0]["success"] is False
+    assert "недоступно" in content[0]["text"]
+    assert message.artifact is None
 
 
 @pytest.mark.asyncio
@@ -1539,6 +1675,41 @@ async def test_remaining_navigation_and_dialog_tools() -> None:
     # unarchive_dialogs
     res = await toolbox.unarchive_dialogs(["group"])
     assert res["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_get_dialogs_labels_only_the_own_chat_as_saved_messages() -> None:
+    class DialogClient(FakeTelethonClient):
+        async def get_dialogs(self, limit: int = 20) -> list[Any]:
+            own = MagicMock()
+            own.id = 123
+            own.title = "Walt Mimic"
+            own.unread_count = 3
+            own.entity = MagicMock(spec=types.User)
+            own.entity.username = "walt_mimic"
+            own.entity.is_self = True
+
+            other = MagicMock()
+            other.id = 456
+            other.title = "Избранное"
+            other.unread_count = 0
+            other.entity = MagicMock(spec=types.User)
+            other.entity.username = "other"
+            other.entity.is_self = False
+            return [own, other]
+
+    dialogs = await TelegramToolbox(DialogClient()).get_dialogs()
+
+    assert dialogs == [
+        {
+            "id": 123,
+            "title": "Избранное",
+            "username": "walt_mimic",
+            "unread_count": 3,
+            "is_self": True,
+        },
+        {"id": 456, "title": "Избранное", "username": "other", "unread_count": 0, "is_self": False},
+    ]
 
 
 @pytest.mark.asyncio

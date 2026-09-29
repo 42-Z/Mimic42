@@ -137,7 +137,12 @@ class ActivityMiddleware(AgentMiddleware):
 
         message = response if isinstance(response, ToolMessage) else None
         content = message.content if message is not None else None
-        status, error, result = _classify_tool_output(content)
+        recorded_output = (
+            message.artifact
+            if message is not None and isinstance(message.artifact, dict)
+            else content
+        )
+        status, error, result = _classify_tool_output(recorded_output)
         if error is None and message is not None and message.status == "error":
             status = "failed"
             error = content if isinstance(content, str) else str(content)

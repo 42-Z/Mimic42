@@ -737,12 +737,14 @@ class TelegramToolbox:
             dialogs_list = await self._client.get_dialogs(limit=limit)
             result = []
             for d in dialogs_list:
+                is_self = bool(getattr(d.entity, "is_self", False))
                 result.append(
                     {
                         "id": d.id,
-                        "title": d.title,
+                        "title": "Избранное" if is_self else d.title,
                         "username": getattr(d.entity, "username", None),
                         "unread_count": d.unread_count,
+                        "is_self": is_self,
                     }
                 )
             return result
@@ -1020,6 +1022,7 @@ class TelegramToolbox:
                 items.append(
                     {
                         "type": "media_ref",
+                        "kind": media_type,
                         "storage_path": storage_path,
                         "mime_type": mime_type,
                         "size": len(data),
@@ -2817,6 +2820,15 @@ def build_telegram_langchain_tools(
         media_refs=media_refs,
     )
 
+    async def view_image_for_agent(
+        media_id: str,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+        """Send the image to the model and keep archive metadata for activity."""
+        result = await toolbox.view_image(media_id)
+        content = [item for item in result if item.get("type") != "media_ref"]
+        refs = [item for item in result if item.get("type") == "media_ref"]
+        return content, {"items": refs} if refs else None
+
     return [
         StructuredTool.from_function(
             coroutine=toolbox.send_text_message,
@@ -2926,12 +2938,13 @@ def build_telegram_langchain_tools(
             ),
         ),
         StructuredTool.from_function(
-            coroutine=toolbox.view_image,
+            coroutine=view_image_for_agent,
             name="view_image",
             description=(
                 "View an image or sticker by its Media ID. Returns "
                 "base64 image data in LangChain multimodal format."
             ),
+            response_format="content_and_artifact",
         ),
         StructuredTool.from_function(
             coroutine=toolbox.set_profile_photo,
