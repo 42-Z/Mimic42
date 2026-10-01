@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { groupAgentToggles } from '@/lib/activity/group';
+import { isStackOpen, setStackOpen } from '@/lib/activity/expand';
 import { buildActivityFeed, type ActivityItem } from '@/lib/activity/normalize';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { LifecycleStack } from '@/components/activity/LifecycleStack';
@@ -41,13 +42,33 @@ describe('groupAgentToggles', () => {
   });
 
   test('renders a collapsed stack with a count and the full timestamped history', () => {
-    const html = renderToStaticMarkup(<LifecycleStack items={[event('1'), event('2', 'agent.stopped')]} />);
+    const html = renderToStaticMarkup(
+      <LifecycleStack
+        items={[event('1'), event('2', 'agent.stopped')]}
+        isOpen={false}
+        onToggle={() => {}}
+      />,
+    );
     expect(html).toContain('<details');
     expect(html).not.toContain(' open=');
     expect(html).toContain('×2');
     expect(html).toContain('Агент запущен');
     expect(html).toContain('Агент остановлен');
     expect(html.match(/tabular-nums/g)).toHaveLength(4);
+  });
+
+  test('an open stack survives group growth from either side', () => {
+    // Стек раскрыт по событиям 2 и 3; «Загрузить ещё» дописало старое событие 1,
+    // realtime добавил сверху событие 4 — идентичность группы не потерялась.
+    const expanded = setStackOpen(new Set<string>(), ['evt:2', 'evt:3'], true);
+    expect(isStackOpen(['evt:2', 'evt:3', 'evt:1'], expanded)).toBe(true);
+    expect(isStackOpen(['evt:4', 'evt:2', 'evt:3', 'evt:1'], expanded)).toBe(true);
+
+    // А посторонняя группа с другими id остаётся закрытой.
+    expect(isStackOpen(['evt:9', 'evt:8'], expanded)).toBe(false);
+
+    const collapsed = setStackOpen(expanded, ['evt:2', 'evt:3'], false);
+    expect(isStackOpen(['evt:4', 'evt:2', 'evt:3', 'evt:1'], collapsed)).toBe(false);
   });
 
   test('warning buttons use the amber fill and dark foreground', () => {

@@ -1,12 +1,26 @@
 'use client';
 
+import type * as React from 'react';
 import { ChevronDown } from 'lucide-react';
 import type { ActivityGroup } from '@/lib/activity/group';
 import { TurnCard } from './TurnCard';
 
-export function LifecycleStack({ items }: { items: ActivityGroup }) {
+interface LifecycleStackProps {
+  items: ActivityGroup;
+  /** Состояние раскрытия держит родитель: стек переживает пересборку групп. */
+  isOpen: boolean;
+  onToggle: (open: boolean) => void;
+}
+
+export function LifecycleStack({ items, isOpen, onToggle }: LifecycleStackProps) {
   return (
-    <details className="group border-b border-border/70 last:border-b-0">
+    <details
+      open={isOpen}
+      onToggle={(event: React.SyntheticEvent<HTMLDetailsElement>) =>
+        onToggle(event.currentTarget.open)
+      }
+      className="group border-b border-border/70 last:border-b-0"
+    >
       <summary className="flex cursor-pointer list-none items-center gap-2 pr-3.5 hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
         <div className="min-w-0 flex-1">
           <TurnCard item={items[0]} />

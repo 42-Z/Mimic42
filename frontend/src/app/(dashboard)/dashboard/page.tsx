@@ -171,7 +171,7 @@ function AgentsGrid({ agents }: { agents: AgentRecord[] }) {
   const { data: details } = useAgentsDetails(agents.map((a) => a.agent_id));
 
   return (
-    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+    <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
       {agents.map((agent) => (
         <AgentCard
           key={agent.agent_id}
@@ -485,7 +485,7 @@ function DashboardSkeleton() {
           <Skeleton key={i} className="h-24 rounded-sm" />
         ))}
       </div>
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
         {[...Array(3)].map((_, i) => (
           <Skeleton key={i} className="h-[160px] rounded-sm" />
         ))}

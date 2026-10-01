@@ -36,6 +36,7 @@ import Link from 'next/link';
 import { formatDistanceToNow, format } from 'date-fns';
 import { ru } from 'date-fns/locale';
 import { cn } from '@/lib/utils';
+import { nextTabFocusIndex } from '@/lib/keyboard';
 import type { AgentTab, AgentState, ApiError } from '@/types';
 
 const TABS: { id: AgentTab; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
@@ -72,10 +73,39 @@ function AgentPageContent({
   const [activeTab, setActiveTab] = useState<AgentTab>(
     TABS.some(t => t.id === initialTab) ? initialTab : 'settings'
   );
+  // Роверный tabindex: внутри списка вкладок фокус ходит стрелками, а Tab
+  // выносит его наружу — в панель. Фокус и выбор разделены (manual activation):
+  // стрелки двигают фокус, Enter/Space активируют вкладку.
+  const [focusedTab, setFocusedTab] = useState<AgentTab>(activeTab);
+
+  useEffect(() => {
+    // При программной смене вкладки (URL, клик) роверный фокус следует за ней.
+    setFocusedTab(activeTab);
+  }, [activeTab]);
 
   const handleTabChange = (tab: AgentTab) => {
     setActiveTab(tab);
     router.replace(`/agent/${agentId}?tab=${tab}`, { scroll: false });
+  };
+
+  const handleTabKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      handleTabChange(focusedTab);
+      return;
+    }
+
+    const current = TABS.findIndex((tab) => tab.id === focusedTab);
+    const next = nextTabFocusIndex(event.key, current, TABS.length);
+    if (next === null) return;
+
+    event.preventDefault();
+    const target = TABS[next];
+    if (!target) return;
+    setFocusedTab(target.id);
+    // Фокус двигаем по DOM, а не через ref-массив: кнопки уже смонтированы.
+    const button = event.currentTarget.parentElement?.children[next];
+    if (button instanceof HTMLElement) button.focus();
   };
 
   const { data: status } = useAgentStatus(agentId);
@@ -126,8 +156,10 @@ function AgentPageContent({
               id={`agent-tab-${tab.id}`}
               aria-selected={activeTab === tab.id}
               aria-controls="agent-tabpanel"
+              tabIndex={focusedTab === tab.id ? 0 : -1}
               data-testid={`agent-tab-${tab.id}`}
               onClick={() => handleTabChange(tab.id)}
+              onKeyDown={handleTabKeyDown}
               className={cn(
                 'flex items-center gap-2 px-4 py-3 font-mono text-xs border-b-2 transition-colors duration-150 whitespace-nowrap',
                 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
@@ -144,7 +176,7 @@ function AgentPageContent({
       </div>
 
       {/* Tab content */}
-      <div id="agent-tabpanel" role="tabpanel" aria-labelledby={`agent-tab-${activeTab}`}>
+      <div id="agent-tabpanel" role="tabpanel" tabIndex={0} aria-labelledby={`agent-tab-${activeTab}`}>
         {activeTab === 'settings'  && <TabSettings  agentId={agentId} />}
         {activeTab === 'logs'      && <TabActivity  agentId={agentId} agentName={details?.name} />}
         {activeTab === 'actions'   && <TabActions    agentId={agentId} />}

@@ -12,6 +12,7 @@ import { Input } from '@/components/ui/input';
 import { TurnCard } from './TurnCard';
 import { LifecycleStack } from './LifecycleStack';
 import { groupAgentToggles, type ActivityGroup } from '@/lib/activity/group';
+import { isStackOpen, setStackOpen, type ExpandedStackIds } from '@/lib/activity/expand';
 import { turnToActivityItem, type ActivityItem } from '@/lib/activity/normalize';
 import { cn } from '@/lib/utils';
 
@@ -111,6 +112,11 @@ export function TabActivity({ agentId, agentName }: { agentId: string; agentName
       .map((group) => group.filter((item) => visible.has(item.id)))
       .filter((group): group is ActivityGroup => group.length > 0);
   }, [items, filtered]);
+
+  // Раскрытие стека живёт по id событий, а не по DOM-позиции: «Загрузить ещё»
+  // дописывает старые события к той же последовательности, realtime — новые
+  // сверху, и пересборка групп не должна схлопывать уже раскрытый стек.
+  const [expandedStackIds, setExpandedStackIds] = useState<ExpandedStackIds>(new Set());
 
   const topId = filtered[0]?.id ?? null;
 
@@ -214,7 +220,16 @@ export function TabActivity({ agentId, agentName }: { agentId: string; agentName
                 </div>
               ) : (
                 grouped.map((group) => group.length > 1 ? (
-                  <LifecycleStack key={group.at(-1)?.id} items={group} />
+                  <LifecycleStack
+                    key={group[0].id}
+                    items={group}
+                    isOpen={isStackOpen(group.map((item) => item.id), expandedStackIds)}
+                    onToggle={(open) =>
+                      setExpandedStackIds((prev) =>
+                        setStackOpen(prev, group.map((item) => item.id), open),
+                      )
+                    }
+                  />
                 ) : (
                   <TurnCard
                     key={group[0].id}

@@ -441,7 +441,7 @@ function StepTelegramCode({
             className="text-center text-xl tracking-[0.5em]"
           />
         </CardContent>
-        <CardFooter className="gap-4">
+        <CardFooter className="flex-col items-stretch gap-4 px-4 sm:flex-row sm:items-center sm:px-6">
           <Button
             type="button"
             variant="outline"
@@ -457,7 +457,7 @@ function StepTelegramCode({
             isLoading={submitCode.isPending}
             disabled={isBacking}
             size="lg"
-            className="flex-1"
+            className="sm:flex-1"
           >
             Подтвердить →
           </Button>
@@ -536,7 +536,7 @@ function StepTelegram2FA({
             autoFocus
           />
         </CardContent>
-        <CardFooter className="gap-4">
+        <CardFooter className="flex-col items-stretch gap-4 px-4 sm:flex-row sm:items-center sm:px-6">
           <Button
             type="button"
             variant="outline"
@@ -552,7 +552,7 @@ function StepTelegram2FA({
             isLoading={submitCode.isPending}
             disabled={isBacking}
             size="lg"
-            className="flex-1"
+            className="sm:flex-1"
           >
             Подтвердить →
           </Button>

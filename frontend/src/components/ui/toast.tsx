@@ -108,9 +108,11 @@ function ToastItem({ toast, onDismiss }: ToastItemProps) {
         {variantIcons[toast.variant]}
       </span>
       <p className="flex-1 leading-relaxed break-words">{toast.message}</p>
+      {/* Без opacity-затемнения: при 60% единственный символ кнопки не проходил
+          WCAG 1.4.11 (≈2,58:1 на error-toast). text-current держит цвет варианта. */}
       <button
         onClick={handleDismiss}
-        className="shrink-0 ml-2 opacity-60 hover:opacity-100 transition-opacity text-current focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className="shrink-0 ml-2 text-current focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         aria-label="Закрыть уведомление"
       >
         ×

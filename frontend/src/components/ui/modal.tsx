@@ -78,6 +78,17 @@ export function Modal({
             // deferred restore (it would target a missing <DialogTrigger>).
             event.preventDefault();
           }}
+          onInteractOutside={(event) => {
+            // The toast stack lives in a portal outside the dialog, so radix
+            // counts its clicks as an outside interaction and would dismiss a
+            // modal that must stay open — e.g. a reset-context error toast.
+            if (
+              event.target instanceof Element &&
+              event.target.closest('[data-testid="toast-container"]')
+            ) {
+              event.preventDefault();
+            }
+          }}
           className={cn(
             'fixed left-1/2 top-1/2 z-50 w-full -translate-x-1/2 -translate-y-1/2',
             'rounded-sm border border-border bg-card shadow-void-lg animate-dialog-in',
