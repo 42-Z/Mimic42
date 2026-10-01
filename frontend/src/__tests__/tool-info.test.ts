@@ -38,4 +38,12 @@ describe('toolInfo', () => {
     const known = new Set(TOOL_GROUP_ORDER.map((group) => group.id));
     for (const tool of TOOL_INFO) expect(known.has(tool.group)).toBe(true);
   });
+
+  test('группа каждого инструмента совпадает с каталогом действий', () => {
+    for (const tool of TOOL_INFO) {
+      const meta = TOOL_CATALOG[tool.name];
+      if (!meta) throw new Error(`нет каталога для ${tool.name}`);
+      expect(tool.group).toBe(meta.group);
+    }
+  });
 });
