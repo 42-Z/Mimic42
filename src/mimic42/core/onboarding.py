@@ -222,6 +222,7 @@ class AgentOnboardingService:
                 raise OnboardingAlreadyCompletedError(onboarding_id)
             name = existing.name
             soul_prompt = existing.soul_prompt
+            settings = existing.settings
             # Метка завершения переживает перезапись строки: иначе rebind-сессия
             # агента снова стала бы черновиком мастера онбординга.
             completed_agent_id = existing.completed_agent_id
@@ -229,6 +230,7 @@ class AgentOnboardingService:
             onboarding_id = uuid4()
             name = None
             soul_prompt = None
+            settings = {}
             completed_agent_id = None
 
         client = self._telegram_factory.build(
@@ -254,6 +256,7 @@ class AgentOnboardingService:
             session_secret=self._cipher.encrypt(session_string),
             name=name,
             soul_prompt=soul_prompt,
+            settings=settings,
             completed_agent_id=completed_agent_id,
         )
         await self._repository.save(session)

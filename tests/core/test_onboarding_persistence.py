@@ -240,6 +240,7 @@ async def test_request_code_with_existing_onboarding_id_reuses_draft() -> None:
             authorization_status=TelegramLoginStatus.NOT_STARTED,
             name="Mimic",
             soul_prompt="Short replies",
+            settings={"enabled_tools": ["send_text_message"]},
         )
     )
     service = AgentOnboardingService(
@@ -259,6 +260,7 @@ async def test_request_code_with_existing_onboarding_id_reuses_draft() -> None:
     reused = await repository.get(onboarding_id)
     assert reused.name == "Mimic"
     assert reused.soul_prompt == "Short replies"
+    assert reused.settings == {"enabled_tools": ["send_text_message"]}
     assert reused.phone_number == "+79990000001"
 
 
