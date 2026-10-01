@@ -8,6 +8,7 @@ import { useMediaUrl } from '@/hooks/useMediaUrl';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/input';
 import { Card, CardTitle } from '@/components/ui/card';
+import { Switch } from '@/components/ui/switch';
 import { cn } from '@/lib/utils';
 import {
   FIRST_COMMENT_MAX_CAPTION,
@@ -139,7 +140,7 @@ export function FirstCommentSettingsSection({
             без задержки и без ИИ. Если вариантов несколько, для каждого поста берётся случайный.
           </p>
         </div>
-        <Toggle
+        <Switch
           checked={value.enabled}
           onChange={(enabled) => onChange((prev) => ({ ...prev, enabled }))}
           label="Первый комментарий"
@@ -378,37 +379,3 @@ function ImagePreview({
   );
 }
 
-// ── Переключатель ─────────────────────────────────────────────────────────────
-
-function Toggle({
-  checked,
-  onChange,
-  label,
-}: {
-  checked: boolean;
-  onChange: (next: boolean) => void;
-  label: string;
-}) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      aria-label={label}
-      onClick={() => onChange(!checked)}
-      className={cn(
-        'relative inline-flex h-6 w-11 shrink-0 items-center rounded-full border transition-colors',
-        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
-        checked ? 'border-primary bg-primary' : 'border-border bg-muted',
-      )}
-    >
-      <span
-        aria-hidden="true"
-        className={cn(
-          'inline-block h-4 w-4 rounded-full bg-foreground transition-transform',
-          checked ? 'translate-x-6' : 'translate-x-1',
-        )}
-      />
-    </button>
-  );
-}
