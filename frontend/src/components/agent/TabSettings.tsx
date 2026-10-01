@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Input, Textarea, Label } from '@/components/ui/input';
 import { Skeleton, Badge } from '@/components/ui/card';
 import { PresetPicker } from '@/components/agent/PresetPicker';
+import { ToolsSettings } from '@/components/agent/ToolsSettings';
 import {
   EMPTY_FIRST_COMMENT,
   FirstCommentSettingsSection,
@@ -17,6 +18,7 @@ import {
 import { DEFAULT_MODEL, optionsIncluding } from '@/lib/models';
 import { agentsApi } from '@/lib/api';
 import { pickReasoningValue, reasoningLabel, reasoningOptionValues } from '@/lib/reasoning';
+import { readEnabledTools } from '@/lib/tools/agentTools';
 import { agentSettingsSchema, type AgentSettingsValues } from '@/lib/validators';
 import type { ApiError } from '@/types';
 
@@ -36,6 +38,7 @@ export function TabSettings({ agentId }: { agentId: string }) {
   const [values, setValues] = useState<SettingsFormValues>({
     name: '', soul_prompt: '', reasoning_effort: 'high', model: DEFAULT_MODEL,
     first_comment: EMPTY_FIRST_COMMENT,
+    enabled_tools: null,
   });
   const [formErrors, setFormErrors] = useState<Partial<Record<keyof AgentSettingsValues, string>>>({});
   const [dirty, setDirty] = useState(false);
@@ -49,6 +52,7 @@ export function TabSettings({ agentId }: { agentId: string }) {
           (details.settings?.reasoning_effort as AgentSettingsValues['reasoning_effort']) ?? 'high',
         model: (details.settings?.model as string) ?? DEFAULT_MODEL,
         first_comment: readFirstComment(details.settings),
+        enabled_tools: readEnabledTools(details.settings),
       });
     }
   }, [details]);
@@ -82,17 +86,24 @@ export function TabSettings({ agentId }: { agentId: string }) {
     try {
       // Merge instead of overwrite: keep settings keys the form does not own.
       const existingSettings = (details?.settings ?? {}) as Record<string, unknown>;
+      const mergedSettings: Record<string, unknown> = {
+        ...existingSettings,
+        // Models without exposed effort selection must not receive a stale
+        // stored effort: "none" keeps the request clean.
+        reasoning_effort: reasoningOptions === null ? 'none' : result.data.reasoning_effort,
+        model: result.data.model,
+        first_comment: result.data.first_comment ?? EMPTY_FIRST_COMMENT,
+      };
+      if (result.data.enabled_tools != null) {
+        mergedSettings.enabled_tools = result.data.enabled_tools;
+      } else {
+        // null — режим «включены все»: ключ убирается, а не пишется пустым.
+        delete mergedSettings.enabled_tools;
+      }
       const submissionData = {
         name: result.data.name,
         soul_prompt: result.data.soul_prompt,
-        settings: {
-          ...existingSettings,
-          // Models without exposed effort selection must not receive a stale
-          // stored effort: "none" keeps the request clean.
-          reasoning_effort: reasoningOptions === null ? 'none' : result.data.reasoning_effort,
-          model: result.data.model,
-          first_comment: result.data.first_comment ?? EMPTY_FIRST_COMMENT,
-        },
+        settings: mergedSettings,
       };
       await update.mutateAsync(submissionData);
       // The runtime is built once: new settings need a rebuild.
@@ -179,6 +190,14 @@ export function TabSettings({ agentId }: { agentId: string }) {
           )}
         </div>
       )}
+
+      <ToolsSettings
+        value={values.enabled_tools ?? null}
+        onChange={(enabled) => {
+          setValues((v) => ({ ...v, enabled_tools: enabled }));
+          setDirty(true);
+        }}
+      />
 
       <FirstCommentSettingsSection
         agentId={agentId}
