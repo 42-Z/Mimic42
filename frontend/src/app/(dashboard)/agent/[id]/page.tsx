@@ -9,6 +9,7 @@ import { TabActivity } from '@/components/activity/TabActivity';
 import { TabAnalytics } from '@/components/agent/TabAnalytics';
 import { TabSettings } from '@/components/agent/TabSettings';
 import { ResetContextDialog } from '@/components/agent/ResetContextDialog';
+import { MemoryCard } from '@/components/agent/MemoryCard';
 import { useTelegramSession } from '@/hooks/useTelegramSession';
 import {
   useStartAgent, useStopAgent, useTriggerMessage, useDeleteAgent,
@@ -567,38 +568,13 @@ function TabMemory({ agentId }: TabMemoryProps) {
           </p>
         </Card>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 items-start gap-3">
           {memories.map((mem) => (
-            <Card
-              variant="glass"
-              padding="md"
+            <MemoryCard
               key={mem.id}
-              className="relative group min-w-0 border-border/80 hover:border-primary/30 transition-colors flex flex-col justify-between"
-            >
-              <div>
-                <p className="text-foreground text-sm leading-relaxed whitespace-pre-wrap [overflow-wrap:anywhere]">
-                  {sanitizeText(mem.memory)}
-                </p>
-              </div>
-
-              <div className="mt-4 flex items-center justify-between border-t border-border/60 pt-3">
-                <span className="font-mono text-[10px] text-muted-foreground flex items-center gap-1.5">
-                  <Clock className="h-3 w-3" />
-                  {mem.created_at 
-                    ? format(new Date(mem.created_at), 'dd.MM.yyyy HH:mm', { locale: ru }) 
-                    : 'Неизвестно'}
-                </span>
-                <Button
-                  variant="ghost"
-                  size="xs"
-                  onClick={() => handleShowHistory(mem.id)}
-                  leftIcon={<RefreshCw className="h-3 w-3" />}
-                  className="text-muted-foreground transition-colors hover:bg-muted/40 hover:text-primary"
-                >
-                  История
-                </Button>
-              </div>
-            </Card>
+              memory={mem}
+              onShowHistory={handleShowHistory}
+            />
           ))}
         </div>
       )}
