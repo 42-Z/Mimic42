@@ -94,6 +94,32 @@ async def test_reset_hides_earlier_messages_from_context_but_keeps_history(
         assert event.actor_user_id == owner_id
 
 
+async def test_old_whitespace_reply_carries_structured_text_into_context(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    """Старая запись с пробельным ответом и текстом в structured_response
+    отдаёт модели человеческий текст, а не пустой ход в истории."""
+    owner_id = clean_slot.persona("twofa").user_id
+    agent_id = await _create_agent(db_session_factory, owner_id)
+    async with db_session_factory() as session:
+        session.add(
+            AgentMessageModel(
+                agent_id=agent_id,
+                direction="agent_response",
+                role="assistant",
+                content=" \n ",
+                payload={"peer": PEER, "structured_response": {"text": "старый текст"}},
+                created_at=datetime.now(UTC),
+            )
+        )
+        await session.commit()
+
+    memory = DatabaseShortTermMemory(db_session_factory)
+    context = await _load_context(memory, agent_id)
+    assert "старый текст" in context
+
+
 async def test_reset_of_one_agent_leaves_other_agents_context(
     db_session_factory: async_sessionmaker[AsyncSession],
     clean_slot: Slot,

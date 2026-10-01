@@ -218,8 +218,10 @@ function buildTurn(
   // The visible reply: a stored response row, the structured text of a realtime
   // row with empty content, or the message a successful send_text_message
   // tool call actually delivered (tool-only turns have no response row).
-  let responseContent = responseMsg ? responseMsg.content : '';
-  if (!responseContent && responseMsg) responseContent = structuredTextOf(responseMsg);
+  // Whitespace-only content ("\n" from structured output) counts as empty:
+  // it would render as a blank paragraph instead of the structured text.
+  let responseContent = responseMsg?.content ?? '';
+  if (!responseContent.trim() && responseMsg) responseContent = structuredTextOf(responseMsg);
   let responseCreatedAt = responseMsg?.created_at ?? null;
   if (!responseContent) {
     const sentTool = sortedEvents.find(
@@ -429,7 +431,7 @@ export function turnToActivityItem(turn: ConversationTurn): ActivityItem {
           reply: turn.incoming_reply ?? null,
         }
       : null,
-    response: turn.outgoing
+    response: turn.outgoing?.trim()
       ? { id: `${turn.id}-out`, content: turn.outgoing, createdAt }
       : null,
     trigger: null,

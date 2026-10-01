@@ -20,6 +20,7 @@ from mimic42.core.agent_runtime import (
     TelegramClientLike,
 )
 from mimic42.core.media import MediaUploader
+from mimic42.core.media_download import MediaRefCache
 from mimic42.core.memory import RuntimeMemoryService
 from mimic42.core.send_window import SendWindowTracker
 from mimic42.integrations.langchain_agent import build_langchain_agent
@@ -276,6 +277,7 @@ class AgentManager:
             memory_service = RuntimeMemoryService()
         else:
             memory_service = self._memory_service_factory(config)
+        media_refs = MediaRefCache()
         return MimicAgentRuntime(
             config=config,
             telegram_client=telegram_client,
@@ -287,6 +289,7 @@ class AgentManager:
                     session_factory=self.session_factory,
                     media_uploader=self.media_uploader,
                     send_window=send_window,
+                    media_refs=media_refs,
                 ),
                 self.session_factory,
             ),
@@ -294,6 +297,7 @@ class AgentManager:
             session_factory=self.session_factory,
             media_uploader=self.media_uploader,
             send_window=send_window,
+            media_refs=media_refs,
         )
 
     async def _save_status(self, agent_id: UUID, state: AgentRuntimeState) -> None:
@@ -309,6 +313,7 @@ def _build_runtime(
 ) -> MimicAgentRuntime:
     telegram_client = cast(TelegramClientLike, build_telegram_client(config))
     send_window = SendWindowTracker(telegram_client)
+    media_refs = MediaRefCache()
     return MimicAgentRuntime(
         config=config,
         telegram_client=telegram_client,
@@ -320,12 +325,14 @@ def _build_runtime(
                 session_factory=session_factory,
                 media_uploader=media_uploader,
                 send_window=send_window,
+                media_refs=media_refs,
             ),
             session_factory=session_factory,
         ),
         session_factory=session_factory,
         media_uploader=media_uploader,
         send_window=send_window,
+        media_refs=media_refs,
     )
 
 

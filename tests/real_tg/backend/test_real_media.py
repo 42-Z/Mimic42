@@ -1,0 +1,230 @@
+"""Медиа в реальном Telegram: архив переживает исчезновение файла (issue #98).
+
+Живой сценарий «нескачиваемой картинки»: мимику приходит фото с таймером
+самоуничтожения (как капча бота верификации), байты архивируются при
+получении, а после исчезновения файла из Telegram (таймер самоуничтожения
+запускает получатель; или удаление сообщения — как капчу) копия остаётся
+доступной через API дашборда. Отказ Telegram проверяется на стороне
+мимика-получателя: у отправителя своя копия файла и она не исчезает.
+
+Тест намеренно не ждёт ответов LLM: архив пишется при получении сообщения,
+до хода модели, а ходы бесплатных моделей в общем прогоне могут быть
+медленными.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from io import BytesIO
+from typing import Any, cast
+from uuid import UUID
+
+import pytest
+from fastapi import FastAPI
+from httpx import AsyncClient
+from PIL import Image
+from telethon import errors, functions, types
+
+from mimic42.core.media_download import MediaUnavailableError, download_media_with_refresh
+from mimic42.integrations.telegram_tools import TelegramToolbox
+from mimic42.testing.real_tg.checker import Checker
+from tests.real_tg.backend.helpers import jwt
+
+pytestmark = pytest.mark.real_tg
+
+TTL_SECONDS = 30
+ARCHIVE_TIMEOUT_SECONDS = 120
+
+
+def png(color: tuple[int, int, int]) -> bytes:
+    buffer = BytesIO()
+    Image.new("RGB", (320, 240), color).save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+async def archived_files(uploader: Any, agent_id: str) -> list[str]:
+    """Пути файлов агента в хранилище (память или настоящий Supabase Storage)."""
+    collect = getattr(uploader, "_collect_files", None)
+    if callable(collect):
+        return list(await collect(str(agent_id), 0))
+    files = getattr(uploader, "_files", {})
+    return [path for path in files if path.startswith(f"{agent_id}/")]
+
+
+async def wait_archived_photo(app: FastAPI, agent_id: str, previous_paths: set[str]) -> str | None:
+    """Ждёт, пока входящее фото мимика окажется в хранилище.
+
+    Проверяет само хранилище, а не запись в БД: строка `agent_messages`
+    появляется только после полного хода LLM, а архив — сразу при получении.
+    Среди путей берётся только появившийся после отправки: прошлые прогоны
+    могли оставить собственные `photo.jpeg`.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + ARCHIVE_TIMEOUT_SECONDS
+    uploader = app.state.media_uploader
+    while loop.time() < deadline:
+        paths = await archived_files(uploader, agent_id)
+        photos = [
+            path for path in paths if path.endswith("photo.jpeg") and path not in previous_paths
+        ]
+        if photos:
+            return photos[0]
+        await asyncio.sleep(2)
+    return None
+
+
+async def recipient_side(app: FastAPI, agent_id: str, sender_id: int) -> tuple[Any, Any]:
+    """Клиент мимика и его копия входящего фото.
+
+    В приватном чате id сообщения у каждого аккаунта свой (core.telegram.org/api/updates,
+    «Message ID sequences»: ids «will not be the same for different accounts»),
+    поэтому фото ищем в истории мимика — последнее сообщение с
+    самоуничтожающимся фото. Его id нужен и для readMessageContents, который
+    запускает таймер, и для повторного скачивания.
+    """
+    runtime = await app.state.agent_manager.get_agent(UUID(agent_id))
+    # Для живого теста нужен именно клиент получателя; публичного доступа нет.
+    client = runtime._telegram_client
+    async for message in client.iter_messages(sender_id, limit=10):
+        media = getattr(message, "media", None)
+        if media is not None and getattr(media, "ttl_seconds", None) == TTL_SECONDS:
+            return client, message
+    return client, None
+
+
+async def recipient_can_download(client: Any, message: Any, sender_id: int) -> bool:
+    # Старая file_reference сама по себе не доказывает исчезновение файла:
+    # Telethon может отдать байты после обновления сообщения получателем.
+    try:
+        data = await download_media_with_refresh(
+            client, message, message_ref=(sender_id, message.id), file=bytes
+        )
+    except MediaUnavailableError:
+        return False
+    return bool(data)
+
+
+async def telegram_loses_the_file(
+    checker: Checker,
+    mimic_client: Any,
+    received: Any,
+    sender_id: int,
+    phone: str,
+    sender_message_id: int,
+) -> str:
+    """Пытается заставить Telegram потерять файл у получателя; диагноз.
+
+    Файл теряет получатель: по core.telegram.org/api/views («Non-secret
+    expiring media») таймер самоуничтожения запускает messages.readMessageContents
+    с id сообщения получателя, после чего его file_reference перестаёт
+    работать. Копия отправителя остаётся живой, поэтому проверяем сторону
+    мимика — тот самый отказ из issue #98.
+    """
+    if not await recipient_can_download(mimic_client, received, sender_id):
+        return "уже недоступно"
+
+    # Получатель открывает медиа — таймер самоуничтожения стартует.
+    # Ошибка запроса не должна выглядеть как успешное истечение таймера.
+    await mimic_client(functions.messages.ReadMessageContentsRequest(id=[received.id]))
+    await asyncio.sleep(TTL_SECONDS + 5)
+    if not await recipient_can_download(mimic_client, received, sender_id):
+        return "просмотр получателем + таймер TTL"
+
+    await checker.client.delete_messages(phone, [sender_message_id], revoke=True)
+    if not await recipient_can_download(mimic_client, received, sender_id):
+        return "удаление сообщения"
+    return "файл ещё доступен"
+
+
+async def test_self_destructing_photo_is_archived_before_telegram_loses_it(
+    real_app: tuple[FastAPI, AsyncClient],
+    checker: Checker,
+    started_mimics: list[tuple[str, str]],
+) -> None:
+    agent_id, phone = started_mimics[0]
+    app, client = real_app
+    await checker.import_contact(phone)
+    previous_paths = set(await archived_files(app.state.media_uploader, agent_id))
+
+    stream = BytesIO(png((60, 160, 90)))
+    stream.name = "verify.png"
+    message = cast(Any, await checker.client.send_file(phone, stream, ttl=TTL_SECONDS))
+    # Фото действительно самоуничтожающееся — как капча бота верификации.
+    assert getattr(getattr(message, "media", None), "ttl_seconds", None) == TTL_SECONDS
+
+    storage_path = await wait_archived_photo(app, agent_id, previous_paths)
+    assert storage_path, "Входящее фото не заархивировалось в Storage"
+
+    sender_id = await checker.my_id()
+    mimic_client, received = await recipient_side(app, agent_id, sender_id)
+    assert received is not None, "Мимик не видит входящее самоуничтожающееся фото"
+
+    # Файл может оказаться недоступным уже при первой проверке (TTL-медиа).
+    # Это также доказывает живучесть архива, но не работу таймера в тесте.
+    mechanism = await telegram_loses_the_file(
+        checker, mimic_client, received, sender_id, phone, message.id
+    )
+    print("потеря файла из Telegram:", mechanism)  # noqa: T201 — диагностика живого прогона
+    assert mechanism in {
+        "уже недоступно",
+        "просмотр получателем + таймер TTL",
+        "удаление сообщения",
+    }, f"Telegram продолжает отдавать файл ({mechanism}): сценарий не воспроизвёлся"
+
+    # Главное живое свойство: байты реального Telegram-файла переживают
+    # исчезновение сообщения и отдаются через API дашборда.
+    token = await jwt()
+    response = await client.get(
+        f"/api/v1/agents/{agent_id}/media/{storage_path}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == 200, response.text
+    # Фото в хранилище лежит как jpeg (пережатое Telegram).
+    assert response.content[:2] == b"\xff\xd8"
+
+    # То же архивное фото можно заново отправить, когда Telegram больше не
+    # принимает старую file_reference. Используем уже работающий клиент мимика,
+    # не подключая его сессию второй раз.
+    runtime = await app.state.agent_manager.get_agent(UUID(agent_id))
+    media_ids = [
+        media_id
+        for media_id, ref in runtime._media_refs._entries.items()
+        if ref.storage_path == storage_path
+    ]
+    assert len(media_ids) == 1, "Связь архивной копии с media_id потеряна"
+
+    class ArchivedSendProbe:
+        def __init__(self, client: Any) -> None:
+            self.client = client
+            self.uploaded: list[bytes] = []
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self.client, name)
+
+        async def send_file(self, entity: Any, file: Any, **kwargs: Any) -> Any:
+            # The download above proved the file is gone; force the expired
+            # reference on send too, so this test *must* exercise the upload.
+            if isinstance(file, types.InputPhoto):
+                raise errors.FileReferenceExpiredError(type("Request", (), {})())
+            assert isinstance(file, BytesIO)
+            self.uploaded.append(file.getvalue())
+            return await self.client.send_file(entity, file, **kwargs)
+
+    send_probe = ArchivedSendProbe(mimic_client)
+    toolbox = TelegramToolbox(
+        send_probe,
+        media_uploader=app.state.media_uploader,
+        media_refs=runtime._media_refs,
+    )
+    caption = f"Проверка архивной отправки {agent_id}"
+    resent = await toolbox.send_file(str(sender_id), media_ids[0], caption=caption)
+    assert resent.get("success") is True, resent
+    assert send_probe.uploaded == [response.content]
+    returned = None
+    async for item in checker.client.iter_messages(phone, limit=10):
+        if item.message == caption:
+            returned = item
+            break
+    assert returned is not None and returned.photo is not None
+    returned_data = await checker.client.download_media(returned, file=cast(Any, bytes))
+    assert returned_data is not None and returned_data[:2] == b"\xff\xd8"

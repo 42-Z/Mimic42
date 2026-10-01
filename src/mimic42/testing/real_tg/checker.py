@@ -425,11 +425,19 @@ class SyncChecker:
         self._run(self._checker.start())
 
     def stop(self) -> None:
+        # Повторный вызов — не ошибка: луп уже закрыт, закрывать нечего.
+        if self._loop.is_closed():
+            return
         try:
             self._run(self._checker.stop())
         finally:
             self._loop.call_soon_threadsafe(self._loop.stop)
             self._thread.join(timeout=30)
+            # Луп и его self-pipe-сокеты иначе переживают stop() и всплывают
+            # ResourceWarning, а с -W error это ошибка прогона.
+            if self._thread.is_alive():
+                raise TimeoutError("Луп проверяющего не остановился за 30 секунд")
+            self._loop.close()
 
     def mimic_phones(self, dsn: str, owner_id: UUID) -> list[str]:
         return cast(list[str], self._run(self._checker.mimic_phones(dsn, owner_id)))
