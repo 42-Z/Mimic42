@@ -572,3 +572,38 @@ async def test_runtime_config_defaults_first_comment_to_off(
     config = await store.get_runtime_config(agent_id)
 
     assert config.first_comment.is_active is False
+
+
+async def test_get_runtime_config_parses_enabled_tools(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    owner_id = clean_slot.persona("full").user_id
+    agent_id = uuid4()
+    store = DatabaseAgentStore(db_session_factory)
+    await store.create_from_onboarding(_make_session(owner_id, agent_id, "Mimic"))
+    async with db_session_factory() as db_session:
+        await db_session.execute(
+            update(AgentModel)
+            .where(AgentModel.id == agent_id)
+            .values(settings={"enabled_tools": ["send_text_message", "view_image"]})
+        )
+        await db_session.commit()
+
+    config = await store.get_runtime_config(agent_id)
+
+    assert config.enabled_tools == frozenset({"send_text_message", "view_image"})
+
+
+async def test_get_runtime_config_without_enabled_tools_enables_all(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    owner_id = clean_slot.persona("full").user_id
+    agent_id = uuid4()
+    store = DatabaseAgentStore(db_session_factory)
+    await store.create_from_onboarding(_make_session(owner_id, agent_id, "Mimic"))
+
+    config = await store.get_runtime_config(agent_id)
+
+    assert config.enabled_tools is None

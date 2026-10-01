@@ -23,6 +23,7 @@ from mimic42.core.agent_store import (
 )
 from mimic42.core.first_comment import parse_first_comment
 from mimic42.core.onboarding import OnboardingSession, SecretCipher
+from mimic42.core.tool_config import parse_enabled_tools
 from mimic42.integrations.database_models import (
     AgentEventModel,
     AgentMessageModel,
@@ -202,6 +203,9 @@ class DatabaseAgentStore:
                 reasoning_effort=agent.settings.get("reasoning_effort", "high")
                 if agent.settings
                 else "high",
+                enabled_tools=parse_enabled_tools(
+                    agent.settings.get("enabled_tools") if agent.settings else None
+                ),
                 system_prompt=load_default_system_prompt(),
                 soul_prompt=agent.soul_prompt,
                 name=agent.name,
