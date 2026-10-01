@@ -672,7 +672,7 @@ def build_telegram_langchain_tools(
 Создать `src/mimic42/integrations/tool_access_middleware.py`:
 
 ```python
-"""Страховка: отключённый инструмент не выполняется даже из старого рантайма."""
+"""Страховка исполнения: вызов инструмента вне allowlist отклоняется."""
 
 from __future__ import annotations
 
@@ -689,8 +689,10 @@ ToolCallHandler = Callable[[ToolCallRequest], Awaitable[Any]]
 class ToolAccessMiddleware(AgentMiddleware):
     """Отклоняет вызовы инструментов, которых нет в allowlist агента.
 
-    Список инструментов фильтруется ещё при сборке рантайма; эта проверка
-    закрывает окно гонки, когда старый рантайм доживает ход после reload.
+    Каталог инструментов фильтруется ещё при сборке рантайма; эта проверка —
+    второй барьер инварианта: имя вне allowlist не исполняется, даже если оно
+    пришло не из отфильтрованного списка (например, модель назвала
+    несуществующий инструмент или появился путь сборки без фильтра).
     """
 
     def __init__(self, enabled_tools: frozenset[str]) -> None:
@@ -706,7 +708,8 @@ class ToolAccessMiddleware(AgentMiddleware):
         if tool_name not in self._enabled_tools:
             return ToolMessage(
                 content=f"Инструмент «{tool_name}» отключён в настройках агента.",
-                tool_call_id=request.tool_call.get("id", ""),
+                name=tool_name,
+                tool_call_id=request.tool_call.get("id") or "",
                 status="error",
             )
         return await handler(request)

@@ -29,6 +29,7 @@ async def test_blocks_tool_outside_allowlist() -> None:
     assert called is False
     assert isinstance(result, ToolMessage)
     assert result.status == "error"
+    assert result.name == "delete_messages"
     assert "delete_messages" in str(result.content)
 
 
@@ -54,3 +55,19 @@ async def test_empty_allowlist_blocks_everything() -> None:
 
     assert isinstance(result, ToolMessage)
     assert result.status == "error"
+
+
+@pytest.mark.asyncio
+async def test_survives_missing_tool_call_id() -> None:
+    middleware = ToolAccessMiddleware(frozenset({"send_text_message"}))
+    request: Any = type(
+        "Request", (), {"tool_call": {"name": "delete_messages", "args": {}, "id": None}}
+    )()
+
+    async def handler(request: Any) -> Any:
+        raise AssertionError("handler must not be called")
+
+    result = await middleware.awrap_tool_call(request, handler)
+
+    assert isinstance(result, ToolMessage)
+    assert result.tool_call_id == ""
