@@ -2836,8 +2836,13 @@ def build_telegram_langchain_tools(
     media_uploader: MediaUploader | None = None,
     send_window: Any | None = None,
     media_refs: MediaRefCache | None = None,
+    enabled_tools: frozenset[str] | None = None,
 ) -> list[BaseTool]:
-    """Expose all 91 tools as LangChain StructuredTools."""
+    """Expose the Telegram tools as LangChain StructuredTools.
+
+    ``enabled_tools`` limits the exposed set to the given allowlist; ``None``
+    keeps the full catalog of 91 tools.
+    """
     toolbox = TelegramToolbox(
         client,
         agent_id=agent_id,
@@ -2856,7 +2861,7 @@ def build_telegram_langchain_tools(
         refs = [item for item in result if item.get("type") == "media_ref"]
         return content, {"items": refs} if refs else None
 
-    return [
+    tools: list[BaseTool] = [
         StructuredTool.from_function(
             coroutine=toolbox.send_text_message,
             name="send_text_message",
@@ -3417,3 +3422,7 @@ def build_telegram_langchain_tools(
             description="Enable or disable sensitive content filter.",
         ),
     ]
+
+    if enabled_tools is None:
+        return tools
+    return [tool for tool in tools if tool.name in enabled_tools]

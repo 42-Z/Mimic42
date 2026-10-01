@@ -23,6 +23,7 @@ from mimic42.integrations.langchain_agent import (
     build_langchain_agent,
 )
 from mimic42.integrations.token_usage_middleware import TokenUsageMiddleware
+from mimic42.integrations.tool_access_middleware import ToolAccessMiddleware
 
 
 def _config(llm_model: str, reasoning_effort: str = "high") -> AgentRuntimeConfig:
@@ -277,3 +278,35 @@ async def test_graph_agent_closes_the_openrouter_http_client() -> None:
     await agent.aclose()
 
     assert model.client.sdk_configuration.async_client.is_closed
+
+
+def test_build_langchain_agent_guards_disabled_tools(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_create_agent(**kwargs: Any) -> str:
+        captured.update(kwargs)
+        return "graph"
+
+    monkeypatch.setattr(langchain_agent_module, "create_agent", fake_create_agent)
+
+    config = _config("mistral-small")
+    config.enabled_tools = frozenset({"send_text_message"})
+    build_langchain_agent(config)
+
+    assert any(isinstance(m, ToolAccessMiddleware) for m in captured["middleware"])
+
+
+def test_build_langchain_agent_without_allowlist_has_no_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_create_agent(**kwargs: Any) -> str:
+        captured.update(kwargs)
+        return "graph"
+
+    monkeypatch.setattr(langchain_agent_module, "create_agent", fake_create_agent)
+
+    build_langchain_agent(_config("mistral-small"))
+
+    assert not any(isinstance(m, ToolAccessMiddleware) for m in captured["middleware"])

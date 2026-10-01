@@ -2484,3 +2484,22 @@ async def test_every_send_tool_is_guarded_by_the_window() -> None:
     for name, call in calls.items():
         result = await call
         assert result.get("error_code") == "SendWindowClosed", f"{name} обошёл окно: {result}"
+
+
+@pytest.mark.asyncio
+async def test_tools_filtered_by_enabled_allowlist() -> None:
+    client = FakeTelethonClient()
+    tools = build_telegram_langchain_tools(
+        cast(TelethonRequestClient, client),
+        enabled_tools=frozenset({"send_text_message", "view_image"}),
+    )
+
+    assert {tool.name for tool in tools} == {"send_text_message", "view_image"}
+
+
+@pytest.mark.asyncio
+async def test_tools_unfiltered_without_allowlist() -> None:
+    client = FakeTelethonClient()
+    tools = build_telegram_langchain_tools(cast(TelethonRequestClient, client))
+
+    assert len(tools) == 91
