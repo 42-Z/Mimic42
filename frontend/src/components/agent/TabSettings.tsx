@@ -18,7 +18,7 @@ import {
 import { DEFAULT_MODEL, optionsIncluding } from '@/lib/models';
 import { agentsApi } from '@/lib/api';
 import { pickReasoningValue, reasoningLabel, reasoningOptionValues } from '@/lib/reasoning';
-import { readEnabledTools } from '@/lib/tools/agentTools';
+import { readEnabledTools, mergeEnabledTools } from '@/lib/tools/agentTools';
 import { agentSettingsSchema, type AgentSettingsValues } from '@/lib/validators';
 import type { ApiError } from '@/types';
 
@@ -94,16 +94,11 @@ export function TabSettings({ agentId }: { agentId: string }) {
         model: result.data.model,
         first_comment: result.data.first_comment ?? EMPTY_FIRST_COMMENT,
       };
-      if (result.data.enabled_tools != null) {
-        mergedSettings.enabled_tools = result.data.enabled_tools;
-      } else {
-        // null — режим «включены все»: ключ убирается, а не пишется пустым.
-        delete mergedSettings.enabled_tools;
-      }
+      const submissionSettings = mergeEnabledTools(mergedSettings, result.data.enabled_tools);
       const submissionData = {
         name: result.data.name,
         soul_prompt: result.data.soul_prompt,
-        settings: mergedSettings,
+        settings: submissionSettings,
       };
       await update.mutateAsync(submissionData);
       // The runtime is built once: new settings need a rebuild.

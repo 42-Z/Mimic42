@@ -22,3 +22,22 @@ export function readEnabledTools(
   if (names.length === 0 && value.length > 0) return null;
   return names;
 }
+
+/**
+ * Вернуть настройки с обновлённым `enabled_tools`.
+ *
+ * Список (включая пустой) записывается как есть; `null`/`undefined` — режим
+ * «включены все»: ключ удаляется. Исходный объект не мутируется.
+ */
+export function mergeEnabledTools(
+  existing: Record<string, unknown>,
+  enabledTools: string[] | null | undefined,
+): Record<string, unknown> {
+  const merged = { ...existing };
+  if (enabledTools != null) {
+    merged.enabled_tools = enabledTools;
+  } else {
+    delete merged.enabled_tools;
+  }
+  return merged;
+}
