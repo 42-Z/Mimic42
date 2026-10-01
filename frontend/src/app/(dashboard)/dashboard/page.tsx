@@ -5,7 +5,6 @@ import { useAllAgentsKPIs, useAgentsDetails, type AgentDetails } from '@/hooks/u
 import { useMultiAgentRealtimeFeed, useAllAgentsStatusRealtime } from '@/hooks/useRealtimeFeed';
 import { useToast } from '@/components/ui/toast';
 import { AgentStatusBadge } from '@/components/agents/AgentStatusBadge';
-import { ResetContextDialog } from '@/components/agent/ResetContextDialog';
 import { AgentToggleButton } from '@/components/agents/AgentToggleButton';
 import { AgentIdentity } from '@/components/agents/AgentIdentity';
 import { Card, Skeleton } from '@/components/ui/card';
@@ -18,10 +17,9 @@ import { formatDistanceToNow } from 'date-fns';
 import { ru } from 'date-fns/locale';
 import {
   MessageSquare, Activity, AlertTriangle, Users,
-  RefreshCw, Wifi, WifiOff, Bot, Plus, Settings, RotateCcw,
+  RefreshCw, Wifi, WifiOff, Bot, Plus, Settings,
 } from 'lucide-react';
 import Link from 'next/link';
-import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { AgentRecord } from '@/types';
 import { incomingBody, type ActivityItem } from '@/lib/activity/normalize';
@@ -202,7 +200,6 @@ function AgentCard({ agent, details }: { agent: AgentRecord; details?: AgentDeta
   const { mutate: start, isPending: starting } = useStartAgent();
   const { mutate: stop, isPending: stopping } = useStopAgent();
   const { toast } = useToast();
-  const [resetConfirm, setResetConfirm] = useState(false);
 
   const rebind = needsRebind(details?.authorization_status);
 
@@ -221,74 +218,54 @@ function AgentCard({ agent, details }: { agent: AgentRecord; details?: AgentDeta
   };
 
   return (
-    <>
-      <Card
-        variant="glass"
-        padding="md"
-        className="space-y-3 transition-colors hover:border-primary/25"
-        data-testid={`agent-card-${agent.agent_id}`}
-      >
-        <div className="flex items-start justify-between gap-2">
-          <div className="flex items-center gap-3 min-w-0">
-            <div className="h-9 w-9 rounded-sm bg-muted border border-border flex items-center justify-center shrink-0" aria-hidden="true">
-              <Bot className="h-4 w-4 text-primary" />
-            </div>
-            <AgentIdentity
-              className="min-w-0"
-              name={agent.name}
-              username={details?.username}
-              subtitle={details?.phone_number ? maskPhoneNumber(details.phone_number) : 'Telegram не подключён'}
-            />
+    <Card
+      variant="glass"
+      padding="md"
+      className="space-y-3 transition-colors hover:border-primary/25"
+      data-testid={`agent-card-${agent.agent_id}`}
+    >
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="h-9 w-9 rounded-sm bg-muted border border-border flex items-center justify-center shrink-0" aria-hidden="true">
+            <Bot className="h-4 w-4 text-primary" />
           </div>
-          <AgentStatusBadge state={agent.state} />
-        </div>
-
-        <p className="font-mono text-xs text-muted-foreground">
-          {details?.last_started_at
-            ? `Запускался ${formatDistanceToNow(new Date(details.last_started_at), { addSuffix: true, locale: ru })}`
-            : 'Ещё не запускался'}
-        </p>
-
-        <div className="flex items-center gap-2 pt-1">
-          <AgentToggleButton
-            agentId={agent.agent_id}
-            state={agent.state}
-            needsRebind={rebind}
-            isStarting={starting}
-            isStopping={stopping}
-            onStart={handleStart}
-            onStop={handleStop}
+          <AgentIdentity
+            className="min-w-0"
+            name={agent.name}
+            username={details?.username}
+            subtitle={details?.phone_number ? maskPhoneNumber(details.phone_number) : 'Telegram не подключён'}
           />
-          <div className="flex-1" />
-          <Button
-            variant="ghost" size="sm" className="px-2"
-            onClick={() => setResetConfirm(true)}
-            aria-label="Сбросить контекст"
-            title="Сбросить контекст"
-            data-testid={`agent-reset-context-${agent.agent_id}`}
-          >
-            <RotateCcw className="h-4 w-4" />
-          </Button>
-          <Link
-            href={`/agent/${agent.agent_id}`}
-            aria-label="Настройки агента"
-            title="Настройки агента"
-            className={cn(buttonVariants({ variant: 'ghost', size: 'sm' }), 'px-2')}
-          >
-            <Settings className="h-4 w-4" />
-          </Link>
         </div>
-      </Card>
+        <AgentStatusBadge state={agent.state} />
+      </div>
 
-      {/* Вне карточки ради ясности разметки: диалог портируется в document.body (radix),
-          поэтому backdrop-blur и стекинг стеклянной карточки на него не влияют. */}
-      <ResetContextDialog
-        agentId={agent.agent_id}
-        agentName={agent.name}
-        isOpen={resetConfirm}
-        onClose={() => setResetConfirm(false)}
-      />
-    </>
+      <p className="font-mono text-xs text-muted-foreground">
+        {details?.last_started_at
+          ? `Запускался ${formatDistanceToNow(new Date(details.last_started_at), { addSuffix: true, locale: ru })}`
+          : 'Ещё не запускался'}
+      </p>
+
+      <div className="flex items-center gap-2 pt-1">
+        <AgentToggleButton
+          agentId={agent.agent_id}
+          state={agent.state}
+          needsRebind={rebind}
+          isStarting={starting}
+          isStopping={stopping}
+          onStart={handleStart}
+          onStop={handleStop}
+        />
+        <div className="flex-1" />
+        <Link
+          href={`/agent/${agent.agent_id}`}
+          aria-label="Настройки агента"
+          title="Настройки агента"
+          className={cn(buttonVariants({ variant: 'ghost', size: 'sm' }), 'px-2')}
+        >
+          <Settings className="h-4 w-4" />
+        </Link>
+      </div>
+    </Card>
   );
 }
 
