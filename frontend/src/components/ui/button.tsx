@@ -19,6 +19,7 @@ const buttonVariants = cva(
         ghost: ['bg-transparent border-transparent text-muted-foreground', 'hover:bg-muted hover:text-foreground'],
         danger: ['bg-destructive border-destructive text-destructive-foreground', 'hover:bg-crimson-400 hover:shadow-crimson'],
         success: ['bg-success border-success text-success-foreground', 'hover:bg-success/90 hover:shadow-neon-sm'],
+        warning: ['bg-warning border-warning text-primary-foreground', 'hover:bg-warning/90'],
         outline: ['bg-transparent border-border text-foreground', 'hover:bg-muted hover:border-primary/60 hover:text-primary'],
         'plasma-outline': ['bg-transparent border-primary/50 text-primary', 'hover:bg-primary/10 hover:border-primary hover:text-primary hover:shadow-plasma-sm'],
       },

@@ -10,6 +10,8 @@ import { Card, Spinner } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { TurnCard } from './TurnCard';
+import { LifecycleStack } from './LifecycleStack';
+import { groupAgentToggles, type ActivityGroup } from '@/lib/activity/group';
 import { turnToActivityItem, type ActivityItem } from '@/lib/activity/normalize';
 import { cn } from '@/lib/utils';
 
@@ -102,6 +104,13 @@ export function TabActivity({ agentId, agentName }: { agentId: string; agentName
       return true;
     });
   }, [items, filter, search]);
+
+  const grouped = useMemo(() => {
+    const visible = new Set(filtered.map((item) => item.id));
+    return groupAgentToggles(items)
+      .map((group) => group.filter((item) => visible.has(item.id)))
+      .filter((group): group is ActivityGroup => group.length > 0);
+  }, [items, filtered]);
 
   const topId = filtered[0]?.id ?? null;
 
@@ -204,10 +213,12 @@ export function TabActivity({ agentId, agentName }: { agentId: string; agentName
                   </p>
                 </div>
               ) : (
-                filtered.map((item) => (
+                grouped.map((group) => group.length > 1 ? (
+                  <LifecycleStack key={group.at(-1)?.id} items={group} />
+                ) : (
                   <TurnCard
-                    key={item.id}
-                    item={item}
+                    key={group[0].id}
+                    item={group[0]}
                     chatOnly={filter === 'chat'}
                     agentName={agentName}
                   />

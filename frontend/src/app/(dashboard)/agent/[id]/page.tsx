@@ -304,7 +304,7 @@ function TabActions({ agentId }: { agentId: string }) {
       action: () => setResetConfirm(true),
       loading: false,
       label: 'Сбросить',
-      variant: 'outline' as const,
+      variant: 'warning' as const,
       destructive: true,
     },
     {
