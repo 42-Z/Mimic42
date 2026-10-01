@@ -7,7 +7,7 @@ import { agentsApi } from '@/lib/api';
 import { useMediaUrl } from '@/hooks/useMediaUrl';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/input';
-import { Card } from '@/components/ui/card';
+import { Card, CardTitle } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
 import {
   FIRST_COMMENT_MAX_CAPTION,
@@ -133,10 +133,8 @@ export function FirstCommentSettingsSection({
     <Card variant="bordered" padding="md" className="space-y-4">
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0 space-y-1">
-          <h3 className="font-mono text-sm font-medium text-void-200 uppercase tracking-wider">
-            Первый комментарий
-          </h3>
-          <p className="font-mono text-xs text-void-300 max-w-prose">
+          <CardTitle className="text-sm">Первый комментарий</CardTitle>
+          <p className="font-mono text-xs text-muted-foreground max-w-prose">
             Под новым постом канала с открытыми комментариями агент сразу оставляет комментарий —
             без задержки и без ИИ. Если вариантов несколько, для каждого поста берётся случайный.
           </p>
@@ -151,7 +149,7 @@ export function FirstCommentSettingsSection({
       {value.enabled && (
         <div className="space-y-3">
           {value.variants.length === 0 && (
-            <p className="font-mono text-xs text-void-300">
+            <p className="font-mono text-xs text-muted-foreground">
               Пока ни одного варианта — комментировать нечем.
             </p>
           )}
@@ -173,7 +171,7 @@ export function FirstCommentSettingsSection({
             Добавить вариант
           </Button>
           {atLimit && (
-            <p className="font-mono text-xs text-void-300">
+            <p className="font-mono text-xs text-muted-foreground">
               Больше {FIRST_COMMENT_MAX_VARIANTS} вариантов не сохранить.
             </p>
           )}
@@ -241,16 +239,16 @@ function VariantRow({ agentId, index, variant, showErrors, onPatch, onRemove }: 
   };
 
   return (
-    <div className="rounded-sm border border-void-700 bg-void-900/40 p-3 space-y-3">
+    <div className="rounded-sm border border-border bg-muted/40 p-3 space-y-3">
       <div className="flex items-center justify-between">
-        <span className="font-mono text-xs text-void-300 uppercase tracking-wider">
+        <span className="font-mono text-xs text-muted-foreground uppercase tracking-wider">
           Вариант {index + 1}
         </span>
         <button
           type="button"
           onClick={onRemove}
           aria-label={`Удалить вариант ${index + 1}`}
-          className="flex h-8 w-8 items-center justify-center rounded-sm text-void-400 transition-colors hover:bg-void-800 hover:text-crimson-400 focus:outline-none focus:ring-1 focus:ring-crimson-500"
+          className="flex h-8 w-8 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-muted hover:text-crimson-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
         >
           <Trash2 className="h-4 w-4" />
         </button>
@@ -304,7 +302,7 @@ function VariantRow({ agentId, index, variant, showErrors, onPatch, onRemove }: 
               <ImagePlus className="h-4 w-4" />
               {uploading ? 'Загружаем…' : 'Добавить картинку'}
             </Button>
-            <span className="font-mono text-xs text-void-300">
+            <span className="font-mono text-xs text-muted-foreground">
               JPEG или PNG до {MAX_IMAGE_MB} МБ
             </span>
           </div>
@@ -345,10 +343,10 @@ function ImagePreview({
       <div
         className={cn(
           'flex h-full w-full items-center justify-center overflow-hidden rounded-sm',
-          'border border-void-700 bg-void-800'
+          'border border-border bg-muted'
         )}
       >
-        {status === 'loading' && <Loader2 className="h-4 w-4 animate-spin text-void-300" />}
+        {status === 'loading' && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
         {status === 'error' && (
           <span className="font-mono text-[10px] text-crimson-400 text-center px-1">
             не открылась
@@ -369,9 +367,9 @@ function ImagePreview({
         aria-label={`Убрать картинку варианта ${variantNumber}`}
         className={cn(
           'absolute right-1 top-1 flex h-6 w-6 items-center justify-center rounded-sm',
-          'border border-void-700 bg-void-950/80 text-void-200 transition-colors',
+          'border border-border bg-background/80 text-foreground/90 transition-colors',
           'hover:border-crimson-500 hover:text-crimson-400',
-          'focus:outline-none focus:ring-1 focus:ring-crimson-500'
+          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
         )}
       >
         <X className="h-3.5 w-3.5" />
@@ -400,15 +398,15 @@ function Toggle({
       onClick={() => onChange(!checked)}
       className={cn(
         'relative inline-flex h-6 w-11 shrink-0 items-center rounded-full border transition-colors',
-        'focus:outline-none focus:ring-1 focus:ring-plasma-500',
-        checked ? 'border-plasma-600 bg-plasma-700' : 'border-void-600 bg-void-700'
+        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
+        checked ? 'border-primary bg-primary' : 'border-border bg-muted',
       )}
     >
       <span
         aria-hidden="true"
         className={cn(
-          'inline-block h-4 w-4 rounded-full bg-void-100 transition-transform',
-          checked ? 'translate-x-6' : 'translate-x-1'
+          'inline-block h-4 w-4 rounded-full bg-foreground transition-transform',
+          checked ? 'translate-x-6' : 'translate-x-1',
         )}
       />
     </button>

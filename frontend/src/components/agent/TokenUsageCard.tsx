@@ -10,7 +10,7 @@ export function TokenUsageCard({ agentId }: { agentId: string }) {
 
   return (
     <Card variant="glass" padding="md" data-testid="token-usage-card">
-      <h3 className="font-mono text-xs text-void-400 uppercase tracking-wider mb-4">
+      <h3 className="font-mono text-xs text-muted-foreground uppercase tracking-wider mb-4">
         Токены за всё время
       </h3>
       <TokenUsageStats
@@ -50,7 +50,7 @@ export function TokenUsageStats({
     <div className="flex flex-wrap gap-x-10 gap-y-4">
       <TokenStat label="Входные" value={inputTokens} className="text-plasma-400" />
       <TokenStat label="Выходные" value={outputTokens} className="text-neon-400" />
-      <TokenStat label="Всего" value={inputTokens + outputTokens} className="text-void-200" />
+      <TokenStat label="Всего" value={inputTokens + outputTokens} className="text-foreground" />
     </div>
   );
 }
@@ -66,8 +66,8 @@ function TokenStat({
 }) {
   return (
     <div title={value.toLocaleString('ru-RU')}>
-      <div className={cn('font-mono text-2xl', className)}>{formatCompactNumber(value)}</div>
-      <div className="font-mono text-[10px] uppercase tracking-wider text-void-300 mt-1">
+      <div className={cn('font-mono text-2xl tabular-nums', className)}>{formatCompactNumber(value)}</div>
+      <div className="mt-1 font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
         {label}
       </div>
     </div>

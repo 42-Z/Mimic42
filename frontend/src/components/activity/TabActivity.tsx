@@ -2,13 +2,17 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { Activity, Wifi, WifiOff } from 'lucide-react';
+import { Activity, ArrowDown, Wifi, WifiOff } from 'lucide-react';
 import { useActivityFeed } from '@/hooks/useActivityFeed';
 import { useRealtimeFeed } from '@/hooks/useRealtimeFeed';
 import { useMessageThreads } from '@/hooks/useTelegramSession';
 import { Card, Spinner } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { TurnCard } from './TurnCard';
+import { LifecycleStack } from './LifecycleStack';
+import { groupAgentToggles, type ActivityGroup } from '@/lib/activity/group';
+import { isStackOpen, setStackOpen, type ExpandedStackIds } from '@/lib/activity/expand';
 import { turnToActivityItem, type ActivityItem } from '@/lib/activity/normalize';
 import { cn } from '@/lib/utils';
 
@@ -102,6 +106,18 @@ export function TabActivity({ agentId, agentName }: { agentId: string; agentName
     });
   }, [items, filter, search]);
 
+  const grouped = useMemo(() => {
+    const visible = new Set(filtered.map((item) => item.id));
+    return groupAgentToggles(items)
+      .map((group) => group.filter((item) => visible.has(item.id)))
+      .filter((group): group is ActivityGroup => group.length > 0);
+  }, [items, filtered]);
+
+  // Раскрытие стека живёт по id событий, а не по DOM-позиции: «Загрузить ещё»
+  // дописывает старые события к той же последовательности, realtime — новые
+  // сверху, и пересборка групп не должна схлопывать уже раскрытый стек.
+  const [expandedStackIds, setExpandedStackIds] = useState<ExpandedStackIds>(new Set());
+
   const topId = filtered[0]?.id ?? null;
 
   useEffect(() => {
@@ -127,43 +143,52 @@ export function TabActivity({ agentId, agentName }: { agentId: string; agentName
           onChange={(e) => setSearch(e.target.value)}
           className="sm:max-w-xs"
         />
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1" role="group" aria-label="Фильтр записей">
           {(Object.keys(FILTER_LABELS) as FeedFilter[]).map((f) => (
-            <button
+            <Button
               key={f}
+              type="button"
+              size="xs"
+              variant="outline"
               data-testid={`log-filter-${f}`}
+              aria-pressed={filter === f}
               onClick={() => applyFilter(f)}
               className={cn(
-                'px-3 py-1.5 rounded-sm font-mono text-xs border transition-colors',
                 filter === f
-                  ? 'bg-plasma-950 border-plasma-800 text-plasma-400'
-                  : 'border-void-700 text-void-300 hover:text-void-100 hover:border-void-600',
+                  ? 'border-primary/60 bg-primary/10 text-primary hover:border-primary hover:text-primary'
+                  : 'border-border text-muted-foreground hover:border-border hover:text-foreground',
               )}
             >
               {FILTER_LABELS[f]}
-            </button>
+            </Button>
           ))}
         </div>
         <div className="flex items-center gap-2 ml-auto">
-          <button
+          <Button
+            type="button"
+            size="xs"
+            variant="outline"
+            aria-pressed={autoScroll}
             onClick={() => setAutoScroll((v) => !v)}
+            leftIcon={<ArrowDown className="h-3 w-3" aria-hidden="true" />}
             className={cn(
-              'font-mono text-xs px-3 py-1.5 rounded-sm border transition-colors',
-              autoScroll ? 'border-neon-800 text-neon-500' : 'border-void-700 text-void-400',
+              autoScroll
+                ? 'border-success/50 text-success hover:border-success/60 hover:text-success'
+                : 'border-border text-muted-foreground hover:border-border hover:text-foreground',
             )}
           >
-            {autoScroll ? '⬇ Авто-скролл' : '— Авто-скролл'}
-          </button>
+            Авто-скролл
+          </Button>
           <div className="flex items-center gap-1.5">
             {isConnected ? (
-              <Wifi className="h-3.5 w-3.5 text-neon-400" />
+              <Wifi className="h-3.5 w-3.5 text-neon-400" aria-hidden="true" />
             ) : (
-              <WifiOff className="h-3.5 w-3.5 text-void-400" />
+              <WifiOff className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
             )}
             <span
               className={cn(
-                'font-mono text-[10px]',
-                isConnected ? 'text-neon-500' : 'text-void-400',
+                'font-mono text-[10px] tracking-wider',
+                isConnected ? 'text-neon-500' : 'text-muted-foreground',
               )}
             >
               {isConnected ? 'ОНЛАЙН' : 'ОФЛАЙН'}
@@ -184,18 +209,31 @@ export function TabActivity({ agentId, agentName }: { agentId: string; agentName
               {filtered.length === 0 ? (
                 <div
                   className={cn(
-                    'flex flex-col items-center justify-center text-void-400 gap-2',
+                    'flex flex-col items-center justify-center gap-2 text-muted-foreground',
                     hasNextPage ? 'py-16' : 'h-full',
                   )}
                 >
-                  <Activity className="h-8 w-8 opacity-30" />
-                  <p>{hasNextPage ? 'На этой странице совпадений нет' : 'Нет записей'}</p>
+                  <Activity className="h-8 w-8 opacity-30" aria-hidden="true" />
+                  <p className="font-mono text-sm">
+                    {hasNextPage ? 'На этой странице совпадений нет' : 'Нет записей'}
+                  </p>
                 </div>
               ) : (
-                filtered.map((item) => (
+                grouped.map((group) => group.length > 1 ? (
+                  <LifecycleStack
+                    key={group[0].id}
+                    items={group}
+                    isOpen={isStackOpen(group.map((item) => item.id), expandedStackIds)}
+                    onToggle={(open) =>
+                      setExpandedStackIds((prev) =>
+                        setStackOpen(prev, group.map((item) => item.id), open),
+                      )
+                    }
+                  />
+                ) : (
                   <TurnCard
-                    key={item.id}
-                    item={item}
+                    key={group[0].id}
+                    item={group[0]}
                     chatOnly={filter === 'chat'}
                     agentName={agentName}
                   />
@@ -205,12 +243,9 @@ export function TabActivity({ agentId, agentName }: { agentId: string; agentName
                 {isFetchingNextPage ? (
                   <Spinner className="inline-block" />
                 ) : hasNextPage ? (
-                  <button
-                    onClick={() => fetchNextPage()}
-                    className="font-mono text-xs text-void-300 hover:text-void-100 transition-colors"
-                  >
+                  <Button type="button" variant="ghost" size="xs" onClick={() => fetchNextPage()}>
                     Загрузить ещё
-                  </button>
+                  </Button>
                 ) : null}
               </div>
             </>
@@ -218,7 +253,9 @@ export function TabActivity({ agentId, agentName }: { agentId: string; agentName
         </div>
       </Card>
 
-      <p className="font-mono text-xs text-void-400 text-right">{filtered.length} записей</p>
+      <p className="text-right font-mono text-xs tabular-nums text-muted-foreground">
+        {filtered.length} записей
+      </p>
     </div>
   );
 }

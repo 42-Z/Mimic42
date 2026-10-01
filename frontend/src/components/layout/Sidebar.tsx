@@ -17,6 +17,7 @@ import {
 import { getSupabaseClient } from '@/lib/supabase/client';
 import { useRouter } from 'next/navigation';
 import { useAgents } from '@/hooks/useAgents';
+import { Button } from '@/components/ui/button';
 
 interface NavItem {
   href: string;
@@ -28,6 +29,19 @@ interface NavItem {
 const mainNav: NavItem[] = [
   { href: '/dashboard', label: 'Главная', icon: LayoutDashboard, exact: true },
 ];
+
+// Общие классы состояний навигации: фокус виден, активный пункт несёт
+// индикатор слева (плазменный) и подсвеченный фон.
+const navItemBase = cn(
+  'flex items-center rounded-sm border-l transition-colors duration-150',
+  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
+);
+const navItemState = (isActive: boolean) =>
+  cn(
+    isActive
+      ? 'bg-primary/10 text-primary border-primary'
+      : 'text-muted-foreground hover:text-foreground hover:bg-muted/60 border-transparent',
+  );
 
 interface SidebarProps {
   className?: string;
@@ -66,7 +80,7 @@ export function Sidebar({ className, mobileOpen = false, onMobileClose }: Sideba
     <aside
       className={cn(
         'relative flex flex-col h-dvh',
-        'bg-void-900 border-r border-void-700',
+        'bg-card/60 border-r border-border backdrop-blur-md',
         'transition-[width] duration-300 ease-spring',
         'md:translate-x-0',
         collapsed ? 'md:w-16' : 'md:w-64',
@@ -77,43 +91,45 @@ export function Sidebar({ className, mobileOpen = false, onMobileClose }: Sideba
       )}
     >
       {/* Top scan line */}
-      <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-plasma-600/40 to-transparent" />
+      <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-primary/40 to-transparent" aria-hidden="true" />
 
       {/* Logo */}
       <div
         className={cn(
-          'flex items-center h-16 px-4 border-b border-void-800',
+          'flex items-center h-16 px-4 border-b border-border',
           collapsed ? 'md:justify-center' : 'gap-3'
         )}
       >
         <div className="relative shrink-0">
-          <Zap className="h-6 w-6 text-plasma-400" strokeWidth={2.5} />
-          <div className="absolute inset-0 blur-sm text-plasma-400 opacity-50">
+          <Zap className="h-6 w-6 text-primary" strokeWidth={2.5} />
+          <div className="absolute inset-0 blur-sm text-primary opacity-50" aria-hidden="true">
             <Zap className="h-6 w-6" strokeWidth={2.5} />
           </div>
         </div>
         {!collapsed && (
           <div className="flex flex-col min-w-0">
-            <span className="font-mono font-bold text-sm text-void-100 tracking-wider">
-              MIMIC<span className="text-plasma-400">42</span>
+            <span className="font-mono font-bold text-sm text-foreground tracking-wider">
+              MIMIC<span className="text-primary">42</span>
             </span>
-            <span className="font-mono text-[10px] text-void-300 tracking-widest uppercase">
+            <span className="font-mono text-[10px] text-muted-foreground tracking-widest uppercase">
               Управление агентами
             </span>
           </div>
         )}
         {/* Mobile close button */}
-        <button
+        <Button
+          variant="ghost"
+          size="icon-sm"
           onClick={onMobileClose}
-          className="ml-auto md:hidden text-void-300 hover:text-void-100 transition-colors"
+          className="ml-auto md:hidden"
           aria-label="Закрыть меню"
         >
           <X className="h-5 w-5" />
-        </button>
+        </Button>
       </div>
 
       {/* Navigation */}
-      <nav className="flex-1 px-3 py-4 overflow-y-auto space-y-1">
+      <nav className="flex-1 px-3 py-4 overflow-y-auto space-y-1" aria-label="Основная навигация">
         {/* Main nav */}
         {mainNav.map((item) => (
           <SidebarLink
@@ -130,7 +146,7 @@ export function Sidebar({ className, mobileOpen = false, onMobileClose }: Sideba
         {/* Agents section */}
         {!collapsed && agents && agents.length > 0 && (
           <div className="mt-6 mb-2">
-            <p className="px-3 text-[10px] font-mono text-void-400 uppercase tracking-widest mb-1">
+            <p className="px-3 text-xs font-mono text-muted-foreground uppercase tracking-wider mb-1">
               Агенты
             </p>
           </div>
@@ -142,27 +158,26 @@ export function Sidebar({ className, mobileOpen = false, onMobileClose }: Sideba
             href={`/agent/${agent.agent_id}`}
             onClick={onMobileClose}
             className={cn(
-              'flex items-center rounded-sm transition-colors duration-150',
-              'hover:bg-void-800 text-void-400 hover:text-void-100',
-              isActive(`/agent/${agent.agent_id}`) &&
-                'bg-void-800 text-void-100',
+              navItemBase,
+              navItemState(isActive(`/agent/${agent.agent_id}`)),
               collapsed ? 'justify-center h-10 w-10 mx-auto' : 'gap-3 px-3 py-2',
             )}
             title={collapsed ? agent.name : undefined}
           >
-            <div className="relative shrink-0">
+            <span className="relative shrink-0">
               <Bot className="h-4 w-4" />
               <span
                 className={cn(
                   'absolute -top-0.5 -right-0.5 h-1.5 w-1.5 rounded-full',
-                  agent.state === 'running' && 'bg-neon-400 animate-status-pulse',
-                  agent.state === 'error' && 'bg-crimson-400',
-                  agent.state === 'starting' && 'bg-plasma-400 animate-pulse',
-                  (agent.state === 'stopped' || agent.state === 'draft') && 'bg-void-600',
-                  agent.state === 'stopping' && 'bg-amber-400 animate-pulse',
+                  agent.state === 'running' && 'bg-success animate-status-pulse',
+                  agent.state === 'error' && 'bg-destructive',
+                  agent.state === 'starting' && 'bg-primary animate-pulse',
+                  (agent.state === 'stopped' || agent.state === 'draft') && 'bg-muted-foreground/50',
+                  agent.state === 'stopping' && 'bg-warning animate-pulse',
                 )}
+                aria-hidden="true"
               />
-            </div>
+            </span>
             {!collapsed && (
               <div className="flex-1 min-w-0">
                 <p className="font-mono text-sm truncate">{agent.name}</p>
@@ -177,8 +192,9 @@ export function Sidebar({ className, mobileOpen = false, onMobileClose }: Sideba
           onClick={onMobileClose}
           className={cn(
             'flex items-center rounded-sm transition-colors duration-150',
-            'text-void-300 hover:text-plasma-400 hover:bg-void-800/50',
-            'border border-dashed border-transparent hover:border-plasma-900',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
+            'text-muted-foreground hover:text-primary hover:bg-primary/5',
+            'border border-dashed border-transparent hover:border-primary/40',
             collapsed ? 'justify-center h-10 w-10 mx-auto mt-2' : 'gap-3 px-3 py-2 mt-2',
           )}
           title={collapsed ? 'Новый агент' : undefined}
@@ -189,20 +205,20 @@ export function Sidebar({ className, mobileOpen = false, onMobileClose }: Sideba
       </nav>
 
       {/* Bottom section */}
-      <div className="px-3 py-4 border-t border-void-800 space-y-1">
-        <button
+      <div className="px-3 py-4 border-t border-border space-y-1">
+        <Button
+          variant="ghost"
           onClick={handleLogout}
           className={cn(
-            'flex items-center w-full rounded-sm',
-            'text-void-300 hover:text-crimson-400 hover:bg-crimson-950/30',
-            'transition-colors duration-150',
-            collapsed ? 'justify-center h-10' : 'gap-3 px-3 py-2'
+            'w-full h-auto font-normal text-muted-foreground',
+            'hover:text-destructive hover:bg-destructive/10',
+            collapsed ? 'justify-center p-2' : 'justify-start gap-3 px-3 py-2'
           )}
           title={collapsed ? 'Выйти' : undefined}
         >
           <LogOut className="h-4 w-4 shrink-0" />
-          {!collapsed && <span className="font-mono text-sm">Выйти</span>}
-        </button>
+          {!collapsed && <span className="text-sm">Выйти</span>}
+        </Button>
       </div>
 
       {/* Collapse toggle */}
@@ -211,11 +227,12 @@ export function Sidebar({ className, mobileOpen = false, onMobileClose }: Sideba
         className={cn(
           'absolute -right-3 top-20',
           'h-6 w-6 rounded-full',
-          'bg-void-700 border border-void-600',
+          'bg-muted border border-border',
           'flex items-center justify-center',
-          'text-void-400 hover:text-void-100',
+          'text-muted-foreground hover:text-foreground',
           'transition-all duration-150',
-          'hover:bg-void-600 hover:border-void-500',
+          'hover:bg-accent hover:border-accent-foreground/20',
+          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
           'shadow-void',
           'z-10'
         )}
@@ -249,10 +266,8 @@ function SidebarLink({ href, label, icon: Icon, isActive, collapsed, badge, onNa
       href={href}
       onClick={onNavigate}
       className={cn(
-        'flex items-center rounded-sm transition-all duration-150',
-        isActive
-          ? 'bg-plasma-950/60 text-plasma-400 border border-plasma-900'
-          : 'text-void-400 hover:text-void-100 hover:bg-void-800 border border-transparent',
+        navItemBase,
+        navItemState(isActive),
         collapsed ? 'justify-center h-10 w-10 mx-auto' : 'gap-3 px-3 py-2'
       )}
       title={collapsed ? label : undefined}
@@ -262,7 +277,7 @@ function SidebarLink({ href, label, icon: Icon, isActive, collapsed, badge, onNa
         <>
           <span className="font-mono text-sm flex-1">{label}</span>
           {badge && (
-            <span className="font-mono text-[10px] bg-plasma-950 text-plasma-400 border border-plasma-800 rounded-[2px] px-1.5 py-0.5">
+            <span className="font-mono text-[10px] bg-primary/10 text-primary border border-primary/30 rounded-sm px-1.5 py-0.5">
               {badge}
             </span>
           )}

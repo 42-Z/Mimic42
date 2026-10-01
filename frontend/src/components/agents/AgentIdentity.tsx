@@ -31,15 +31,15 @@ export function AgentIdentity({
   return (
     <div className={className ?? 'min-w-0'}>
       <div className="flex items-baseline gap-2 min-w-0">
-        <p className={nameClassName ?? 'font-display text-sm font-bold text-void-100 truncate'}>
+        <p className={nameClassName ?? 'font-display text-sm font-bold text-foreground truncate'}>
           {cleanName}
         </p>
         {handle && (
-          <span className="font-mono text-xs text-plasma-400 shrink-0">@{handle}</span>
+          <span className="font-mono text-xs text-primary shrink-0">@{handle}</span>
         )}
       </div>
       {subtitle && (
-        <p className="font-mono text-xs text-void-400 truncate">{subtitle}</p>
+        <p className="font-mono text-xs text-muted-foreground truncate">{subtitle}</p>
       )}
     </div>
   );

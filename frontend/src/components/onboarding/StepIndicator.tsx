@@ -1,3 +1,4 @@
+import { Check } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { OnboardingStep } from '@/types';
 
@@ -35,22 +36,34 @@ export function StepIndicator({ currentStep, className }: StepIndicatorProps) {
         const isActive = index === currentIndex;
 
         return (
-          <div key={step.id} className="flex items-center" data-testid={`onboarding-step-${step.id}`}>
+          <div
+            key={step.id}
+            className="flex items-center"
+            data-testid={`onboarding-step-${step.id}`}
+            aria-current={isActive ? 'step' : undefined}
+          >
             {/* Node */}
             <div className="flex flex-col items-center">
               <div className={cn(
                 'h-8 w-8 rounded-sm flex items-center justify-center',
                 'font-mono text-xs font-bold transition-all duration-300',
                 'border',
-                isDone && 'bg-neon-900 border-neon-700 text-neon-400',
-                isActive && 'bg-plasma-900 border-plasma-600 text-plasma-300 shadow-plasma-sm',
-                !isDone && !isActive && 'bg-void-800 border-void-700 text-void-400',
+                isDone && 'bg-success/10 border-success/50 text-success',
+                isActive && 'bg-primary border-primary text-primary-foreground shadow-plasma-sm',
+                !isDone && !isActive && 'bg-muted border-border text-muted-foreground',
               )}>
-                {isDone ? '✓' : step.short}
+                {isDone ? (
+                  <>
+                    <Check className="h-4 w-4" aria-hidden="true" />
+                    <span className="sr-only">Завершено</span>
+                  </>
+                ) : (
+                  step.short
+                )}
               </div>
               <span className={cn(
                 'font-mono text-[10px] mt-1.5 text-center w-14 sm:w-16 leading-tight',
-                isActive ? 'text-plasma-400' : isDone ? 'text-neon-600' : 'text-void-400',
+                isActive ? 'text-primary' : isDone ? 'text-success' : 'text-muted-foreground',
               )}>
                 {step.label}
               </span>
@@ -60,7 +73,7 @@ export function StepIndicator({ currentStep, className }: StepIndicatorProps) {
             {index < STEPS.length - 1 && (
               <div className={cn(
                 'h-px w-8 sm:w-12 mb-5 transition-all duration-300',
-                index < currentIndex ? 'bg-neon-700' : 'bg-void-800',
+                index < currentIndex ? 'bg-success/60' : 'bg-border',
               )} />
             )}
           </div>

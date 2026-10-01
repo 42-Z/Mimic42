@@ -9,6 +9,31 @@
     --font-geist-sans: 'Syne', system-ui, sans-serif;
     --font-geist-mono: 'Space Mono', monospace;
     --font-display: 'Syne', system-ui, sans-serif;
+
+    /* shadcn semantic tokens — dark "terminal" world (void/plasma/neon/crimson) */
+    --background: 5 5 14;            /* void-950 */
+    --foreground: 224 224 229;       /* void-100 */
+    --card: 18 18 32;                /* void-800 */
+    --card-foreground: 224 224 229;
+    --popover: 18 18 32;
+    --popover-foreground: 224 224 229;
+    --primary: 26 127 255;           /* plasma-500 */
+    --primary-foreground: 5 5 14;      /* void-950: тёмный текст на яркой заливке (WCAG AA) */
+    --secondary: 37 37 53;           /* void-600 */
+    --secondary-foreground: 224 224 229;
+    --muted: 26 26 40;               /* void-700 */
+    --muted-foreground: 144 144 160; /* void-300 */
+    --accent: 37 37 53;
+    --accent-foreground: 224 224 229;
+    --destructive: 244 63 94;        /* crimson-500 */
+    --destructive-foreground: 5 5 14;  /* void-950: тёмный текст на яркой заливке (WCAG AA) */
+    --success: 0 224 112;            /* neon-500 */
+    --success-foreground: 5 5 14;      /* void-950: тёмный текст на яркой заливке (WCAG AA) */
+    --warning: 245 158 11;           /* amber-500 */
+    --border: 37 37 53;
+    --input: 37 37 53;
+    --ring: 26 127 255;
+    --radius: 0.25rem;
   }
 
   * {
@@ -25,7 +50,7 @@
   html { color-scheme: dark; }
 
   body {
-    @apply bg-void-950 text-void-100 antialiased;
+    @apply bg-background text-foreground antialiased;
     font-family: var(--font-geist-sans);
     background-image:
       linear-gradient(rgba(26, 127, 255, 0.03) 1px, transparent 1px),

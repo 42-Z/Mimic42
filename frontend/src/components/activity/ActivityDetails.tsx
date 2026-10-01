@@ -54,16 +54,16 @@ export function valueToString(value: unknown): string {
 function KVTable({ rows, accent }: { rows: [string, unknown][]; accent?: 'error' }) {
   if (rows.length === 0) return null;
   return (
-    <div className="rounded-[2px] border border-void-800 divide-y divide-void-800/60">
+    <div className="rounded-[2px] border border-border divide-y divide-border/60">
       {rows.map(([key, value]) => (
         <div key={key} className="flex gap-3 px-2.5 py-1.5">
-          <span className="font-mono text-[10px] text-void-400 uppercase tracking-wider w-28 shrink-0 pt-0.5">
+          <span className="font-mono text-[10px] text-muted-foreground uppercase tracking-wider w-28 shrink-0 pt-0.5">
             {key}
           </span>
           <span
             className={cn(
               'font-mono text-[11px] whitespace-pre-wrap break-words min-w-0 flex-1',
-              accent === 'error' ? 'text-crimson-300' : 'text-void-300',
+              accent === 'error' ? 'text-crimson-300' : 'text-foreground/85',
             )}
           >
             {valueToString(value)}
@@ -80,15 +80,17 @@ function RawJson({ title, value }: { title: string; value: Record<string, unknow
   return (
     <div>
       <button
+        type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex items-center gap-1.5 font-mono text-[10px] text-void-400 hover:text-void-200 transition-colors"
+        aria-expanded={open}
+        className="flex items-center gap-1.5 rounded-sm font-mono text-[10px] uppercase tracking-wider text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
       >
         <Braces className="h-3 w-3" />
         {title}
         <ChevronDown className={cn('h-3 w-3 transition-transform', open && 'rotate-180')} />
       </button>
       {open && (
-        <pre className="mt-1.5 max-h-48 overflow-auto p-2 rounded-[2px] bg-void-950/60 border border-void-800 font-mono text-[10px] text-void-400 whitespace-pre-wrap break-words">
+        <pre className="mt-1.5 max-h-48 overflow-auto p-2 rounded-[2px] bg-background/60 border border-border font-mono text-[10px] text-muted-foreground whitespace-pre-wrap break-words">
           {JSON.stringify(value, null, 2)}
         </pre>
       )}
@@ -132,7 +134,7 @@ export function ActivityDetails({
       {/* The dead-end note only when there is truly nothing: no rows, no hint,
           and no raw JSON either. */}
       {!hasStructured && !action.hint && !action.args && !action.result && (
-        <p className="font-mono text-[10px] text-void-400">Детали недоступны</p>
+        <p className="font-mono text-[10px] text-muted-foreground">Детали недоступны</p>
       )}
       <RawJson title="Аргументы JSON" value={args} />
       <RawJson title="Результат JSON" value={result} />

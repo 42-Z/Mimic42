@@ -33,22 +33,22 @@ const TONES: Record<
     box: 'border-neon-900/80 bg-neon-950/40',
     icon: 'text-neon-400',
     name: 'text-neon-400',
-    tag: 'text-neon-800',
+    tag: 'text-muted-foreground/80',
     text: 'text-neon-100/85',
   },
   peer: {
     box: 'border-plasma-900/80 bg-plasma-950/40',
     icon: 'text-plasma-400',
     name: 'text-plasma-400',
-    tag: 'text-plasma-900',
-    text: 'text-void-100',
+    tag: 'text-muted-foreground/80',
+    text: 'text-foreground',
   },
   trigger: {
-    box: 'border-void-800 bg-void-900/50',
-    icon: 'text-void-300',
-    name: 'text-void-300',
-    tag: 'text-void-700',
-    text: 'text-void-400 italic',
+    box: 'border-border bg-muted/50',
+    icon: 'text-muted-foreground',
+    name: 'text-muted-foreground',
+    tag: 'text-muted-foreground/60',
+    text: 'text-muted-foreground italic',
   },
 };
 
@@ -82,15 +82,15 @@ function MessageRow({
           <span className={cn(MESSAGE_META, 'truncate', styles.name)}>{sanitizeText(name)}</span>
           <span className={cn(MESSAGE_META, 'shrink-0 text-[9px]', styles.tag)}>{tag}</span>
           {badgeId != null && (
-            <span className="shrink-0 rounded-[2px] border border-void-800 px-1 font-mono text-[9px] tabular-nums text-void-300">
+            <span className="shrink-0 rounded-[2px] border border-border px-1 font-mono text-[9px] tabular-nums text-muted-foreground">
               #{badgeId}
             </span>
           )}
         </div>
         {reply && (
-          <div className="mt-1 flex items-start gap-1.5 border-l-2 border-void-700 pl-2">
-            <Reply className="mt-px h-3 w-3 shrink-0 text-void-400" />
-            <span className="truncate font-mono text-[10px] text-void-300">
+          <div className="mt-1 flex items-start gap-1.5 border-l-2 border-border pl-2">
+            <Reply className="mt-px h-3 w-3 shrink-0 text-muted-foreground" />
+            <span className="truncate font-mono text-[10px] text-muted-foreground">
               #{reply.message_id}
               {reply.preview ? ` · ${sanitizeText(reply.preview)}` : ''}
             </span>
@@ -141,14 +141,14 @@ function ToolEntry({
         type="button"
         onClick={() => setSelfOpen((v) => !v)}
         aria-expanded={expanded}
-        className="flex w-full items-center gap-1 text-left"
+        className="flex w-full items-center gap-1 rounded-sm text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
       >
         <span className="min-w-0 flex-1">
           <ActionRow action={action} />
         </span>
         <ChevronDown
           className={cn(
-            'h-3 w-3 shrink-0 text-void-400 transition-transform',
+            'h-3 w-3 shrink-0 text-muted-foreground transition-transform',
             expanded && 'rotate-180',
           )}
         />
@@ -222,19 +222,19 @@ export function TurnCard({
       <div
         className={cn(
           'flex items-center gap-2.5 px-3.5 py-2',
-          failed ? 'bg-crimson-950/25' : 'bg-void-900/40',
+          failed ? 'bg-crimson-950/25' : 'bg-muted/40',
         )}
       >
-        <Clock className="h-3 w-3 shrink-0 text-void-700" />
-        <span className="w-14 shrink-0 font-mono text-[10px] tabular-nums text-void-400">
+        <Clock className="h-3 w-3 shrink-0 text-muted-foreground/50" />
+        <span className="w-14 shrink-0 font-mono text-[10px] tabular-nums text-muted-foreground">
           {time}
         </span>
         <span
-          className={cn(MESSAGE_ICON_BOX, 'mt-0', failed ? 'border-crimson-900/80' : 'border-void-800')}
+          className={cn(MESSAGE_ICON_BOX, 'mt-0', failed ? 'border-crimson-900/80' : 'border-border')}
         >
           <Icon className={cn('h-3 w-3', failed ? 'text-crimson-400' : 'text-plasma-400')} />
         </span>
-        <span className={cn('text-xs font-medium', failed ? 'text-crimson-300' : 'text-void-200')}>
+        <span className={cn('text-xs font-medium', failed ? 'text-crimson-300' : 'text-foreground/90')}>
           {action.label}
         </span>
         {action.hint && <span className="truncate text-[11px] text-crimson-400">{action.hint}</span>}
@@ -245,7 +245,7 @@ export function TurnCard({
   return (
     <div
       className={cn(
-        'border-b border-void-800/70 last:border-b-0',
+        'border-b border-border/70 last:border-b-0',
         item.failed && 'bg-crimson-950/15',
       )}
     >
@@ -255,10 +255,10 @@ export function TurnCard({
           type="button"
           onClick={() => setOpenAll((v) => !v)}
           aria-expanded={openAll}
-          className="flex w-full items-center gap-2 text-left"
+          className="flex w-full items-center gap-2 rounded-sm text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
         >
-          <Clock className="h-3 w-3 shrink-0 text-void-700" />
-          <span className="w-14 shrink-0 font-mono text-[10px] tabular-nums text-void-300">
+          <Clock className="h-3 w-3 shrink-0 text-muted-foreground/50" />
+          <span className="w-14 shrink-0 font-mono text-[10px] tabular-nums text-muted-foreground">
             {time}
           </span>
           <span className="flex min-w-0 flex-1 items-center gap-1.5">
@@ -272,7 +272,7 @@ export function TurnCard({
             </span>
           </span>
           {item.peer && (
-            <span className="shrink-0 rounded-[2px] border border-void-800 bg-void-900/40 px-1.5 py-px font-mono text-[9px] tabular-nums text-void-300">
+            <span className="shrink-0 rounded-[2px] border border-border bg-muted/40 px-1.5 py-px font-mono text-[9px] tabular-nums text-muted-foreground">
               #{sanitizeText(item.peer)}
             </span>
           )}
@@ -283,7 +283,7 @@ export function TurnCard({
           )}
           <ChevronDown
             className={cn(
-              'h-3.5 w-3.5 shrink-0 text-void-400 transition-transform',
+              'h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform',
               openAll && 'rotate-180',
             )}
           />
@@ -338,7 +338,7 @@ export function TurnCard({
             )}
 
           {!hasBody && item.actions.length === 0 && (
-            <p className="pl-[30px] font-mono text-[10px] uppercase tracking-[0.12em] text-void-700">
+            <p className="pl-[30px] font-mono text-[10px] uppercase tracking-[0.12em] text-muted-foreground/50">
               пустой ход
             </p>
           )}

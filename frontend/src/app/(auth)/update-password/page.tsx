@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { getSupabaseClient } from '@/lib/supabase/client';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Card, CardHeader, CardTitle, CardContent, Spinner } from '@/components/ui/card';
 import { useToast } from '@/components/ui/toast';
 import { Zap } from 'lucide-react';
 
@@ -71,56 +72,67 @@ export default function UpdatePasswordPage() {
 
   if (!isReady) {
     return (
-      <div className="min-h-screen bg-void-950 flex items-center justify-center p-8">
-        <div className="text-center space-y-4">
-          <Zap className="h-8 w-8 text-plasma-400 mx-auto animate-pulse" />
-          <p className="font-mono text-sm text-void-400">Проверка сессии...</p>
+      <div className="min-h-dvh flex items-center justify-center p-8">
+        <div className="flex flex-col items-center gap-4 text-center">
+          <Spinner size="md" />
+          <p className="text-sm font-mono text-muted-foreground">Проверка сессии...</p>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-void-950 flex items-center justify-center p-8">
-      <div className="w-full max-w-sm space-y-8">
-        <div className="text-center space-y-2">
-          <Zap className="h-8 w-8 text-plasma-400 mx-auto" />
-          <h1 className="font-display text-xl font-bold text-neon-400">
-            Новый пароль
-          </h1>
-          <p className="font-mono text-sm text-void-300">
-            Введите новый пароль для вашего аккаунта
-          </p>
+    <div className="min-h-dvh flex items-center justify-center p-8">
+      <div className="w-full max-w-md space-y-6">
+        <div className="flex items-center justify-center gap-2">
+          <Zap className="h-6 w-6 text-plasma-400" />
+          <span className="font-mono font-bold text-lg text-foreground">
+            MIMIC<span className="text-plasma-400">42</span>
+          </span>
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-4" noValidate>
-          <Input
-            type="password"
-            placeholder="Новый пароль"
-            value={password}
-            onChange={(e) => {
-              setPassword(e.target.value);
-              if (passwordError) setPasswordError('');
-            }}
-            error={passwordError}
-            required
-          />
-          <Input
-            type="password"
-            placeholder="Подтвердите пароль"
-            value={confirmPassword}
-            onChange={(e) => {
-              setConfirmPassword(e.target.value);
-              if (passwordError) setPasswordError('');
-            }}
-            error={passwordError}
-            required
-          />
+        <Card padding="none" className="w-full">
+          <CardHeader className="pb-4">
+            <CardTitle as="h1" className="text-2xl font-display normal-case tracking-normal text-foreground">
+              Новый пароль
+            </CardTitle>
+            <p className="text-sm font-mono text-muted-foreground">
+              Введите новый пароль для вашего аккаунта
+            </p>
+          </CardHeader>
+          <CardContent>
+            <form onSubmit={handleSubmit} className="space-y-4" noValidate>
+              <Input
+                label="Новый пароль"
+                type="password"
+                placeholder="Минимум 8 символов"
+                value={password}
+                onChange={(e) => {
+                  setPassword(e.target.value);
+                  if (passwordError) setPasswordError('');
+                }}
+                error={passwordError}
+                required
+              />
+              <Input
+                label="Подтвердите пароль"
+                type="password"
+                placeholder="••••••••"
+                value={confirmPassword}
+                onChange={(e) => {
+                  setConfirmPassword(e.target.value);
+                  if (passwordError) setPasswordError('');
+                }}
+                error={passwordError}
+                required
+              />
 
-          <Button type="submit" className="w-full" size="lg" isLoading={isLoading}>
-            {isLoading ? 'Обновление...' : 'Обновить пароль'}
-          </Button>
-        </form>
+              <Button type="submit" variant="default" className="w-full" size="lg" isLoading={isLoading}>
+                {isLoading ? 'Обновление...' : 'Обновить пароль'}
+              </Button>
+            </form>
+          </CardContent>
+        </Card>
       </div>
     </div>
   );

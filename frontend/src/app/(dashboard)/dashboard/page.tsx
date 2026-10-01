@@ -5,11 +5,10 @@ import { useAllAgentsKPIs, useAgentsDetails, type AgentDetails } from '@/hooks/u
 import { useMultiAgentRealtimeFeed, useAllAgentsStatusRealtime } from '@/hooks/useRealtimeFeed';
 import { useToast } from '@/components/ui/toast';
 import { AgentStatusBadge } from '@/components/agents/AgentStatusBadge';
-import { ResetContextDialog } from '@/components/agent/ResetContextDialog';
 import { AgentToggleButton } from '@/components/agents/AgentToggleButton';
 import { AgentIdentity } from '@/components/agents/AgentIdentity';
 import { Card, Skeleton } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
+import { Button, buttonVariants } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { maskPhoneNumber, sanitizeText, truncate } from '@/lib/sanitize';
 import { needsRebind } from '@/lib/telegram';
@@ -18,10 +17,9 @@ import { formatDistanceToNow } from 'date-fns';
 import { ru } from 'date-fns/locale';
 import {
   MessageSquare, Activity, AlertTriangle, Users,
-  RefreshCw, Wifi, WifiOff, Bot, Plus, Settings, RotateCcw,
+  RefreshCw, Wifi, WifiOff, Bot, Plus, Settings,
 } from 'lucide-react';
 import Link from 'next/link';
-import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { AgentRecord } from '@/types';
 import { incomingBody, type ActivityItem } from '@/lib/activity/normalize';
@@ -52,21 +50,20 @@ function DashboardHeader({ agentsCount }: { agentsCount: number }) {
   return (
     <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
       <div className="flex items-center gap-4">
-        <div className="h-10 w-10 rounded-sm bg-plasma-950 border border-plasma-800 flex items-center justify-center">
-          <Bot className="h-5 w-5 text-plasma-400" />
+        <div className="h-10 w-10 rounded-sm bg-primary/10 border border-primary/20 flex items-center justify-center" aria-hidden="true">
+          <Bot className="h-5 w-5 text-primary" />
         </div>
         <div>
-          <h1 className="font-display text-xl font-bold text-void-100">Ваши агенты</h1>
-          <p className="font-mono text-xs text-void-300 mt-0.5">
+          <h1 className="font-display text-2xl font-bold text-foreground">Ваши агенты</h1>
+          <p className="font-mono text-xs text-muted-foreground mt-1">
             {agentsCount} {agentsCount === 1 ? 'агент' : agentsCount < 5 ? 'агента' : 'агентов'} на связи
           </p>
         </div>
       </div>
 
-      <Link href="/onboarding">
-        <Button variant="default" size="sm" leftIcon={<Plus className="h-3.5 w-3.5" />}>
-          Новый агент
-        </Button>
+      <Link href="/onboarding" className={buttonVariants({ variant: 'default', size: 'sm' })}>
+        <Plus className="h-3.5 w-3.5" />
+        Новый агент
       </Link>
     </div>
   );
@@ -101,33 +98,33 @@ function KPIRow({ agentIds }: { agentIds: string[] }) {
       label: 'Собеседников сегодня',
       value: kpis?.contacts_today ?? 0,
       icon: Users,
-      color: 'text-amber-400',
-      bg: 'bg-amber-950/40',
-      border: 'border-amber-900',
+      color: 'text-warning',
+      bg: 'bg-warning/10',
+      border: 'border-warning/20',
     },
     {
       label: 'Сообщений сегодня',
       value: kpis?.messages_today ?? 0,
       icon: MessageSquare,
-      color: 'text-plasma-400',
-      bg: 'bg-plasma-950/40',
-      border: 'border-plasma-900',
+      color: 'text-primary',
+      bg: 'bg-primary/10',
+      border: 'border-primary/20',
     },
     {
       label: 'Действий сегодня',
       value: kpis?.actions_today ?? 0,
       icon: Activity,
-      color: 'text-neon-400',
-      bg: 'bg-neon-950/40',
-      border: 'border-neon-900',
+      color: 'text-success',
+      bg: 'bg-success/10',
+      border: 'border-success/20',
     },
     {
       label: 'Ошибок сегодня',
       value: kpis?.errors_today ?? 0,
       icon: AlertTriangle,
-      color: 'text-crimson-400',
-      bg: 'bg-crimson-950/40',
-      border: 'border-crimson-900',
+      color: 'text-destructive',
+      bg: 'bg-destructive/10',
+      border: 'border-destructive/20',
       clickable: true,
     },
   ];
@@ -145,7 +142,7 @@ function KPIRow({ agentIds }: { agentIds: string[] }) {
             'border',
             card.border,
             card.clickable && kpis && kpis.errors_today > 0 &&
-              'cursor-pointer hover:border-crimson-700 transition-colors',
+              'cursor-pointer hover:border-destructive/40 transition-colors',
           )}
         >
           <div className="flex items-start justify-between">
@@ -157,9 +154,9 @@ function KPIRow({ agentIds }: { agentIds: string[] }) {
                   {card.value.toLocaleString('ru-RU')}
                 </p>
               )}
-              <p className="font-mono text-xs text-void-300 mt-1 leading-tight">{card.label}</p>
+              <p className="font-mono text-xs text-muted-foreground mt-1 leading-tight">{card.label}</p>
             </div>
-            <div className={cn('h-8 w-8 rounded-sm flex items-center justify-center', card.bg)}>
+            <div className={cn('h-8 w-8 rounded-sm flex items-center justify-center', card.bg)} aria-hidden="true">
               <card.icon className={cn('h-4 w-4', card.color)} />
             </div>
           </div>
@@ -174,7 +171,7 @@ function AgentsGrid({ agents }: { agents: AgentRecord[] }) {
   const { data: details } = useAgentsDetails(agents.map((a) => a.agent_id));
 
   return (
-    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+    <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
       {agents.map((agent) => (
         <AgentCard
           key={agent.agent_id}
@@ -182,13 +179,16 @@ function AgentsGrid({ agents }: { agents: AgentRecord[] }) {
           details={details?.[agent.agent_id]}
         />
       ))}
-      <Link href="/onboarding" className="block h-full">
+      <Link
+        href="/onboarding"
+        className="block h-full rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+      >
         <Card
           variant="glass"
           padding="md"
-          className="h-full min-h-[160px] border-dashed border-void-700 flex flex-col items-center justify-center gap-2 text-void-300 hover:text-plasma-400 hover:border-plasma-700 transition-colors cursor-pointer"
+          className="h-full min-h-[160px] border-dashed border-border flex flex-col items-center justify-center gap-2 text-muted-foreground hover:text-primary hover:bg-primary/5 hover:border-primary/40 transition-colors cursor-pointer"
         >
-          <Plus className="h-8 w-8" />
+          <Plus className="h-8 w-8" aria-hidden="true" />
           <span className="font-mono text-sm">Новый агент</span>
         </Card>
       </Link>
@@ -200,7 +200,6 @@ function AgentCard({ agent, details }: { agent: AgentRecord; details?: AgentDeta
   const { mutate: start, isPending: starting } = useStartAgent();
   const { mutate: stop, isPending: stopping } = useStopAgent();
   const { toast } = useToast();
-  const [resetConfirm, setResetConfirm] = useState(false);
 
   const rebind = needsRebind(details?.authorization_status);
 
@@ -219,65 +218,54 @@ function AgentCard({ agent, details }: { agent: AgentRecord; details?: AgentDeta
   };
 
   return (
-    <>
-      <Card variant="glass" padding="md" className="space-y-3" data-testid={`agent-card-${agent.agent_id}`}>
-        <div className="flex items-start justify-between gap-2">
-          <div className="flex items-center gap-3 min-w-0">
-            <div className="h-9 w-9 rounded-sm bg-void-800 border border-void-600 flex items-center justify-center shrink-0">
-              <Bot className="h-4 w-4 text-plasma-400" />
-            </div>
-            <AgentIdentity
-              className="min-w-0"
-              name={agent.name}
-              username={details?.username}
-              subtitle={details?.phone_number ? maskPhoneNumber(details.phone_number) : 'Telegram не подключён'}
-            />
+    <Card
+      variant="glass"
+      padding="md"
+      className="space-y-3 transition-colors hover:border-primary/25"
+      data-testid={`agent-card-${agent.agent_id}`}
+    >
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="h-9 w-9 rounded-sm bg-muted border border-border flex items-center justify-center shrink-0" aria-hidden="true">
+            <Bot className="h-4 w-4 text-primary" />
           </div>
-          <AgentStatusBadge state={agent.state} />
-        </div>
-
-        <p className="font-mono text-[10px] text-void-400">
-          {details?.last_started_at
-            ? `Запускался ${formatDistanceToNow(new Date(details.last_started_at), { addSuffix: true, locale: ru })}`
-            : 'Ещё не запускался'}
-        </p>
-
-        <div className="flex items-center gap-2 pt-1">
-          <AgentToggleButton
-            agentId={agent.agent_id}
-            state={agent.state}
-            needsRebind={rebind}
-            isStarting={starting}
-            isStopping={stopping}
-            onStart={handleStart}
-            onStop={handleStop}
+          <AgentIdentity
+            className="min-w-0"
+            name={agent.name}
+            username={details?.username}
+            subtitle={details?.phone_number ? maskPhoneNumber(details.phone_number) : 'Telegram не подключён'}
           />
-          <div className="flex-1" />
-          <Button
-            variant="ghost" size="sm" className="px-2"
-            onClick={() => setResetConfirm(true)}
-            aria-label="Сбросить контекст"
-            title="Сбросить контекст"
-            data-testid={`agent-reset-context-${agent.agent_id}`}
-          >
-            <RotateCcw className="h-4 w-4" />
-          </Button>
-          <Link href={`/agent/${agent.agent_id}`} aria-label="Настройки агента">
-            <Button variant="ghost" size="sm" className="px-2">
-              <Settings className="h-4 w-4" />
-            </Button>
-          </Link>
         </div>
-      </Card>
+        <AgentStatusBadge state={agent.state} />
+      </div>
 
-      {/* Outside the card: its backdrop-blur would trap the fixed modal inside it. */}
-      <ResetContextDialog
-        agentId={agent.agent_id}
-        agentName={agent.name}
-        isOpen={resetConfirm}
-        onClose={() => setResetConfirm(false)}
-      />
-    </>
+      <p className="font-mono text-xs text-muted-foreground">
+        {details?.last_started_at
+          ? `Запускался ${formatDistanceToNow(new Date(details.last_started_at), { addSuffix: true, locale: ru })}`
+          : 'Ещё не запускался'}
+      </p>
+
+      <div className="flex items-center gap-2 pt-1">
+        <AgentToggleButton
+          agentId={agent.agent_id}
+          state={agent.state}
+          needsRebind={rebind}
+          isStarting={starting}
+          isStopping={stopping}
+          onStart={handleStart}
+          onStop={handleStop}
+        />
+        <div className="flex-1" />
+        <Link
+          href={`/agent/${agent.agent_id}`}
+          aria-label="Настройки агента"
+          title="Настройки агента"
+          className={cn(buttonVariants({ variant: 'ghost', size: 'sm' }), 'px-2')}
+        >
+          <Settings className="h-4 w-4" />
+        </Link>
+      </div>
+    </Card>
   );
 }
 
@@ -306,39 +294,40 @@ function LiveFeed({
   return (
     <Card variant="glass" padding="none" className="flex flex-col h-[480px]">
       {/* Header */}
-      <div className="flex items-center justify-between px-5 py-4 border-b border-void-700">
+      <div className="flex items-center justify-between px-5 py-4 border-b border-border">
         <div className="flex items-center gap-2">
-          <span className="font-mono text-xs font-medium text-void-300 uppercase tracking-wider">
+          <h2 className="font-mono text-xs font-medium text-muted-foreground uppercase tracking-wider">
             Живая лента
-          </span>
+          </h2>
           <div className="flex items-center gap-1.5">
             {isConnected ? (
-              <Wifi className="h-3 w-3 text-neon-400" />
+              <Wifi className="h-3 w-3 text-success" aria-hidden="true" />
             ) : (
-              <WifiOff className="h-3 w-3 text-void-400" />
+              <WifiOff className="h-3 w-3 text-muted-foreground" aria-hidden="true" />
             )}
-            <span className={cn('font-mono text-[10px]', isConnected ? 'text-neon-500' : 'text-void-400')}>
+            <span className={cn('font-mono text-[10px]', isConnected ? 'text-success' : 'text-muted-foreground')}>
               {isConnected ? 'ОНЛАЙН' : 'ОФЛАЙН'}
             </span>
           </div>
         </div>
-        <button
+        <Button
+          variant="ghost"
+          size="xs"
           onClick={() => {
             refetchSeed();
             clearFeed();
           }}
-          className="font-mono text-xs text-void-400 hover:text-void-200 transition-colors flex items-center gap-1"
+          leftIcon={<RefreshCw className="h-3 w-3" />}
         >
-          <RefreshCw className="h-3 w-3" />
           Обновить
-        </button>
+        </Button>
       </div>
 
       {/* Items — newest turns first, within a turn: incoming, actions, response */}
       <div className="flex-1 overflow-y-auto p-2 space-y-1">
         {rows.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-full text-void-400">
-            <Activity className="h-8 w-8 mb-2 opacity-30" />
+          <div className="flex flex-col items-center justify-center h-full text-muted-foreground">
+            <Activity className="h-8 w-8 mb-2 opacity-30" aria-hidden="true" />
             <p className="font-mono text-xs">Ожидание событий...</p>
           </div>
         ) : (
@@ -447,16 +436,16 @@ function FeedRow({ line, agentNameById }: { line: FeedLine; agentNameById: Map<s
 
   return (
     <div className={cn(
-      'flex gap-2.5 px-3 py-2 rounded-sm text-xs font-mono group hover:bg-void-800/50 transition-colors',
-      line.failed ? 'border-l-2 border-crimson-700' : 'border-l-2 border-void-700',
+      'flex gap-2.5 px-3 py-2 rounded-sm text-xs font-mono group hover:bg-muted/40 transition-colors',
+      line.failed ? 'border-l-2 border-destructive/60' : 'border-l-2 border-muted',
     )}>
       {agentName && (
-        <span className="shrink-0 text-void-400">{truncate(sanitizeText(agentName), 16)}</span>
+        <span className="shrink-0 text-muted-foreground">{truncate(sanitizeText(agentName), 16)}</span>
       )}
       <span
         className={cn(
           'shrink-0 font-bold',
-          line.direction === 'in' ? 'text-plasma-500' : 'text-neon-600',
+          line.direction === 'in' ? 'text-primary' : 'text-success',
         )}
         title={line.direction === 'in' ? 'Входящее от собеседника' : 'Действие агента'}
       >
@@ -466,16 +455,16 @@ function FeedRow({ line, agentNameById }: { line: FeedLine; agentNameById: Map<s
         <span
           className={cn(
             'shrink-0 max-w-[140px] truncate',
-            line.direction === 'in' ? 'text-plasma-400' : 'text-void-300',
+            line.direction === 'in' ? 'text-primary' : 'text-muted-foreground',
           )}
         >
           {sanitizeText(peerLabel)}
         </span>
       )}
-      <span className={cn('flex-1 truncate', line.failed ? 'text-crimson-300' : line.direction === 'in' ? 'text-void-200' : 'text-void-300')}>
+      <span className={cn('flex-1 truncate', line.failed ? 'text-destructive' : line.direction === 'in' ? 'text-foreground' : 'text-muted-foreground')}>
         {truncate(sanitizeText(line.text), 140)}
       </span>
-      <span className="text-void-400 shrink-0">{time}</span>
+      <span className="text-muted-foreground shrink-0">{time}</span>
     </div>
   );
 }
@@ -496,6 +485,11 @@ function DashboardSkeleton() {
           <Skeleton key={i} className="h-24 rounded-sm" />
         ))}
       </div>
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+        {[...Array(3)].map((_, i) => (
+          <Skeleton key={i} className="h-[160px] rounded-sm" />
+        ))}
+      </div>
       <Skeleton className="h-[480px] rounded-sm" />
     </div>
   );
@@ -503,14 +497,17 @@ function DashboardSkeleton() {
 
 function NoAgents() {
   return (
-    <div className="flex flex-col items-center justify-center h-[60vh] text-center space-y-4">
-      <Bot className="h-16 w-16 text-void-700" />
-      <h2 className="font-display text-xl font-bold text-void-300">Нет агентов</h2>
-      <p className="font-mono text-sm text-void-400 max-w-xs">
+    <div className="flex flex-col items-center justify-center min-h-[60vh] text-center animate-fade-in">
+      <div className="h-16 w-16 rounded-sm bg-muted border border-border flex items-center justify-center" aria-hidden="true">
+        <Bot className="h-8 w-8 text-muted-foreground" />
+      </div>
+      <h1 className="mt-6 font-display text-2xl font-bold text-foreground">Нет агентов</h1>
+      <p className="mt-2 font-mono text-sm text-muted-foreground max-w-xs leading-relaxed">
         Вы ещё не создали агентов. Пройдите онбординг, чтобы создать первого.
       </p>
-      <Link href="/onboarding">
-        <Button>Создать агента</Button>
+      <Link href="/onboarding" className={cn(buttonVariants({ variant: 'default', size: 'md' }), 'mt-6')}>
+        <Plus className="h-4 w-4" />
+        Создать агента
       </Link>
     </div>
   );

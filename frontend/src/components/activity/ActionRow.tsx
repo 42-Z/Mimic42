@@ -51,15 +51,15 @@ export function ActionRow({ action }: { action: ActivityAction }) {
     <span
       className={cn(
         'flex items-center gap-2.5 py-1.5 px-2 rounded-[2px]',
-        failed ? 'bg-crimson-950/25' : expandable && 'hover:bg-void-800/40',
+        failed ? 'bg-crimson-950/25' : expandable && 'hover:bg-muted/40',
       )}
     >
       {Icon && (
         <Icon
-          className={cn('h-3.5 w-3.5 shrink-0', failed ? 'text-crimson-400' : 'text-void-400')}
+          className={cn('h-3.5 w-3.5 shrink-0', failed ? 'text-crimson-400' : 'text-muted-foreground')}
         />
       )}
-      <span className={cn('flex-1 min-w-0 truncate text-xs', failed ? 'text-crimson-300' : 'text-void-300')}>
+      <span className={cn('flex-1 min-w-0 truncate text-xs', failed ? 'text-crimson-300' : 'text-foreground/90')}>
         {action.label}
       </span>
       {action.hint && (
@@ -73,7 +73,7 @@ export function ActionRow({ action }: { action: ActivityAction }) {
         </span>
       )}
       {!failed && !running && !action.hint && isTool && resultSummary && (
-        <span className="hidden md:inline text-[11px] text-void-400 truncate max-w-[40%]">
+        <span className="hidden md:inline text-[11px] text-muted-foreground truncate max-w-[40%]">
           {resultSummary}
         </span>
       )}
@@ -89,13 +89,15 @@ export function ActionRow({ action }: { action: ActivityAction }) {
           <ExternalLink aria-hidden="true" className="h-3 w-3" />
         </a>
       )}
-      {duration && <span className="shrink-0 font-mono text-[10px] text-void-400">{duration}</span>}
+      {duration && (
+        <span className="shrink-0 font-mono text-[10px] tabular-nums text-muted-foreground">{duration}</span>
+      )}
       {failed ? (
         <XCircle className="h-3.5 w-3.5 shrink-0 text-crimson-500" />
       ) : running ? (
         <Loader2 className="h-3.5 w-3.5 shrink-0 text-plasma-500 animate-spin" />
       ) : (
-        <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-neon-700" />
+        <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-neon-500" />
       )}
     </span>
   );

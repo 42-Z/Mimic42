@@ -6,8 +6,9 @@ import { getSupabaseClient } from '@/lib/supabase/client';
 import { registerSchema, type RegisterFormValues } from '@/lib/validators';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Card, CardHeader, CardTitle, CardContent, CardFooter } from '@/components/ui/card';
 import { useToast } from '@/components/ui/toast';
-import { Zap, Eye, EyeOff } from 'lucide-react';
+import { Zap, Eye, EyeOff, CircleCheck } from 'lucide-react';
 
 const SUPABASE_ERROR_MESSAGES: Record<string, string> = {
   'User already registered': 'Этот email уже зарегистрирован',
@@ -71,85 +72,98 @@ export default function RegisterPage() {
 
   if (done) {
     return (
-      <div className="min-h-dvh bg-void-950 flex items-center justify-center p-8 pb-[max(2rem,env(safe-area-inset-bottom))]">
-        <div className="max-w-sm w-full text-center space-y-4">
-          <div className="text-4xl">✓</div>
-          <h1 className="font-display text-xl font-bold text-neon-400">Проверьте email</h1>
-          <p className="font-mono text-sm text-void-400">
-            Мы отправили ссылку для подтверждения на{' '}
-            <span className="text-void-200">{values.email}</span>
-          </p>
-          <Link href="/login" className="font-mono text-sm text-plasma-400 hover:text-plasma-300">
-            ← Вернуться ко входу
-          </Link>
-        </div>
+      <div className="min-h-dvh flex items-center justify-center p-8 pb-[max(2rem,env(safe-area-inset-bottom))]">
+        <Card className="w-full max-w-md">
+          <div className="flex flex-col items-center gap-4 text-center">
+            <CircleCheck className="h-10 w-10 text-success" strokeWidth={1.5} aria-hidden="true" />
+            <h1 className="text-2xl font-display font-semibold text-foreground">Проверьте email</h1>
+            <p className="text-sm font-mono text-muted-foreground">
+              Мы отправили ссылку для подтверждения на{' '}
+              <span className="text-foreground">{values.email}</span>
+            </p>
+            <Link href="/login" className="text-sm font-mono text-primary hover:underline">
+              ← Вернуться ко входу
+            </Link>
+          </div>
+        </Card>
       </div>
     );
   }
 
   return (
-    <div className="min-h-dvh bg-void-950 flex items-center justify-center p-8 pb-[max(2rem,env(safe-area-inset-bottom))]">
-      <div className="w-full max-w-sm space-y-8">
-        <div className="flex items-center gap-2">
+    <div className="min-h-dvh flex items-center justify-center p-8 pb-[max(2rem,env(safe-area-inset-bottom))]">
+      <div className="w-full max-w-md space-y-6">
+        <div className="flex items-center justify-center gap-2">
           <Zap className="h-6 w-6 text-plasma-400" />
-          <span className="font-mono font-bold text-lg">
+          <span className="font-mono font-bold text-lg text-foreground">
             MIMIC<span className="text-plasma-400">42</span>
           </span>
         </div>
 
-        <div>
-          <h1 className="font-display text-2xl font-bold text-void-100">Создать аккаунт</h1>
-          <p className="mt-1 text-sm font-mono text-void-300">Запустите своего первого агента</p>
-        </div>
-
-        <form onSubmit={handleSubmit} className="space-y-4" noValidate>
-          <Input
-            label="Email"
-            type="email"
-            autoComplete="email"
-            placeholder="you@example.com"
-            value={values.email}
-            onChange={(e) => setValues((v) => ({ ...v, email: e.target.value }))}
-            error={errors.email}
-            disabled={isLoading}
-          />
-          <Input
-            label="Пароль"
-            type={showPassword ? 'text' : 'password'}
-            autoComplete="new-password"
-            placeholder="Минимум 8 символов"
-            value={values.password}
-            onChange={(e) => setValues((v) => ({ ...v, password: e.target.value }))}
-            error={errors.password}
-            disabled={isLoading}
-            rightElement={
-              <button type="button" onClick={() => setShowPassword((v) => !v)}
-                className="text-void-300 hover:text-void-100 transition-colors p-2 -m-1">
-                {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-              </button>
-            }
-          />
-          <Input
-            label="Повторите пароль"
-            type={showPassword ? 'text' : 'password'}
-            autoComplete="new-password"
-            placeholder="••••••••"
-            value={values.confirmPassword}
-            onChange={(e) => setValues((v) => ({ ...v, confirmPassword: e.target.value }))}
-            error={errors.confirmPassword}
-            disabled={isLoading}
-          />
-          <Button type="submit" className="w-full mt-2" size="lg" isLoading={isLoading}>
-            {isLoading ? 'Создание...' : 'Создать аккаунт'}
-          </Button>
-        </form>
-
-        <p className="text-center font-mono text-sm text-void-300">
-          Уже есть аккаунт?{' '}
-          <Link href="/login" className="text-plasma-400 hover:text-plasma-300 transition-colors inline-block py-2">
-            Войти
-          </Link>
-        </p>
+        <Card padding="none" className="w-full">
+          <CardHeader className="pb-4">
+            <CardTitle as="h1" className="text-2xl font-display normal-case tracking-normal text-foreground">
+              Создать аккаунт
+            </CardTitle>
+            <p className="text-sm font-mono text-muted-foreground">Запустите своего первого агента</p>
+          </CardHeader>
+          <CardContent>
+            <form onSubmit={handleSubmit} className="space-y-4" noValidate>
+              <Input
+                label="Email"
+                type="email"
+                autoComplete="email"
+                placeholder="you@example.com"
+                value={values.email}
+                onChange={(e) => setValues((v) => ({ ...v, email: e.target.value }))}
+                error={errors.email}
+                disabled={isLoading}
+              />
+              <Input
+                label="Пароль"
+                type={showPassword ? 'text' : 'password'}
+                autoComplete="new-password"
+                placeholder="Минимум 8 символов"
+                value={values.password}
+                onChange={(e) => setValues((v) => ({ ...v, password: e.target.value }))}
+                error={errors.password}
+                disabled={isLoading}
+                rightElement={
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
+                    onClick={() => setShowPassword((v) => !v)}
+                    aria-label={showPassword ? 'Скрыть пароль' : 'Показать пароль'}
+                  >
+                    {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </Button>
+                }
+              />
+              <Input
+                label="Повторите пароль"
+                type={showPassword ? 'text' : 'password'}
+                autoComplete="new-password"
+                placeholder="••••••••"
+                value={values.confirmPassword}
+                onChange={(e) => setValues((v) => ({ ...v, confirmPassword: e.target.value }))}
+                error={errors.confirmPassword}
+                disabled={isLoading}
+              />
+              <Button type="submit" variant="default" className="w-full" size="lg" isLoading={isLoading}>
+                {isLoading ? 'Создание...' : 'Создать аккаунт'}
+              </Button>
+            </form>
+          </CardContent>
+          <CardFooter className="justify-center">
+            <p className="text-xs font-mono text-muted-foreground">
+              Уже есть аккаунт?{' '}
+              <Link href="/login" className="text-primary hover:underline">
+                Войти
+              </Link>
+            </p>
+          </CardFooter>
+        </Card>
       </div>
     </div>
   );

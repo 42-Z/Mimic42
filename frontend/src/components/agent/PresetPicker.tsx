@@ -110,7 +110,7 @@ export function PresetPickerDialog({
       )}
 
       {!isLoading && !isError && presets.length === 0 && (
-        <p className="font-mono text-xs text-void-400">Пресетов пока нет</p>
+        <p className="font-mono text-xs text-muted-foreground">Пресетов пока нет</p>
       )}
 
       {!isLoading && !isError && presets.length > 0 && (
@@ -129,20 +129,21 @@ export function PresetPickerDialog({
                 onClick={() => handleSelect(preset.slug)}
                 className={cn(
                   'rounded-sm border px-3 py-2 text-left transition-colors duration-150',
+                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
                   selected?.slug === preset.slug
-                    ? 'border-plasma-600 bg-plasma-950/40'
-                    : 'border-void-700 hover:border-void-500',
+                    ? 'border-primary/60 bg-primary/10'
+                    : 'border-border hover:border-primary/40',
                 )}
               >
-                <span className="block font-mono text-xs text-void-100">{preset.title}</span>
-                <span className="block font-mono text-[11px] text-void-300">{preset.summary}</span>
+                <span className="block font-mono text-xs text-foreground">{preset.title}</span>
+                <span className="block font-mono text-[11px] text-muted-foreground">{preset.summary}</span>
               </button>
             ))}
           </div>
 
           <pre
             data-testid="preset-body"
-            className="max-h-72 overflow-y-auto whitespace-pre-wrap rounded-sm border border-void-700 bg-void-900 p-3 font-mono text-xs text-void-300"
+            className="max-h-72 overflow-y-auto whitespace-pre-wrap rounded-sm border border-border bg-background/60 p-3 font-mono text-xs text-foreground/90"
           >
             {selected?.body}
           </pre>

@@ -9,12 +9,12 @@ import { agentsApi, onboardingApi } from '@/lib/api';
 import { queryKeys } from '@/lib/queryClient';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Card, Spinner } from '@/components/ui/card';
+import { Card, CardHeader, CardContent, CardFooter, Spinner } from '@/components/ui/card';
 import { useToast } from '@/components/ui/toast';
 import { maskPhoneNumber } from '@/lib/sanitize';
 import { telegramCodeSchema, telegram2FASchema } from '@/lib/validators';
 import type { ApiError } from '@/types';
-import { CheckCircle2, Link2, MessageSquare, ShieldCheck } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Link2, MessageSquare, ShieldCheck } from 'lucide-react';
 import Link from 'next/link';
 
 type RebindStep = 'starting' | 'code' | '2fa' | 'confirm-failed' | 'done';
@@ -24,7 +24,7 @@ export default function RebindPage() {
   const rawId = params['id'] as string;
   const parsed = agentIdSchema.safeParse(rawId);
   if (!parsed.success) {
-    return <div className="p-8 font-mono text-crimson-400">Недопустимый ID агента</div>;
+    return <div role="alert" className="p-8 font-mono text-sm text-destructive">Недопустимый ID агента</div>;
   }
   return <RebindPageContent agentId={parsed.data} />;
 }
@@ -212,12 +212,12 @@ export function RebindWizard({
   return (
     <div className="max-w-xl mx-auto space-y-6 animate-fade-in">
       <div className="flex items-center gap-4">
-        <div className="h-10 w-10 rounded-sm bg-plasma-950 border border-plasma-800 flex items-center justify-center">
-          <Link2 className="h-5 w-5 text-plasma-400" />
+        <div className="h-10 w-10 rounded-sm bg-muted/60 border border-border flex items-center justify-center">
+          <Link2 className="h-5 w-5 text-primary" />
         </div>
         <div>
-          <h1 className="font-display text-xl font-bold text-void-100">Перепривязка Telegram</h1>
-          <p className="font-mono text-xs text-void-300 mt-0.5">
+          <h1 className="font-display text-2xl font-bold text-foreground">Перепривязка Telegram</h1>
+          <p className="font-mono text-xs text-muted-foreground mt-1">
             Введите код из Telegram. Имя, память и настройки сохранятся.
           </p>
         </div>
@@ -228,11 +228,11 @@ export function RebindWizard({
           {isPending ? (
             <>
               <Spinner size="lg" />
-              <p className="font-mono text-sm text-void-400">Отправляем код в Telegram…</p>
+              <p className="font-mono text-sm text-muted-foreground">Отправляем код в Telegram…</p>
             </>
           ) : (
             <>
-              <p className="font-mono text-sm text-crimson-400">
+              <p role="alert" className="font-mono text-sm text-destructive">
                 {error || 'Не удалось отправить код'}
               </p>
               <Button onClick={() => void requestCode()} size="lg" className="w-full">
@@ -245,67 +245,84 @@ export function RebindWizard({
 
       {step === 'code' && (
         <form onSubmit={handleCode} className="space-y-6">
-          <StepBadge step="1" label="Код из Telegram" icon={MessageSquare} />
-          <Input
-            label="Код подтверждения"
-            type="text"
-            inputMode="numeric"
-            placeholder="12345"
-            maxLength={8}
-            value={code}
-            onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))}
-            error={error}
-            hint={knownPhone ? `Код придёт в Telegram на ${maskPhoneNumber(knownPhone)}` : undefined}
-            autoFocus
-            className="text-center text-xl tracking-[0.5em]"
-          />
-          <Button
-            type="submit"
-            isLoading={isPending}
-            disabled={isResending}
-            size="lg"
-            className="w-full"
-          >
-            Подтвердить →
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            onClick={resendCode}
-            isLoading={isResending}
-            disabled={isPending}
-            className="w-full"
-          >
-            Отправить код ещё раз
-          </Button>
+          <Card padding="none">
+            <CardHeader className="pb-4">
+              <StepBadge step="1" label="Код из Telegram" icon={MessageSquare} />
+            </CardHeader>
+            <CardContent>
+              <Input
+                label="Код подтверждения"
+                type="text"
+                inputMode="numeric"
+                placeholder="12345"
+                maxLength={8}
+                value={code}
+                onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))}
+                error={error}
+                hint={knownPhone ? `Код придёт в Telegram на ${maskPhoneNumber(knownPhone)}` : undefined}
+                autoFocus
+                className="text-center text-xl tracking-[0.5em]"
+              />
+            </CardContent>
+            <CardFooter className="flex-col gap-3">
+              <Button
+                type="submit"
+                isLoading={isPending}
+                disabled={isResending}
+                size="lg"
+                className="w-full"
+              >
+                Подтвердить →
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={resendCode}
+                isLoading={isResending}
+                disabled={isPending}
+                className="w-full"
+              >
+                Отправить код ещё раз
+              </Button>
+            </CardFooter>
+          </Card>
         </form>
       )}
 
       {step === '2fa' && (
         <form onSubmit={handle2FA} className="space-y-6">
-          <StepBadge step="2" label="Пароль 2FA" icon={ShieldCheck} />
-          <Input
-            label="Пароль 2FA"
-            type="password"
-            placeholder="••••••••"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            error={error}
-            autoFocus
-          />
-          <Button type="submit" isLoading={isPending} size="lg" className="w-full">
-            Подтвердить →
-          </Button>
+          <Card padding="none">
+            <CardHeader className="pb-4">
+              <StepBadge step="2" label="Пароль 2FA" icon={ShieldCheck} />
+            </CardHeader>
+            <CardContent>
+              <Input
+                label="Пароль 2FA"
+                type="password"
+                placeholder="••••••••"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                error={error}
+                autoFocus
+              />
+            </CardContent>
+            <CardFooter>
+              <Button type="submit" isLoading={isPending} size="lg" className="w-full">
+                Подтвердить →
+              </Button>
+            </CardFooter>
+          </Card>
         </form>
       )}
 
       {step === 'confirm-failed' && (
         <Card variant="glass" padding="lg" className="flex flex-col items-center gap-4 text-center">
-          <p className="font-mono text-sm text-crimson-400">
+          <AlertTriangle className="h-10 w-10 text-amber-400" aria-hidden="true" />
+          <p role="alert" className="font-mono text-sm text-destructive">
             {error || 'Не удалось завершить перепривязку'}
           </p>
-          <p className="font-mono text-xs text-void-300">
+          <p className="font-mono text-xs text-muted-foreground">
             Telegram уже привязан — осталось пересобрать агента.
           </p>
           <Button
@@ -321,9 +338,9 @@ export function RebindWizard({
 
       {step === 'done' && (
         <Card variant="glass" padding="lg" className="space-y-4 text-center">
-          <CheckCircle2 className="h-12 w-12 text-neon-400 mx-auto" />
-          <h2 className="font-display text-lg font-bold text-void-100">Telegram перепривязан</h2>
-          <p className="font-mono text-sm text-void-300">
+          <CheckCircle2 className="h-12 w-12 text-success mx-auto" aria-hidden="true" />
+          <h2 className="font-display text-xl font-bold text-foreground">Telegram перепривязан</h2>
+          <p className="font-mono text-sm text-muted-foreground">
             Агент пока остановлен — запустите его на странице агента.
           </p>
           <Button onClick={() => onNavigate(`/agent/${agentId}`)} size="lg" className="w-full">
@@ -335,7 +352,7 @@ export function RebindWizard({
       <div className="text-center">
         <Link
           href={`/agent/${agentId}`}
-          className="font-mono text-xs text-void-300 hover:text-void-200 transition-colors"
+          className="font-mono text-xs text-muted-foreground hover:text-foreground transition-colors"
         >
           ← Вернуться к агенту
         </Link>
@@ -355,10 +372,10 @@ function StepBadge({
 }) {
   return (
     <div className="flex items-center gap-3">
-      <div className="h-8 w-8 rounded-sm bg-plasma-950 border border-plasma-800 flex items-center justify-center">
-        <Icon className="h-4 w-4 text-plasma-400" />
+      <div className="h-8 w-8 rounded-sm bg-primary/10 border border-border flex items-center justify-center">
+        <Icon className="h-4 w-4 text-primary" />
       </div>
-      <div className="font-mono text-xs text-plasma-500 uppercase tracking-widest">
+      <div className="font-mono text-xs text-muted-foreground uppercase tracking-wider">
         Шаг {step} — {label}
       </div>
     </div>

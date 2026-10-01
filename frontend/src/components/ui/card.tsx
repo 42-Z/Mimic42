@@ -3,6 +3,11 @@ import { cva, type VariantProps } from 'class-variance-authority';
 import { cn } from '@/lib/utils';
 
 // ── Card ──────────────────────────────────────────────────────────────────────
+// Пропсы variant/padding сохранены ради существующих вызывающих мест.
+// Токены схлопнули цветовые различия вариантов (старые void-600/void-700 оба
+// отображаются в border-border), поэтому bordered совпадает с default, но
+// elevated сохраняет shadow-void, а glass остаётся полупрозрачным.
+// Правило padding: внутри Card с CardHeader/CardContent/CardFooter передавай padding="none" — иначе p-6 задвоится.
 interface CardProps extends React.HTMLAttributes<HTMLDivElement> {
   variant?: 'default' | 'bordered' | 'elevated' | 'glass';
   padding?: 'none' | 'sm' | 'md' | 'lg';
@@ -11,10 +16,10 @@ interface CardProps extends React.HTMLAttributes<HTMLDivElement> {
 const Card = React.forwardRef<HTMLDivElement, CardProps>(
   ({ className, variant = 'default', padding = 'md', children, ...props }, ref) => {
     const variants = {
-      default: 'bg-void-800 border border-void-700',
-      bordered: 'bg-void-800 border border-void-600',
-      elevated: 'bg-void-800 border border-void-700 shadow-void',
-      glass: 'bg-void-900/60 backdrop-blur-sm border border-void-700/60',
+      default: '',
+      bordered: '',
+      elevated: 'shadow-void',
+      glass: 'bg-card/60 border-border/60 backdrop-blur-sm',
     };
 
     const paddings = {
@@ -28,7 +33,7 @@ const Card = React.forwardRef<HTMLDivElement, CardProps>(
       <div
         ref={ref}
         className={cn(
-          'rounded-sm',
+          'rounded-sm border border-border bg-card text-card-foreground',
           // eslint-disable-next-line security/detect-object-injection -- keys are typed variant/padding unions
           variants[variant],
           // eslint-disable-next-line security/detect-object-injection -- keys are typed variant/padding unions
@@ -46,34 +51,37 @@ Card.displayName = 'Card';
 
 const CardHeader = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(
   ({ className, ...props }, ref) => (
-    <div ref={ref} className={cn('flex flex-col gap-1.5', className)} {...props} />
+    <div ref={ref} className={cn('flex flex-col space-y-1.5 p-6', className)} {...props} />
   )
 );
 CardHeader.displayName = 'CardHeader';
 
-const CardTitle = React.forwardRef<HTMLHeadingElement, React.HTMLAttributes<HTMLHeadingElement>>(
-  ({ className, children, ...props }, ref) => (
-    <h3
+interface CardTitleProps extends React.HTMLAttributes<HTMLHeadingElement> {
+  /** Уровень заголовка: по умолчанию h3, как в shadcn/ui. */
+  as?: 'h1' | 'h2' | 'h3' | 'h4';
+}
+
+const CardTitle = React.forwardRef<HTMLHeadingElement, CardTitleProps>(
+  ({ as: Tag = 'h3', className, ...props }, ref) => (
+    <Tag
       ref={ref}
-      className={cn('font-mono text-sm font-medium text-void-200 uppercase tracking-wider', className)}
+      className={cn('font-mono text-base font-semibold uppercase tracking-wider text-foreground', className)}
       {...props}
-    >
-      {children}
-    </h3>
+    />
   )
 );
 CardTitle.displayName = 'CardTitle';
 
 const CardContent = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(
   ({ className, ...props }, ref) => (
-    <div ref={ref} className={cn('', className)} {...props} />
+    <div ref={ref} className={cn('p-6 pt-0', className)} {...props} />
   )
 );
 CardContent.displayName = 'CardContent';
 
 const CardFooter = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(
   ({ className, ...props }, ref) => (
-    <div ref={ref} className={cn('flex items-center pt-4 border-t border-void-700', className)} {...props} />
+    <div ref={ref} className={cn('flex items-center p-6 pt-0', className)} {...props} />
   )
 );
 CardFooter.displayName = 'CardFooter';
@@ -84,12 +92,12 @@ const badgeVariants = cva(
   {
     variants: {
       variant: {
-        default: 'bg-void-700 text-void-200 border border-void-600',
+        default: 'bg-muted text-foreground border border-border',
         plasma: 'bg-plasma-950 text-plasma-300 border border-plasma-800',
         neon: 'bg-neon-950 text-neon-300 border border-neon-800',
         amber: 'bg-amber-950 text-amber-300 border border-amber-800',
         crimson: 'bg-crimson-950 text-crimson-300 border border-crimson-800',
-        outline: 'border border-void-600 text-void-300',
+        outline: 'border border-border text-muted-foreground',
       },
     },
     defaultVariants: {
@@ -160,9 +168,9 @@ function Skeleton({ className, variant = 'block', ...props }: SkeletonProps) {
   return (
     <div
       className={cn(
-        'relative overflow-hidden bg-void-800 rounded-sm',
+        'relative overflow-hidden bg-muted rounded-sm',
         'after:absolute after:inset-0',
-        'after:bg-gradient-to-r after:from-transparent after:via-void-700/50 after:to-transparent',
+        'after:bg-gradient-to-r after:from-transparent after:via-border/50 after:to-transparent',
         'after:animate-shimmer after:bg-[length:600px_100%]',
         variant === 'circle' && 'rounded-full',
         variant === 'line' && 'h-4',
@@ -179,14 +187,14 @@ function Divider({ className, label }: { className?: string; label?: string }) {
   if (label) {
     return (
       <div className={cn('flex items-center gap-3', className)}>
-        <div className="flex-1 h-px bg-void-700" />
-        <span className="text-xs font-mono text-void-300 uppercase tracking-wider">{label}</span>
-        <div className="flex-1 h-px bg-void-700" />
+        <div className="flex-1 h-px bg-border" />
+        <span className="text-xs font-mono text-muted-foreground uppercase tracking-wider">{label}</span>
+        <div className="flex-1 h-px bg-border" />
       </div>
     );
   }
 
-  return <div className={cn('h-px bg-void-700', className)} />;
+  return <div className={cn('h-px bg-border', className)} />;
 }
 
 export {

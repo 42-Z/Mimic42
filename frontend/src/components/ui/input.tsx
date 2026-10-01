@@ -2,6 +2,8 @@ import * as React from 'react';
 import { cn } from '@/lib/utils';
 
 // ── Input ─────────────────────────────────────────────────────────────────────
+// Дополнительные свойства (label/error/hint/leftElement/rightElement) сохранены:
+// их используют формы логина, регистрации, онбординга и перевязки Telegram.
 export interface InputProps extends React.InputHTMLAttributes<HTMLInputElement> {
   error?: string;
   label?: string;
@@ -12,21 +14,22 @@ export interface InputProps extends React.InputHTMLAttributes<HTMLInputElement> 
 
 const Input = React.forwardRef<HTMLInputElement, InputProps>(
   ({ className, type, error, label, hint, leftElement, rightElement, id, ...props }, ref) => {
-    const inputId = id ?? label?.toLowerCase().replace(/\s+/g, '-');
+    const generatedId = React.useId();
+    const inputId = id ?? (label ? label.toLowerCase().replace(/\s+/g, '-') : generatedId);
 
     return (
       <div className="flex flex-col gap-1.5">
         {label && (
           <label
             htmlFor={inputId}
-            className="text-xs font-mono font-medium text-void-300 uppercase tracking-wider"
+            className="text-xs font-mono font-medium text-muted-foreground uppercase tracking-wider"
           >
             {label}
           </label>
         )}
         <div className="relative flex items-center">
           {leftElement && (
-            <div className="absolute left-3 flex items-center pointer-events-none text-void-400">
+            <div className="absolute left-3 flex items-center pointer-events-none text-muted-foreground">
               {leftElement}
             </div>
           )}
@@ -34,17 +37,11 @@ const Input = React.forwardRef<HTMLInputElement, InputProps>(
             id={inputId}
             type={type}
             className={cn(
-              'flex h-10 w-full rounded-sm',
-              'bg-void-800 border border-void-600',
-              'px-3 py-2',
-              'font-mono text-base sm:text-sm text-void-100',
-              'placeholder:text-void-400',
-              'transition-colors duration-150',
-              'focus:outline-none focus:ring-1 focus:ring-plasma-500 focus:border-plasma-600',
-              'hover:border-void-500',
-              'disabled:cursor-not-allowed disabled:opacity-50',
-              'autofill:bg-void-800',
-              error && 'border-crimson-600 focus:ring-crimson-500 focus:border-crimson-500',
+              'flex h-9 w-full rounded-sm border border-border bg-background px-3 py-1 text-base sm:text-sm text-foreground',
+              'font-mono placeholder:text-muted-foreground',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
+              'disabled:cursor-not-allowed disabled:opacity-40',
+              error && 'border-crimson-600 focus-visible:ring-crimson-500',
               leftElement && 'pl-9',
               rightElement && 'pr-9',
               className
@@ -55,7 +52,7 @@ const Input = React.forwardRef<HTMLInputElement, InputProps>(
             {...props}
           />
           {rightElement && (
-            <div className="absolute right-1 flex min-h-[44px] min-w-[44px] items-center justify-center text-void-400">
+            <div className="absolute right-1 flex min-h-[44px] min-w-[44px] items-center justify-center text-muted-foreground">
               {rightElement}
             </div>
           )}
@@ -71,7 +68,7 @@ const Input = React.forwardRef<HTMLInputElement, InputProps>(
           </p>
         )}
         {hint && !error && (
-          <p id={`${inputId}-hint`} className="text-xs text-void-300 font-mono">
+          <p id={`${inputId}-hint`} className="text-xs text-muted-foreground font-mono">
             {hint}
           </p>
         )}
@@ -82,6 +79,8 @@ const Input = React.forwardRef<HTMLInputElement, InputProps>(
 Input.displayName = 'Input';
 
 // ── Textarea ──────────────────────────────────────────────────────────────────
+// Дополнительные свойства (error/label/hint/showCount) сохранены ради форм
+// настроек агента и первого комментария.
 export interface TextareaProps extends React.TextareaHTMLAttributes<HTMLTextAreaElement> {
   error?: string;
   label?: string;
@@ -92,7 +91,8 @@ export interface TextareaProps extends React.TextareaHTMLAttributes<HTMLTextArea
 
 const Textarea = React.forwardRef<HTMLTextAreaElement, TextareaProps>(
   ({ className, error, label, hint, showCount, maxLength, id, value, ...props }, ref) => {
-    const textareaId = id ?? label?.toLowerCase().replace(/\s+/g, '-');
+    const generatedId = React.useId();
+    const textareaId = id ?? (label ? label.toLowerCase().replace(/\s+/g, '-') : generatedId);
     const charCount = typeof value === 'string' ? value.length : 0;
 
     return (
@@ -101,7 +101,7 @@ const Textarea = React.forwardRef<HTMLTextAreaElement, TextareaProps>(
           {label && (
             <label
               htmlFor={textareaId}
-              className="text-xs font-mono font-medium text-void-300 uppercase tracking-wider"
+              className="text-xs font-mono font-medium text-muted-foreground uppercase tracking-wider"
             >
               {label}
             </label>
@@ -110,7 +110,7 @@ const Textarea = React.forwardRef<HTMLTextAreaElement, TextareaProps>(
             <span
               className={cn(
                 'text-xs font-mono tabular-nums',
-                charCount > maxLength * 0.9 ? 'text-amber-400' : 'text-void-300',
+                charCount > maxLength * 0.9 ? 'text-amber-400' : 'text-muted-foreground',
                 charCount >= maxLength && 'text-crimson-400'
               )}
             >
@@ -121,17 +121,11 @@ const Textarea = React.forwardRef<HTMLTextAreaElement, TextareaProps>(
         <textarea
           id={textareaId}
           className={cn(
-            'flex w-full rounded-sm',
-            'bg-void-800 border border-void-600',
-            'px-3 py-2.5',
-            'font-mono text-base sm:text-sm text-void-100',
-            'placeholder:text-void-400',
-            'transition-colors duration-150',
-            'focus:outline-none focus:ring-1 focus:ring-plasma-500 focus:border-plasma-600',
-            'hover:border-void-500',
-            'disabled:cursor-not-allowed disabled:opacity-50',
-            'resize-y min-h-[100px]',
-            error && 'border-crimson-600 focus:ring-crimson-500 focus:border-crimson-500',
+            'flex min-h-[80px] w-full rounded-sm border border-border bg-background px-3 py-2 text-base sm:text-sm text-foreground',
+            'font-mono placeholder:text-muted-foreground',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
+            'disabled:cursor-not-allowed disabled:opacity-40',
+            error && 'border-crimson-600 focus-visible:ring-crimson-500',
             className
           )}
           ref={ref}
@@ -154,7 +148,7 @@ const Textarea = React.forwardRef<HTMLTextAreaElement, TextareaProps>(
           </p>
         )}
         {hint && !error && (
-          <p id={`${textareaId}-hint`} className="text-xs text-void-300 font-mono">
+          <p id={`${textareaId}-hint`} className="text-xs text-muted-foreground font-mono">
             {hint}
           </p>
         )}
@@ -165,20 +159,15 @@ const Textarea = React.forwardRef<HTMLTextAreaElement, TextareaProps>(
 Textarea.displayName = 'Textarea';
 
 // ── Label ─────────────────────────────────────────────────────────────────────
-const Label = React.forwardRef<
-  HTMLLabelElement,
-  React.LabelHTMLAttributes<HTMLLabelElement>
->(({ className, ...props }, ref) => (
-  <label
-    ref={ref}
-    className={cn(
-      'text-xs font-mono font-medium text-void-300 uppercase tracking-wider',
-      'peer-disabled:cursor-not-allowed peer-disabled:opacity-70',
-      className
-    )}
-    {...props}
-  />
-));
+const Label = React.forwardRef<HTMLLabelElement, React.LabelHTMLAttributes<HTMLLabelElement>>(
+  ({ className, ...props }, ref) => (
+    <label
+      ref={ref}
+      className={cn('text-sm font-medium font-mono uppercase tracking-wider text-muted-foreground', className)}
+      {...props}
+    />
+  )
+);
 Label.displayName = 'Label';
 
 export { Input, Textarea, Label };
