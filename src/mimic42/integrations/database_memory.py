@@ -49,6 +49,14 @@ class DatabaseShortTermMemory:
                     msg_type = "ai"
 
                 content = model.content
+                if role == "assistant" and not content.strip():
+                    # Старая запись с пустым ответом хранит текст в схеме:
+                    # модели он нужен, а не пробельный ход в истории.
+                    structured = model.payload.get("structured_response")
+                    if isinstance(structured, dict):
+                        text = structured.get("text", "")
+                        if isinstance(text, str):
+                            content = text
 
                 msg: dict[str, Any] = {"type": msg_type, "content": content}
                 if msg_type == "tool" or role == "tool":
@@ -192,12 +200,22 @@ class DatabaseShortTermMemory:
                 # ── Clean assistant content ──────────────────────────────────────
                 if role == "assistant":
                     # Structured output often leaves content empty or dumps the
-                    # raw repr.  Prefer the human-readable text.
+                    # raw repr.  Prefer the human-readable text.  Content can be
+                    # whitespace-only ("\n") — truthy, but renders as an empty
+                    # paragraph in the feed, so treat it as empty too.
                     human_text = ""
                     if structured_response is not None:
-                        human_text = structured_response.get("text", "")
+                        raw_text = structured_response.get("text")
+                        # None — пустой текст: str(None) дал бы «None» в ленте.
+                        if raw_text is None:
+                            human_text = ""
+                        elif not isinstance(raw_text, str):
+                            human_text = str(raw_text)
+                        else:
+                            human_text = raw_text
+                        human_text = human_text.strip()
 
-                    if content.startswith("Returning structured response:") or not content:
+                    if content.startswith("Returning structured response:") or not content.strip():
                         content = human_text
 
                     # If this is an intermediate AIMessage that only contains

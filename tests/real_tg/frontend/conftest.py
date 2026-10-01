@@ -78,6 +78,7 @@ def real_servers() -> Iterator[None]:
     # real_tg проверяет Telegram, а не наблюдаемость — в Braintrust тесты
     # не пишут.
     env["BRAINTRUST_API_KEY"] = ""
+    env["MEM0_API_KEY"] = ""
     # CORS бэкенда должен знать фактический порт фронта (он может быть
     # переопределён через E2E_APP_PORT, если 3000 занят).
     env["CORS_ALLOW_ORIGINS"] = f"http://127.0.0.1:{APP_PORT},http://localhost:{APP_PORT}"
@@ -113,9 +114,11 @@ def sync_checker() -> Iterator[SyncChecker]:
         api_hash=os.environ["TG_CHECKER_API_HASH"],
         session_string=os.environ["TG_CHECKER_SESSION"],
     )
-    instance.start()
-    yield instance
-    instance.stop()
+    try:
+        instance.start()
+        yield instance
+    finally:
+        instance.stop()
 
 
 @pytest.fixture(scope="session")
@@ -156,14 +159,16 @@ def real_auth(browser: Browser, real_servers: None) -> str:
     context = browser.new_context(base_url=APP_URL)
     context.set_default_timeout(ACTION_TIMEOUT_MS)
     context.set_default_navigation_timeout(NAVIGATION_TIMEOUT_MS)
-    page = context.new_page()
-    page.goto("/login")
-    page.get_by_label("Email").fill(os.environ["TEST_ACCOUNT_EMAIL"])
-    page.get_by_label("Пароль", exact=True).fill(os.environ["TEST_ACCOUNT_PASSWORD"])
-    page.get_by_role("button", name="Войти").click()
-    # У аккаунта есть агенты-мимики, но состояние зависит от прогона: логин
-    # может упасть и на дашборд, и на онбординг (если агентов ещё нет).
-    page.wait_for_url(re.compile(r"/(dashboard|onboarding)"), timeout=60_000)
-    context.storage_state(path=str(state_path))
-    context.close()
+    try:
+        page = context.new_page()
+        page.goto("/login")
+        page.get_by_label("Email").fill(os.environ["TEST_ACCOUNT_EMAIL"])
+        page.get_by_label("Пароль", exact=True).fill(os.environ["TEST_ACCOUNT_PASSWORD"])
+        page.get_by_role("button", name="Войти").click()
+        # У аккаунта есть агенты-мимики, но состояние зависит от прогона: логин
+        # может упасть и на дашборд, и на онбординг (если агентов ещё нет).
+        page.wait_for_url(re.compile(r"/(dashboard|onboarding)"), timeout=60_000)
+        context.storage_state(path=str(state_path))
+    finally:
+        context.close()
     return str(state_path)

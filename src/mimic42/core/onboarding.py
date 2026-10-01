@@ -21,8 +21,9 @@ logger = logging.getLogger("mimic42.onboarding")
 
 
 def load_default_system_prompt() -> str:
-    root = Path(__file__).resolve().parents[3]
-    path = root / "BASE_SYSTEM_PROMPT.txt"
+    # Файл лежит в пакете (src/mimic42), поэтому одинаково резолвится из
+    # editable-инсталла в dev и из wheel в образе (site-packages).
+    path = Path(__file__).resolve().parents[1] / "BASE_SYSTEM_PROMPT.txt"
     if path.exists():
         try:
             return path.read_text(encoding="utf-8").strip()

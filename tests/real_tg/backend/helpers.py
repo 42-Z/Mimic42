@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from uuid import UUID
+from typing import Any
+from uuid import UUID, uuid4
 
 import asyncpg
 import httpx
@@ -126,3 +127,56 @@ async def disable_auto_restore(dsn: str, owner_id: UUID) -> None:
         )
     finally:
         await conn.close()
+
+
+class MemoryMediaStorage:
+    """MediaUploader в памяти: настоящий Telegram, но без зависимости от Storage.
+
+    Без SUPABASE_SERVICE_ROLE_KEY SupabaseMediaStorage не строится, но
+    сценарий issue #98 должен оставаться доступным в живом тесте.
+    """
+
+    def __init__(self) -> None:
+        self._files: dict[str, bytes] = {}
+
+    async def upload(
+        self,
+        *,
+        agent_id: UUID,
+        filename: str,
+        data: bytes,
+        mime_type: str,
+        kind: str = "doc",
+    ) -> Any:
+        from mimic42.core.media import MediaFile, safe_filename
+
+        if not data:
+            return None
+        name = safe_filename(filename)
+        # uuid4 — как в SupabaseMediaStorage: две загрузки с одним именем
+        # не должны затирать байты друг друга.
+        path = f"{agent_id}/{uuid4()}/{name}"
+        self._files[path] = bytes(data)
+        return MediaFile(
+            kind=kind, name=name, mime_type=mime_type, size=len(data), storage_path=path
+        )
+
+    async def open(self, path: str) -> bytes | None:
+        return self._files.get(path)
+
+    async def remove_prefix(self, agent_id: UUID) -> None:
+        prefix = f"{agent_id}/"
+        for key in [key for key in self._files if key.startswith(prefix)]:
+            del self._files[key]
+
+
+def media_storage() -> Any:
+    """Настоящий Supabase Storage при наличии ключа, иначе хранилище в памяти."""
+    service_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+    if service_key:
+        from mimic42.integrations.supabase_media import SupabaseMediaStorage
+
+        return SupabaseMediaStorage(
+            supabase_url=os.environ["SUPABASE_URL"], service_key=service_key
+        )
+    return MemoryMediaStorage()

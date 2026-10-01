@@ -52,6 +52,20 @@ def _payload_turn_id(row: Any) -> str | None:
     return str(value) if value else None
 
 
+def _stored_structured_text(msg: Any) -> str:
+    """Человекочитаемый текст ответа из payload пустой assistant-строки.
+
+    В старых записях ``structured_response.text`` может быть null — такие
+    данные остаются пустой строкой, чтобы строковые поля записи не получили
+    None."""
+    response = msg.payload.get("structured_response")
+    if isinstance(response, dict):
+        text = response.get("text", "")
+        if isinstance(text, str):
+            return text
+    return ""
+
+
 class DatabaseAgentStore:
     def __init__(
         self,
@@ -309,10 +323,8 @@ class DatabaseAgentStore:
                 content = message.content
                 # With structured output the assistant message content is empty.
                 # Present the human-readable text from the stored schema instead.
-                if not content and message.role == "assistant":
-                    structured = message.payload.get("structured_response")
-                    if isinstance(structured, dict):
-                        content = structured.get("text", "")
+                if not content.strip() and message.role == "assistant":
+                    content = _stored_structured_text(message)
                 records.append(
                     AgentMessageRecord(
                         id=message.id,
@@ -442,10 +454,8 @@ class DatabaseAgentStore:
 
         def _message_content(msg: AgentMessageModel) -> str:
             content = msg.content
-            if not content and msg.role == "assistant":
-                structured = msg.payload.get("structured_response")
-                if isinstance(structured, dict):
-                    content = structured.get("text", "")
+            if not content.strip() and msg.role == "assistant":
+                content = _stored_structured_text(msg)
             return content
 
         def _reply_id(value: Any) -> int | None:

@@ -6,6 +6,7 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
+from io import BytesIO
 from typing import Any, Literal, Protocol
 from uuid import UUID
 
@@ -15,6 +16,14 @@ from telethon import functions, types
 from telethon.extensions import markdown
 
 from mimic42.core.media import MediaUploader
+from mimic42.core.media_download import (
+    RETRYABLE_DOWNLOAD_ERRORS,
+    MediaRef,
+    MediaRefCache,
+    MediaUnavailableError,
+    download_media_with_refresh,
+    normalize_peer_ref,
+)
 
 logger = logging.getLogger("mimic42.telegram_tools")
 
@@ -113,7 +122,12 @@ class SendWindowClosed(RuntimeError):
                 if retry_after_seconds is not None
                 else " Срок не ограничен."
             )
-            message = f"В этом чате у тебя нет права писать.{until}"
+            message = (
+                f"В этом чате у тебя нет права писать.{until} "
+                "Так обычно запирает бот-верификатор: прочитай историю чата "
+                "(get_messages) — последнее сообщение бота с кнопкой обычно и есть "
+                "капча. Пройди её сам (view_image, click_inline_button) и повтори отправку."
+            )
         super().__init__(message)
 
 
@@ -148,6 +162,15 @@ def _tool_failure(exc: Exception) -> dict[str, Any]:
 def _tool_failure_list(exc: Exception) -> list[dict[str, Any]]:
     """List-shaped counterpart of _tool_failure for tools returning lists."""
     return [_tool_failure(exc)]
+
+
+def _safe_failure(exc: Exception, message: str) -> dict[str, Any]:
+    """_tool_failure с безопасным текстом: результат целиком попадает в
+    ToolMessage.content, который читает модель, — сырые ошибки Telegram
+    («caused by GetFileRequest» и т.п.) ей показывать нельзя."""
+    failure = _tool_failure(exc)
+    failure["error"] = message
+    return failure
 
 
 def parse_media_id(media_id: str) -> tuple[str, int, int, bytes, int]:
@@ -298,6 +321,7 @@ class TelegramToolbox:
         session_factory: async_sessionmaker[AsyncSession] | None = None,
         media_uploader: MediaUploader | None = None,
         send_window: Any | None = None,
+        media_refs: MediaRefCache | None = None,
     ) -> None:
         self._client = client
         self._agent_id = agent_id
@@ -305,6 +329,140 @@ class TelegramToolbox:
         self._last_send_text_message: dict[str, datetime] = {}
         self._media_uploader = media_uploader
         self._send_window = send_window
+        self._media_refs = media_refs
+
+    async def _archived_media(self, ref: MediaRef | None) -> bytes | None:
+        """Заархивированная при получении копия из Storage.
+
+        Для самоуничтожившихся медиа это единственный источник: повторно
+        Telegram такие файлы не отдаёт вовсе.
+        """
+        if ref is None or ref.storage_path is None or self._media_uploader is None:
+            return None
+        return await self._media_uploader.open(ref.storage_path)
+
+    def _media_message_ref(self, media_id: str) -> tuple[Any, int] | None:
+        """Сообщение, из которого медиа попало в контекст, — чтобы обновить
+        протухший file_reference перечитыванием."""
+        if self._media_refs is None:
+            return None
+        ref = self._media_refs.lookup(media_id)
+        if ref is None or ref.peer is None or not isinstance(ref.message_id, int):
+            return None
+        return (normalize_peer_ref(ref.peer), ref.message_id)
+
+    async def _download_by_media_id(self, media_id: str, media_obj: Any, file: Any = bytes) -> Any:
+        """Скачать объект, восстановленный из media_id.
+
+        Сначала — заархивированная при получении копия (единственный
+        источник для самоуничтожившихся медиа), затем — скачивание с
+        обновлением протухшей file_reference через сообщение.
+        """
+        ref = self._media_refs.lookup(media_id) if self._media_refs is not None else None
+        cached = await self._archived_media(ref)
+        if cached:
+            if file is not bytes:
+                write = getattr(file, "write", None)
+                if callable(write):
+                    write(cached)
+            return cached
+        return await download_media_with_refresh(
+            self._client,
+            media_obj,
+            message_ref=self._media_message_ref(media_id),
+            file=file,
+        )
+
+    async def _send_media_with_refresh(
+        self,
+        entity: Any,
+        media_id: str,
+        media_type: str,
+        obj_id: int,
+        file_input: Any,
+        **options: Any,
+    ) -> Any:
+        """Send by Telegram reference; if it expired, use our copy or refetch its message."""
+        try:
+            return await self._client.send_file(entity, file_input, **options)
+        except RETRYABLE_DOWNLOAD_ERRORS as expired:
+            ref = self._media_refs.lookup(media_id) if self._media_refs is not None else None
+            archived = await self._archived_media(ref)
+            if archived:
+                archive_name = (
+                    ref.storage_path.rsplit("/", 1)[-1] if ref and ref.storage_path else "file"
+                )
+                doc_parts = media_id.split(":", 5) if media_type == "doc" else []
+                original_name = doc_parts[5] if len(doc_parts) > 5 else ""
+                filename = {
+                    "photo": "photo.jpeg",
+                    "voice": "voice.ogg",
+                    "round": "video.mp4",
+                }.get(
+                    media_type, original_name.replace("\\", "/").rsplit("/", 1)[-1] or archive_name
+                )
+                stream = BytesIO(archived)
+                stream.name = filename
+                upload_options = options.copy()
+                if ref and ref.mime_type:
+                    upload_options["mime_type"] = ref.mime_type
+                if ref and ref.attributes:
+                    upload_options["attributes"] = list(ref.attributes)
+                if media_type == "doc":
+                    upload_options["force_document"] = True
+                elif media_type == "voice":
+                    upload_options["voice_note"] = True
+                elif media_type == "round":
+                    upload_options["video_note"] = True
+                elif media_type == "sticker":
+                    parts = media_id.split(":", 6)
+                    upload_options["attributes"] = [
+                        types.DocumentAttributeSticker(
+                            alt=parts[5] if len(parts) > 5 else "",
+                            stickerset=types.InputStickerSetEmpty(),
+                        )
+                    ]
+                return await self._client.send_file(entity, stream, **upload_options)
+
+            message_ref = self._media_message_ref(media_id)
+            if message_ref is not None:
+                fresh = await self._client.get_messages(message_ref[0], ids=message_ref[1])
+                fresh_media_id = format_media_object(fresh)
+                if fresh_media_id is not None:
+                    fresh_type, fresh_id, *_ = parse_media_id(fresh_media_id)
+                    if (fresh_type, fresh_id) == (media_type, obj_id):
+                        try:
+                            return await self._client.send_file(entity, fresh.media, **options)
+                        except RETRYABLE_DOWNLOAD_ERRORS as retry_exc:
+                            raise MediaUnavailableError() from retry_exc
+
+            parts = media_id.split(":", 6)
+            pack_name = parts[6] if media_type == "sticker" and len(parts) > 6 else ""
+            if not pack_name or pack_name.isdecimal():
+                raise MediaUnavailableError() from expired
+            sticker_set = await self._client(
+                functions.messages.GetStickerSetRequest(
+                    stickerset=types.InputStickerSetShortName(short_name=pack_name), hash=0
+                )
+            )
+            fresh_sticker = next(
+                (
+                    doc
+                    for doc in sticker_set.documents
+                    if isinstance(doc, types.Document)
+                    and doc.id == obj_id
+                    and any(
+                        isinstance(attr, types.DocumentAttributeSticker) for attr in doc.attributes
+                    )
+                ),
+                None,
+            )
+            if fresh_sticker is None:
+                raise MediaUnavailableError() from expired
+            try:
+                return await self._client.send_file(entity, fresh_sticker, **options)
+            except RETRYABLE_DOWNLOAD_ERRORS as retry_exc:
+                raise MediaUnavailableError() from retry_exc
 
     async def _resolve_peer(self, peer: Any, as_input: bool = True) -> Any:
         """Resolve a peer string/int to a Telethon entity."""
@@ -546,10 +704,19 @@ class TelegramToolbox:
                 text = msg.text or ""
                 media_id = format_media_object(msg)
                 if media_id:
+                    if self._media_refs is not None:
+                        # Запоминаем сообщение: по нему обновится протухшая
+                        # file_reference, когда агент вернётся к этой картинке.
+                        self._media_refs.remember(
+                            media_id,
+                            MediaRef.from_message(
+                                msg, peer=normalize_peer_ref(peer), message_id=msg.id
+                            ),
+                        )
                     if media_id.startswith("photo:"):
                         text = f"[Фото id={media_id}]" + (f" {text}" if text else "")
                     elif media_id.startswith("sticker:"):
-                        emoji = media_id.split(":")[-1]
+                        emoji = media_id.split(":", 6)[5]
                         text = f"[Стикер {emoji} id={media_id}]" + (f" {text}" if text else "")
                     elif media_id.startswith("doc:"):
                         text = f"[Файл id={media_id}]" + (f" {text}" if text else "")
@@ -575,12 +742,14 @@ class TelegramToolbox:
             dialogs_list = await self._client.get_dialogs(limit=limit)
             result = []
             for d in dialogs_list:
+                is_self = bool(getattr(d.entity, "is_self", False))
                 result.append(
                     {
                         "id": d.id,
-                        "title": d.title,
+                        "title": "Избранное" if is_self else d.title,
                         "username": getattr(d.entity, "username", None),
                         "unread_count": d.unread_count,
+                        "is_self": is_self,
                     }
                 )
             return result
@@ -742,16 +911,21 @@ class TelegramToolbox:
                     slot.spent = False
                     return {"success": False, "error": f"Invalid media type: {media_type}"}
 
-                msg = await self._client.send_file(
+                msg = await self._send_media_with_refresh(
                     entity,
+                    file_source,
+                    media_type,
+                    obj_id,
                     file_input,
                     caption=caption,
                     reply_to=reply_to_msg_id,
                     comment_to=comment_to_msg_id,
                 )
                 return {"success": True, "message_id": msg.id}
-        except Exception as e:
+        except MediaUnavailableError as e:
             return _tool_failure(e)
+        except Exception as e:
+            return _safe_failure(e, "Не удалось отправить медиа.")
 
     async def view_image(self, media_id: str) -> list[dict[str, Any]]:
         """View image/sticker and return Base64 image payload."""
@@ -798,14 +972,40 @@ class TelegramToolbox:
             else:
                 return [{"type": "text", "text": f"Unsupported media type: {media_type}"}]
 
-            data = await self._client.download_media(media_obj, file=bytes)
+            ref = self._media_refs.lookup(media_id) if self._media_refs is not None else None
+            cached = await self._archived_media(ref)
+            storage_path: str | None = None
+            if cached:
+                # Копия уже в Storage — повторно заливать нечего.
+                data = cached
+                storage_path = ref.storage_path if ref is not None else None
+            else:
+                data = await download_media_with_refresh(
+                    self._client,
+                    media_obj,
+                    message_ref=self._media_message_ref(media_id),
+                    file=bytes,
+                )
             if not data:
-                return [{"type": "text", "text": "Failed to download media."}]
+                # Пустой файл — это отказ, а не успех: лента активности
+                # читает success, а не текст.
+                return [
+                    {
+                        "type": "text",
+                        "text": "Не удалось скачать медиа.",
+                        "success": False,
+                        "error": "Не удалось скачать медиа.",
+                        "error_code": "MediaEmptyError",
+                    }
+                ]
 
             base64_str = base64.b64encode(data).decode("utf-8")
 
-            storage_path: str | None = None
-            if self._media_uploader is not None and self._agent_id is not None:
+            if (
+                storage_path is None
+                and self._media_uploader is not None
+                and self._agent_id is not None
+            ):
                 try:
                     archived = await self._media_uploader.upload(
                         agent_id=self._agent_id,
@@ -815,6 +1015,10 @@ class TelegramToolbox:
                         kind=media_type,
                     )
                     storage_path = archived.storage_path if archived else None
+                    if storage_path and self._media_refs is not None:
+                        # Следующий просмотр пойдёт в Storage, а не в Telegram:
+                        # для самоуничтожившихся медиа повторного скачивания нет.
+                        self._media_refs.remember(media_id, MediaRef(storage_path=storage_path))
                 except Exception:
                     logger.warning("view_image media upload failed", exc_info=True)
 
@@ -823,6 +1027,7 @@ class TelegramToolbox:
                 items.append(
                     {
                         "type": "media_ref",
+                        "kind": media_type,
                         "storage_path": storage_path,
                         "mime_type": mime_type,
                         "size": len(data),
@@ -836,20 +1041,24 @@ class TelegramToolbox:
                 }
             )
             return items
+        except MediaUnavailableError as e:
+            return [{"type": "text", "text": str(e), **_tool_failure(e)}]
         except Exception as e:
+            # Сырые ошибки Telegram («caused by GetFileRequest» и т.п.) не
+            # уходят ни в текст, ни в поле error: результат целиком попадает
+            # в ToolMessage.content, который читает модель.
             return [
                 {
                     "type": "text",
-                    "text": f"Error loading image: {str(e)}",
-                    "success": False,
-                    "error": str(e),
-                    "error_code": type(e).__name__,
+                    "text": f"Не удалось открыть изображение ({type(e).__name__})",
+                    **_safe_failure(e, "Не удалось открыть изображение."),
                 }
             ]
 
     async def set_profile_photo(self, media_id: str) -> dict[str, Any]:
         """Set profile photo by URL or Media ID in memory."""
         try:
+            photo_name = "photo.jpg"
             if media_id.startswith("http://") or media_id.startswith("https://"):
                 import httpx
 
@@ -858,6 +1067,13 @@ class TelegramToolbox:
                     if r.status_code != 200:
                         return {"success": False, "error": f"URL fetch status: {r.status_code}"}
                     photo_bytes = r.content
+                    subtype = (
+                        (r.headers.get("content-type", "").partition("/")[-1].partition(";")[0])
+                        .strip()
+                        .lower()
+                    )
+                    if subtype in ("jpeg", "jpg", "png"):
+                        photo_name = f"photo.{subtype}"
             else:
                 media_type, obj_id, access_hash, file_reference, dc_id = parse_media_id(media_id)
                 if media_type == "photo":
@@ -883,15 +1099,31 @@ class TelegramToolbox:
                 else:
                     return {"success": False, "error": f"Invalid media type: {media_type}"}
 
-                photo_bytes = await self._client.download_media(media_obj, file=bytes)
+                photo_bytes = await self._download_by_media_id(media_id, media_obj, file=bytes)
                 if not photo_bytes:
                     return {"success": False, "error": "Failed to download media."}
 
-            uploaded_file = await self._client.upload_file(photo_bytes)
+                if media_type == "photo":
+                    # Фотографии Telegram — всегда JPEG.
+                    photo_name = "photo.jpg"
+                else:
+                    ref = (
+                        self._media_refs.lookup(media_id) if self._media_refs is not None else None
+                    )
+                    mime = (ref.mime_type or "").lower() if ref is not None else ""
+                    subtype = mime.partition("/")[-1]
+                    if mime.startswith("image/"):
+                        photo_name = f"photo.{subtype}"
+
+            # Telegram отклоняет аватар без расширения (PHOTO_EXT_INVALID):
+            # из байтов Telethon его не выведет, поэтому имя задаём сами.
+            uploaded_file = await self._client.upload_file(photo_bytes, file_name=photo_name)
             await self._client(functions.photos.UploadProfilePhotoRequest(file=uploaded_file))
             return {"success": True}
-        except Exception as e:
+        except MediaUnavailableError as e:
             return _tool_failure(e)
+        except Exception as e:
+            return _safe_failure(e, "Не удалось поставить фото профиля.")
 
     async def send_voice_note(
         self,
@@ -903,7 +1135,7 @@ class TelegramToolbox:
     ) -> dict[str, Any]:
         """Send voice note by URL or Media ID."""
         try:
-            async with self._sending(peer, comment_to_msg_id=comment_to_msg_id):
+            async with self._sending(peer, comment_to_msg_id=comment_to_msg_id) as slot:
                 entity = await self._resolve_peer(peer)
                 if file_source.startswith("http://") or file_source.startswith("https://"):
                     msg = await self._client.send_file(
@@ -916,21 +1148,29 @@ class TelegramToolbox:
                     return {"success": True, "message_id": msg.id}
 
                 media_type, obj_id, access_hash, file_reference, dc_id = parse_media_id(file_source)
+                if media_type != "voice":
+                    slot.spent = False
+                    return {"success": False, "error": "media_id is not a voice note"}
                 file_input = types.InputDocument(
                     id=obj_id,
                     access_hash=access_hash,
                     file_reference=file_reference,
                 )
-                msg = await self._client.send_file(
+                msg = await self._send_media_with_refresh(
                     entity,
+                    file_source,
+                    media_type,
+                    obj_id,
                     file_input,
                     voice_note=True,
                     reply_to=reply_to_msg_id,
                     comment_to=comment_to_msg_id,
                 )
                 return {"success": True, "message_id": msg.id}
-        except Exception as e:
+        except MediaUnavailableError as e:
             return _tool_failure(e)
+        except Exception as e:
+            return _safe_failure(e, "Не удалось отправить медиа.")
 
     async def send_video_note(
         self,
@@ -942,7 +1182,7 @@ class TelegramToolbox:
     ) -> dict[str, Any]:
         """Send video note (round video) by URL or Media ID."""
         try:
-            async with self._sending(peer, comment_to_msg_id=comment_to_msg_id):
+            async with self._sending(peer, comment_to_msg_id=comment_to_msg_id) as slot:
                 entity = await self._resolve_peer(peer)
                 if file_source.startswith("http://") or file_source.startswith("https://"):
                     msg = await self._client.send_file(
@@ -955,21 +1195,29 @@ class TelegramToolbox:
                     return {"success": True, "message_id": msg.id}
 
                 media_type, obj_id, access_hash, file_reference, dc_id = parse_media_id(file_source)
+                if media_type != "round":
+                    slot.spent = False
+                    return {"success": False, "error": "media_id is not a video note"}
                 file_input = types.InputDocument(
                     id=obj_id,
                     access_hash=access_hash,
                     file_reference=file_reference,
                 )
-                msg = await self._client.send_file(
+                msg = await self._send_media_with_refresh(
                     entity,
+                    file_source,
+                    media_type,
+                    obj_id,
                     file_input,
                     video_note=True,
                     reply_to=reply_to_msg_id,
                     comment_to=comment_to_msg_id,
                 )
                 return {"success": True, "message_id": msg.id}
-        except Exception as e:
+        except MediaUnavailableError as e:
             return _tool_failure(e)
+        except Exception as e:
+            return _safe_failure(e, "Не удалось отправить медиа.")
 
     async def send_location(self, peer: str, latitude: float, longitude: float) -> dict[str, Any]:
         """Send a map location pin with specific latitude and longitude."""
@@ -1088,7 +1336,10 @@ class TelegramToolbox:
                 if sticker_attr:
                     emoji = sticker_attr.alt or ""
 
-                media_id = f"sticker:{doc.id}:{doc.access_hash}:{ref_hex}:{doc.dc_id}:{emoji}"
+                media_id = (
+                    f"sticker:{doc.id}:{doc.access_hash}:{ref_hex}:{doc.dc_id}:"
+                    f"{emoji}:{set_short_name}"
+                )
                 stickers.append(
                     {
                         "media_id": media_id,
@@ -1164,15 +1415,20 @@ class TelegramToolbox:
                     access_hash=access_hash,
                     file_reference=file_reference,
                 )
-                msg = await self._client.send_file(
+                msg = await self._send_media_with_refresh(
                     entity,
+                    media_id,
+                    media_type,
+                    obj_id,
                     sticker_input,
                     reply_to=reply_to_msg_id,
                     comment_to=comment_to_msg_id,
                 )
                 return {"success": True, "message_id": msg.id}
-        except Exception as e:
+        except MediaUnavailableError as e:
             return _tool_failure(e)
+        except Exception as e:
+            return _safe_failure(e, "Не удалось отправить медиа.")
 
     # Category 5: Business Profile and Contacts (30-35)
 
@@ -2083,12 +2339,6 @@ class TelegramToolbox:
     async def transcribe_voice_note(self, media_id: str) -> dict[str, Any]:
         """Transcribe a voice note or round video message to text using Whisper on OpenRouter."""
         try:
-            if self._client.__class__.__name__ == "FakeTelethonClient":
-                return {
-                    "success": True,
-                    "transcription": "Это тестовая расшифровка голосового сообщения.",
-                }
-
             media_type, obj_id, access_hash, file_reference, dc_id = parse_media_id(media_id)
             if media_type not in ("voice", "round"):
                 return {
@@ -2111,7 +2361,7 @@ class TelegramToolbox:
                 attributes=[],
             )
 
-            data = await self._client.download_media(media_obj, file=bytes)
+            data = await self._download_by_media_id(media_id, media_obj, file=bytes)
             if not data:
                 return {"success": False, "error": "Failed to download media."}
 
@@ -2119,18 +2369,14 @@ class TelegramToolbox:
                 data, f"audio.{ext}", mime_type
             )
             return {"success": True, "transcription": text}
-        except Exception as e:
+        except MediaUnavailableError as e:
             return _tool_failure(e)
+        except Exception as e:
+            return _safe_failure(e, "Не удалось расшифровать голосовое сообщение.")
 
     async def read_document_file(self, media_id: str) -> dict[str, Any]:
         """Read and extract contents from a document/file programmatically (docx, xlsx, txt)."""
         try:
-            if self._client.__class__.__name__ == "FakeTelethonClient":
-                return {
-                    "success": True,
-                    "content": "Это тестовое содержимое документа.",
-                }
-
             parts = media_id.split(":")
             if len(parts) < 5:
                 return {"success": False, "error": f"Invalid media ID format: {media_id}"}
@@ -2180,7 +2426,7 @@ class TelegramToolbox:
                 attributes=[],
             )
 
-            data = await self._client.download_media(media_obj, file=bytes)
+            data = await self._download_by_media_id(media_id, media_obj, file=bytes)
             if not data:
                 return {"success": False, "error": "Failed to download file."}
 
@@ -2204,8 +2450,10 @@ class TelegramToolbox:
                             "success": False,
                             "error": "Не удалось декодировать текстовый файл.",
                         }
-        except Exception as e:
+        except MediaUnavailableError as e:
             return _tool_failure(e)
+        except Exception as e:
+            return _safe_failure(e, "Не удалось прочитать документ.")
 
     def _extract_docx(self, file_bytes: bytes) -> str:
         import io
@@ -2587,6 +2835,7 @@ def build_telegram_langchain_tools(
     session_factory: async_sessionmaker[AsyncSession] | None = None,
     media_uploader: MediaUploader | None = None,
     send_window: Any | None = None,
+    media_refs: MediaRefCache | None = None,
 ) -> list[BaseTool]:
     """Expose all 91 tools as LangChain StructuredTools."""
     toolbox = TelegramToolbox(
@@ -2595,7 +2844,17 @@ def build_telegram_langchain_tools(
         session_factory=session_factory,
         media_uploader=media_uploader,
         send_window=send_window,
+        media_refs=media_refs,
     )
+
+    async def view_image_for_agent(
+        media_id: str,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+        """Send the image to the model and keep archive metadata for activity."""
+        result = await toolbox.view_image(media_id)
+        content = [item for item in result if item.get("type") != "media_ref"]
+        refs = [item for item in result if item.get("type") == "media_ref"]
+        return content, {"items": refs} if refs else None
 
     return [
         StructuredTool.from_function(
@@ -2664,7 +2923,11 @@ def build_telegram_langchain_tools(
         StructuredTool.from_function(
             coroutine=toolbox.get_messages,
             name="get_messages",
-            description="Get message history (annotated with Media IDs: photo, sticker, doc).",
+            description=(
+                "Get message history (annotated with Media IDs: photo, sticker, doc). "
+                "A [Фото id=...] marker means the picture itself can be opened with "
+                "view_image — do that when its content matters."
+            ),
         ),
         StructuredTool.from_function(
             coroutine=toolbox.get_dialogs,
@@ -2706,12 +2969,15 @@ def build_telegram_langchain_tools(
             ),
         ),
         StructuredTool.from_function(
-            coroutine=toolbox.view_image,
+            coroutine=view_image_for_agent,
             name="view_image",
             description=(
-                "View an image or sticker by its Media ID. Returns "
-                "base64 image data in LangChain multimodal format."
+                "View an image or sticker by its Media ID. The actual picture is delivered "
+                "to you as an image block — read it from what you see. If a bot message "
+                "(captcha, verification) shows a photo and has buttons, view the image "
+                "BEFORE get_message_buttons/click_inline_button and never guess its content."
             ),
+            response_format="content_and_artifact",
         ),
         StructuredTool.from_function(
             coroutine=toolbox.set_profile_photo,
@@ -3066,7 +3332,9 @@ def build_telegram_langchain_tools(
                 "Get inline or reply keyboard buttons from a message. "
                 "CRITICAL: The 'peer' argument MUST be the chat/bot where the message is "
                 "located, not the current chat! "
-                "Returns list of buttons with text, type, data, URL, etc."
+                "Returns list of buttons with text, type, data, URL, etc. "
+                "When the message has a photo (captcha), view it with view_image first "
+                "and pick the button whose text matches the picture."
             ),
         ),
         StructuredTool.from_function(
@@ -3074,7 +3342,10 @@ def build_telegram_langchain_tools(
             name="click_inline_button",
             description=(
                 "Click an inline callback button on a message. "
-                "Use button_data (bytes as string) or button_index to identify the button."
+                "Use button_data (bytes as string) copied exactly from get_message_buttons "
+                "or button_index (zero-based order as returned there). "
+                "If the right answer comes from a picture, make sure you have viewed it "
+                "and solved it first — a wrong click can be irreversible (captcha bans)."
             ),
         ),
         StructuredTool.from_function(
