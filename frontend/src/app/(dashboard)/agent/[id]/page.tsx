@@ -573,10 +573,10 @@ function TabMemory({ agentId }: TabMemoryProps) {
               variant="glass"
               padding="md"
               key={mem.id}
-              className="relative group border-border/80 hover:border-primary/30 transition-colors flex flex-col justify-between"
+              className="relative group min-w-0 border-border/80 hover:border-primary/30 transition-colors flex flex-col justify-between"
             >
               <div>
-                <p className="text-foreground text-sm leading-relaxed whitespace-pre-wrap">
+                <p className="text-foreground text-sm leading-relaxed whitespace-pre-wrap [overflow-wrap:anywhere]">
                   {sanitizeText(mem.memory)}
                 </p>
               </div>
@@ -657,14 +657,14 @@ function TabMemory({ agentId }: TabMemoryProps) {
                     </span>
                   </div>
 
-                  <p className="text-foreground/90 text-sm leading-relaxed bg-background/30 p-2.5 rounded-[4px] border border-border/60 break-words">
+                  <p className="text-foreground/90 text-sm leading-relaxed bg-background/30 p-2.5 rounded-[4px] border border-border/60 [overflow-wrap:anywhere]">
                     {sanitizeText(item.new_value || item.prev_value || '')}
                   </p>
 
                   {item.prev_value && item.new_value && item.prev_value !== item.new_value && (
                     <div className="text-xs border-l border-border pl-3 py-1 space-y-1 bg-background/20 rounded-r-sm">
                       <span className="text-muted-foreground font-mono block text-[10px]">Предыдущее значение:</span>
-                      <span className="text-muted-foreground line-through block text-xs">{sanitizeText(item.prev_value)}</span>
+                      <span className="text-muted-foreground line-through block text-xs [overflow-wrap:anywhere]">{sanitizeText(item.prev_value)}</span>
                     </div>
                   )}
                 </div>
