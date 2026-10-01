@@ -100,6 +100,9 @@ class DatabaseAgentStore:
             agent.name = session.name
             agent.status = AgentRuntimeState.STOPPED.value
             agent.soul_prompt = session.soul_prompt
+            # Настройки инструментов, выбранные пресетом в визарде, переезжают
+            # в агента вместе с характером.
+            agent.settings = dict(session.settings)
 
             telegram_session = await db_session.scalar(
                 select(TelegramSessionModel)

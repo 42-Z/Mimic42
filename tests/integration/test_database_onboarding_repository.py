@@ -91,3 +91,27 @@ async def test_database_onboarding_repository_finds_session_for_agent(
     assert loaded.completed_agent_id == agent_id
     with pytest.raises(OnboardingNotFoundError):
         await repository.get_for_agent(uuid4())
+
+
+async def test_draft_settings_round_trip(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    repository = DatabaseOnboardingRepository(db_session_factory)
+    session = OnboardingSession(
+        onboarding_id=uuid4(),
+        owner_id=clean_slot.persona("code").user_id,
+        api_id=12345,
+        api_hash_secret="encrypted-hash",
+        phone_number="+79990000000",
+        authorization_status=TelegramLoginStatus.AUTHORIZED,
+        session_secret="encrypted-session",
+        name="Mimic",
+        soul_prompt="Short replies",
+        settings={"enabled_tools": ["send_text_message", "view_image"]},
+    )
+
+    await repository.save(session)
+    loaded = await repository.get(session.onboarding_id)
+
+    assert loaded.settings == {"enabled_tools": ["send_text_message", "view_image"]}

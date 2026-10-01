@@ -607,3 +607,22 @@ async def test_get_runtime_config_without_enabled_tools_enables_all(
     config = await store.get_runtime_config(agent_id)
 
     assert config.enabled_tools is None
+
+
+async def test_create_from_onboarding_carries_tool_settings(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    owner_id = clean_slot.persona("full").user_id
+    agent_id = uuid4()
+    store = DatabaseAgentStore(db_session_factory)
+    session = _make_session(owner_id, agent_id, "Mimic")
+    session.settings = {"enabled_tools": ["send_text_message"]}
+
+    await store.create_from_onboarding(session)
+
+    async with db_session_factory() as db_session:
+        settings = await db_session.scalar(
+            select(AgentModel.settings).where(AgentModel.id == agent_id)
+        )
+    assert settings == {"enabled_tools": ["send_text_message"]}
