@@ -1053,6 +1053,7 @@ class TelegramToolbox:
     async def set_profile_photo(self, media_id: str) -> dict[str, Any]:
         """Set profile photo by URL or Media ID in memory."""
         try:
+            photo_name = "photo.jpg"
             if media_id.startswith("http://") or media_id.startswith("https://"):
                 import httpx
 
@@ -1061,6 +1062,13 @@ class TelegramToolbox:
                     if r.status_code != 200:
                         return {"success": False, "error": f"URL fetch status: {r.status_code}"}
                     photo_bytes = r.content
+                    subtype = (
+                        (r.headers.get("content-type", "").partition("/")[-1].partition(";")[0])
+                        .strip()
+                        .lower()
+                    )
+                    if subtype in ("jpeg", "jpg", "png"):
+                        photo_name = f"photo.{subtype}"
             else:
                 media_type, obj_id, access_hash, file_reference, dc_id = parse_media_id(media_id)
                 if media_type == "photo":
@@ -1090,7 +1098,21 @@ class TelegramToolbox:
                 if not photo_bytes:
                     return {"success": False, "error": "Failed to download media."}
 
-            uploaded_file = await self._client.upload_file(photo_bytes)
+                if media_type == "photo":
+                    # Фотографии Telegram — всегда JPEG.
+                    photo_name = "photo.jpg"
+                else:
+                    ref = (
+                        self._media_refs.lookup(media_id) if self._media_refs is not None else None
+                    )
+                    mime = (ref.mime_type or "").lower() if ref is not None else ""
+                    subtype = mime.partition("/")[-1]
+                    if mime.startswith("image/"):
+                        photo_name = f"photo.{subtype}"
+
+            # Telegram отклоняет аватар без расширения (PHOTO_EXT_INVALID):
+            # из байтов Telethon его не выведет, поэтому имя задаём сами.
+            uploaded_file = await self._client.upload_file(photo_bytes, file_name=photo_name)
             await self._client(functions.photos.UploadProfilePhotoRequest(file=uploaded_file))
             return {"success": True}
         except MediaUnavailableError as e:

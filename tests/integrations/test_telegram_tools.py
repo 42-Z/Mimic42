@@ -1157,6 +1157,18 @@ async def test_send_media_tools_hide_raw_telegram_errors() -> None:
 
 
 @pytest.mark.asyncio
+async def test_set_profile_photo_uploads_with_a_file_name() -> None:
+    """Без расширения Telegram отклоняет аватар (PHOTO_EXT_INVALID)."""
+    client = FakeTelethonClient()
+    toolbox = TelegramToolbox(client)
+
+    assert (await toolbox.set_profile_photo("photo:123:456:0102:2"))["success"] is True
+
+    upload = next(payload for name, payload in client.calls if name == "upload_file")
+    assert upload["kwargs"]["file_name"] == "photo.jpg"
+
+
+@pytest.mark.asyncio
 async def test_media_tools_hide_raw_telegram_errors_from_the_model() -> None:
     """Соседние медиа-тулзы тоже не отдают модели сырой текст исключения."""
     toolbox = TelegramToolbox(RawErrorMediaClient())
