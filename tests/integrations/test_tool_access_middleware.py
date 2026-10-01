@@ -41,3 +41,16 @@ async def test_passes_allowed_tool_through() -> None:
         return sentinel
 
     assert await middleware.awrap_tool_call(_request("send_text_message"), handler) is sentinel
+
+
+@pytest.mark.asyncio
+async def test_empty_allowlist_blocks_everything() -> None:
+    middleware = ToolAccessMiddleware(frozenset())
+
+    async def handler(request: Any) -> Any:
+        raise AssertionError("handler must not be called")
+
+    result = await middleware.awrap_tool_call(_request("send_text_message"), handler)
+
+    assert isinstance(result, ToolMessage)
+    assert result.status == "error"

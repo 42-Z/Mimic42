@@ -2503,3 +2503,14 @@ async def test_tools_unfiltered_without_allowlist() -> None:
     tools = build_telegram_langchain_tools(cast(TelethonRequestClient, client))
 
     assert len(tools) == 91
+
+
+@pytest.mark.asyncio
+async def test_tools_filtered_by_empty_allowlist() -> None:
+    client = FakeTelethonClient()
+    tools = build_telegram_langchain_tools(
+        cast(TelethonRequestClient, client),
+        enabled_tools=frozenset(),
+    )
+
+    assert tools == []

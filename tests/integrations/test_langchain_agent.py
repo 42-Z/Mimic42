@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from contextvars import Context
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 import pytest
@@ -15,6 +15,7 @@ from pydantic import SecretStr
 import mimic42.integrations.langchain_agent as langchain_agent_module
 from mimic42.core.agent_runtime import AgentRuntimeConfig
 from mimic42.integrations import tracing
+from mimic42.integrations.activity_middleware import ActivityMiddleware
 from mimic42.integrations.langchain_agent import (
     MODEL_CALLS_PER_TURN,
     REQUEST_TIMEOUT_MS,
@@ -310,3 +311,29 @@ def test_build_langchain_agent_without_allowlist_has_no_guard(
     build_langchain_agent(_config("mistral-small"))
 
     assert not any(isinstance(m, ToolAccessMiddleware) for m in captured["middleware"])
+
+
+def test_build_langchain_agent_guards_before_activity_recording(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_create_agent(**kwargs: Any) -> str:
+        captured.update(kwargs)
+        return "graph"
+
+    monkeypatch.setattr(langchain_agent_module, "create_agent", fake_create_agent)
+
+    config = _config("mistral-small")
+    config.enabled_tools = frozenset({"send_text_message"})
+    build_langchain_agent(config, session_factory=cast(Any, object()))
+
+    middleware = captured["middleware"]
+    guard_index = next(
+        index for index, m in enumerate(middleware) if isinstance(m, ToolAccessMiddleware)
+    )
+    activity_index = next(
+        index for index, m in enumerate(middleware) if isinstance(m, ActivityMiddleware)
+    )
+
+    assert guard_index < activity_index
