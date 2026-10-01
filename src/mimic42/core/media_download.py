@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from collections import OrderedDict
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Any
 
 from telethon import errors, types
@@ -56,6 +57,78 @@ class MediaRef:
     storage_path: str | None = None
     mime_type: str | None = None
     attributes: tuple[types.DocumentAttributeAudio | types.DocumentAttributeVideo, ...] = ()
+    download_source: Any | None = field(default=None, repr=False, compare=False)
+
+    def as_payload(self) -> dict[str, Any]:
+        """JSON metadata only; the refreshed Telethon object stays in memory."""
+        payload: dict[str, Any] = {}
+        for key in ("peer", "message_id", "storage_path", "mime_type"):
+            value = getattr(self, key)
+            if value is not None:
+                payload[key] = value
+        if self.attributes:
+            attributes = []
+            for attribute in self.attributes:
+                data = attribute.to_dict()
+                waveform = data.get("waveform")
+                if isinstance(waveform, bytes):
+                    data["waveform"] = waveform.hex()
+                attributes.append(data)
+            payload["attributes"] = attributes
+        return payload
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, Any]) -> MediaRef:
+        """Restore archive coordinates and Telegram audio/video metadata."""
+        attribute_types = {
+            "DocumentAttributeAudio": types.DocumentAttributeAudio,
+            "DocumentAttributeVideo": types.DocumentAttributeVideo,
+        }
+        attributes = []
+        entries = payload.get("attributes")
+        for entry in entries if isinstance(entries, list) else []:
+            if not isinstance(entry, dict):
+                continue
+            data = entry.copy()
+            name = data.pop("_", "")
+            constructor = attribute_types.get(name) if isinstance(name, str) else None
+            if constructor is None:
+                continue
+            try:
+                if isinstance(data.get("waveform"), str):
+                    data["waveform"] = bytes.fromhex(data["waveform"])
+                attributes.append(constructor(**data))
+            except (TypeError, ValueError):
+                continue
+        peer = payload.get("peer")
+        message_id = payload.get("message_id")
+        storage_path = payload.get("storage_path")
+        mime_type = payload.get("mime_type")
+        return cls(
+            peer=peer if type(peer) in (str, int) else None,
+            message_id=message_id if type(message_id) is int else None,
+            storage_path=storage_path if isinstance(storage_path, str) and storage_path else None,
+            mime_type=mime_type if isinstance(mime_type, str) and mime_type else None,
+            attributes=tuple(attributes),
+        )
+
+    def merged_with(self, ref: MediaRef) -> MediaRef:
+        """Keep message coordinates together and retain known archive metadata."""
+        peer, message_id = (
+            (ref.peer, ref.message_id)
+            if ref.peer is not None and ref.message_id is not None
+            else (self.peer, self.message_id)
+        )
+        return MediaRef(
+            peer=peer,
+            message_id=message_id,
+            storage_path=ref.storage_path or self.storage_path,
+            mime_type=ref.mime_type or self.mime_type,
+            attributes=ref.attributes or self.attributes,
+            download_source=(
+                ref.download_source if ref.download_source is not None else self.download_source
+            ),
+        )
 
     @classmethod
     def from_message(
@@ -87,9 +160,8 @@ class MediaRefCache:
     обновить нечем. Рантайм запоминает сообщение и путь в Storage при
     получении, тулзы — при чтении истории.
 
-    Предположения: кеш живёт в памяти процесса и в одном event loop
-    (память о медиа из прошлых запусков теряется — пока это осознанное
-    ограничение), многопоточности нет, поэтому lock не нужен.
+    Кеш живёт в одном event loop, поэтому lock не нужен. После рестарта
+    архивные ссылки восстанавливаются из payload сообщений и событий БД.
     """
 
     def __init__(self, capacity: int = 512) -> None:
@@ -104,20 +176,7 @@ class MediaRefCache:
             return
         existing = self._entries.get(media_id)
         if existing is not None:
-            # Peer and message id identify one message; never mix halves from
-            # separate registrations of the same media_id.
-            message_ref = (
-                (ref.peer, ref.message_id)
-                if ref.peer is not None and ref.message_id is not None
-                else (existing.peer, existing.message_id)
-            )
-            ref = MediaRef(
-                peer=message_ref[0],
-                message_id=message_ref[1],
-                storage_path=ref.storage_path or existing.storage_path,
-                mime_type=ref.mime_type or existing.mime_type,
-                attributes=ref.attributes or existing.attributes,
-            )
+            ref = existing.merged_with(ref)
         self._entries[media_id] = ref
         self._entries.move_to_end(media_id)
         while len(self._entries) > self._capacity:
@@ -205,15 +264,15 @@ async def download_media_with_refresh(
     *,
     message_ref: tuple[Any, int] | None = None,
     file: Any = bytes,
+    on_refresh: Callable[[Any], None] | None = None,
 ) -> Any:
     """Скачать медиа, при протухшей ссылке — перечитав сообщение.
 
-    Telethon сам обновляет file_reference только для документов,
-    скачиваемых из Message (см. telethon.client.downloads), а фото и
-    объекты, восстановленные из media_id, падают с FileReferenceExpired.
+    Передаём media, а не Message: иначе Telethon сам обновляет документы
+    внутри download_media, не возвращая свежий объект в наш кеш.
     """
     try:
-        return await client.download_media(media, file=file)
+        return await client.download_media(getattr(media, "media", None) or media, file=file)
     except RETRYABLE_DOWNLOAD_ERRORS as exc:
         fresh = await _refetch_message(client, message_ref)
         original_id = _media_object_identity(media)
@@ -226,6 +285,9 @@ async def download_media_with_refresh(
             raise MediaUnavailableError() from exc
         _rewind(file)
         try:
-            return await client.download_media(fresh, file=file)
+            result = await client.download_media(fresh.media, file=file)
         except RETRYABLE_DOWNLOAD_ERRORS as retry_exc:
             raise MediaUnavailableError() from retry_exc
+        if on_refresh is not None and result:
+            on_refresh(fresh)
+        return result
