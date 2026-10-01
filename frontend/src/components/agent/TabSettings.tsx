@@ -125,7 +125,16 @@ export function TabSettings({ agentId }: { agentId: string }) {
         <div className="flex justify-end">
           <PresetPicker
             currentValue={values.soul_prompt}
-            onApply={(body) => set('soul_prompt', body)}
+            onApply={(preset) => {
+              const enabled = readEnabledTools(preset.settings);
+              setValues((v) => ({
+                ...v,
+                soul_prompt: preset.body,
+                // Пресет без настроек инструментов не трогает текущий выбор.
+                enabled_tools: enabled ?? v.enabled_tools,
+              }));
+              setDirty(true);
+            }}
           />
         </div>
         <Textarea

@@ -279,7 +279,7 @@ function StepSoul({ session }: { session: OnboardingSessionRow | null }) {
           </div>
           <div className="space-y-2">
             <div className="flex justify-end">
-              <PresetPicker currentValue={soulPrompt} onApply={setSoulPrompt} />
+              <PresetPicker currentValue={soulPrompt} onApply={(preset) => setSoulPrompt(preset.body)} />
             </div>
             <Textarea
               label={`SOUL.md — ${session?.agent_name ?? 'Агент'}`}

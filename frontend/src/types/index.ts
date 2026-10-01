@@ -408,6 +408,7 @@ export interface PromptPresetRow {
   title: string;
   summary: string;
   body: string;
+  settings: Record<string, unknown> | null;
   sort_order: number;
   is_active: boolean;
   created_at: string;

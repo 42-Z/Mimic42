@@ -12,6 +12,7 @@ const PRESETS: PromptPresetRow[] = [
     title: 'Рейджбейт в комментариях',
     summary: 'спорит под постами',
     body: 'ТЕЛО РЕЙДЖБЕЙТА',
+    settings: null,
     sort_order: 1,
     is_active: true,
     created_at: '2026-09-20T00:00:00Z',
@@ -23,6 +24,7 @@ const PRESETS: PromptPresetRow[] = [
     title: 'Фанат сасыча',
     summary: 'пацанский олд',
     body: 'ТЕЛО ФАНАТА',
+    settings: { enabled_tools: ['send_text_message', 'view_image'] },
     sort_order: 2,
     is_active: true,
     created_at: '2026-09-20T00:00:00Z',
@@ -31,7 +33,7 @@ const PRESETS: PromptPresetRow[] = [
 ];
 
 function renderDialog(overrides: Partial<ComponentProps<typeof PresetPickerDialog>> = {}) {
-  const onApply = mock((_body: string) => {});
+  const onApply = mock((_preset: { body: string; settings: Record<string, unknown> | null }) => {});
   const onClose = mock(() => {});
   render(
     <PresetPickerDialog
@@ -57,18 +59,25 @@ describe('PresetPickerDialog', () => {
     expect(screen.getByTestId('preset-body').textContent).toBe('ТЕЛО РЕЙДЖБЕЙТА');
   });
 
-  test('выбор другого пресета показывает его тело', async () => {
+  test('выбор другого пресета показывает его тело и настройки инструментов', async () => {
     const user = userEvent.setup();
     renderDialog();
     await user.click(screen.getByRole('option', { name: /Фанат сасыча/ }));
+
     expect(screen.getByTestId('preset-body').textContent).toBe('ТЕЛО ФАНАТА');
+    expect(screen.getByTestId('preset-tools').textContent).toContain('2 из 91');
   });
 
-  test('пустое поле — применение сразу отдаёт текст наверх', async () => {
+  test('пресет без настроек не обещает настройку инструментов', () => {
+    renderDialog();
+    expect(screen.queryByTestId('preset-tools')).toBeNull();
+  });
+
+  test('пустое поле — применение сразу отдаёт текст и настройки наверх', async () => {
     const user = userEvent.setup();
     const { onApply } = renderDialog({ currentValue: '   ' });
     await user.click(screen.getByRole('button', { name: 'Применить пресет' }));
-    expect(onApply).toHaveBeenCalledWith('ТЕЛО РЕЙДЖБЕЙТА');
+    expect(onApply).toHaveBeenCalledWith({ body: 'ТЕЛО РЕЙДЖБЕЙТА', settings: null });
   });
 
   test('непустое поле — первый клик только предупреждает, второй применяет', async () => {
@@ -80,7 +89,16 @@ describe('PresetPickerDialog', () => {
     expect(screen.getByRole('alert').textContent).toContain('будет заменён');
 
     await user.click(screen.getByRole('button', { name: 'Всё равно заменить' }));
-    expect(onApply).toHaveBeenCalledWith('ТЕЛО РЕЙДЖБЕЙТА');
+    expect(onApply).toHaveBeenCalledWith({ body: 'ТЕЛО РЕЙДЖБЕЙТА', settings: null });
+  });
+
+  test('предупреждение упоминает настройки инструментов, когда пресет их несёт', async () => {
+    const user = userEvent.setup();
+    renderDialog({ currentValue: 'мой старый характер' });
+    await user.click(screen.getByRole('option', { name: /Фанат сасыча/ }));
+
+    await user.click(screen.getByRole('button', { name: 'Применить пресет' }));
+    expect(screen.getByRole('alert').textContent).toContain('настройки инструментов');
   });
 
   test('смена пресета сбрасывает предупреждение', async () => {
