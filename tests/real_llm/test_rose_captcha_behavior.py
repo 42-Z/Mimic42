@@ -20,31 +20,51 @@ from langchain_core.tools import BaseTool, StructuredTool
 from mimic42.core.agent_runtime import AgentRuntimeConfig, _extract_structured_response
 from mimic42.core.onboarding import load_default_system_prompt
 from mimic42.integrations.langchain_agent import LangChainGraphAgent, build_langchain_agent
+from mimic42.integrations.telegram_tools import SendWindowClosed, _tool_failure
 
 pytestmark = pytest.mark.real_llm
 
 TRACE_MODEL = "z-ai/glm-5.3-flash"
 CALL_TIMEOUT = 180.0
 BOT = "MissRose_bot"
+GROUP_ID = "12345"
 CAPTCHA_MESSAGE_ID = 767
+WALT_MESSAGE_ID = 528923
 CAPTCHA_DIR = Path(__file__).parent / "fixtures" / "rose"
 CAPTCHAS = (
     ("mimic42-cap-1.jpg", 1001, ("16", "87", "78", "-18", "22", "-36", "56", "42", "95"), "56"),
     ("mimic42-cap-2.jpg", 1002, ("26", "44", "42", "1", "21", "89", "91", "-36", "-53"), "21"),
     ("mimic42-cap-3.jpg", 1003, ("-51", "-36", "-17", "8", "-24", "-46", "44", "-46", "-28"), "8"),
 )
+RESTRICTED_ERROR = str(SendWindowClosed("restricted", None))
+
+
+def _is_group(peer: str) -> bool:
+    return peer.lstrip("-") in (GROUP_ID, f"100{GROUP_ID}")
 
 
 class RoseScenario:
     """Replay the Telegram tool results from the trace, without a client."""
 
-    def __init__(self, photo: str, photo_id: int, options: tuple[str, ...], answer: str) -> None:
+    def __init__(
+        self,
+        photo: str,
+        photo_id: int,
+        options: tuple[str, ...],
+        answer: str,
+        restricted: bool = False,
+    ) -> None:
         self.photo = photo
         self.media_id = f"photo:{photo_id}:2000:0102:4"
         self.options = options
         self.answer = answer
+        self.restricted = restricted
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.clicked: list[str] = []
+        self.sent: list[dict[str, Any]] = []
+
+    def _solved(self) -> bool:
+        return bool(self.clicked) and self.clicked[0] == self.answer
 
     def tools(self) -> list[BaseTool]:
         async def get_messages(
@@ -54,6 +74,18 @@ class RoseScenario:
             self.calls.append(
                 ("get_messages", {"peer": peer, "limit": limit, "offset_id": offset_id})
             )
+            if _is_group(peer):
+                return [
+                    {
+                        "id": WALT_MESSAGE_ID,
+                        "sender_id": 609517172,
+                        "date": "2026-10-01T08:27:51+00:00",
+                        "text": (
+                            "Луи MAGNUM, привет! Здесь мы обсуждаем новости сервиса и индустрии."
+                        ),
+                        "has_buttons": True,
+                    }
+                ]
             if peer.lstrip("@") == BOT:
                 if self.clicked:
                     return [
@@ -96,6 +128,18 @@ class RoseScenario:
                             "data": f"captcha_{self.photo}_{index}",
                         }
                         for index, value in enumerate(self.options)
+                    ]
+                }
+            if _is_group(peer) and message_id == WALT_MESSAGE_ID:
+                return {
+                    "buttons": [
+                        {
+                            "row": 0,
+                            "column": 0,
+                            "text": "Чтобы общаться в чате, нажмите на кнопку 💛",
+                            "type": "KeyboardButtonUrl",
+                            "url": f"https://t.me/{BOT}?start=captcha_-100{GROUP_ID}_X",
+                        }
                     ]
                 }
             return {"buttons": []}
@@ -149,15 +193,45 @@ class RoseScenario:
             self.clicked.append(self.options[button_index])
             return {"success": True, "message": None, "alert": False, "url": None}
 
-        return [
-            StructuredTool.from_function(coroutine=fn)
-            for fn in (get_messages, get_message_buttons, click_inline_button)
-        ] + [
-            StructuredTool.from_function(
-                coroutine=view_image,
-                response_format="content_and_artifact",
+        async def send_text_message(
+            peer: str,
+            message: str,
+            reply_to_msg_id: int | None = None,
+            comment_to_msg_id: int | None = None,
+        ) -> dict[str, Any]:
+            """Send a text message; a restricted chat refuses until the captcha is solved."""
+            self.calls.append(
+                (
+                    "send_text_message",
+                    {
+                        "peer": peer,
+                        "message": message,
+                        "reply_to_msg_id": reply_to_msg_id,
+                        "comment_to_msg_id": comment_to_msg_id,
+                    },
+                )
             )
-        ]
+            if self.restricted and _is_group(peer) and not self._solved():
+                return _tool_failure(SendWindowClosed("restricted", None))
+            self.sent.append({"peer": peer, "text": message})
+            return {"success": True, "message_id": 1000 + len(self.sent)}
+
+        send_tools = (
+            [StructuredTool.from_function(coroutine=send_text_message)] if self.restricted else []
+        )
+        return (
+            send_tools
+            + [
+                StructuredTool.from_function(coroutine=fn)
+                for fn in (get_messages, get_message_buttons, click_inline_button)
+            ]
+            + [
+                StructuredTool.from_function(
+                    coroutine=view_image,
+                    response_format="content_and_artifact",
+                )
+            ]
+        )
 
 
 async def run_case(
@@ -265,3 +339,58 @@ async def test_agent_reads_rose_captchas_before_clicking() -> None:
     # image-backed first clicks distinguish vision from blind guesses.
     passed = sum(row["passed"] for row in rows)
     assert passed >= 2, f"{passed}/3 капчи пройдено: {rows}"
+
+
+@pytest.mark.usefixtures("weak_model")  # loads .env and skips when no OpenRouter key exists
+async def test_agent_self_solves_the_captcha_when_a_chat_refuses_writes() -> None:
+    """Ход из трейса 2026-10-01: отправка заперта, агент сам ищет и решает капчу.
+
+    Раньше модель игнорировала отказ отправки, отчитывалась об успехе и ждала
+    подсказки владельца, вместо того чтобы заглянуть в историю чата.
+    """
+    photo, photo_id, options, answer = CAPTCHAS[0]
+    scenario = RoseScenario(photo, photo_id, options, answer, restricted=True)
+    config = AgentRuntimeConfig(
+        agent_id=uuid4(),
+        owner_id=uuid4(),
+        telegram_session_string="sessions/real-llm",
+        telegram_api_id=12345,
+        telegram_api_hash="hash",
+        llm_model=TRACE_MODEL,
+        name="Walt Mimic",
+        system_prompt=load_default_system_prompt(),
+        soul_prompt="Ты обычный человек, пишешь коротко и неформально.",
+    )
+    agent = cast(LangChainGraphAgent, build_langchain_agent(config, tools=scenario.tools()))
+    try:
+        response = await asyncio.wait_for(
+            agent.ainvoke(
+                {
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": (
+                                "[Контекст] Ты только что вступил в обсуждение канала "
+                                "yandexmusic_live: группа «Чат Яндекс Музыки без музыки», "
+                                f"ID: -100{GROUP_ID}.\n\n"
+                                "[Входящее сообщение]\n"
+                                "Время: 2026-10-01 08:27:43\n"
+                                "Чат: ЛС\n"
+                                "Отправитель: Владелец (@owner, ID: 42)\n"
+                                "ID сообщения: 770\n"
+                                "Содержимое: вступи в чат комментариев и поздоровайся"
+                            ),
+                        }
+                    ]
+                }
+            ),
+            CALL_TIMEOUT,
+        )
+    finally:
+        await agent.aclose()
+
+    assert isinstance(response, dict)
+    assert _extract_structured_response(response) is not None
+    greetings = [item for item in scenario.sent if _is_group(str(item["peer"]))]
+    assert scenario.clicked == [answer], f"капча не решена; вызовы: {scenario.calls}"
+    assert greetings, f"приветствие так и не отправлено: {scenario.calls}"

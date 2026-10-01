@@ -122,7 +122,12 @@ class SendWindowClosed(RuntimeError):
                 if retry_after_seconds is not None
                 else " Срок не ограничен."
             )
-            message = f"В этом чате у тебя нет права писать.{until}"
+            message = (
+                f"В этом чате у тебя нет права писать.{until} "
+                "Так обычно запирает бот-верификатор: прочитай историю чата "
+                "(get_messages) — последнее сообщение бота с кнопкой обычно и есть "
+                "капча. Пройди её сам (view_image, click_inline_button) и повтори отправку."
+            )
         super().__init__(message)
 
 
