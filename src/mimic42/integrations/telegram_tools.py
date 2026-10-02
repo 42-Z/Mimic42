@@ -14,6 +14,7 @@ from langchain_core.tools import BaseTool, StructuredTool
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from telethon import functions, types
 from telethon.extensions import markdown
+from telethon.helpers import generate_random_long
 
 from mimic42.core.media import MediaUploader
 from mimic42.core.media_download import (
@@ -2313,7 +2314,10 @@ class TelegramToolbox:
             async with self._sending(peer):
                 entity = await self._resolve_peer(peer)
                 poll = types.Poll(
-                    id=0,
+                    # Id опроса генерирует клиент; ноль Telegram считает
+                    # невалидной медиа (MediaInvalidError). Так же поступают
+                    # эталонные клиенты: random_id / rnd_id.
+                    id=generate_random_long() or 1,
                     hash=0,
                     question=types.TextWithEntities(text=question, entities=[]),
                     answers=[

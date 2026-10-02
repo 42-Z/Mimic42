@@ -1854,6 +1854,26 @@ async def test_remaining_group_and_channel_tools() -> None:
 
 
 @pytest.mark.asyncio
+async def test_send_poll_uses_random_nonzero_id() -> None:
+    """Опрос с id=0 Telegram считает невалидной медиа (MediaInvalidError).
+
+    Id опроса генерирует клиент; эталонные реализации (rnd_id в Pyrogram)
+    всегда отправляют случайный long, а не ноль.
+    """
+    client = FakeTelethonClient()
+    toolbox = TelegramToolbox(client)
+
+    res = await toolbox.send_poll("group", "Q?", ["Yes", "No"])
+
+    assert res["success"] is True
+    media = [call for call in client.calls if call[0] == "send_file"][0][1]["file"]
+    assert isinstance(media, types.InputMediaPoll)
+    assert media.poll.id != 0
+    options = [answer.option for answer in media.poll.answers]
+    assert options and len(set(options)) == len(options)
+
+
+@pytest.mark.asyncio
 async def test_transcribe_and_read_file_tools(monkeypatch: pytest.MonkeyPatch) -> None:
     client = FakeTelethonClient()
     toolbox = TelegramToolbox(client)
