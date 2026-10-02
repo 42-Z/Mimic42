@@ -14,6 +14,7 @@ import {
 } from '@/hooks/useOnboarding';
 import { StepIndicator } from '@/components/onboarding/StepIndicator';
 import { PresetPicker } from '@/components/agent/PresetPicker';
+import { readEnabledTools } from '@/lib/tools/agentTools';
 import { Button } from '@/components/ui/button';
 import { ConfirmDialog } from '@/components/ui/modal';
 import { Input, Textarea } from '@/components/ui/input';
@@ -238,6 +239,8 @@ function StepSoul({ session }: { session: OnboardingSessionRow | null }) {
   const { toast } = useToast();
   const save = useSaveSoulPrompt();
   const [soulPrompt, setSoulPrompt] = useState('');
+  // Патч настроек, который принёс выбранный пресет; сохраняется вместе с текстом.
+  const [presetSettings, setPresetSettings] = useState<Record<string, unknown> | null>(null);
   const [error, setError] = useState('');
 
   const placeholder = `Опиши характер агента: как он общается, какой у него стиль, какие интересы.
@@ -256,7 +259,11 @@ function StepSoul({ session }: { session: OnboardingSessionRow | null }) {
     setError('');
     try {
       if (!session?.id) { toast('Сессия не найдена', 'error'); return; }
-      await save.mutateAsync({ sessionId: session.id, values: { soul_prompt: soulPrompt } });
+      await save.mutateAsync({
+        sessionId: session.id,
+        values: { soul_prompt: soulPrompt },
+        settings: presetSettings,
+      });
     } catch {
       toast('Не удалось сохранить', 'error');
     }
@@ -279,7 +286,14 @@ function StepSoul({ session }: { session: OnboardingSessionRow | null }) {
           </div>
           <div className="space-y-2">
             <div className="flex justify-end">
-              <PresetPicker currentValue={soulPrompt} onApply={(preset) => setSoulPrompt(preset.body)} />
+              <PresetPicker
+                currentValue={soulPrompt}
+                onApply={(preset) => {
+                  setSoulPrompt(preset.body);
+                  const enabled = readEnabledTools(preset.settings);
+                  if (enabled !== null) setPresetSettings({ enabled_tools: enabled });
+                }}
+              />
             </div>
             <Textarea
               label={`SOUL.md — ${session?.agent_name ?? 'Агент'}`}
