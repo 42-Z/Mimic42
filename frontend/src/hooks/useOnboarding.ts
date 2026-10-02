@@ -90,7 +90,7 @@ export function useSaveOnboardingStep() {
         // OnboardingSessionRow is a manual mirror, wider than the generated
         // Json type: cast settings at the supabase-js boundary, as in
         // useUpdateAgentSettings.
-        ...(settings !== undefined ? { settings: settings as Json } : {}),
+        ...(settings != null ? { settings: settings as Json } : {}),
         updated_at: new Date().toISOString(),
       };
 
@@ -159,7 +159,6 @@ export function useSaveSoulPrompt() {
       }),
   };
 }
-
 
 /**
  * Step 4a: Start Telegram authorization for the current draft
