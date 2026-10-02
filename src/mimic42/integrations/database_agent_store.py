@@ -89,6 +89,10 @@ class DatabaseAgentStore:
             )
             if agent is None:
                 agent = AgentModel(id=session.onboarding_id)
+                # Настройки инструментов, выбранные пресетом в визарде, переезжают
+                # в агента при создании. Повторная финализация не откатывает
+                # настройки, которые пользователь уже менял в дашборде.
+                agent.settings = dict(session.settings)
                 db_session.add(agent)
             elif agent.owner_id != session.owner_id:
                 # Id онбординг-сессии выбирает клиент, поэтому существующего
@@ -100,9 +104,6 @@ class DatabaseAgentStore:
             agent.name = session.name
             agent.status = AgentRuntimeState.STOPPED.value
             agent.soul_prompt = session.soul_prompt
-            # Настройки инструментов, выбранные пресетом в визарде, переезжают
-            # в агента вместе с характером.
-            agent.settings = dict(session.settings)
 
             telegram_session = await db_session.scalar(
                 select(TelegramSessionModel)

@@ -626,3 +626,30 @@ async def test_create_from_onboarding_carries_tool_settings(
             select(AgentModel.settings).where(AgentModel.id == agent_id)
         )
     assert settings == {"enabled_tools": ["send_text_message"]}
+
+
+async def test_repeated_finalization_keeps_existing_agent_settings(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    owner_id = clean_slot.persona("full").user_id
+    agent_id = uuid4()
+    store = DatabaseAgentStore(db_session_factory)
+    session = _make_session(owner_id, agent_id, "Mimic")
+    session.settings = {"enabled_tools": ["send_text_message"]}
+    await store.create_from_onboarding(session)
+    async with db_session_factory() as db_session:
+        await db_session.execute(
+            update(AgentModel)
+            .where(AgentModel.id == agent_id)
+            .values(settings={"enabled_tools": ["view_image"], "model": "openai/gpt-x"})
+        )
+        await db_session.commit()
+
+    await store.create_from_onboarding(session)
+
+    async with db_session_factory() as db_session:
+        settings = await db_session.scalar(
+            select(AgentModel.settings).where(AgentModel.id == agent_id)
+        )
+    assert settings == {"enabled_tools": ["view_image"], "model": "openai/gpt-x"}
