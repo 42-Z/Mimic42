@@ -156,6 +156,12 @@ export const agentSettingsSchema = z.object({
   model: z.string().min(1, 'Модель обязательна'),
   // Необязательное: у агентов, заведённых до этой настройки, ключа нет.
   first_comment: firstCommentSchema.optional(),
+  // Необязательное: у агентов без настройки ключа нет — включены все.
+  enabled_tools: z
+    .array(z.string().min(1, 'Имя инструмента не должно быть пустым'))
+    .max(200, 'Слишком много инструментов')
+    .nullable()
+    .optional(),
 });
 
 // ── Trigger message form ──────────────────────────────────────────────────────

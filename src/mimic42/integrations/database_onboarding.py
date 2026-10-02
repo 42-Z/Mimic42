@@ -33,6 +33,7 @@ class DatabaseOnboardingRepository:
             model.authorization_status = session.authorization_status.value
             model.agent_name = session.name
             model.soul_prompt = session.soul_prompt
+            model.settings = session.settings
             model.completed_agent_id = session.completed_agent_id
             await db_session.commit()
 
@@ -76,5 +77,6 @@ def _model_to_session(model: AgentOnboardingSessionModel) -> OnboardingSession:
         session_secret=model.session_ciphertext,
         name=model.agent_name,
         soul_prompt=model.soul_prompt,
+        settings=model.settings or {},
         completed_agent_id=model.completed_agent_id,
     )

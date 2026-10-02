@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from uuid import UUID, uuid4
 
 import pytest
@@ -80,6 +81,58 @@ async def test_reload_keeps_stopped_agent_stopped() -> None:
     rebuilt = manager._agents[agent_id]
     assert rebuilt.config.llm_model == "deepseek/deepseek-v4-flash-0731"
     assert rebuilt.status.state is AgentRuntimeState.STOPPED
+
+
+@pytest.mark.asyncio
+async def test_reload_reaching_starting_runtime_keeps_agent_running() -> None:
+    """Reload, заставший агента в STARTING, обязан его перезапустить.
+
+    Регресс: `was_running` проверялся до `close()` и считал STARTING
+    выключенным состоянием — пересобранный рантайм оставался STOPPED,
+    а в БД статус оставался RUNNING.
+    """
+    agent_id = uuid4()
+    configs = {agent_id: _build_config(agent_id)}
+    connect_gate = asyncio.Event()
+
+    class GatedClient(FakeTelegramClient):
+        async def connect(self) -> None:
+            await connect_gate.wait()
+            await super().connect()
+
+    manager = AgentManager(
+        runtime_factory=lambda runtime_config: MimicAgentRuntime(
+            config=runtime_config,
+            telegram_client=GatedClient(),
+            langchain_agent=FakeLangChainAgent(),
+        ),
+        config_loader=ConfigStore(configs),
+    )
+    connect_gate.set()
+    await manager.create_agent(configs[agent_id], start=True)
+    connect_gate.clear()
+
+    first = asyncio.create_task(manager.reload_agent(agent_id))
+    for _ in range(1000):
+        runtime = manager._agents.get(agent_id)
+        if runtime is not None and runtime.status.state is AgentRuntimeState.STARTING:
+            break
+        await asyncio.sleep(0)
+    else:
+        first.cancel()
+        pytest.fail("рантайм не дошёл до STARTING")
+
+    # Второй reload приходит ровно в окно старта и не должен «отменить» запуск.
+    second = asyncio.create_task(manager.reload_agent(agent_id))
+    for _ in range(1000):
+        await asyncio.sleep(0)
+        if agent_id not in manager._agents:
+            break
+    connect_gate.set()
+    await asyncio.gather(first, second)
+
+    rebuilt = manager._agents[agent_id]
+    assert rebuilt.status.state is AgentRuntimeState.RUNNING
 
 
 @pytest.mark.asyncio

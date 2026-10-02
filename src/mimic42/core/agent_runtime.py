@@ -110,6 +110,9 @@ class AgentRuntimeConfig(BaseModel):
     telegram_session_token: str | None = Field(default=None, exclude=True, repr=False)
     llm_model: str = Field(default=DEFAULT_LLM_MODEL, min_length=1)
     reasoning_effort: str = Field(default="high")
+    # None — allowlist не задан: доступны все инструменты. Иначе — только
+    # перечисленные имена.
+    enabled_tools: frozenset[str] | None = Field(default=None)
     system_prompt: str = Field(min_length=1)
     soul_prompt: str = Field(default="", max_length=20_000)
     name: str = Field(default="AI", min_length=1, max_length=120)

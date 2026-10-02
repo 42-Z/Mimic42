@@ -190,7 +190,9 @@ class TestAgentPage:
         page.get_by_test_id("open-presets").click()
         page.get_by_role("button", name="Применить пресет").click()
 
-        expect(page.get_by_text("Текущий характер будет заменён")).to_be_visible()
+        expect(
+            page.get_by_text("Текущий характер и настройки инструментов будут заменены")
+        ).to_be_visible()
         expect(soul).to_have_value("мой старый характер")
 
         page.get_by_role("button", name="Всё равно заменить").click()
@@ -227,6 +229,71 @@ class TestAgentPage:
         )
         expect(page.get_by_label("Текст варианта 1")).to_have_value("Я тут")
         expect(page.get_by_label("Текст варианта 2")).to_have_count(0)
+
+    def test_tool_toggle_survives_save_and_reload(
+        self, persona_page: Callable[..., Page], api: httpx.Client, users: dict
+    ) -> None:
+        agent_id = _new_agent(api, users, "Инструменты")
+        page = persona_page("full")
+        page.goto(f"/agent/{agent_id}?tab=settings")
+
+        tools = page.get_by_test_id("tools-settings")
+        expect(tools).to_be_visible()
+        expect(tools.get_by_text(re.compile(r"Включено \d+ из \d+"))).to_be_visible()
+
+        # exact=True: иначе подстрочный матч ловит групповой switch
+        # «Все инструменты группы „Диалоги и поиск“»
+        tools.get_by_label("Поиск", exact=True).fill("Отправка сообщения")
+        toggle = tools.get_by_role("switch", name="Отправка сообщения")
+        expect(toggle).to_have_attribute("aria-checked", "true")
+        toggle.click()
+
+        page.get_by_role("button", name="Сохранить изменения").click()
+        expect(page.get_by_test_id("toast-container")).to_contain_text("Настройки сохранены")
+
+        page.reload()
+        tools = page.get_by_test_id("tools-settings")
+        expect(tools.get_by_text(re.compile(r"Включено 90 из \d+"))).to_be_visible()
+        tools.get_by_label("Поиск", exact=True).fill("Отправка сообщения")
+        expect(tools.get_by_role("switch", name="Отправка сообщения")).to_have_attribute(
+            "aria-checked", "false"
+        )
+
+    def test_preset_applies_tool_settings(
+        self, persona_page: Callable[..., Page], api: httpx.Client, users: dict
+    ) -> None:
+        agent_id = _new_agent(api, users, "Инструменты пресета")
+        page = persona_page("full")
+        page.goto(f"/agent/{agent_id}?tab=settings")
+
+        soul = page.get_by_label("SOUL.md — Характер")
+        soul.fill("")
+
+        page.get_by_test_id("open-presets").click()
+        page.get_by_role("option", name=re.compile("Рейджбейт в комментариях")).click()
+        expect(page.get_by_test_id("preset-tools")).to_contain_text(re.compile(r"16 из \d+"))
+        page.get_by_role("button", name="Применить пресет").click()
+
+        tools = page.get_by_test_id("tools-settings")
+        tools.get_by_label("Поиск", exact=True).fill("Отправка сообщения")
+        expect(tools.get_by_role("switch", name="Отправка сообщения")).to_have_attribute(
+            "aria-checked", "true"
+        )
+        tools.get_by_label("Поиск", exact=True).fill("Удаление канала")
+        expect(tools.get_by_role("switch", name="Удаление канала")).to_have_attribute(
+            "aria-checked", "false"
+        )
+
+        page.get_by_role("button", name="Сохранить изменения").click()
+        expect(page.get_by_test_id("toast-container")).to_contain_text("Настройки сохранены")
+
+        page.reload()
+        tools = page.get_by_test_id("tools-settings")
+        expect(tools.get_by_text(re.compile(r"Включено 16 из \d+"))).to_be_visible()
+        tools.get_by_label("Поиск", exact=True).fill("Удаление канала")
+        expect(tools.get_by_role("switch", name="Удаление канала")).to_have_attribute(
+            "aria-checked", "false"
+        )
 
 
 class TestEmptyStates:
