@@ -868,6 +868,12 @@ Expected: FAIL — `OnboardingSession` не принимает `settings`; в `A
             agent.settings = dict(session.settings)
 ```
 
+> Замечание при исполнении: `request_telegram_code` пересобирает
+> `OnboardingSession` при повторном запросе кода и переносит из черновика
+> `name`/`soul_prompt` — вместе с ними обязан переноситься и `settings`,
+> иначе настройки пресета теряются до финализации. Закреплено тестом
+> `test_request_code_with_existing_onboarding_id_reuses_draft`.
+
 - [ ] **Step 5: Прогнать тесты**
 
 Run: `uv run pytest -m db tests/integration/test_database_onboarding_repository.py tests/integration/test_database_agent_store.py tests/integration/test_onboarding_rls.py -v`
