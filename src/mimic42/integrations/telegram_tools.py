@@ -12,7 +12,7 @@ from uuid import UUID
 
 from langchain_core.tools import BaseTool, StructuredTool
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-from telethon import functions, types
+from telethon import errors, functions, types
 from telethon.extensions import markdown
 from telethon.helpers import generate_random_long
 
@@ -2314,9 +2314,9 @@ class TelegramToolbox:
             async with self._sending(peer):
                 entity = await self._resolve_peer(peer)
                 poll = types.Poll(
-                    # Id опроса генерирует клиент; ноль Telegram считает
-                    # невалидной медиа (MediaInvalidError). Так же поступают
-                    # эталонные клиенты: random_id / rnd_id.
+                    # Id опроса генерирует клиент: эталонные реализации
+                    # (Pyrogram) всегда отправляют случайный long (rnd_id),
+                    # а не ноль.
                     id=generate_random_long() or 1,
                     hash=0,
                     question=types.TextWithEntities(text=question, entities=[]),
@@ -2337,6 +2337,19 @@ class TelegramToolbox:
                 )
                 msg = await self._client.send_file(entity, media)
                 return {"success": True, "message_id": msg.id}
+        except errors.MediaInvalidError:
+            # Telegram разрешает опросы только в группах и каналах: в личной
+            # переписке SendMediaRequest с опросом отвечает MEDIA_INVALID
+            # (проверено живыми прогонами; в группах и «Избранном» тот же
+            # опрос уходит успешно).
+            return {
+                "success": False,
+                "error": (
+                    "Telegram разрешает опросы только в группах и каналах — "
+                    "в личной переписке опрос отправить нельзя. "
+                    "Отправь обычное сообщение или предложи создать группу."
+                ),
+            }
         except Exception as e:
             return _tool_failure(e)
 
@@ -3269,7 +3282,10 @@ def build_telegram_langchain_tools(
         StructuredTool.from_function(
             coroutine=toolbox.send_poll,
             name="send_poll",
-            description="Send a poll or quiz.",
+            description=(
+                "Send a poll or quiz. Telegram allows polls only in groups and channels, "
+                "not in private chats."
+            ),
         ),
         StructuredTool.from_function(
             coroutine=toolbox.transcribe_voice_note,
