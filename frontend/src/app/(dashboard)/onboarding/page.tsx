@@ -291,7 +291,9 @@ function StepSoul({ session }: { session: OnboardingSessionRow | null }) {
                 onApply={(preset) => {
                   setSoulPrompt(preset.body);
                   const enabled = readEnabledTools(preset.settings);
-                  if (enabled !== null) setPresetSettings({ enabled_tools: enabled });
+                  // Пресет без настроек сбрасывает несохранённый патч, но не
+                  // трогает уже сохранённый allowlist черновика (его не шлём).
+                  setPresetSettings(enabled !== null ? { enabled_tools: enabled } : null);
                 }}
               />
             </div>
