@@ -190,7 +190,9 @@ class TestAgentPage:
         page.get_by_test_id("open-presets").click()
         page.get_by_role("button", name="Применить пресет").click()
 
-        expect(page.get_by_text("Текущий характер будет заменён")).to_be_visible()
+        expect(
+            page.get_by_text("Текущий характер и настройки инструментов будут заменены")
+        ).to_be_visible()
         expect(soul).to_have_value("мой старый характер")
 
         page.get_by_role("button", name="Всё равно заменить").click()
