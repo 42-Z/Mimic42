@@ -6,15 +6,27 @@ import { Modal } from '@/components/ui/modal';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/card';
 import { usePromptPresets } from '@/hooks/usePromptPresets';
+import { readEnabledTools } from '@/lib/tools/agentTools';
+import { TOOL_INFO } from '@/lib/tools/toolInfo';
 import { cn } from '@/lib/utils';
 import type { PromptPresetRow } from '@/types';
+
+/**
+ * Результат применения пресета: текст характера и сырой частичный патч
+ * настроек (может быть `null`, `{}` или нести другие ключи помимо
+ * `enabled_tools`). Читать настройки только через `readEnabledTools`.
+ */
+export interface AppliedPromptPreset {
+  body: string;
+  settings: Record<string, unknown> | null;
+}
 
 export function PresetPicker({
   currentValue,
   onApply,
 }: {
   currentValue: string;
-  onApply: (body: string) => void;
+  onApply: (preset: AppliedPromptPreset) => void;
 }) {
   const [isOpen, setIsOpen] = useState(false);
   const { data, isLoading, isError } = usePromptPresets();
@@ -39,8 +51,8 @@ export function PresetPicker({
         isLoading={isLoading}
         isError={isError}
         currentValue={currentValue}
-        onApply={(body) => {
-          onApply(body);
+        onApply={(preset) => {
+          onApply(preset);
           setIsOpen(false);
         }}
       />
@@ -63,7 +75,7 @@ export function PresetPickerDialog({
   isLoading: boolean;
   isError: boolean;
   currentValue: string;
-  onApply: (body: string) => void;
+  onApply: (preset: AppliedPromptPreset) => void;
 }) {
   const [selectedSlug, setSelectedSlug] = useState<string | null>(null);
   // Вторая стадия кнопки вместо вложенного диалога: Modal рендерится инлайном
@@ -72,6 +84,7 @@ export function PresetPickerDialog({
 
   const selected = presets.find((preset) => preset.slug === selectedSlug) ?? presets[0] ?? null;
   const willOverwrite = currentValue.trim().length > 0;
+  const selectedTools = selected ? readEnabledTools(selected.settings) : null;
 
   const handleClose = () => {
     setConfirming(false);
@@ -90,7 +103,7 @@ export function PresetPickerDialog({
       return;
     }
     setConfirming(false);
-    onApply(selected.body);
+    onApply({ body: selected.body, settings: selected.settings ?? null });
   };
 
   return (
@@ -141,19 +154,28 @@ export function PresetPickerDialog({
             ))}
           </div>
 
-          <pre
-            data-testid="preset-body"
-            className="max-h-72 overflow-y-auto whitespace-pre-wrap rounded-sm border border-border bg-background/60 p-3 font-mono text-xs text-foreground/90"
-          >
-            {selected?.body}
-          </pre>
+          <div className="space-y-2">
+            <pre
+              data-testid="preset-body"
+              className="max-h-72 overflow-y-auto whitespace-pre-wrap rounded-sm border border-border bg-background/60 p-3 font-mono text-xs text-foreground/90"
+            >
+              {selected?.body}
+            </pre>
+            {selectedTools !== null && (
+              <p data-testid="preset-tools" className="font-mono text-[11px] text-muted-foreground">
+                Настроит инструменты: {selectedTools.length} из {TOOL_INFO.length}
+              </p>
+            )}
+          </div>
         </div>
       )}
 
       <div className="mt-6 flex items-center justify-end gap-3">
         {confirming && (
           <span role="alert" className="mr-auto font-mono text-xs text-amber-400">
-            Текущий характер будет заменён
+            {selectedTools !== null
+              ? 'Текущий характер и настройки инструментов будут заменены'
+              : 'Текущий характер будет заменён'}
           </span>
         )}
         <Button type="button" variant="ghost" size="sm" onClick={handleClose}>

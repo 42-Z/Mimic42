@@ -12,8 +12,9 @@ from uuid import UUID
 
 from langchain_core.tools import BaseTool, StructuredTool
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-from telethon import functions, types
+from telethon import errors, functions, types
 from telethon.extensions import markdown
+from telethon.helpers import generate_random_long
 
 from mimic42.core.media import MediaUploader
 from mimic42.core.media_download import (
@@ -2313,7 +2314,10 @@ class TelegramToolbox:
             async with self._sending(peer):
                 entity = await self._resolve_peer(peer)
                 poll = types.Poll(
-                    id=0,
+                    # Id опроса генерирует клиент: эталонные реализации
+                    # (Pyrogram) всегда отправляют случайный long (rnd_id),
+                    # а не ноль.
+                    id=generate_random_long() or 1,
                     hash=0,
                     question=types.TextWithEntities(text=question, entities=[]),
                     answers=[
@@ -2333,6 +2337,19 @@ class TelegramToolbox:
                 )
                 msg = await self._client.send_file(entity, media)
                 return {"success": True, "message_id": msg.id}
+        except errors.MediaInvalidError:
+            # Telegram разрешает опросы только в группах и каналах: в личной
+            # переписке SendMediaRequest с опросом отвечает MEDIA_INVALID
+            # (проверено живыми прогонами; в группах и «Избранном» тот же
+            # опрос уходит успешно).
+            return {
+                "success": False,
+                "error": (
+                    "Telegram разрешает опросы только в группах и каналах — "
+                    "в личной переписке опрос отправить нельзя. "
+                    "Отправь обычное сообщение или предложи создать группу."
+                ),
+            }
         except Exception as e:
             return _tool_failure(e)
 
@@ -2836,8 +2853,13 @@ def build_telegram_langchain_tools(
     media_uploader: MediaUploader | None = None,
     send_window: Any | None = None,
     media_refs: MediaRefCache | None = None,
+    enabled_tools: frozenset[str] | None = None,
 ) -> list[BaseTool]:
-    """Expose all 91 tools as LangChain StructuredTools."""
+    """Expose the Telegram tools as LangChain StructuredTools.
+
+    ``enabled_tools`` limits the exposed set to the given allowlist; ``None``
+    keeps the full catalog of 91 tools.
+    """
     toolbox = TelegramToolbox(
         client,
         agent_id=agent_id,
@@ -2856,7 +2878,7 @@ def build_telegram_langchain_tools(
         refs = [item for item in result if item.get("type") == "media_ref"]
         return content, {"items": refs} if refs else None
 
-    return [
+    tools: list[BaseTool] = [
         StructuredTool.from_function(
             coroutine=toolbox.send_text_message,
             name="send_text_message",
@@ -3260,7 +3282,10 @@ def build_telegram_langchain_tools(
         StructuredTool.from_function(
             coroutine=toolbox.send_poll,
             name="send_poll",
-            description="Send a poll or quiz.",
+            description=(
+                "Send a poll or quiz. Telegram allows polls only in groups and channels, "
+                "not in private chats."
+            ),
         ),
         StructuredTool.from_function(
             coroutine=toolbox.transcribe_voice_note,
@@ -3417,3 +3442,7 @@ def build_telegram_langchain_tools(
             description="Enable or disable sensitive content filter.",
         ),
     ]
+
+    if enabled_tools is None:
+        return tools
+    return [tool for tool in tools if tool.name in enabled_tools]

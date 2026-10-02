@@ -1854,6 +1854,45 @@ async def test_remaining_group_and_channel_tools() -> None:
 
 
 @pytest.mark.asyncio
+async def test_send_poll_uses_random_nonzero_id() -> None:
+    """Id опроса генерирует клиент — как rnd_id в Pyrogram, а не ноль."""
+    client = FakeTelethonClient()
+    toolbox = TelegramToolbox(client)
+
+    res = await toolbox.send_poll("group", "Q?", ["Yes", "No"])
+
+    assert res["success"] is True
+    media = [call for call in client.calls if call[0] == "send_file"][0][1]["file"]
+    assert isinstance(media, types.InputMediaPoll)
+    assert media.poll.id != 0
+    options = [answer.option for answer in media.poll.answers]
+    assert options and len(set(options)) == len(options)
+
+
+@pytest.mark.asyncio
+async def test_send_poll_in_private_chat_explains_restriction() -> None:
+    """В личке Telegram отклоняет опрос как невалидную медиа.
+
+    Живые прогоны: та же конструкция уходит в группу и «Избранное», но в
+    личной переписке SendMediaRequest отвечает MediaInvalidError. Модель
+    должна получить понятное объяснение, а не сырое «Media invalid».
+    """
+
+    class PrivateChatClient(FakeTelethonClient):
+        async def send_file(self, entity: Any, file: Any, **kwargs: Any) -> Any:
+            from telethon import errors
+
+            raise errors.MediaInvalidError(request=None)
+
+    toolbox = TelegramToolbox(PrivateChatClient())
+
+    res = await toolbox.send_poll("6121153070", "Какой цвет?", ["Красный", "Синий"])
+
+    assert res["success"] is False
+    assert "группах" in res["error"] and "каналах" in res["error"]
+
+
+@pytest.mark.asyncio
 async def test_transcribe_and_read_file_tools(monkeypatch: pytest.MonkeyPatch) -> None:
     client = FakeTelethonClient()
     toolbox = TelegramToolbox(client)
@@ -2484,3 +2523,33 @@ async def test_every_send_tool_is_guarded_by_the_window() -> None:
     for name, call in calls.items():
         result = await call
         assert result.get("error_code") == "SendWindowClosed", f"{name} обошёл окно: {result}"
+
+
+@pytest.mark.asyncio
+async def test_tools_filtered_by_enabled_allowlist() -> None:
+    client = FakeTelethonClient()
+    tools = build_telegram_langchain_tools(
+        cast(TelethonRequestClient, client),
+        enabled_tools=frozenset({"send_text_message", "view_image"}),
+    )
+
+    assert {tool.name for tool in tools} == {"send_text_message", "view_image"}
+
+
+@pytest.mark.asyncio
+async def test_tools_unfiltered_without_allowlist() -> None:
+    client = FakeTelethonClient()
+    tools = build_telegram_langchain_tools(cast(TelethonRequestClient, client))
+
+    assert len(tools) == 91
+
+
+@pytest.mark.asyncio
+async def test_tools_filtered_by_empty_allowlist() -> None:
+    client = FakeTelethonClient()
+    tools = build_telegram_langchain_tools(
+        cast(TelethonRequestClient, client),
+        enabled_tools=frozenset(),
+    )
+
+    assert tools == []
