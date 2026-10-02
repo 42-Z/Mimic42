@@ -2,7 +2,8 @@ import { describe, expect, mock, test } from 'bun:test';
 import type { ComponentProps } from 'react';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { PresetPickerDialog } from '@/components/agent/PresetPicker';
+import { PresetPickerDialog, type AppliedPromptPreset } from '@/components/agent/PresetPicker';
+import { TOOL_INFO } from '@/lib/tools/toolInfo';
 import type { PromptPresetRow } from '@/types';
 
 const PRESETS: PromptPresetRow[] = [
@@ -30,10 +31,34 @@ const PRESETS: PromptPresetRow[] = [
     created_at: '2026-09-20T00:00:00Z',
     updated_at: '2026-09-20T00:00:00Z',
   },
+  {
+    id: '33333333-3333-3333-3333-333333333333',
+    slug: 'empty_tools',
+    title: 'Пустой набор',
+    summary: 'ни одного инструмента',
+    body: 'ТЕЛО ПУСТОГО НАБОРА',
+    settings: { enabled_tools: [] },
+    sort_order: 3,
+    is_active: true,
+    created_at: '2026-09-20T00:00:00Z',
+    updated_at: '2026-09-20T00:00:00Z',
+  },
+  {
+    id: '44444444-4444-4444-4444-444444444444',
+    slug: 'no_tools_key',
+    title: 'Без ключа инструментов',
+    summary: 'патч без enabled_tools',
+    body: 'ТЕЛО БЕЗ КЛЮЧА',
+    settings: {},
+    sort_order: 4,
+    is_active: true,
+    created_at: '2026-09-20T00:00:00Z',
+    updated_at: '2026-09-20T00:00:00Z',
+  },
 ];
 
 function renderDialog(overrides: Partial<ComponentProps<typeof PresetPickerDialog>> = {}) {
-  const onApply = mock((_preset: { body: string; settings: Record<string, unknown> | null }) => {});
+  const onApply = mock((_preset: AppliedPromptPreset) => {});
   const onClose = mock(() => {});
   render(
     <PresetPickerDialog
@@ -65,12 +90,40 @@ describe('PresetPickerDialog', () => {
     await user.click(screen.getByRole('option', { name: /Фанат сасыча/ }));
 
     expect(screen.getByTestId('preset-body').textContent).toBe('ТЕЛО ФАНАТА');
-    expect(screen.getByTestId('preset-tools').textContent).toContain('2 из 91');
+    expect(screen.getByTestId('preset-tools').textContent).toContain(`2 из ${TOOL_INFO.length}`);
   });
 
   test('пресет без настроек не обещает настройку инструментов', () => {
     renderDialog();
     expect(screen.queryByTestId('preset-tools')).toBeNull();
+  });
+
+  test('пустой allowlist — это настройка, а не её отсутствие', async () => {
+    const user = userEvent.setup();
+    const { onApply } = renderDialog();
+    await user.click(screen.getByRole('option', { name: /Пустой набор/ }));
+
+    expect(screen.getByTestId('preset-tools').textContent).toContain(`0 из ${TOOL_INFO.length}`);
+
+    await user.click(screen.getByRole('button', { name: 'Применить пресет' }));
+    expect(onApply.mock.calls[0]?.[0]).toEqual({
+      body: 'ТЕЛО ПУСТОГО НАБОРА',
+      settings: { enabled_tools: [] },
+    });
+  });
+
+  test('патч без enabled_tools не обещает настройку инструментов', async () => {
+    const user = userEvent.setup();
+    const { onApply } = renderDialog();
+    await user.click(screen.getByRole('option', { name: /Без ключа инструментов/ }));
+
+    expect(screen.queryByTestId('preset-tools')).toBeNull();
+
+    await user.click(screen.getByRole('button', { name: 'Применить пресет' }));
+    expect(onApply.mock.calls[0]?.[0]).toEqual({
+      body: 'ТЕЛО БЕЗ КЛЮЧА',
+      settings: {},
+    });
   });
 
   test('пустое поле — применение сразу отдаёт текст и настройки наверх', async () => {

@@ -11,6 +11,11 @@ import { TOOL_INFO } from '@/lib/tools/toolInfo';
 import { cn } from '@/lib/utils';
 import type { PromptPresetRow } from '@/types';
 
+/**
+ * Результат применения пресета: текст характера и сырой частичный патч
+ * настроек (может быть `null`, `{}` или нести другие ключи помимо
+ * `enabled_tools`). Читать настройки только через `readEnabledTools`.
+ */
 export interface AppliedPromptPreset {
   body: string;
   settings: Record<string, unknown> | null;
