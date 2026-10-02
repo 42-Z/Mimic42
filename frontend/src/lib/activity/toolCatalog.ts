@@ -81,6 +81,7 @@ import {
 export type ToolGroup =
   | 'messages'
   | 'dialogs'
+  | 'channels'
   | 'media'
   | 'profile'
   | 'groups'
@@ -169,8 +170,8 @@ export const TOOL_CATALOG: Record<string, ToolMeta> = {
   toggle_join_to_send: { ru: 'Переключил вступление для записи', icon: DoorClosed, group: 'groups' },
   toggle_slow_mode: { ru: 'Переключил медленный режим', icon: Timer, group: 'groups' },
   set_discussion_group: { ru: 'Привязал группу обсуждений', icon: MessageSquareDot, group: 'groups' },
-  join_channel_discussion: { ru: 'Открыл обсуждение канала', icon: MessagesSquare, group: 'groups' },
-  get_discussion_messages: { ru: 'Прочитал обсуждение', icon: Hash, group: 'groups' },
+  join_channel_discussion: { ru: 'Открыл обсуждение канала', icon: MessagesSquare, group: 'channels' },
+  get_discussion_messages: { ru: 'Прочитал обсуждение', icon: Hash, group: 'channels' },
   toggle_forum: { ru: 'Переключил режим форума', icon: FolderTree, group: 'groups' },
   toggle_pre_history_hidden: { ru: 'Скрыл историю для новых', icon: EyeOff, group: 'groups' },
   toggle_participants_hidden: { ru: 'Скрыл список участников', icon: Eye, group: 'groups' },
@@ -180,7 +181,7 @@ export const TOOL_CATALOG: Record<string, ToolMeta> = {
   set_chat_banned_rights: { ru: 'Настроил ограничения', icon: Ban, group: 'groups' },
 
   // Misc utilities
-  join_channel: { ru: 'Присоединился к каналу', icon: PlayCircle, group: 'utils' },
+  join_channel: { ru: 'Присоединился к каналу', icon: PlayCircle, group: 'channels' },
   send_poll: { ru: 'Отправил опрос', icon: BarChart2, group: 'utils' },
   transcribe_voice_note: { ru: 'Расшифровал голосовое', icon: Volume2, group: 'utils' },
   read_document_file: { ru: 'Прочитал документ', icon: FileSearch, group: 'utils' },

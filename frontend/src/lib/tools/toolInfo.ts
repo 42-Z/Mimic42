@@ -16,6 +16,7 @@ export interface ToolInfo {
 export const TOOL_GROUP_ORDER: { id: ToolGroup; title: string }[] = [
   { id: 'messages', title: 'Сообщения' },
   { id: 'dialogs', title: 'Диалоги и поиск' },
+  { id: 'channels', title: 'Каналы и обсуждения' },
   { id: 'media', title: 'Медиа' },
   { id: 'stickers', title: 'Стикеры' },
   { id: 'profile', title: 'Профиль и контакты' },
@@ -48,6 +49,11 @@ export const TOOL_INFO: ToolInfo[] = [
   { name: 'archive_dialogs', group: 'dialogs', title: 'Архивирование чатов', description: 'Убирает чаты в архив.' },
   { name: 'unarchive_dialogs', group: 'dialogs', title: 'Разархивирование чатов', description: 'Возвращает чаты из архива.' },
   { name: 'get_common_chats', group: 'dialogs', title: 'Общие чаты', description: 'Показывает общие чаты с пользователем.' },
+
+  // Каналы и обсуждения
+  { name: 'join_channel', group: 'channels', title: 'Вступление в канал', description: 'Подписывает аккаунт на канал или группу.' },
+  { name: 'join_channel_discussion', group: 'channels', title: 'Вход в обсуждение', description: 'Открывает обсуждение канала и присоединяется к нему.' },
+  { name: 'get_discussion_messages', group: 'channels', title: 'Чтение обсуждения', description: 'Читает комментарии под постом канала.' },
 
   // Медиа
   { name: 'send_file', group: 'media', title: 'Отправка файлов', description: 'Отправляет фото, документы, стикеры, голосовые и кружки.' },
@@ -95,8 +101,6 @@ export const TOOL_INFO: ToolInfo[] = [
   { name: 'toggle_join_to_send', group: 'groups', title: 'Вход для записи', description: 'Запрещает писать до вступления в чат.' },
   { name: 'toggle_slow_mode', group: 'groups', title: 'Медленный режим', description: 'Настраивает задержку между сообщениями.' },
   { name: 'set_discussion_group', group: 'groups', title: 'Группа обсуждений', description: 'Привязывает чат обсуждений к каналу.' },
-  { name: 'join_channel_discussion', group: 'groups', title: 'Вход в обсуждение', description: 'Открывает обсуждение канала и присоединяется к нему.' },
-  { name: 'get_discussion_messages', group: 'groups', title: 'Чтение обсуждения', description: 'Читает комментарии под постом канала.' },
   { name: 'toggle_forum', group: 'groups', title: 'Режим форума', description: 'Включает или выключает темы в группе.' },
   { name: 'toggle_pre_history_hidden', group: 'groups', title: 'Скрытие истории', description: 'Скрывает старые сообщения от новых участников.' },
   { name: 'toggle_participants_hidden', group: 'groups', title: 'Скрытие участников', description: 'Скрывает список участников чата.' },
@@ -106,7 +110,6 @@ export const TOOL_INFO: ToolInfo[] = [
   { name: 'set_chat_banned_rights', group: 'groups', title: 'Ограничения участника', description: 'Настраивает запреты для участника.' },
 
   // Разное
-  { name: 'join_channel', group: 'utils', title: 'Вступление в канал', description: 'Подписывает аккаунт на канал или группу.' },
   { name: 'send_poll', group: 'utils', title: 'Опросы', description: 'Отправляет опрос в чат.' },
   { name: 'transcribe_voice_note', group: 'utils', title: 'Расшифровка голосовых', description: 'Переводит голосовое сообщение в текст.' },
   { name: 'read_document_file', group: 'utils', title: 'Чтение документов', description: 'Открывает и читает присланный файл.' },

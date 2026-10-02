@@ -26,6 +26,7 @@ describe('toolInfo', () => {
     expect(TOOL_GROUP_ORDER.map((group) => group.id)).toEqual([
       'messages',
       'dialogs',
+      'channels',
       'media',
       'stickers',
       'profile',
