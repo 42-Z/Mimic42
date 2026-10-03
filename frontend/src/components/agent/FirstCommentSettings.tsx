@@ -380,7 +380,7 @@ function ImagePreview({
 
 // ── Переключатель ─────────────────────────────────────────────────────────────
 
-function Toggle({
+export function Toggle({
   checked,
   onChange,
   label,

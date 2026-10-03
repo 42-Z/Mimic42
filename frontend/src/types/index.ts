@@ -361,6 +361,18 @@ export interface FirstCommentSettings {
 }
 
 /**
+ * Настройка прогрева, agents.settings.warmup — зеркало WarmupSettings из
+ * src/mimic42/core/warmup.py. `enabled` меняет пользователь. `restricted_at` и
+ * `recovery` ведёт бэкенд: Telegram ограничил аккаунт, и пользователь выбрал
+ * восстановление.
+ */
+export interface WarmupSettings {
+  enabled: boolean;
+  restricted_at: string | null;
+  recovery: boolean;
+}
+
+/**
  * Form state for agent settings
  */
 export interface AgentSettingsForm {

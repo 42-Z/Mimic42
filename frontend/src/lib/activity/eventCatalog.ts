@@ -5,6 +5,7 @@ import {
   Flag,
   MessageSquareX,
   MessageSquarePlus,
+  Flame,
   Timer,
   Hourglass,
   Ban,
@@ -39,6 +40,10 @@ export const EVENT_CATALOG: Record<string, EventMeta> = {
   'timer.failed': { ru: 'Таймер завершился ошибкой', icon: AlertTriangle },
   'first_comment.sent': { ru: 'Первый комментарий отправлен', icon: MessageSquarePlus },
   'first_comment.failed': { ru: 'Первый комментарий не ушёл', icon: AlertTriangle },
+  'warmup.opener_sent': { ru: 'Прогрев: начал диалог с другим мимиком', icon: Flame },
+  'warmup.opener_failed': { ru: 'Прогрев: не удалось начать диалог', icon: AlertTriangle },
+  'warmup.restricted': { ru: 'Telegram ограничил аккаунт: писать первым нельзя', icon: AlertTriangle },
+  'warmup.recovered': { ru: 'Ограничение Telegram снято', icon: Flame },
 };
 
 export function getEventMeta(eventType: string): EventMeta | null {

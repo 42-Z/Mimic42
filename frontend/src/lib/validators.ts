@@ -138,6 +138,11 @@ export const firstCommentSchema = z
     path: ['variants'],
   });
 
+// В форме только переключатель: ограничение и восстановление ведёт бэкенд.
+export const warmupSchema = z.object({
+  enabled: z.boolean(),
+});
+
 // ── Agent settings form ───────────────────────────────────────────────────────
 export const agentSettingsSchema = z.object({
   name: z
@@ -156,6 +161,8 @@ export const agentSettingsSchema = z.object({
   model: z.string().min(1, 'Модель обязательна'),
   // Необязательное: у агентов, заведённых до этой настройки, ключа нет.
   first_comment: firstCommentSchema.optional(),
+  // Необязательное: у агентов, заведённых до прогрева, ключа нет (прогрев выключен).
+  warmup: warmupSchema.optional(),
 });
 
 // ── Trigger message form ──────────────────────────────────────────────────────
@@ -182,5 +189,6 @@ export type TelegramCodeValues = z.infer<typeof telegramCodeSchema>;
 export type Telegram2FAValues = z.infer<typeof telegram2FASchema>;
 export type AgentSettingsValues = z.infer<typeof agentSettingsSchema>;
 export type TriggerMessageValues = z.infer<typeof triggerMessageSchema>;
+export type WarmupValues = z.infer<typeof warmupSchema>;
 export type FirstCommentValues = z.infer<typeof firstCommentSchema>;
 export type FirstCommentVariantValues = z.infer<typeof firstCommentVariantSchema>;
