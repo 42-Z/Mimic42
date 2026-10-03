@@ -64,6 +64,7 @@ from mimic42.core.onboarding import (
     TelegramPasswordRequiredError,
     TelegramRebindUnavailableError,
 )
+from mimic42.core.warmup_service import pair_policy_for
 from mimic42.integrations import openrouter_catalog
 from mimic42.integrations.database_agent_store import DatabaseAgentStore
 from mimic42.integrations.database_memory import DatabaseShortTermMemory
@@ -71,6 +72,7 @@ from mimic42.integrations.database_onboarding import (
     DatabaseOnboardingRepository,
 )
 from mimic42.integrations.database_session import create_engine, create_session_factory
+from mimic42.integrations.database_warmup import DatabaseWarmupHistory, DatabaseWarmupStateStore
 from mimic42.integrations.mem0_memory import build_mem0_memory
 from mimic42.integrations.supabase_media import SupabaseMediaStorage
 from mimic42.integrations.telegram_auth import TelethonAuthClientFactory
@@ -363,6 +365,9 @@ def create_app(
                     telegram_client_factory=telegram_client_factory,
                     langchain_agent_factory=langchain_agent_factory,
                     media_uploader=app_media_storage,
+                    warmup_history=DatabaseWarmupHistory(session_factory),
+                    warmup_state_store=DatabaseWarmupStateStore(session_factory),
+                    warmup_pair_policy=pair_policy_for(app_settings.warmup_partners),
                 )
         try:
             setup_tracing(app_settings)
@@ -400,6 +405,10 @@ def create_app(
                             )
                 except Exception as exc:
                     logger.exception(f"[lifespan] Failed to restore running agents: {exc}")
+            if should_build_database and manager is None:
+                warmup = app.state.agent_manager.warmup
+                if warmup is not None:
+                    warmup.start()
             yield
         finally:
             # flush не должен отменять остановку агентов и cleanup: отмена
