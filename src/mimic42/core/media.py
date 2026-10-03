@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 from uuid import UUID
 
+from mimic42.core.media_download import MediaRef
+
 MAX_MEDIA_BYTES = 20 * 1024 * 1024
 # Предел Telegram для фото: больше уйдёт только документом, а не картинкой.
 MAX_PHOTO_BYTES = 10 * 1024 * 1024
@@ -58,22 +60,29 @@ def detect_photo_type(data: bytes) -> tuple[str, str] | None:
 
 @dataclass(slots=True)
 class MediaFile:
-    """Metadata of one archived media item (Telegram attachment or tool view)."""
+    """Attachment metadata, with an archive path when upload succeeded."""
 
     kind: str  # photo | sticker | voice | round | doc
     name: str
     mime_type: str
     size: int
     storage_path: str | None = None
+    media_id: str | None = None
+    telegram_ref: MediaRef | None = None
 
     def as_payload(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "kind": self.kind,
             "name": self.name,
             "mime_type": self.mime_type,
             "size": self.size,
             "storage_path": self.storage_path,
         }
+        if self.media_id is not None:
+            payload["media_id"] = self.media_id
+        if self.telegram_ref is not None:
+            payload.update(self.telegram_ref.as_payload())
+        return payload
 
 
 class MediaUploader(Protocol):

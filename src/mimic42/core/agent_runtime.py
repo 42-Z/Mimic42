@@ -2031,6 +2031,26 @@ async def _process_media_and_text(
             peer=normalize_peer_ref(chat) if chat is not None else None,
             message_id=msg_id if isinstance(msg_id, int) else None,
         )
+        parts = media_id.split(":", 5)
+        kind = parts[0]
+        filename, mime_type = {
+            "photo": ("photo.jpeg", "image/jpeg"),
+            "sticker": _sticker_file_of(message),
+            "voice": ("voice.ogg", "audio/ogg"),
+            "round": ("video.mp4", "video/mp4"),
+        }.get(kind, (parts[5] if len(parts) > 5 else "file", "application/octet-stream"))
+        document = getattr(getattr(message, "media", None), "document", None)
+        size = getattr(document, "size", 0)
+        media_files.append(
+            MediaFile(
+                kind=kind,
+                name=filename,
+                mime_type=base_ref.mime_type or mime_type,
+                size=size if isinstance(size, int) else 0,
+                media_id=media_id,
+                telegram_ref=base_ref,
+            )
+        )
         if media_refs is not None:
             # Пока ссылка на файл свежая: тулзы по ней найдут сообщение и
             # заархивированную копию, когда file_reference протухнет.
@@ -2043,6 +2063,9 @@ async def _process_media_and_text(
 
     async def _archive(kind: str, filename: str, mime_type: str, data: bytes) -> None:
         """Archive one attachment to Storage; never break the turn on failure."""
+        media_files[0] = replace(
+            media_files[0], kind=kind, name=filename, mime_type=mime_type, size=len(data)
+        )
         if media_uploader is None or agent_id is None or not data:
             return
         try:
@@ -2057,14 +2080,22 @@ async def _process_media_and_text(
             logger.warning("Media archiving failed for %s", filename, exc_info=True)
             return
         if archived is not None:
-            media_files.append(archived)
+            media_files[0] = replace(archived, media_id=media_id, telegram_ref=base_ref)
             if media_refs is not None:
                 media_refs.remember(media_id, replace(base_ref, storage_path=archived.storage_path))
+
+    def _remember_refresh(fresh: Any) -> None:
+        if media_refs is not None:
+            media_refs.remember(media_id, replace(base_ref, download_source=fresh))
 
     try:
         if media_id.startswith("photo:"):
             data = await download_media_with_refresh(
-                event.client, message, message_ref=message_ref, file=bytes
+                event.client,
+                message,
+                message_ref=message_ref,
+                file=bytes,
+                on_refresh=_remember_refresh,
             )
             await _archive("photo", "photo.jpeg", "image/jpeg", data or b"")
             return f"[Фото id={media_id}]" + (f" {text}" if text else ""), media_files
@@ -2075,7 +2106,11 @@ async def _process_media_and_text(
             pack_name = parts[6] if len(parts) > 6 else ""
             pack_str = f" пак={pack_name}" if pack_name else ""
             data = await download_media_with_refresh(
-                event.client, message, message_ref=message_ref, file=bytes
+                event.client,
+                message,
+                message_ref=message_ref,
+                file=bytes,
+                on_refresh=_remember_refresh,
             )
             sticker_name, sticker_mime = _sticker_file_of(message)
             await _archive("sticker", sticker_name, sticker_mime, data or b"")
@@ -2089,7 +2124,11 @@ async def _process_media_and_text(
 
             buffer = BytesIO()
             await download_media_with_refresh(
-                event.client, message, message_ref=message_ref, file=buffer
+                event.client,
+                message,
+                message_ref=message_ref,
+                file=buffer,
+                on_refresh=_remember_refresh,
             )
             file_bytes = buffer.getvalue()
             if not file_bytes:
@@ -2184,7 +2223,11 @@ async def _process_media_and_text(
                 if not isinstance(doc_size, int) or doc_size <= MAX_MEDIA_BYTES:
                     buffer = BytesIO()
                     await download_media_with_refresh(
-                        event.client, message, message_ref=message_ref, file=buffer
+                        event.client,
+                        message,
+                        message_ref=message_ref,
+                        file=buffer,
+                        on_refresh=_remember_refresh,
                     )
                     await _archive("doc", filename, doc_mime_type, buffer.getvalue())
                 return (
@@ -2204,7 +2247,11 @@ async def _process_media_and_text(
 
             buffer = BytesIO()
             await download_media_with_refresh(
-                event.client, message, message_ref=message_ref, file=buffer
+                event.client,
+                message,
+                message_ref=message_ref,
+                file=buffer,
+                on_refresh=_remember_refresh,
             )
             file_bytes = buffer.getvalue()
             if not file_bytes:

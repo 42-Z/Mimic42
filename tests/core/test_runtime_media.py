@@ -148,12 +148,25 @@ async def test_photo_message_uploads_and_returns_media() -> None:
     assert uploader.uploads == [("photo.jpeg", b"JPEGDATA", "image/jpeg", "photo")]
 
 
-async def test_no_uploader_keeps_text_marker_without_media() -> None:
+async def test_archived_photo_payload_keeps_telegram_identity() -> None:
+    event = _photo_event_with(FakeClient())
+    _, media = await _process_media_and_text(
+        event, "", media_uploader=FakeUploader(), agent_id=uuid4()
+    )
+
+    payload = media[0].as_payload()
+    assert payload["media_id"] == "photo:123:456:0102:2"
+    assert payload["peer"] == -100500
+    assert payload["message_id"] == 55
+
+
+async def test_no_uploader_keeps_text_marker_and_media_coordinates() -> None:
     text, media = await _process_media_and_text(_photo_event(), "подпись", media_uploader=None)
 
     assert text.startswith("[Фото id=")
     assert text.endswith("подпись")
-    assert media == []
+    assert len(media) == 1 and media[0].storage_path is None
+    assert media[0].media_id == "photo:123:456:0102:2"
 
 
 async def test_no_media_message_is_passthrough() -> None:
@@ -228,6 +241,10 @@ async def test_incoming_notes_archive_even_without_transcription_key(
     assert "OPENROUTER_API_KEY" in text
     assert len(media) == 1 and media[0].kind == kind
     assert uploader.uploads[0][2:] == (mime, kind)
+    payload = media[0].as_payload()
+    assert payload["media_id"] == f"{kind}:1:2:01:2"
+    assert payload["mime_type"] == mime
+    assert payload["attributes"][0]["duration"] == 25
 
 
 async def test_oversized_document_is_not_downloaded() -> None:
@@ -245,7 +262,8 @@ async def test_oversized_document_is_not_downloaded() -> None:
     )
 
     assert "слишком большой" in text
-    assert media == []
+    assert len(media) == 1 and media[0].storage_path is None
+    assert media[0].media_id == "doc:1:2:01:2:notes.txt"
     assert uploader.uploads == []
     assert client.downloads == 0
 
@@ -275,7 +293,7 @@ class ExpiringClient(FakeClient):
 
     async def download_media(self, message: object, file: object = None, **kwargs: object) -> bytes:
         self.downloads += 1
-        if self.fresh is None or message is not self.fresh:
+        if self.fresh is None or message is not getattr(self.fresh, "media", None):
             from telethon import errors
 
             raise errors.FileReferenceExpiredError(type("Request", (), {})())
@@ -310,7 +328,9 @@ async def test_undownloadable_photo_keeps_a_graceful_marker() -> None:
 
     assert text.startswith("[Фото (недоступно")
     assert "GetFileRequest" not in text
-    assert media == []
+    assert len(media) == 1 and media[0].storage_path is None
+    assert media[0].as_payload()["peer"] == -100500
+    assert media[0].as_payload()["message_id"] == 55
     assert uploader.uploads == []
 
 
@@ -330,7 +350,9 @@ async def test_archiving_failure_does_not_lose_downloaded_photo() -> None:
 
     assert "[Фото id=" in text
     assert "подпись" in text
-    assert media == []
+    assert len(media) == 1 and media[0].storage_path is None
+    assert media[0].as_payload()["peer"] == -100500
+    assert media[0].as_payload()["message_id"] == 55
 
 
 async def test_unexpected_media_error_keeps_the_message() -> None:
@@ -382,19 +404,22 @@ async def test_incoming_photo_retries_after_refetching_the_message() -> None:
     fresh.media = _photo_event().message.media
     client = ExpiringClient(fresh=fresh)
     uploader = FakeUploader()
+    cache = MediaRefCache()
 
     text, media = await _process_media_and_text(
         _photo_event_with(client),
         "",
         media_uploader=uploader,
         agent_id=uuid4(),
-        media_refs=MediaRefCache(),
+        media_refs=cache,
     )
 
     assert text.startswith("[Фото id=")
     assert client.downloads == 2
     assert client.refetched == (-100500, 55)
     assert len(media) == 1
+    ref = cache.lookup("photo:123:456:0102:2")
+    assert ref is not None and ref.download_source is fresh
 
 
 async def test_photo_media_id_is_registered_for_view_image() -> None:

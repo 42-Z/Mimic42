@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC
 from io import BytesIO
 from typing import Any
@@ -51,7 +52,7 @@ class ExpiringClient:
 
     async def download_media(self, message: Any, file: Any = None, **kwargs: Any) -> Any:
         self.downloads.append(message)
-        if message is not self.fresh:
+        if self.fresh is None or message is not self.fresh.media:
             raise _expired()
         return b"JPEGDATA"
 
@@ -78,7 +79,73 @@ async def test_expired_reference_refetches_message_and_retries() -> None:
 
     assert data == b"JPEGDATA"
     assert client.get_messages_calls == [(-100500, 55)]
-    assert client.downloads == ["stale-media", fresh]
+    assert client.downloads == ["stale-media", fresh.media]
+
+
+async def test_successful_refresh_returns_fresh_message_to_cache() -> None:
+    fresh = _photo_message()
+    client = ExpiringClient(fresh=fresh)
+    refreshed: list[Any] = []
+
+    await download_media_with_refresh(
+        client,
+        "stale-media",
+        message_ref=(-100500, 55),
+        on_refresh=refreshed.append,
+    )
+
+    assert refreshed == [fresh]
+
+
+async def test_refresh_downloads_bare_media_so_telethon_cannot_hide_a_document_refresh() -> None:
+    from datetime import datetime
+
+    document = types.Document(
+        id=123,
+        access_hash=456,
+        file_reference=b"fresh",
+        date=datetime.now(UTC),
+        mime_type="audio/ogg",
+        size=1,
+        dc_id=2,
+        attributes=[types.DocumentAttributeAudio(duration=5, voice=True)],
+    )
+    fresh = types.Message(
+        id=55,
+        peer_id=types.PeerUser(42),
+        message="",
+        date=datetime.now(UTC),
+        media=types.MessageMediaDocument(document=document),
+    )
+    stale = types.Message(
+        id=55,
+        peer_id=types.PeerUser(42),
+        message="",
+        date=datetime.now(UTC),
+        media=types.MessageMediaDocument(
+            document=types.Document(
+                id=123,
+                access_hash=456,
+                file_reference=b"stale",
+                date=datetime.now(UTC),
+                mime_type="audio/ogg",
+                size=1,
+                dc_id=2,
+                attributes=[],
+            )
+        ),
+    )
+    client = ExpiringClient(fresh)
+    refreshed: list[Any] = []
+
+    await download_media_with_refresh(
+        client, stale, message_ref=(42, 55), on_refresh=refreshed.append
+    )
+    await download_media_with_refresh(client, fresh, message_ref=(42, 55))
+
+    assert client.downloads == [stale.media, fresh.media, fresh.media]
+    assert client.get_messages_calls == [(42, 55)]
+    assert refreshed == [fresh]
 
 
 async def test_media_unavailable_when_refetched_message_also_fails() -> None:
@@ -189,6 +256,63 @@ def test_media_ref_cache_keeps_peer_and_message_id_together() -> None:
     cache.remember("photo", MediaRef(peer="original", message_id=1))
     cache.remember("photo", MediaRef(peer="other"))
     assert cache.lookup("photo") == MediaRef(peer="original", message_id=1)
+
+
+def test_media_ref_json_round_trip_preserves_note_attributes_without_live_objects() -> None:
+    attributes = (
+        types.DocumentAttributeAudio(duration=25, voice=True, waveform=b"\x00\x10\xff"),
+        types.DocumentAttributeVideo(duration=3.5, w=240, h=240, round_message=True),
+    )
+    ref = MediaRef(
+        peer=-100500,
+        message_id=55,
+        storage_path="agent/voice.ogg",
+        mime_type="audio/ogg",
+        attributes=attributes,
+        download_source=_photo_message(),
+    )
+
+    payload = json.loads(json.dumps(ref.as_payload()))
+    restored = MediaRef.from_payload(payload)
+
+    assert "download_source" not in payload
+    assert restored.download_source is None
+    assert restored.peer == ref.peer
+    assert restored.message_id == ref.message_id
+    assert restored.storage_path == ref.storage_path
+    assert restored.mime_type == ref.mime_type
+    assert [attr.to_dict() for attr in restored.attributes] == [
+        attr.to_dict() for attr in attributes
+    ]
+
+
+def test_media_ref_from_old_or_invalid_payload_keeps_usable_metadata() -> None:
+    ref = MediaRef.from_payload(
+        {
+            "storage_path": "agent/photo.jpeg",
+            "peer": True,
+            "message_id": "55",
+            "attributes": [
+                None,
+                {"_": "UnknownAttribute"},
+                {"_": "DocumentAttributeAudio", "duration": 5, "waveform": "not-hex"},
+            ],
+        }
+    )
+
+    assert ref == MediaRef(storage_path="agent/photo.jpeg")
+
+
+def test_durable_metadata_merge_does_not_discard_a_refreshed_download_source() -> None:
+    cache = MediaRefCache()
+    fresh = _photo_message()
+    cache.remember("photo", MediaRef(peer="chat", message_id=55, download_source=fresh))
+    cache.remember("photo", MediaRef(peer="chat", message_id=55, storage_path="archive"))
+
+    ref = cache.lookup("photo")
+    assert ref is not None
+    assert ref.storage_path == "archive"
+    assert ref.download_source is fresh
 
 
 async def test_refresh_rejects_a_replaced_attachment() -> None:

@@ -5,6 +5,7 @@ import json
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from io import BytesIO
 from typing import Any, Literal, Protocol
@@ -330,7 +331,29 @@ class TelegramToolbox:
         self._last_send_text_message: dict[str, datetime] = {}
         self._media_uploader = media_uploader
         self._send_window = send_window
-        self._media_refs = media_refs
+        self._media_refs = media_refs if media_refs is not None else MediaRefCache()
+
+    async def _resolve_media_ref(self, media_id: str) -> MediaRef | None:
+        """Restore durable metadata first, then merge the current process cache."""
+        if self._session_factory is not None and self._agent_id is not None:
+            from mimic42.integrations.database_agent_store import DatabaseAgentStore
+
+            try:
+                ref = await DatabaseAgentStore(self._session_factory).lookup_media_ref(
+                    agent_id=self._agent_id, media_id=media_id
+                )
+                if ref is not None:
+                    self._media_refs.remember(media_id, ref)
+            except Exception:
+                logger.warning(
+                    "Media reference lookup failed (agent_id=%s)", self._agent_id, exc_info=True
+                )
+        return self._media_refs.lookup(media_id)
+
+    def _remember_refreshed_media(self, media_id: str, fresh: Any) -> None:
+        self._media_refs.remember(
+            media_id, replace(MediaRef.from_message(fresh), download_source=fresh)
+        )
 
     async def _archived_media(self, ref: MediaRef | None) -> bytes | None:
         """Заархивированная при получении копия из Storage.
@@ -345,8 +368,6 @@ class TelegramToolbox:
     def _media_message_ref(self, media_id: str) -> tuple[Any, int] | None:
         """Сообщение, из которого медиа попало в контекст, — чтобы обновить
         протухший file_reference перечитыванием."""
-        if self._media_refs is None:
-            return None
         ref = self._media_refs.lookup(media_id)
         if ref is None or ref.peer is None or not isinstance(ref.message_id, int):
             return None
@@ -359,7 +380,7 @@ class TelegramToolbox:
         источник для самоуничтожившихся медиа), затем — скачивание с
         обновлением протухшей file_reference через сообщение.
         """
-        ref = self._media_refs.lookup(media_id) if self._media_refs is not None else None
+        ref = await self._resolve_media_ref(media_id)
         cached = await self._archived_media(ref)
         if cached:
             if file is not bytes:
@@ -369,9 +390,12 @@ class TelegramToolbox:
             return cached
         return await download_media_with_refresh(
             self._client,
-            media_obj,
+            ref.download_source
+            if ref is not None and ref.download_source is not None
+            else media_obj,
             message_ref=self._media_message_ref(media_id),
             file=file,
+            on_refresh=lambda fresh: self._remember_refreshed_media(media_id, fresh),
         )
 
     async def _send_media_with_refresh(
@@ -384,10 +408,12 @@ class TelegramToolbox:
         **options: Any,
     ) -> Any:
         """Send by Telegram reference; if it expired, use our copy or refetch its message."""
+        ref = await self._resolve_media_ref(media_id)
+        if ref is not None and ref.download_source is not None:
+            file_input = getattr(ref.download_source, "media", None) or ref.download_source
         try:
             return await self._client.send_file(entity, file_input, **options)
         except RETRYABLE_DOWNLOAD_ERRORS as expired:
-            ref = self._media_refs.lookup(media_id) if self._media_refs is not None else None
             archived = await self._archived_media(ref)
             if archived:
                 archive_name = (
@@ -433,9 +459,11 @@ class TelegramToolbox:
                     fresh_type, fresh_id, *_ = parse_media_id(fresh_media_id)
                     if (fresh_type, fresh_id) == (media_type, obj_id):
                         try:
-                            return await self._client.send_file(entity, fresh.media, **options)
+                            sent = await self._client.send_file(entity, fresh.media, **options)
                         except RETRYABLE_DOWNLOAD_ERRORS as retry_exc:
                             raise MediaUnavailableError() from retry_exc
+                        self._remember_refreshed_media(media_id, fresh)
+                        return sent
 
             parts = media_id.split(":", 6)
             pack_name = parts[6] if media_type == "sticker" and len(parts) > 6 else ""
@@ -461,9 +489,11 @@ class TelegramToolbox:
             if fresh_sticker is None:
                 raise MediaUnavailableError() from expired
             try:
-                return await self._client.send_file(entity, fresh_sticker, **options)
+                sent = await self._client.send_file(entity, fresh_sticker, **options)
             except RETRYABLE_DOWNLOAD_ERRORS as retry_exc:
                 raise MediaUnavailableError() from retry_exc
+            self._media_refs.remember(media_id, MediaRef(download_source=fresh_sticker))
+            return sent
 
     async def _resolve_peer(self, peer: Any, as_input: bool = True) -> Any:
         """Resolve a peer string/int to a Telethon entity."""
@@ -704,16 +734,13 @@ class TelegramToolbox:
             async for msg in self._client.iter_messages(entity, limit=limit, offset_id=offset_id):
                 text = msg.text or ""
                 media_id = format_media_object(msg)
+                media_payload: dict[str, Any] = {}
                 if media_id:
-                    if self._media_refs is not None:
-                        # Запоминаем сообщение: по нему обновится протухшая
-                        # file_reference, когда агент вернётся к этой картинке.
-                        self._media_refs.remember(
-                            media_id,
-                            MediaRef.from_message(
-                                msg, peer=normalize_peer_ref(peer), message_id=msg.id
-                            ),
-                        )
+                    ref = MediaRef.from_message(
+                        msg, peer=normalize_peer_ref(peer), message_id=msg.id
+                    )
+                    self._media_refs.remember(media_id, ref)
+                    media_payload["media"] = {"media_id": media_id, **ref.as_payload()}
                     if media_id.startswith("photo:"):
                         text = f"[Фото id={media_id}]" + (f" {text}" if text else "")
                     elif media_id.startswith("sticker:"):
@@ -729,6 +756,7 @@ class TelegramToolbox:
                         "date": msg.date.isoformat() if msg.date else None,
                         "text": text,
                         "has_buttons": bool(msg.reply_markup),
+                        **media_payload,
                     }
                 )
             return messages
@@ -973,7 +1001,9 @@ class TelegramToolbox:
             else:
                 return [{"type": "text", "text": f"Unsupported media type: {media_type}"}]
 
-            ref = self._media_refs.lookup(media_id) if self._media_refs is not None else None
+            ref = await self._resolve_media_ref(media_id)
+            if ref is not None and ref.mime_type:
+                mime_type = ref.mime_type
             cached = await self._archived_media(ref)
             storage_path: str | None = None
             if cached:
@@ -983,9 +1013,12 @@ class TelegramToolbox:
             else:
                 data = await download_media_with_refresh(
                     self._client,
-                    media_obj,
+                    ref.download_source
+                    if ref is not None and ref.download_source is not None
+                    else media_obj,
                     message_ref=self._media_message_ref(media_id),
                     file=bytes,
+                    on_refresh=lambda fresh: self._remember_refreshed_media(media_id, fresh),
                 )
             if not data:
                 # Пустой файл — это отказ, а не успех: лента активности
@@ -1016,23 +1049,28 @@ class TelegramToolbox:
                         kind=media_type,
                     )
                     storage_path = archived.storage_path if archived else None
-                    if storage_path and self._media_refs is not None:
+                    if storage_path:
                         # Следующий просмотр пойдёт в Storage, а не в Telegram:
                         # для самоуничтожившихся медиа повторного скачивания нет.
-                        self._media_refs.remember(media_id, MediaRef(storage_path=storage_path))
+                        self._media_refs.remember(
+                            media_id, MediaRef(storage_path=storage_path, mime_type=mime_type)
+                        )
                 except Exception:
                     logger.warning("view_image media upload failed", exc_info=True)
 
             items: list[dict[str, Any]] = []
             if storage_path:
+                ref = self._media_refs.lookup(media_id)
                 items.append(
                     {
+                        **(ref.as_payload() if ref is not None else {}),
                         "type": "media_ref",
                         "kind": media_type,
                         "storage_path": storage_path,
                         "mime_type": mime_type,
                         "size": len(data),
                         "name": f"view_{media_type}_{obj_id}",
+                        "media_id": media_id,
                     }
                 )
             items.append(
