@@ -737,6 +737,10 @@ class TelegramToolbox:
         """Get message history (annotated with Media IDs)."""
         try:
             entity = await self._resolve_peer(peer, as_input=False)
+            try:
+                input_peer = utils.get_input_peer(entity, allow_self=False)
+            except TypeError:
+                input_peer = None
             messages = []
             async for msg in self._client.iter_messages(entity, limit=limit, offset_id=offset_id):
                 text = msg.text or ""
@@ -747,7 +751,7 @@ class TelegramToolbox:
                         msg,
                         peer=normalize_peer_ref(peer),
                         message_id=msg.id,
-                        input_peer=utils.get_input_peer(entity, allow_self=False),
+                        input_peer=input_peer,
                     )
                     self._media_refs.remember(media_id, ref)
                     media_payload["media"] = {"media_id": media_id, **ref.as_payload()}

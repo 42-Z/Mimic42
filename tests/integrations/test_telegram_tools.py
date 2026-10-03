@@ -238,6 +238,8 @@ class FakeTelethonClient(FakeTelegramClient):
         elif peer == "group":
             channel = MagicMock(spec=types.Channel)
             channel.id = 456
+            channel.access_hash = 789
+            channel.min = False
             channel.title = "Test Group"
             channel.username = "test_group"
             channel.megagroup = True
@@ -1552,6 +1554,21 @@ async def test_get_messages_stores_a_normalized_peer() -> None:
     ref = cache.lookup("photo:123:456:0102:2")
     assert ref is not None
     assert ref.peer == -100500
+
+
+async def test_get_messages_keeps_history_when_entity_has_no_usable_access_hash() -> None:
+    class MinimalUserHistoryClient(PhotoHistoryClient):
+        async def get_entity(self, peer: Any) -> Any:
+            return types.User(id=123, min=True)
+
+    messages = await TelegramToolbox(MinimalUserHistoryClient()).get_messages("@old_name")
+
+    assert messages[0]["id"] == 42
+    assert messages[0]["media"] == {
+        "media_id": "photo:123:456:0102:2",
+        "peer": "@old_name",
+        "message_id": 42,
+    }
 
 
 async def test_get_messages_keeps_sticker_emoji_separate_from_pack_name() -> None:
