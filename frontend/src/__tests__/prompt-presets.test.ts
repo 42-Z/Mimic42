@@ -42,6 +42,7 @@ const ROW: PromptPresetRow = {
   title: 'Рейджбейт в комментариях',
   summary: 'спорит под постами',
   body: 'текст пресета',
+  settings: null,
   sort_order: 1,
   is_active: true,
   created_at: '2026-09-20T00:00:00Z',

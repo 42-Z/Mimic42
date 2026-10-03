@@ -5,7 +5,7 @@ import json
 from datetime import datetime
 from io import BytesIO
 from typing import Any, cast
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from langchain_core.messages import ToolMessage
@@ -680,6 +680,7 @@ async def test_view_image_tool_keeps_archive_out_of_model_content() -> None:
                 "mime_type": "image/jpeg",
                 "size": len(b"fake_image_data"),
                 "name": "view_photo_123",
+                "media_id": "photo:123:456:0102:2",
             }
         ]
     }
@@ -717,7 +718,7 @@ class RefreshingMediaClient(FakeTelethonClient):
         from telethon import errors
 
         self.calls.append(("download_media", {"message": message, "file": file, "kwargs": kwargs}))
-        if message is not self.fresh:
+        if message is not self.fresh.media:
             raise errors.FileReferenceExpiredError(type("Request", (), {})())
         return b"fresh_image_data"
 
@@ -751,6 +752,115 @@ async def test_view_image_serves_archived_copy_when_telegram_media_is_gone() -> 
     assert result[1]["type"] == "image_url"
     assert base64.b64encode(b"ARCHIVED").decode() in result[1]["image_url"]["url"]
     assert [name for name, _ in client.calls] == []
+
+
+async def test_view_image_restores_archived_copy_with_empty_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from uuid import uuid4
+
+    from mimic42.integrations.database_agent_store import DatabaseAgentStore
+
+    agent_id = uuid4()
+    media_id = "photo:123:456:0102:2"
+    path = f"{agent_id}/u1/photo.jpeg"
+    lookup = AsyncMock(return_value=MediaRef(peer=-100500, message_id=55, storage_path=path))
+    monkeypatch.setattr(DatabaseAgentStore, "lookup_media_ref", lookup)
+    uploader = FakeMediaUploader()
+    uploader.files[path] = b"ARCHIVED"
+    client = ExpiringMediaClient()
+    cache = MediaRefCache()
+    toolbox = TelegramToolbox(
+        client,
+        agent_id=agent_id,
+        session_factory=MagicMock(),
+        media_uploader=uploader,
+        media_refs=cache,
+    )
+
+    result = await toolbox.view_image(media_id)
+
+    assert result[0]["storage_path"] == path
+    assert base64.b64encode(b"ARCHIVED").decode() in result[1]["image_url"]["url"]
+    ref = cache.lookup(media_id)
+    assert ref is not None and ref.storage_path == path
+    lookup.assert_awaited_once_with(agent_id=agent_id, media_id=media_id)
+    assert client.calls == []
+
+
+async def test_persisted_archive_takes_precedence_over_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from uuid import uuid4
+
+    from mimic42.integrations.database_agent_store import DatabaseAgentStore
+
+    agent_id = uuid4()
+    media_id = "photo:123:456:0102:2"
+    path = f"{agent_id}/persisted/photo.jpeg"
+    monkeypatch.setattr(
+        DatabaseAgentStore,
+        "lookup_media_ref",
+        AsyncMock(return_value=MediaRef(storage_path=path)),
+    )
+    cache = MediaRefCache()
+    cache.remember(media_id, MediaRef(storage_path=f"{agent_id}/stale/photo.jpeg"))
+    uploader = FakeMediaUploader()
+    uploader.files[path] = b"PERSISTED"
+    client = ExpiringMediaClient()
+    toolbox = TelegramToolbox(
+        client,
+        agent_id=agent_id,
+        session_factory=MagicMock(),
+        media_uploader=uploader,
+        media_refs=cache,
+    )
+
+    result = await toolbox.view_image(media_id)
+
+    assert result[0]["storage_path"] == path
+    assert client.calls == []
+
+
+@pytest.mark.parametrize("kind", ["voice", "round", "doc"])
+async def test_note_and_document_tools_restore_archives_without_cache(
+    monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    from uuid import uuid4
+
+    from mimic42.integrations.database_agent_store import DatabaseAgentStore
+
+    agent_id = uuid4()
+    media_id = f"{kind}:123:456:0102:2" + (":notes.txt" if kind == "doc" else "")
+    path = f"{agent_id}/u1/attachment"
+    lookup = AsyncMock(return_value=MediaRef(storage_path=path))
+    monkeypatch.setattr(DatabaseAgentStore, "lookup_media_ref", lookup)
+    uploader = FakeMediaUploader()
+    uploader.files[path] = b"ARCHIVED"
+    client = ExpiringMediaClient()
+    toolbox = TelegramToolbox(
+        client, agent_id=agent_id, session_factory=MagicMock(), media_uploader=uploader
+    )
+    transcribe = AsyncMock(return_value="Расшифровка")
+    monkeypatch.setattr(toolbox, "_transcribe_audio_via_openrouter_whisper", transcribe)
+
+    if kind == "doc":
+        assert await toolbox.read_document_file(media_id) == {
+            "success": True,
+            "content": "ARCHIVED",
+        }
+    else:
+        assert await toolbox.transcribe_voice_note(media_id) == {
+            "success": True,
+            "transcription": "Расшифровка",
+        }
+        transcribe.assert_awaited_once_with(
+            b"ARCHIVED",
+            "audio.ogg" if kind == "voice" else "audio.mp4",
+            "audio/ogg" if kind == "voice" else "video/mp4",
+        )
+    lookup.assert_awaited_once_with(agent_id=agent_id, media_id=media_id)
+    assert client.calls == []
 
 
 @pytest.mark.asyncio
@@ -1064,6 +1174,12 @@ async def test_sticker_set_stays_sendable_after_its_reference_expires() -> None:
     assert isinstance(sent[1]["file"], types.Document)
     assert sent[1]["file"].file_reference == b"\x09"
 
+    assert (await toolbox.send_sticker("chat", "sticker:333:444:01:1:🔥:pepe"))["success"] is True
+    assert len(client.requests) == 1
+    sent = [call for name, call in client.calls if name == "send_file"]
+    assert len(sent) == 3
+    assert sent[-1]["file"] is sent[1]["file"]
+
 
 async def test_send_file_refreshes_original_message_when_no_archive_exists() -> None:
     from datetime import UTC
@@ -1102,6 +1218,12 @@ async def test_send_file_refreshes_original_message_when_no_archive_exists() -> 
     assert len(sends) == 2
     assert sends[1]["file"] is fresh.media
     assert sends[1]["kwargs"]["caption"] == "Подпись"
+
+    assert (await toolbox.send_file("chat", "photo:123:456:0102:2"))["success"] is True
+    sends = [call for name, call in client.calls if name == "send_file"]
+    assert len(sends) == 3
+    assert sends[-1]["file"] is fresh.media
+    assert len([name for name, _ in client.calls if name == "get_messages"]) == 1
 
 
 async def test_send_file_never_resends_replaced_media_with_same_id() -> None:
@@ -1217,6 +1339,44 @@ async def test_view_image_refreshes_stale_reference_via_message_ref() -> None:
     assert ("get_messages", {"entity": "chat", "kwargs": {"ids": 55}}) in client.calls
 
 
+async def test_view_image_reuses_successfully_refreshed_message() -> None:
+    client = RefreshingMediaClient()
+    cache = MediaRefCache()
+    media_id = "photo:123:456:0102:2"
+    cache.remember(media_id, MediaRef(peer="chat", message_id=55))
+    toolbox = TelegramToolbox(client, media_refs=cache)
+
+    first = await toolbox.view_image(media_id)
+    second = await toolbox.view_image(media_id)
+
+    assert first == second
+    assert len([name for name, _ in client.calls if name == "get_messages"]) == 1
+    downloads = [payload["message"] for name, payload in client.calls if name == "download_media"]
+    assert len(downloads) == 3
+    assert downloads[-1] is client.fresh.media
+
+
+async def test_database_lookup_does_not_reset_successfully_refreshed_reference(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from uuid import uuid4
+
+    from mimic42.integrations.database_agent_store import DatabaseAgentStore
+
+    lookup = AsyncMock(return_value=MediaRef(peer="chat", message_id=55))
+    monkeypatch.setattr(DatabaseAgentStore, "lookup_media_ref", lookup)
+    client = RefreshingMediaClient()
+    toolbox = TelegramToolbox(client, agent_id=uuid4(), session_factory=MagicMock())
+
+    await toolbox.view_image("photo:123:456:0102:2")
+    await toolbox.view_image("photo:123:456:0102:2")
+
+    assert lookup.await_count == 2
+    assert len([name for name, _ in client.calls if name == "get_messages"]) == 1
+    downloads = [payload["message"] for name, payload in client.calls if name == "download_media"]
+    assert downloads[-1] is client.fresh.media
+
+
 class PhotoHistoryClient(FakeTelethonClient):
     """История с одним фото-сообщением."""
 
@@ -1246,12 +1406,17 @@ async def test_get_messages_remembers_media_refs() -> None:
     cache = MediaRefCache()
     toolbox = TelegramToolbox(PhotoHistoryClient(), media_refs=cache)
 
-    await toolbox.get_messages("chat")
+    messages = await toolbox.get_messages("chat")
 
     ref = cache.lookup("photo:123:456:0102:2")
     assert ref is not None
     assert ref.peer == "chat"
     assert ref.message_id == 42
+    assert messages[0]["media"] == {
+        "media_id": "photo:123:456:0102:2",
+        "peer": "chat",
+        "message_id": 42,
+    }
 
 
 @pytest.mark.asyncio
@@ -1851,6 +2016,45 @@ async def test_remaining_group_and_channel_tools() -> None:
     res = await toolbox.send_poll("group", "Q?", ["Yes", "No"])
     assert res["success"] is True
     assert res["message_id"] == 999
+
+
+@pytest.mark.asyncio
+async def test_send_poll_uses_random_nonzero_id() -> None:
+    """Id опроса генерирует клиент — как rnd_id в Pyrogram, а не ноль."""
+    client = FakeTelethonClient()
+    toolbox = TelegramToolbox(client)
+
+    res = await toolbox.send_poll("group", "Q?", ["Yes", "No"])
+
+    assert res["success"] is True
+    media = [call for call in client.calls if call[0] == "send_file"][0][1]["file"]
+    assert isinstance(media, types.InputMediaPoll)
+    assert media.poll.id != 0
+    options = [answer.option for answer in media.poll.answers]
+    assert options and len(set(options)) == len(options)
+
+
+@pytest.mark.asyncio
+async def test_send_poll_in_private_chat_explains_restriction() -> None:
+    """В личке Telegram отклоняет опрос как невалидную медиа.
+
+    Живые прогоны: та же конструкция уходит в группу и «Избранное», но в
+    личной переписке SendMediaRequest отвечает MediaInvalidError. Модель
+    должна получить понятное объяснение, а не сырое «Media invalid».
+    """
+
+    class PrivateChatClient(FakeTelethonClient):
+        async def send_file(self, entity: Any, file: Any, **kwargs: Any) -> Any:
+            from telethon import errors
+
+            raise errors.MediaInvalidError(request=None)
+
+    toolbox = TelegramToolbox(PrivateChatClient())
+
+    res = await toolbox.send_poll("6121153070", "Какой цвет?", ["Красный", "Синий"])
+
+    assert res["success"] is False
+    assert "группах" in res["error"] and "каналах" in res["error"]
 
 
 @pytest.mark.asyncio
@@ -2484,3 +2688,33 @@ async def test_every_send_tool_is_guarded_by_the_window() -> None:
     for name, call in calls.items():
         result = await call
         assert result.get("error_code") == "SendWindowClosed", f"{name} обошёл окно: {result}"
+
+
+@pytest.mark.asyncio
+async def test_tools_filtered_by_enabled_allowlist() -> None:
+    client = FakeTelethonClient()
+    tools = build_telegram_langchain_tools(
+        cast(TelethonRequestClient, client),
+        enabled_tools=frozenset({"send_text_message", "view_image"}),
+    )
+
+    assert {tool.name for tool in tools} == {"send_text_message", "view_image"}
+
+
+@pytest.mark.asyncio
+async def test_tools_unfiltered_without_allowlist() -> None:
+    client = FakeTelethonClient()
+    tools = build_telegram_langchain_tools(cast(TelethonRequestClient, client))
+
+    assert len(tools) == 91
+
+
+@pytest.mark.asyncio
+async def test_tools_filtered_by_empty_allowlist() -> None:
+    client = FakeTelethonClient()
+    tools = build_telegram_langchain_tools(
+        cast(TelethonRequestClient, client),
+        enabled_tools=frozenset(),
+    )
+
+    assert tools == []

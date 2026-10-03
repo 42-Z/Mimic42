@@ -136,6 +136,7 @@ export type Database = {
           phone_code_hash_ciphertext: string | null
           phone_number: string | null
           session_ciphertext: string | null
+          settings: Json
           soul_prompt: string | null
           updated_at: string
         }
@@ -152,6 +153,7 @@ export type Database = {
           phone_code_hash_ciphertext?: string | null
           phone_number?: string | null
           session_ciphertext?: string | null
+          settings?: Json
           soul_prompt?: string | null
           updated_at?: string
         }
@@ -168,6 +170,7 @@ export type Database = {
           phone_code_hash_ciphertext?: string | null
           phone_number?: string | null
           session_ciphertext?: string | null
+          settings?: Json
           soul_prompt?: string | null
           updated_at?: string
         }
@@ -379,6 +382,7 @@ export type Database = {
           created_at: string
           id: string
           is_active: boolean
+          settings: Json | null
           slug: string
           sort_order: number
           summary: string
@@ -390,6 +394,7 @@ export type Database = {
           created_at?: string
           id?: string
           is_active?: boolean
+          settings?: Json | null
           slug: string
           sort_order?: number
           summary: string
@@ -401,6 +406,7 @@ export type Database = {
           created_at?: string
           id?: string
           is_active?: boolean
+          settings?: Json | null
           slug?: string
           sort_order?: number
           summary?: string

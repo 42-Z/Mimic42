@@ -8,6 +8,7 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from mimic42.core.media_download import MediaRef
 from mimic42.integrations.database_models import AgentEventModel
 
 logger = logging.getLogger("mimic42.activity")
@@ -17,6 +18,38 @@ MAX_ITEM_CHARS = 400
 PREVIEW_CHARS = 500
 
 
+def _media_reference_items(items: Any) -> list[dict[str, Any]]:
+    """Retain durable coordinates, never the text or bytes of a tool result."""
+    if not isinstance(items, list):
+        return []
+    references = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        media = item.get("media")
+        if isinstance(media, dict) and isinstance(media.get("media_id"), str):
+            references.append(
+                {
+                    "media": {
+                        "media_id": media["media_id"],
+                        **MediaRef.from_payload(media).as_payload(),
+                    }
+                }
+            )
+        elif item.get("type") == "media_ref":
+            references.append(
+                {
+                    **MediaRef.from_payload(item).as_payload(),
+                    **{
+                        key: item[key]
+                        for key in ("type", "kind", "name", "size", "media_id")
+                        if key in item
+                    },
+                }
+            )
+    return references
+
+
 def _truncate(value: Any) -> dict[str, Any]:
     """Fit an arbitrary JSON value into the payload/result column.
 
@@ -24,7 +57,9 @@ def _truncate(value: Any) -> dict[str, Any]:
     activity log. For oversized dicts the small top-level keys are kept —
     they carry turn correlation and error identity (turn_id, peer,
     error_code, success, error) — while each oversized value collapses to
-    a marker. Non-dict values collapse to a short preview.
+    a marker. Non-dict values collapse to a short preview. Compact media
+    references are exempt from the text budget: truncating them would lose
+    access to attachments after a restart.
     """
     try:
         serialized = json.dumps(value, ensure_ascii=False, default=str)
@@ -51,7 +86,10 @@ def _truncate(value: Any) -> dict[str, Any]:
     kept["_truncated"] = True
 
     if len(json.dumps(kept, ensure_ascii=False, default=str)) > MAX_JSON_CHARS:
-        return {"_truncated": True, "preview": serialized[:PREVIEW_CHARS]}
+        kept = {"_truncated": True, "preview": serialized[:PREVIEW_CHARS]}
+    media_items = _media_reference_items(value.get("items"))
+    if media_items:
+        kept["items"] = media_items
     return kept
 
 

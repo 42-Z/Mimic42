@@ -163,6 +163,12 @@ export const agentSettingsSchema = z.object({
   first_comment: firstCommentSchema.optional(),
   // Необязательное: у агентов, заведённых до прогрева, ключа нет (прогрев выключен).
   warmup: warmupSchema.optional(),
+  // Необязательное: у агентов без настройки ключа нет — включены все.
+  enabled_tools: z
+    .array(z.string().min(1, 'Имя инструмента не должно быть пустым'))
+    .max(200, 'Слишком много инструментов')
+    .nullable()
+    .optional(),
 });
 
 // ── Trigger message form ──────────────────────────────────────────────────────

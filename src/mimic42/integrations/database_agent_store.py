@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import and_, delete, or_, select
+from sqlalchemy import and_, delete, or_, select, type_coerce
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mimic42.core.agent_runtime import DEFAULT_LLM_MODEL, AgentRuntimeConfig, AgentRuntimeState
@@ -22,7 +24,9 @@ from mimic42.core.agent_store import (
     reply_target_of,
 )
 from mimic42.core.first_comment import parse_first_comment
+from mimic42.core.media_download import MediaRef
 from mimic42.core.onboarding import OnboardingSession, SecretCipher
+from mimic42.core.tool_config import parse_enabled_tools
 from mimic42.core.warmup import parse_warmup
 from mimic42.integrations.database_models import (
     AgentEventModel,
@@ -67,6 +71,15 @@ def _stored_structured_text(msg: Any) -> str:
     return ""
 
 
+def _owned_media_ref(agent_id: UUID, payload: dict[str, Any]) -> MediaRef:
+    """Storage uses a privileged client: never open another agent's path."""
+    ref = MediaRef.from_payload(payload)
+    path = ref.storage_path
+    if path is not None and (not path.startswith(f"{agent_id}/") or ".." in path.split("/")):
+        return replace(ref, storage_path=None)
+    return ref
+
+
 class DatabaseAgentStore:
     def __init__(
         self,
@@ -77,6 +90,78 @@ class DatabaseAgentStore:
         self._session_factory = session_factory
         self._cipher = cipher
         self._llm_model = DEFAULT_LLM_MODEL
+
+    async def lookup_media_ref(self, *, agent_id: UUID, media_id: str) -> MediaRef | None:
+        """Resolve persisted media without the context TTL or dashboard page limit.
+
+        Incoming attachments live in message payloads; tool-only archives and
+        history references live in existing activity events. Every lookup is
+        scoped to the Telegram account's agent because access_hash is private.
+        """
+        ref: MediaRef | None = None
+        async with self._session_factory() as db_session:
+            payloads = await db_session.scalars(
+                select(AgentMessageModel.payload)
+                .where(
+                    AgentMessageModel.agent_id == agent_id,
+                    type_coerce(AgentMessageModel.payload, JSONB).contains(
+                        {"media": [{"media_id": media_id}]}
+                    ),
+                )
+                .order_by(AgentMessageModel.created_at.desc(), AgentMessageModel.id.desc())
+            )
+            for payload in payloads:
+                for entry in payload.get("media") or []:
+                    if isinstance(entry, dict) and entry.get("media_id") == media_id:
+                        candidate = _owned_media_ref(agent_id, entry)
+                        ref = candidate.merged_with(ref) if ref is not None else candidate
+                        if ref.storage_path:
+                            return ref
+
+            results = await db_session.scalars(
+                select(AgentEventModel.result)
+                .where(
+                    AgentEventModel.agent_id == agent_id,
+                    AgentEventModel.event_type == "tool.view_image",
+                    AgentEventModel.status == "succeeded",
+                    AgentEventModel.payload["args"]["media_id"].as_string() == media_id,
+                    type_coerce(AgentEventModel.result, JSONB).contains(
+                        {"items": [{"type": "media_ref"}]}
+                    ),
+                )
+                .order_by(AgentEventModel.created_at.desc(), AgentEventModel.id.desc())
+            )
+            for result in results:
+                if result is None:
+                    continue
+                for entry in result.get("items") or []:
+                    if isinstance(entry, dict) and entry.get("type") == "media_ref":
+                        archived = _owned_media_ref(agent_id, entry)
+                        ref = archived.merged_with(ref) if ref is not None else archived
+                        break
+                if ref is not None and ref.storage_path:
+                    return ref
+
+            result = await db_session.scalar(
+                select(AgentEventModel.result)
+                .where(
+                    AgentEventModel.agent_id == agent_id,
+                    AgentEventModel.event_type == "tool.get_messages",
+                    AgentEventModel.status == "succeeded",
+                    type_coerce(AgentEventModel.result, JSONB).contains(
+                        {"items": [{"media": {"media_id": media_id}}]}
+                    ),
+                )
+                .order_by(AgentEventModel.created_at.desc(), AgentEventModel.id.desc())
+                .limit(1)
+            )
+            if result is not None:
+                for item in result.get("items") or []:
+                    entry = item.get("media") if isinstance(item, dict) else None
+                    if isinstance(entry, dict) and entry.get("media_id") == media_id:
+                        history_ref = _owned_media_ref(agent_id, entry)
+                        return ref.merged_with(history_ref) if ref is not None else history_ref
+        return ref
 
     async def create_from_onboarding(self, session: OnboardingSession) -> AgentRecord:
         if not session.name or not session.soul_prompt:
@@ -89,6 +174,10 @@ class DatabaseAgentStore:
             )
             if agent is None:
                 agent = AgentModel(id=session.onboarding_id)
+                # Настройки инструментов, выбранные пресетом в визарде, переезжают
+                # в агента при создании. Повторная финализация не откатывает
+                # настройки, которые пользователь уже менял в дашборде.
+                agent.settings = dict(session.settings)
                 db_session.add(agent)
             elif agent.owner_id != session.owner_id:
                 # Id онбординг-сессии выбирает клиент, поэтому существующего
@@ -203,6 +292,9 @@ class DatabaseAgentStore:
                 reasoning_effort=agent.settings.get("reasoning_effort", "high")
                 if agent.settings
                 else "high",
+                enabled_tools=parse_enabled_tools(
+                    agent.settings.get("enabled_tools") if agent.settings else None
+                ),
                 system_prompt=load_default_system_prompt(),
                 soul_prompt=agent.soul_prompt,
                 name=agent.name,

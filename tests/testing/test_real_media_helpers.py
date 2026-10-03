@@ -19,7 +19,7 @@ class DownloadClient:
 
     async def download_media(self, message: Any, file: Any = None) -> bytes:
         assert file is bytes
-        if self.error is not None and message is not self.fresh:
+        if self.error is not None and message is not getattr(self.fresh, "media", None):
             raise self.error
         return b"photo"
 

@@ -20,6 +20,7 @@ from mimic42.core.token_usage import TokenUsageRecorder
 from mimic42.integrations.activity_middleware import ActivityMiddleware
 from mimic42.integrations.agent_response_schema import AgentResponse
 from mimic42.integrations.token_usage_middleware import TokenUsageMiddleware
+from mimic42.integrations.tool_access_middleware import ToolAccessMiddleware
 from mimic42.integrations.tracing import tracing_enabled
 
 logger = logging.getLogger("mimic42.tracing")
@@ -119,6 +120,10 @@ def build_langchain_agent(
     middleware: list[Any] = [
         ModelCallLimitMiddleware(run_limit=MODEL_CALLS_PER_TURN, exit_behavior="error")
     ]
+    if config.enabled_tools is not None:
+        # Внешний слой к ActivityMiddleware: заблокированный вызов не должен
+        # попадать в ленту активности.
+        middleware.append(ToolAccessMiddleware(config.enabled_tools))
     if session_factory is not None:
         recorder = ActivityRecorder(session_factory)
         middleware.append(ActivityMiddleware(agent_id=config.agent_id, recorder=recorder))

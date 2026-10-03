@@ -255,6 +255,7 @@ export interface OnboardingSessionRow {
   owner_id: string;
   agent_name: string | null;
   soul_prompt: string | null;
+  settings: Record<string, unknown> | null;
   authorization_status: OnboardingAuthorizationStatus;
   phone_number: string | null;
   completed_agent_id: string | null;
@@ -420,6 +421,7 @@ export interface PromptPresetRow {
   title: string;
   summary: string;
   body: string;
+  settings: Record<string, unknown> | null;
   sort_order: number;
   is_active: boolean;
   created_at: string;

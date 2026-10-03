@@ -8,6 +8,7 @@ function makeSession(overrides: Partial<OnboardingSessionRow> = {}): OnboardingS
     owner_id: '0b3f9c1e-0000-4000-8000-000000000002',
     agent_name: null,
     soul_prompt: null,
+    settings: {},
     authorization_status: 'not_started',
     phone_number: null,
     completed_agent_id: null,

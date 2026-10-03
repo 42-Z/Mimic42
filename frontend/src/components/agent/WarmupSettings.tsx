@@ -6,7 +6,7 @@ import { AlertTriangle } from 'lucide-react';
 
 import { Card, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Toggle } from '@/components/agent/FirstCommentSettings';
+import { Switch } from '@/components/ui/switch';
 import { useToast } from '@/components/ui/toast';
 import { useUpdateAgentSettings } from '@/hooks/useAgent';
 import { useDeleteAgent } from '@/hooks/useAgents';
@@ -51,7 +51,7 @@ export function WarmupSettingsSection({
             иметь @username.
           </p>
         </div>
-        <Toggle
+        <Switch
           checked={value.enabled}
           onChange={(enabled) => onChange((prev) => ({ ...prev, enabled }))}
           label="Прогрев аккаунта"

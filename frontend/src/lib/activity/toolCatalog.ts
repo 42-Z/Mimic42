@@ -81,13 +81,17 @@ import {
 export type ToolGroup =
   | 'messages'
   | 'dialogs'
+  | 'channels'
   | 'media'
-  | 'profile'
-  | 'groups'
   | 'stickers'
+  | 'profile'
+  | 'chatinfo'
+  | 'members'
+  | 'chatsettings'
+  | 'chatlifecycle'
+  | 'utils'
   | 'folders'
   | 'bots'
-  | 'utils'
   | 'privacy';
 
 export interface ToolMeta {
@@ -146,41 +150,49 @@ export const TOOL_CATALOG: Record<string, ToolMeta> = {
   delete_contact: { ru: 'Удалил контакт', icon: UserMinus, group: 'profile' },
   get_contacts: { ru: 'Просмотрел контакты', icon: Contact, group: 'profile' },
 
-  // Groups, channels and permissions
-  get_chat_info: { ru: 'Посмотрел информацию о чате', icon: Info, group: 'groups' },
-  check_admin_permissions: { ru: 'Проверил права администратора', icon: ShieldCheck, group: 'groups' },
-  create_group: { ru: 'Создал группу', icon: Users2, group: 'groups' },
-  create_channel: { ru: 'Создал канал', icon: Megaphone, group: 'groups' },
-  invite_to_channel: { ru: 'Добавил участника', icon: UserPlus, group: 'groups' },
-  kick_chat_member: { ru: 'Исключил участника', icon: UserX, group: 'groups' },
-  ban_chat_member: { ru: 'Забанил участника', icon: Ban, group: 'groups' },
-  restrict_chat_member: { ru: 'Ограничил участника', icon: Gavel, group: 'groups' },
-  promote_chat_member: { ru: 'Назначил администратором', icon: ShieldPlus, group: 'groups' },
-  get_chat_members: { ru: 'Просмотрел участников', icon: UsersRound, group: 'groups' },
-  get_chat_admin_log: { ru: 'Просмотрел журнал админ-действий', icon: ScrollText, group: 'groups' },
-  edit_chat_title: { ru: 'Изменил название чата', icon: Type, group: 'groups' },
-  edit_chat_about: { ru: 'Изменил описание чата', icon: FileText, group: 'groups' },
-  edit_chat_photo: { ru: 'Изменил фото чата', icon: Camera, group: 'groups' },
-  update_chat_public_link: { ru: 'Обновил публичную ссылку', icon: Link2, group: 'groups' },
-  set_chat_default_banned_rights: { ru: 'Настроил права по умолчанию', icon: Lock, group: 'groups' },
-  toggle_chat_signatures: { ru: 'Переключил подписи', icon: Signature, group: 'groups' },
-  delete_channel: { ru: 'Удалил канал', icon: Trash, group: 'groups' },
-  toggle_join_requests: { ru: 'Переключил заявки на вход', icon: DoorOpen, group: 'groups' },
-  toggle_join_to_send: { ru: 'Переключил вступление для записи', icon: DoorClosed, group: 'groups' },
-  toggle_slow_mode: { ru: 'Переключил медленный режим', icon: Timer, group: 'groups' },
-  set_discussion_group: { ru: 'Привязал группу обсуждений', icon: MessageSquareDot, group: 'groups' },
-  join_channel_discussion: { ru: 'Открыл обсуждение канала', icon: MessagesSquare, group: 'groups' },
-  get_discussion_messages: { ru: 'Прочитал обсуждение', icon: Hash, group: 'groups' },
-  toggle_forum: { ru: 'Переключил режим форума', icon: FolderTree, group: 'groups' },
-  toggle_pre_history_hidden: { ru: 'Скрыл историю для новых', icon: EyeOff, group: 'groups' },
-  toggle_participants_hidden: { ru: 'Скрыл список участников', icon: Eye, group: 'groups' },
-  edit_chat_location: { ru: 'Изменил геолокацию чата', icon: MapPin, group: 'groups' },
-  toggle_anti_spam: { ru: 'Переключил антиспам', icon: ShieldQuestion, group: 'groups' },
-  set_chat_admin_rights: { ru: 'Настроил права администратора', icon: Settings2, group: 'groups' },
-  set_chat_banned_rights: { ru: 'Настроил ограничения', icon: Ban, group: 'groups' },
+  // Chat information (read-only)
+  get_chat_info: { ru: 'Посмотрел информацию о чате', icon: Info, group: 'chatinfo' },
+  check_admin_permissions: { ru: 'Проверил права администратора', icon: ShieldCheck, group: 'chatinfo' },
+  get_chat_members: { ru: 'Просмотрел участников', icon: UsersRound, group: 'chatinfo' },
+  get_chat_admin_log: { ru: 'Просмотрел журнал админ-действий', icon: ScrollText, group: 'chatinfo' },
+
+  // Channel discussions
+  join_channel: { ru: 'Присоединился к каналу', icon: PlayCircle, group: 'channels' },
+  join_channel_discussion: { ru: 'Открыл обсуждение канала', icon: MessagesSquare, group: 'channels' },
+  get_discussion_messages: { ru: 'Прочитал обсуждение', icon: Hash, group: 'channels' },
+
+  // Members and permissions
+  invite_to_channel: { ru: 'Добавил участника', icon: UserPlus, group: 'members' },
+  kick_chat_member: { ru: 'Исключил участника', icon: UserX, group: 'members' },
+  ban_chat_member: { ru: 'Забанил участника', icon: Ban, group: 'members' },
+  restrict_chat_member: { ru: 'Ограничил участника', icon: Gavel, group: 'members' },
+  promote_chat_member: { ru: 'Назначил администратором', icon: ShieldPlus, group: 'members' },
+  set_chat_admin_rights: { ru: 'Настроил права администратора', icon: Settings2, group: 'members' },
+  set_chat_banned_rights: { ru: 'Настроил ограничения', icon: Ban, group: 'members' },
+  set_chat_default_banned_rights: { ru: 'Настроил права по умолчанию', icon: Lock, group: 'members' },
+
+  // Chat settings
+  edit_chat_title: { ru: 'Изменил название чата', icon: Type, group: 'chatsettings' },
+  edit_chat_about: { ru: 'Изменил описание чата', icon: FileText, group: 'chatsettings' },
+  edit_chat_photo: { ru: 'Изменил фото чата', icon: Camera, group: 'chatsettings' },
+  update_chat_public_link: { ru: 'Обновил публичную ссылку', icon: Link2, group: 'chatsettings' },
+  toggle_chat_signatures: { ru: 'Переключил подписи', icon: Signature, group: 'chatsettings' },
+  toggle_join_requests: { ru: 'Переключил заявки на вход', icon: DoorOpen, group: 'chatsettings' },
+  toggle_join_to_send: { ru: 'Переключил вступление для записи', icon: DoorClosed, group: 'chatsettings' },
+  toggle_slow_mode: { ru: 'Переключил медленный режим', icon: Timer, group: 'chatsettings' },
+  toggle_forum: { ru: 'Переключил режим форума', icon: FolderTree, group: 'chatsettings' },
+  toggle_pre_history_hidden: { ru: 'Скрыл историю для новых', icon: EyeOff, group: 'chatsettings' },
+  toggle_participants_hidden: { ru: 'Скрыл список участников', icon: Eye, group: 'chatsettings' },
+  edit_chat_location: { ru: 'Изменил геолокацию чата', icon: MapPin, group: 'chatsettings' },
+  toggle_anti_spam: { ru: 'Переключил антиспам', icon: ShieldQuestion, group: 'chatsettings' },
+  set_discussion_group: { ru: 'Привязал группу обсуждений', icon: MessageSquareDot, group: 'chatsettings' },
+
+  // Chat lifecycle
+  create_group: { ru: 'Создал группу', icon: Users2, group: 'chatlifecycle' },
+  create_channel: { ru: 'Создал канал', icon: Megaphone, group: 'chatlifecycle' },
+  delete_channel: { ru: 'Удалил канал', icon: Trash, group: 'chatlifecycle' },
 
   // Misc utilities
-  join_channel: { ru: 'Присоединился к каналу', icon: PlayCircle, group: 'utils' },
   send_poll: { ru: 'Отправил опрос', icon: BarChart2, group: 'utils' },
   transcribe_voice_note: { ru: 'Расшифровал голосовое', icon: Volume2, group: 'utils' },
   read_document_file: { ru: 'Прочитал документ', icon: FileSearch, group: 'utils' },

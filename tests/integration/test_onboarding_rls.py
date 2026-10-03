@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import json
 from uuid import UUID, uuid4
 
 import asyncpg
@@ -304,3 +305,39 @@ async def test_policies_reject_forged_rows_even_with_extra_grants(
         "'id', 'insert')"
     )
     await connection.close()
+
+
+async def test_client_can_store_tool_settings_in_draft(
+    test_dsn: str,
+    clean_slot: Slot,
+) -> None:
+    """Настройки инструментов — обычные данные черновика, их пишет визард."""
+    client = clean_slot.persona("code")
+    connection = await asyncpg.connect(plain_dsn(test_dsn), timeout=CONNECT_TIMEOUT_SECONDS)
+    try:
+        async with connection.transaction():
+            await _act_as_client(connection, client.user_id)
+            draft_id = await connection.fetchval(
+                "insert into public.agent_onboarding_sessions "
+                "(owner_id, agent_name, soul_prompt, settings, updated_at) "
+                "values ($1, 'Мой агент', 'Характер', $2::jsonb, now()) returning id",
+                client.user_id,
+                '{"enabled_tools": ["send_text_message"]}',
+            )
+            await connection.execute(
+                "update public.agent_onboarding_sessions "
+                "set settings = $2::jsonb, updated_at = now() where id = $1",
+                draft_id,
+                '{"enabled_tools": ["send_text_message", "view_image"]}',
+            )
+            # asyncpg по умолчанию отдаёт jsonb строкой — разбираем её сами.
+            stored = json.loads(
+                await connection.fetchval(
+                    "select settings from public.agent_onboarding_sessions where id = $1",
+                    draft_id,
+                )
+            )
+    finally:
+        await connection.close()
+
+    assert stored == {"enabled_tools": ["send_text_message", "view_image"]}

@@ -14,6 +14,7 @@ import type {
   SoulPromptValues,
   TelegramCredentialsValues,
 } from '@/lib/validators';
+import type { Json } from '@/types/supabase';
 
 /**
  * Determines the current onboarding step from the session row.
@@ -82,9 +83,14 @@ export function useSaveOnboardingStep() {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) throw new Error('Not authenticated');
 
+      const { settings, ...rest } = update;
       const payload = {
         owner_id: user.id,
-        ...update,
+        ...rest,
+        // OnboardingSessionRow is a manual mirror, wider than the generated
+        // Json type: cast settings at the supabase-js boundary, as in
+        // useUpdateAgentSettings.
+        ...(settings != null ? { settings: settings as Json } : {}),
         updated_at: new Date().toISOString(),
       };
 
@@ -128,20 +134,31 @@ export function useSaveAgentName() {
 }
 
 /**
- * Step 2: Save soul prompt
+ * Step 2: Save soul prompt and the preset's tool settings (if any)
  */
 export function useSaveSoulPrompt() {
   const save = useSaveOnboardingStep();
   return {
     ...save,
-    mutateAsync: ({ sessionId, values }: { sessionId: string; values: SoulPromptValues }) =>
+    mutateAsync: ({
+      sessionId,
+      values,
+      settings,
+    }: {
+      sessionId: string;
+      values: SoulPromptValues;
+      settings?: Record<string, unknown> | null;
+    }) =>
       save.mutateAsync({
         sessionId,
-        update: { soul_prompt: values.soul_prompt },
+        update: {
+          soul_prompt: values.soul_prompt,
+          // Пресет без настроек не трогает уже сохранённый черновик.
+          ...(settings ? { settings } : {}),
+        },
       }),
   };
 }
-
 
 /**
  * Step 4a: Start Telegram authorization for the current draft

@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from langchain_core.messages import ToolMessage
 
+from mimic42.core.activity import _truncate
 from mimic42.integrations.activity_middleware import ActivityMiddleware, _sanitize_result
 
 
@@ -67,3 +68,29 @@ async def test_middleware_records_image_archive_without_logging_base64() -> None
     assert event["status"] == "succeeded"
     assert event["result"]["items"][0] == ref
     assert "data:image/jpeg;base64," not in str(event["result"])
+
+
+def test_long_history_keeps_all_compact_media_references() -> None:
+    items = [
+        {
+            "text": "Long message " * 500,
+            "media": {"media_id": f"photo:{index}", "peer": -100500, "message_id": index},
+        }
+        for index in range(100)
+    ]
+
+    result = _truncate({"items": items})
+
+    assert result["_truncated"] is True
+    assert result["items"] == [{"media": item["media"]} for item in items]
+    assert "Long message" not in str(result)
+
+
+def test_long_image_result_preserves_legacy_archive_ref() -> None:
+    ref = {"type": "media_ref", "storage_path": "ag/1/photo.jpeg", "mime_type": "image/jpeg"}
+
+    result = _truncate(
+        {"items": [ref, {"type": "image_url", "image_url": {"url": "data:image" + "A" * 5000}}]}
+    )
+
+    assert result["items"] == [ref]

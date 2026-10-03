@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Input, Textarea, Label } from '@/components/ui/input';
 import { Skeleton, Badge } from '@/components/ui/card';
 import { PresetPicker } from '@/components/agent/PresetPicker';
+import { ToolsSettings } from '@/components/agent/ToolsSettings';
 import {
   EMPTY_FIRST_COMMENT,
   FirstCommentSettingsSection,
@@ -22,6 +23,7 @@ import {
 import { DEFAULT_MODEL, optionsIncluding } from '@/lib/models';
 import { agentsApi } from '@/lib/api';
 import { pickReasoningValue, reasoningLabel, reasoningOptionValues } from '@/lib/reasoning';
+import { readEnabledTools, mergeEnabledTools } from '@/lib/tools/agentTools';
 import { agentSettingsSchema, type AgentSettingsValues, type WarmupValues } from '@/lib/validators';
 import type { ApiError } from '@/types';
 
@@ -43,6 +45,7 @@ export function TabSettings({ agentId }: { agentId: string }) {
     name: '', soul_prompt: '', reasoning_effort: 'high', model: DEFAULT_MODEL,
     first_comment: EMPTY_FIRST_COMMENT,
     warmup: { enabled: false },
+    enabled_tools: null,
   });
   const [formErrors, setFormErrors] = useState<Partial<Record<keyof AgentSettingsValues, string>>>({});
   const [dirty, setDirty] = useState(false);
@@ -57,6 +60,7 @@ export function TabSettings({ agentId }: { agentId: string }) {
         model: (details.settings?.model as string) ?? DEFAULT_MODEL,
         first_comment: readFirstComment(details.settings),
         warmup: { enabled: readWarmup(details.settings).enabled },
+        enabled_tools: readEnabledTools(details.settings),
       });
     }
   }, [details]);
@@ -90,22 +94,24 @@ export function TabSettings({ agentId }: { agentId: string }) {
     try {
       // Merge instead of overwrite: keep settings keys the form does not own.
       const existingSettings = (details?.settings ?? {}) as Record<string, unknown>;
+      const mergedSettings: Record<string, unknown> = {
+        ...existingSettings,
+        // Models without exposed effort selection must not receive a stale
+        // stored effort: "none" keeps the request clean.
+        reasoning_effort: reasoningOptions === null ? 'none' : result.data.reasoning_effort,
+        model: result.data.model,
+        first_comment: result.data.first_comment ?? EMPTY_FIRST_COMMENT,
+        // Ключи прогрева, которых нет в форме (часовой пояс, ограничение), сохраняются.
+        warmup: {
+          ...((existingSettings.warmup as Record<string, unknown> | undefined) ?? {}),
+          enabled: result.data.warmup?.enabled ?? false,
+        },
+      };
+      const submissionSettings = mergeEnabledTools(mergedSettings, result.data.enabled_tools);
       const submissionData = {
         name: result.data.name,
         soul_prompt: result.data.soul_prompt,
-        settings: {
-          ...existingSettings,
-          // Models without exposed effort selection must not receive a stale
-          // stored effort: "none" keeps the request clean.
-          reasoning_effort: reasoningOptions === null ? 'none' : result.data.reasoning_effort,
-          model: result.data.model,
-          first_comment: result.data.first_comment ?? EMPTY_FIRST_COMMENT,
-          // Ключи прогрева, которых нет в форме (часовой пояс, ограничение), сохраняются.
-          warmup: {
-            ...((existingSettings.warmup as Record<string, unknown> | undefined) ?? {}),
-            enabled: result.data.warmup?.enabled ?? false,
-          },
-        },
+        settings: submissionSettings,
       };
       await update.mutateAsync(submissionData);
       // The runtime is built once: new settings need a rebuild.
@@ -132,7 +138,16 @@ export function TabSettings({ agentId }: { agentId: string }) {
         <div className="flex justify-end">
           <PresetPicker
             currentValue={values.soul_prompt}
-            onApply={(body) => set('soul_prompt', body)}
+            onApply={(preset) => {
+              const enabled = readEnabledTools(preset.settings);
+              setValues((v) => ({
+                ...v,
+                soul_prompt: preset.body,
+                // Пресет без настроек инструментов не трогает текущий выбор.
+                enabled_tools: enabled ?? v.enabled_tools,
+              }));
+              setDirty(true);
+            }}
           />
         </div>
         <Textarea
@@ -192,6 +207,14 @@ export function TabSettings({ agentId }: { agentId: string }) {
           )}
         </div>
       )}
+
+      <ToolsSettings
+        value={values.enabled_tools ?? null}
+        onChange={(enabled) => {
+          setValues((v) => ({ ...v, enabled_tools: enabled }));
+          setDirty(true);
+        }}
+      />
 
       <FirstCommentSettingsSection
         agentId={agentId}

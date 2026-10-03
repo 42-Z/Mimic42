@@ -129,6 +129,9 @@ class AgentManager:
             if warmup_history is not None
             else None
         )
+        # Reload'ы одного агента сериализуются: параллельные вызовы иначе
+        # пересобирают рантайм друг друга (см. reload_agent).
+        self._reload_locks: dict[UUID, asyncio.Lock] = {}
 
     async def create_agent(
         self,
@@ -241,25 +244,35 @@ class AgentManager:
         settings changes (model, prompts) require a rebuild: stop the old
         runtime, drop it from the registry and re-materialise from the
         config loader. No tombstone is set — the agent still exists in the
-        database. A runtime that was RUNNING is started again.
+        database. A runtime that was active (RUNNING or STARTING) is started
+        again.
+
+        Reloads of one agent are serialised: parallel reloads otherwise pop
+        each other's freshly materialised runtime and can leave the agent
+        STOPPED while the database still says RUNNING.
         """
-        async with self._lock:
-            old_runtime = self._agents.pop(agent_id, None)
-        if old_runtime is None:
-            # Not materialised in this process: the next get_agent/start
-            # already reads the fresh config from the database.
-            return
-        was_running = old_runtime.status.state is AgentRuntimeState.RUNNING
-        await old_runtime.close()
-        runtime = await self.get_agent(agent_id)
-        if was_running:
-            try:
-                await runtime.start()
-            except Exception:
-                # Persist the failure like start_agent does: without this the
-                # database keeps RUNNING while the rebuilt runtime is ERROR.
-                await self._save_status(agent_id, AgentRuntimeState.ERROR)
-                raise
+        reload_lock = self._reload_locks.setdefault(agent_id, asyncio.Lock())
+        async with reload_lock:
+            async with self._lock:
+                old_runtime = self._agents.pop(agent_id, None)
+            if old_runtime is None:
+                # Not materialised in this process: the next get_agent/start
+                # already reads the fresh config from the database.
+                return
+            was_active = old_runtime.status.state in (
+                AgentRuntimeState.RUNNING,
+                AgentRuntimeState.STARTING,
+            )
+            await old_runtime.close()
+            runtime = await self.get_agent(agent_id)
+            if was_active:
+                try:
+                    await runtime.start()
+                except Exception:
+                    # Persist the failure like start_agent does: without this the
+                    # database keeps RUNNING while the rebuilt runtime is ERROR.
+                    await self._save_status(agent_id, AgentRuntimeState.ERROR)
+                    raise
 
     async def remove_agent(self, agent_id: UUID) -> None:
         """Unregister the agent runtime and stop it. Missing agents are ignored.
@@ -316,6 +329,7 @@ class AgentManager:
                     media_uploader=self.media_uploader,
                     send_window=send_window,
                     media_refs=media_refs,
+                    enabled_tools=config.enabled_tools,
                 ),
                 self.session_factory,
             ),
@@ -352,6 +366,7 @@ def _build_runtime(
                 media_uploader=media_uploader,
                 send_window=send_window,
                 media_refs=media_refs,
+                enabled_tools=config.enabled_tools,
             ),
             session_factory=session_factory,
         ),
