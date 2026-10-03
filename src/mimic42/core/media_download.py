@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from collections.abc import Callable
-from dataclasses import dataclass, field
-from typing import Any
+from dataclasses import dataclass, field, replace
+from typing import Any, Literal
 
 from telethon import errors, types
 
@@ -58,11 +58,22 @@ class MediaRef:
     mime_type: str | None = None
     attributes: tuple[types.DocumentAttributeAudio | types.DocumentAttributeVideo, ...] = ()
     download_source: Any | None = field(default=None, repr=False, compare=False)
+    peer_type: Literal["user", "chat", "channel"] | None = None
+    peer_id: int | None = None
+    peer_access_hash: int | None = None
 
     def as_payload(self) -> dict[str, Any]:
         """JSON metadata only; the refreshed Telethon object stays in memory."""
         payload: dict[str, Any] = {}
-        for key in ("peer", "message_id", "storage_path", "mime_type"):
+        for key in (
+            "peer",
+            "message_id",
+            "storage_path",
+            "mime_type",
+            "peer_type",
+            "peer_id",
+            "peer_access_hash",
+        ):
             value = getattr(self, key)
             if value is not None:
                 payload[key] = value
@@ -104,49 +115,95 @@ class MediaRef:
         message_id = payload.get("message_id")
         storage_path = payload.get("storage_path")
         mime_type = payload.get("mime_type")
+        peer_type = payload.get("peer_type")
+        peer_id = payload.get("peer_id")
+        peer_access_hash = payload.get("peer_access_hash")
+        if (
+            peer_type not in ("user", "chat", "channel")
+            or type(peer_id) is not int
+            or peer_id <= 0
+            or (peer_type != "chat" and type(peer_access_hash) is not int)
+        ):
+            peer_type = peer_id = peer_access_hash = None
+        elif peer_type == "chat":
+            peer_access_hash = None
         return cls(
             peer=peer if type(peer) in (str, int) else None,
             message_id=message_id if type(message_id) is int else None,
             storage_path=storage_path if isinstance(storage_path, str) and storage_path else None,
             mime_type=mime_type if isinstance(mime_type, str) and mime_type else None,
             attributes=tuple(attributes),
+            peer_type=peer_type,
+            peer_id=peer_id,
+            peer_access_hash=peer_access_hash,
         )
 
     def merged_with(self, ref: MediaRef) -> MediaRef:
         """Keep message coordinates together and retain known archive metadata."""
-        peer, message_id = (
-            (ref.peer, ref.message_id)
-            if ref.peer is not None and ref.message_id is not None
-            else (self.peer, self.message_id)
+        coordinates = (
+            ref
+            if (ref.peer is not None or ref.peer_id is not None) and ref.message_id is not None
+            else self
         )
+        input_peer_ref = coordinates
+        if (
+            coordinates is ref
+            and ref.peer_type is None
+            and (ref.peer, ref.message_id) == (self.peer, self.message_id)
+        ):
+            input_peer_ref = self
         return MediaRef(
-            peer=peer,
-            message_id=message_id,
+            peer=coordinates.peer,
+            message_id=coordinates.message_id,
             storage_path=ref.storage_path or self.storage_path,
             mime_type=ref.mime_type or self.mime_type,
             attributes=ref.attributes or self.attributes,
             download_source=(
                 ref.download_source if ref.download_source is not None else self.download_source
             ),
+            peer_type=input_peer_ref.peer_type,
+            peer_id=input_peer_ref.peer_id,
+            peer_access_hash=input_peer_ref.peer_access_hash,
         )
 
     @classmethod
     def from_message(
-        cls, message: Any, *, peer: str | int | None = None, message_id: int | None = None
+        cls,
+        message: Any,
+        *,
+        peer: str | int | None = None,
+        message_id: int | None = None,
+        input_peer: types.TypeInputPeer | None = None,
     ) -> MediaRef:
         """Keep original document metadata needed to upload an archived copy."""
+        ref = cls(peer=peer, message_id=message_id)
+        if isinstance(input_peer, types.InputPeerUser):
+            ref = replace(
+                ref,
+                peer_type="user",
+                peer_id=input_peer.user_id,
+                peer_access_hash=input_peer.access_hash,
+            )
+        elif isinstance(input_peer, types.InputPeerChannel):
+            ref = replace(
+                ref,
+                peer_type="channel",
+                peer_id=input_peer.channel_id,
+                peer_access_hash=input_peer.access_hash,
+            )
+        elif isinstance(input_peer, types.InputPeerChat):
+            ref = replace(ref, peer_type="chat", peer_id=input_peer.chat_id)
         media = getattr(message, "media", None)
         document = media.document if isinstance(media, types.MessageMediaDocument) else None
         if not isinstance(document, types.Document):
-            return cls(peer=peer, message_id=message_id)
+            return ref
         attributes = tuple(
             attr
             for attr in document.attributes
             if isinstance(attr, (types.DocumentAttributeAudio, types.DocumentAttributeVideo))
         )
-        return cls(
-            peer=peer,
-            message_id=message_id,
+        return replace(
+            ref,
             mime_type=document.mime_type,
             attributes=attributes,
         )

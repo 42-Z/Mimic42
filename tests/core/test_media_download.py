@@ -303,6 +303,80 @@ def test_media_ref_from_old_or_invalid_payload_keeps_usable_metadata() -> None:
     assert ref == MediaRef(storage_path="agent/photo.jpeg")
 
 
+@pytest.mark.parametrize(
+    "peer_fields",
+    [
+        {"peer_type": "user", "peer_id": 42, "peer_access_hash": -789},
+        {"peer_type": "channel", "peer_id": 42, "peer_access_hash": 0},
+        {"peer_type": "chat", "peer_id": 42},
+    ],
+)
+def test_media_ref_json_round_trip_preserves_input_peer(peer_fields: dict[str, Any]) -> None:
+    payload = {"peer": "@old_name", "message_id": 55, **peer_fields}
+
+    ref = MediaRef.from_payload(json.loads(json.dumps(payload)))
+
+    assert ref.as_payload() == payload
+
+
+@pytest.mark.parametrize(
+    "peer_fields",
+    [
+        {"peer_type": "unknown", "peer_id": 42, "peer_access_hash": 789},
+        {"peer_type": [], "peer_id": 42, "peer_access_hash": 789},
+        {"peer_type": "user", "peer_id": True, "peer_access_hash": 789},
+        {"peer_type": "user", "peer_id": "42", "peer_access_hash": 789},
+        {"peer_type": "user", "peer_id": 0, "peer_access_hash": 789},
+        {"peer_type": "channel", "peer_id": -42, "peer_access_hash": 789},
+        {"peer_type": "user", "peer_id": 42},
+        {"peer_type": "channel", "peer_id": 42, "peer_access_hash": True},
+        {"peer_type": "channel", "peer_id": 42, "peer_access_hash": "789"},
+        {"peer_type": "chat"},
+    ],
+)
+def test_invalid_input_peer_keeps_legacy_coordinates(peer_fields: dict[str, Any]) -> None:
+    ref = MediaRef.from_payload({"peer": "@old_name", "message_id": 55, **peer_fields})
+
+    assert ref == MediaRef(peer="@old_name", message_id=55)
+
+
+@pytest.mark.parametrize(
+    "update", [MediaRef(storage_path="archive"), MediaRef(peer="@old_name", message_id=55)]
+)
+def test_media_ref_merge_keeps_input_peer_for_the_same_message(update: MediaRef) -> None:
+    payload = {
+        "peer": "@old_name",
+        "message_id": 55,
+        "peer_type": "channel",
+        "peer_id": 42,
+        "peer_access_hash": 789,
+    }
+    cache = MediaRefCache()
+    cache.remember("photo", MediaRef.from_payload(payload))
+    cache.remember("photo", update)
+
+    ref = cache.lookup("photo")
+
+    assert ref is not None
+    assert ref.as_payload() == {**payload, **update.as_payload()}
+
+
+def test_media_ref_merge_keeps_input_peer_and_message_coordinates_together() -> None:
+    ref = MediaRef.from_payload(
+        {
+            "peer": "@old_name",
+            "message_id": 55,
+            "peer_type": "channel",
+            "peer_id": 42,
+            "peer_access_hash": 789,
+        }
+    )
+
+    assert ref.merged_with(MediaRef(peer="other", message_id=77)) == MediaRef(
+        peer="other", message_id=77
+    )
+
+
 def test_durable_metadata_merge_does_not_discard_a_refreshed_download_source() -> None:
     cache = MediaRefCache()
     fresh = _photo_message()
