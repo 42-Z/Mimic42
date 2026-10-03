@@ -141,10 +141,22 @@ class WarmupService:
         sender = self._agent_by_telegram_id(sender_telegram_id)
         if sender is None:
             return None
+        receiver = self._agent_by_id(receiver_id)
+        # Прогрев выключен хоть у одного: это обычная переписка, и ограничивать её нельзя.
+        if receiver is None or not (
+            receiver.config.warmup.enabled and sender.config.warmup.enabled
+        ):
+            return None
         return self._tracker.claim_reply(receiver_id, sender.config.agent_id, now=self._now())
 
     def reply_delay_seconds(self) -> float:
         return self._delay()
+
+    def _agent_by_id(self, agent_id: UUID) -> MimicAgentRuntime | None:
+        for runtime in self._runtimes():
+            if runtime.config.agent_id == agent_id:
+                return runtime
+        return None
 
     def _agent_by_telegram_id(self, telegram_id: int) -> MimicAgentRuntime | None:
         for runtime in self._runtimes():

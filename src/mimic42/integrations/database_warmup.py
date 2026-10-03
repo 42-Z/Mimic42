@@ -14,7 +14,7 @@ from uuid import UUID
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from mimic42.core.warmup import EVENT_OPENER_FAILED, EVENT_OPENER_SENT
+from mimic42.core.warmup import EVENT_OPENER_FAILED, EVENT_OPENER_SENT, EVENT_RESTRICTED
 from mimic42.integrations.database_models import AgentEventModel, AgentModel
 
 # Хватает с запасом на любую разумную базу зачинов и круг знакомых.
@@ -32,7 +32,9 @@ class DatabaseWarmupHistory:
                 .select_from(AgentEventModel)
                 .where(
                     AgentEventModel.agent_id == agent_id,
-                    AgentEventModel.event_type.in_((EVENT_OPENER_SENT, EVENT_OPENER_FAILED)),
+                    AgentEventModel.event_type.in_(
+                        (EVENT_OPENER_SENT, EVENT_OPENER_FAILED, EVENT_RESTRICTED)
+                    ),
                     AgentEventModel.created_at >= since,
                 )
             )
@@ -44,7 +46,11 @@ class DatabaseWarmupHistory:
                 select(func.count())
                 .select_from(AgentEventModel)
                 .where(
-                    AgentEventModel.event_type == EVENT_OPENER_SENT,
+                    # Неудачные попытки тоже в счёт: иначе слот остаётся «неотработанным» и
+                    # помощник долбит ограниченный аккаунт на каждом тике.
+                    AgentEventModel.event_type.in_(
+                        (EVENT_OPENER_SENT, EVENT_OPENER_FAILED, EVENT_RESTRICTED)
+                    ),
                     AgentEventModel.created_at >= since,
                     AgentEventModel.payload["partner_agent_id"].as_string() == str(agent_id),
                 )

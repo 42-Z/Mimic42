@@ -238,3 +238,32 @@ async def test_runtime_starts_with_the_saved_restriction_state() -> None:
     )
     assert runtime.warmup_restricted_at == datetime(2026, 10, 1, tzinfo=UTC)
     assert runtime.warmup_recovery is True
+
+
+@pytest.mark.asyncio
+async def test_spambot_reply_does_not_start_an_agent_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime, telegram, agent = make_runtime()
+    await runtime.start()
+    spambot_id = 178220800
+
+    async def no_delay(_seconds: float) -> None:
+        return None
+
+    async def get_input_entity(_peer: object) -> object:
+        return type("InputPeerUser", (), {"user_id": spambot_id})()
+
+    async def get_messages(_entity: object, **_kwargs: object) -> list[object]:
+        return []
+
+    monkeypatch.setattr("mimic42.core.agent_runtime.asyncio.sleep", no_delay)
+    monkeypatch.setattr(telegram, "get_input_entity", get_input_entity, raising=False)
+    monkeypatch.setattr(telegram, "get_messages", get_messages, raising=False)
+
+    await runtime.check_spambot()
+    await telegram.account.deliver(chat_id=spambot_id, text="Good news", sender_id=spambot_id)
+    assert agent.inputs == []
+
+    await telegram.account.deliver(chat_id=555, text="привет", sender_id=555)
+    assert len(agent.inputs) == 1

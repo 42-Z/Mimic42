@@ -109,7 +109,7 @@ async def login(slot: int, api_id: int, api_hash: str, saved: str | None) -> str
         print(f"\n── Аккаунт {slot}: вход ──")
         phone = ask("Номер телефона (с +, например +79991234567)")
         await client.send_code_request(phone)
-        code = ask("Код из Telegram")
+        code = ask("Код из Telegram (ввод скрыт)", secret=True)
         try:
             await client.sign_in(phone, code)
         except SessionPasswordNeededError:
@@ -264,14 +264,14 @@ async def main() -> None:
     print("Живая проверка прогрева: два аккаунта пишут друг другу.\n")
     print("Нужны api_id и api_hash Telegram-приложения (my.telegram.org → API development tools).")
     api_id = int(store.get("api_id") or ask("api_id"))
-    api_hash = store.get("api_hash") or ask("api_hash")
+    api_hash = store.get("api_hash") or ask("api_hash (ввод скрыт)", secret=True)
     store.update(api_id=api_id, api_hash=api_hash)
     save_store(store)
 
     openrouter = os.environ.get("OPENROUTER_API_KEY") or store.get("openrouter_key")
     if not openrouter:
-        raw = input(
-            "\nКлюч OpenRouter для живых ответов (Enter — без LLM, ответы-заготовки): "
+        raw = getpass.getpass(
+            "\nКлюч OpenRouter для живых ответов, ввод скрыт (Enter — без LLM, заготовки): "
         ).strip()
         openrouter = raw or None
     if openrouter:
@@ -298,56 +298,58 @@ async def main() -> None:
         )
         for name, client in zip(("Аня", "Макс"), clients, strict=True)
     ]
-    for runtime in runtimes:
-        await runtime.start()
+    try:
+        for runtime in runtimes:
+            await runtime.start()
 
-    for index, runtime in enumerate(runtimes, start=1):
-        if not runtime.telegram_username:
-            print(
-                f"\nУ аккаунта {index} нет @username. Задай его в Telegram "
-                "(Настройки → Имя пользователя) и запусти скрипт заново."
-            )
-            await asyncio.gather(*(r.close() for r in runtimes))
-            sys.exit(1)
+        for index, runtime in enumerate(runtimes, start=1):
+            if not runtime.telegram_username:
+                print(
+                    f"\nУ аккаунта {index} нет @username. Задай его в Telegram "
+                    "(Настройки → Имя пользователя) и запусти скрипт заново."
+                )
+                sys.exit(1)
 
-    names = [f"{r.config.name} (@{r.telegram_username})" for r in runtimes]
-    print(f"\nАгенты запущены: {names[0]} и {names[1]}")
-    watch(clients[0], runtimes[0].config.name, lambda: runtimes[1].config.name)
-    watch(clients[1], runtimes[1].config.name, lambda: runtimes[0].config.name)
+        names = [f"{r.config.name} (@{r.telegram_username})" for r in runtimes]
+        print(f"\nАгенты запущены: {names[0]} и {names[1]}")
+        watch(clients[0], runtimes[0].config.name, lambda: runtimes[1].config.name)
+        watch(clients[1], runtimes[1].config.name, lambda: runtimes[0].config.name)
 
-    await add_each_other_as_contacts(clients, runtimes)
+        await add_each_other_as_contacts(clients, runtimes)
 
-    history = DemoHistory()
-    service = WarmupService(
-        lambda: runtimes, history, delay=lambda: random.uniform(*DEMO_REPLY_DELAY)
-    )
-    for runtime in runtimes:
-        runtime.set_warmup_gate(service)
-
-    starter, _ = random.sample(runtimes, 2)
-    print(f"Диалог начинает {starter.config.name}. Остановить — Ctrl+C.\n")
-    sent = await service.start_dialog(starter, runtimes)
-    if not sent:
-        print(
-            "Зачин не отправился, смотри ошибку выше.\n"
-            "Если там PeerFloodError — Telegram ограничил аккаунт-отправитель за рассылку "
-            "незнакомым. Открой @SpamBot с него и нажми /start: бот скажет, есть ли "
-            "ограничение и до какого числа. Пока оно действует, этот аккаунт писать "
-            "первым не сможет; можно запустить скрипт ещё раз позже или начать диалог "
-            "с другого аккаунта."
+        history = DemoHistory()
+        service = WarmupService(
+            lambda: runtimes, history, delay=lambda: random.uniform(*DEMO_REPLY_DELAY)
         )
-    else:
-        # Ждём, пока диалог не затихнет: сам он заканчивается по длине, а не по таймеру.
-        last_count = -1
-        idle = 0
-        while idle < IDLE_STOP_SECONDS:
-            await asyncio.sleep(5)
-            total = sum(len(v) for v in short_term._rows.values())
-            idle = idle + 5 if total == last_count else 0
-            last_count = total
-        print("\nДиалог закончился (тишина больше 4 минут).")
+        for runtime in runtimes:
+            runtime.set_warmup_gate(service)
 
-    await asyncio.gather(*(r.close() for r in runtimes), return_exceptions=True)
+        starter, _ = random.sample(runtimes, 2)
+        print(f"Диалог начинает {starter.config.name}. Остановить — Ctrl+C.\n")
+        sent = await service.start_dialog(starter, runtimes)
+        if not sent:
+            print(
+                "Зачин не отправился, смотри ошибку выше.\n"
+                "Если там PeerFloodError — Telegram ограничил аккаунт-отправитель за рассылку "
+                "незнакомым. Открой @SpamBot с него и нажми /start: бот скажет, есть ли "
+                "ограничение и до какого числа. Пока оно действует, этот аккаунт писать "
+                "первым не сможет; можно запустить скрипт ещё раз позже или начать диалог "
+                "с другого аккаунта."
+            )
+        else:
+            # Ждём, пока диалог не затихнет: сам он заканчивается по длине, а не по таймеру.
+            last_count = -1
+            idle = 0
+            while idle < IDLE_STOP_SECONDS:
+                await asyncio.sleep(5)
+                total = sum(len(v) for v in short_term._rows.values())
+                idle = idle + 5 if total == last_count else 0
+                last_count = total
+            print("\nДиалог закончился (тишина больше 4 минут).")
+
+    finally:
+        # Ctrl+C или ошибка запуска второго агента: закрываем всех, кто уже поднялся.
+        await asyncio.gather(*(r.close() for r in runtimes), return_exceptions=True)
     print(f"Готово. Сессии сохранены в {STORE}, при повторном запуске вводить код не придётся.")
 
 

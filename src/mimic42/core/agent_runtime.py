@@ -321,6 +321,8 @@ class MimicAgentRuntime:
         # Состояние прогрева живёт в рантайме, а сохраняет его WarmupService в настройки агента.
         self.warmup_restricted_at: datetime | None = config.warmup.restricted_at
         self.warmup_recovery: bool = config.warmup.recovery
+        # Id @SpamBot: его ответ на проверку не повод для хода агента.
+        self._spambot_user_id: int | None = None
 
     async def _record_event(
         self,
@@ -491,6 +493,19 @@ class MimicAgentRuntime:
         )
         return OpenerResult.SENT
 
+    async def _remember_spambot_id(self) -> None:
+        get_input_entity = getattr(self._telegram_client, "get_input_entity", None)
+        if not callable(get_input_entity):
+            return
+        try:
+            entity = await get_input_entity("@SpamBot")
+        except Exception:
+            logger.debug("Could not resolve @SpamBot", exc_info=True)
+            return
+        user_id = getattr(entity, "user_id", None)
+        if isinstance(user_id, int):
+            self._spambot_user_id = user_id
+
     async def note_warmup_event(
         self, event_type: str, *, status: str = "succeeded", payload: dict[str, Any] | None = None
     ) -> None:
@@ -517,6 +532,9 @@ class MimicAgentRuntime:
             return None
         try:
             async with self._trigger_lock:
+                # Id запоминаем до /start: ответ бота придёт обычным входящим, и по id
+                # _dispatch_incoming отличит его от человека.
+                await self._remember_spambot_id()
                 await self._telegram_client.send_message("@SpamBot", "/start")
                 await asyncio.sleep(SPAMBOT_REPLY_WAIT_SECONDS)
                 messages = await get_messages("@SpamBot", limit=1)
@@ -1810,6 +1828,12 @@ class MimicAgentRuntime:
             await self._record_incoming_failure(str(getattr(event, "chat_id", "") or ""), e)
             return
         if await self._is_chat_muted(event, peer):
+            return
+        if (
+            self._spambot_user_id is not None
+            and getattr(event, "sender_id", None) == self._spambot_user_id
+        ):
+            logger.debug("Ответ @SpamBot не запускает ход агента")
             return
         warmup_verdict = self._warmup_verdict(event)
         if warmup_verdict is False:

@@ -363,3 +363,18 @@ async def test_spambot_is_asked_rarely_and_unknown_answer_changes_nothing() -> N
     service._now = lambda: later  # noqa: SLF001
     await service.tick()
     assert limited.spambot_checks == 2
+
+
+@pytest.mark.asyncio
+async def test_messages_between_mimics_are_left_alone_when_warmup_is_off() -> None:
+    a, b = StubRuntime(user_id=1), StubRuntime(user_id=2, enabled=False)
+    service, tracker = make_service([a, b], MemoryHistory(), due_moment(a))
+
+    # Диалога нет, но у b прогрев выключен: обычная переписка, никаких ограничений.
+    assert service.claim_reply(b.config.agent_id, 1) is None
+    assert service.claim_reply(a.config.agent_id, 2) is None
+
+    b.config.warmup = WarmupSettings(enabled=True)
+    assert service.claim_reply(b.config.agent_id, 1) is False
+    tracker.start(a.config.agent_id, b.config.agent_id, length=4, now=due_moment(a))
+    assert service.claim_reply(b.config.agent_id, 1) is True
