@@ -23,6 +23,13 @@ from mimic42.core.media import MediaUploader
 from mimic42.core.media_download import MediaRefCache
 from mimic42.core.memory import RuntimeMemoryService
 from mimic42.core.send_window import SendWindowTracker
+from mimic42.core.warmup_service import (
+    PairPolicy,
+    WarmupHistory,
+    WarmupService,
+    WarmupStateStore,
+    allow_everyone,
+)
 from mimic42.integrations.langchain_agent import build_langchain_agent
 from mimic42.integrations.telegram_tools import (
     TelethonRequestClient,
@@ -89,6 +96,9 @@ class AgentManager:
         telegram_client_factory: TelegramClientFactory | None = None,
         langchain_agent_factory: LangChainAgentFactory | None = None,
         media_uploader: MediaUploader | None = None,
+        warmup_history: WarmupHistory | None = None,
+        warmup_state_store: WarmupStateStore | None = None,
+        warmup_pair_policy: PairPolicy = allow_everyone,
     ) -> None:
         self._runtime_factory = runtime_factory or _build_runtime
         self._memory_service_factory = memory_service_factory
@@ -107,6 +117,18 @@ class AgentManager:
         self._agents: dict[UUID, MimicAgentRuntime] = {}
         self._removed: set[UUID] = set()
         self._lock = asyncio.Lock()
+        # Прогрев нужен только с постоянным хранилищем: без него нечем помнить, что уже
+        # отправлено, и после рестарта агенты начали бы диалоги заново.
+        self.warmup: WarmupService | None = (
+            WarmupService(
+                lambda: list(self._agents.values()),
+                warmup_history,
+                state_store=warmup_state_store,
+                pair_policy=warmup_pair_policy,
+            )
+            if warmup_history is not None
+            else None
+        )
 
     async def create_agent(
         self,
@@ -131,6 +153,8 @@ class AgentManager:
         if config.agent_id in self._agents:
             raise ValueError("Агент с этим ID уже существует")
         runtime = self._build_runtime_for(config)
+        if self.warmup is not None:
+            runtime.set_warmup_gate(self.warmup)
         self._agents[config.agent_id] = runtime
         self._removed.discard(config.agent_id)
         return runtime
@@ -267,6 +291,8 @@ class AgentManager:
         return await (await self.get_agent(agent_id)).trigger_message(trigger)
 
     async def shutdown(self) -> None:
+        if self.warmup is not None:
+            await self.warmup.stop()
         agents = list(self._agents.values())
         await asyncio.gather(*(agent.close() for agent in agents), return_exceptions=True)
 

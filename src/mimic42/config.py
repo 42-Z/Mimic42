@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -31,6 +31,11 @@ class Settings(BaseSettings):
     # real_tg выключают: иначе поднялся бы чужой агент (и Telegram убил бы
     # его сессию за параллельное использование).
     restore_running_agents: bool = Field(default=True, validation_alias="RESTORE_RUNNING_AGENTS")
+    # С кем переписываются агенты при прогреве: all — со всеми агентами платформы,
+    # own — только с агентами того же владельца.
+    warmup_partners: Literal["all", "own"] = Field(
+        default="all", validation_alias="WARMUP_PARTNERS"
+    )
     cors_allow_origins: Annotated[list[str], NoDecode] = Field(
         default=["http://localhost:3000", "http://127.0.0.1:3000"],
         validation_alias="CORS_ALLOW_ORIGINS",

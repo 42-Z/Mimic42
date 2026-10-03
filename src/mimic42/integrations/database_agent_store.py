@@ -23,6 +23,7 @@ from mimic42.core.agent_store import (
 )
 from mimic42.core.first_comment import parse_first_comment
 from mimic42.core.onboarding import OnboardingSession, SecretCipher
+from mimic42.core.warmup import parse_warmup
 from mimic42.integrations.database_models import (
     AgentEventModel,
     AgentMessageModel,
@@ -208,6 +209,7 @@ class DatabaseAgentStore:
                 first_comment=parse_first_comment(
                     agent.settings.get("first_comment") if agent.settings else None
                 ),
+                warmup=parse_warmup(agent.settings.get("warmup") if agent.settings else None),
             )
 
     async def get_telegram_rebind_credentials(self, agent_id: UUID) -> TelegramRebindCredentials:
@@ -643,7 +645,7 @@ class DatabaseAgentStore:
                 # Legacy tool events (no turn_id, pre-`tool.*` naming) still
                 # attach to the turn they ran in.
                 is_lifecycle = item.event_type.startswith(
-                    ("agent.", "timer.", "turn.", "message.", "first_comment.")
+                    ("agent.", "timer.", "turn.", "message.", "first_comment.", "warmup.")
                 )
                 if is_lifecycle or legacy_current is None:
                     block = ConversationTurn(
