@@ -1,21 +1,23 @@
-"""История и состояние прогрева из ``agent_events``: отдельной таблицы не нужно.
+"""История и состояние прогрева.
 
-Каждый начатый диалог — событие ``warmup.opener_sent`` (или ``warmup.opener_failed``)
-с текстом зачина и партнёром в payload. По ним считаются попытки за день, уже
-использованные зачины и знакомые собеседники, и всё переживает рестарт.
+История — это ``agent_events``: каждый начатый диалог — событие ``warmup.opener_sent`` (или
+``warmup.opener_failed``) с текстом зачина и партнёром в payload. По ним считаются попытки за
+день, уже использованные зачины и знакомые собеседники, и всё переживает рестарт.
 
-Ограничение аккаунта и режим восстановления тоже события (``warmup.restricted``,
-``warmup.recovery_started``, ``warmup.recovered``): журнал только дописывается, и форма
-настроек, которая перезаписывает ``agents.settings`` целиком, не может откатить состояние.
+Состояние ограничения аккаунта живёт в колонках ``agents.warmup_restricted_at`` и
+``agents.warmup_recovery``, а не в ``agents.settings``: форма настроек перезаписывает
+``settings`` целиком и затёрла бы то, что ведёт только сервер. Переходы состояния дополнительно
+пишутся событиями (``warmup.restricted`` и др.) для ленты активности.
 """
 
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mimic42.core.warmup import (
@@ -25,24 +27,26 @@ from mimic42.core.warmup import (
     EVENT_RECOVERY_STARTED,
     EVENT_RESTRICTED,
     WarmupState,
-    state_from_events,
 )
-from mimic42.integrations.database_models import AgentEventModel
+from mimic42.integrations.database_models import AgentEventModel, AgentModel
 
 # Хватает с запасом на любую разумную базу зачинов и круг знакомых.
 HISTORY_LIMIT = 1000
 ATTEMPT_EVENTS = (EVENT_OPENER_SENT, EVENT_OPENER_FAILED)
-STATE_EVENTS = (EVENT_RESTRICTED, EVENT_RECOVERY_STARTED, EVENT_RECOVERED)
 
 
 async def load_warmup_state(session: AsyncSession, agent_id: UUID) -> WarmupState:
-    """Состояние ограничения агента по журналу событий."""
-    rows = await session.execute(
-        select(AgentEventModel.event_type, AgentEventModel.created_at)
-        .where(AgentEventModel.agent_id == agent_id, AgentEventModel.event_type.in_(STATE_EVENTS))
-        .order_by(AgentEventModel.created_at.asc())
-    )
-    return state_from_events((event_type, created_at) for event_type, created_at in rows)
+    """Состояние ограничения агента из колонок ``agents``."""
+    row = (
+        await session.execute(
+            select(AgentModel.warmup_restricted_at, AgentModel.warmup_recovery).where(
+                AgentModel.id == agent_id
+            )
+        )
+    ).first()
+    if row is None:
+        return WarmupState()
+    return WarmupState(restricted_at=row.warmup_restricted_at, recovery=row.warmup_recovery)
 
 
 class DatabaseWarmupHistory:
@@ -107,7 +111,7 @@ class DatabaseWarmupHistory:
 
 
 class DatabaseWarmupStateStore:
-    """Состояние ограничения: чтение и запись событий-переходов."""
+    """Переходы состояния: колонки ``agents`` и событие для ленты в одной транзакции."""
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
@@ -119,17 +123,54 @@ class DatabaseWarmupStateStore:
     async def record(
         self, agent_id: UUID, event_type: str, payload: dict[str, Any] | None = None
     ) -> None:
-        """Записать переход состояния. В отличие от ленты активности ошибка не глотается."""
+        """Применить переход. В отличие от ленты активности ошибка не глотается.
+
+        Переход идемпотентен: повтор того же перехода (гонка двух отправок, повторное
+        нажатие) не меняет колонки и не пишет второе событие.
+        """
         async with self._session_factory() as session:
-            now = datetime.now().astimezone()
-            session.add(
-                AgentEventModel(
-                    agent_id=agent_id,
-                    event_type=event_type,
-                    status="succeeded",
-                    payload=payload or {},
-                    started_at=now,
-                    completed_at=now,
+            changed = await self._apply(session, agent_id, event_type)
+            if changed:
+                now = datetime.now().astimezone()
+                session.add(
+                    AgentEventModel(
+                        agent_id=agent_id,
+                        event_type=event_type,
+                        status="succeeded",
+                        payload=payload or {},
+                        started_at=now,
+                        completed_at=now,
+                    )
                 )
-            )
             await session.commit()
+
+    @staticmethod
+    async def _apply(session: AsyncSession, agent_id: UUID, event_type: str) -> bool:
+        now = datetime.now().astimezone()
+        target = AgentModel.id == agent_id
+        if event_type == EVENT_RESTRICTED:
+            statement = (
+                update(AgentModel)
+                .where(target, AgentModel.warmup_restricted_at.is_(None))
+                .values(warmup_restricted_at=now, warmup_recovery=False)
+            )
+        elif event_type == EVENT_RECOVERY_STARTED:
+            statement = (
+                update(AgentModel)
+                .where(
+                    target,
+                    AgentModel.warmup_restricted_at.is_not(None),
+                    AgentModel.warmup_recovery.is_(False),
+                )
+                .values(warmup_recovery=True)
+            )
+        elif event_type == EVENT_RECOVERED:
+            statement = (
+                update(AgentModel)
+                .where(target, AgentModel.warmup_restricted_at.is_not(None))
+                .values(warmup_restricted_at=None, warmup_recovery=False)
+            )
+        else:
+            raise ValueError(f"Неизвестный переход состояния прогрева: {event_type}")
+        result = await session.execute(statement)
+        return cast("CursorResult[Any]", result).rowcount > 0

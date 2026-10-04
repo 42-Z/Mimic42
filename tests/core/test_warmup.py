@@ -11,15 +11,11 @@ from mimic42.core.warmup import (
     DEFAULT_TIMEZONE,
     DIALOG_IDLE_TIMEOUT,
     DIALOG_LENGTH_RANGE,
-    EVENT_RECOVERED,
-    EVENT_RECOVERY_STARTED,
-    EVENT_RESTRICTED,
     MAX_OPENERS_PER_DAY,
     MIN_OPENER_INTERVAL,
     MIN_SLOT_GAP,
     DialogTracker,
     WarmupSettings,
-    WarmupState,
     classify_spambot_reply,
     daily_slots,
     dialog_length,
@@ -30,7 +26,6 @@ from mimic42.core.warmup import (
     pick_partner,
     reply_delay,
     sender_may_open,
-    state_from_events,
 )
 from mimic42.core.warmup_messages import OPENERS
 
@@ -220,30 +215,6 @@ def test_parse_warmup_reads_only_what_the_user_owns() -> None:
 def test_parse_warmup_falls_back_for_bad_values() -> None:
     parsed = parse_warmup({"enabled": True, "timezone": "Mars/Base"})
     assert parsed.timezone == DEFAULT_TIMEZONE
-
-
-def test_state_follows_the_last_events_in_the_journal() -> None:
-    t1, t2, t3, t4 = (NOW + timedelta(hours=h) for h in range(4))
-    assert state_from_events([]) == WarmupState()
-    assert state_from_events([(EVENT_RESTRICTED, t1)]) == WarmupState(restricted_at=t1)
-    assert state_from_events([(EVENT_RESTRICTED, t1), (EVENT_RECOVERY_STARTED, t2)]) == WarmupState(
-        restricted_at=t1, recovery=True
-    )
-    # Повторное ограничение не сдвигает момент и не сбрасывает восстановление.
-    assert state_from_events(
-        [(EVENT_RESTRICTED, t1), (EVENT_RECOVERY_STARTED, t2), (EVENT_RESTRICTED, t3)]
-    ) == WarmupState(restricted_at=t1, recovery=True)
-    assert (
-        state_from_events(
-            [(EVENT_RESTRICTED, t1), (EVENT_RECOVERY_STARTED, t2), (EVENT_RECOVERED, t3)]
-        )
-        == WarmupState()
-    )
-    # Восстановление без ограничения ничего не значит; после снятия возможно новое ограничение.
-    assert state_from_events([(EVENT_RECOVERY_STARTED, t1)]) == WarmupState()
-    assert state_from_events(
-        [(EVENT_RESTRICTED, t1), (EVENT_RECOVERED, t2), (EVENT_RESTRICTED, t4)]
-    ) == WarmupState(restricted_at=t4)
 
 
 def test_recovery_has_more_and_longer_dialogs_than_ordinary_warmup() -> None:

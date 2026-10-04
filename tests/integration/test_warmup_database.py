@@ -4,6 +4,9 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
+import pytest
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mimic42.core.agent_runtime import AgentRuntimeState
@@ -56,7 +59,23 @@ async def _add_event(
         await session.commit()
 
 
-async def test_restriction_state_follows_the_journal_and_survives_a_stale_settings_write(
+async def _count_events(
+    db_session_factory: async_sessionmaker[AsyncSession], agent_id: UUID, event_type: str
+) -> int:
+    async with db_session_factory() as session:
+        return int(
+            await session.scalar(
+                select(func.count())
+                .select_from(AgentEventModel)
+                .where(
+                    AgentEventModel.agent_id == agent_id, AgentEventModel.event_type == event_type
+                )
+            )
+            or 0
+        )
+
+
+async def test_restriction_state_lives_in_columns_and_survives_a_stale_settings_write(
     db_session_factory: async_sessionmaker[AsyncSession],
     clean_slot: Slot,
 ) -> None:
@@ -72,7 +91,7 @@ async def test_restriction_state_follows_the_journal_and_survives_a_stale_settin
     await store.record(agent_id, EVENT_RECOVERY_STARTED)
     assert (await store.load(agent_id)).recovery is True
 
-    # Форма настроек перезаписывает agents.settings целиком, состояние в журнале не меняется.
+    # Форма настроек перезаписывает agents.settings целиком, колонки состояния не трогает.
     async with db_session_factory() as session:
         agent = await session.get(AgentModel, agent_id)
         assert agent is not None
@@ -84,6 +103,46 @@ async def test_restriction_state_follows_the_journal_and_survives_a_stale_settin
 
     await store.record(agent_id, EVENT_RECOVERED)
     assert await store.load(agent_id) == WarmupState()
+
+
+async def test_transitions_are_idempotent_and_respect_the_order(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    agent_id = await _create_agent(db_session_factory, clean_slot.persona("twofa").user_id)
+    store = DatabaseWarmupStateStore(db_session_factory)
+
+    # Восстанавливать и снимать нечего, пока аккаунт не ограничен.
+    await store.record(agent_id, EVENT_RECOVERY_STARTED)
+    await store.record(agent_id, EVENT_RECOVERED)
+    assert await store.load(agent_id) == WarmupState()
+
+    await store.record(agent_id, EVENT_RESTRICTED)
+    first = await store.load(agent_id)
+    await store.record(agent_id, EVENT_RESTRICTED)
+    await store.record(agent_id, EVENT_RECOVERY_STARTED)
+    await store.record(agent_id, EVENT_RECOVERY_STARTED)
+
+    state = await store.load(agent_id)
+    assert state.restricted_at == first.restricted_at and state.recovery is True
+    # Повтор того же перехода не пишет второго события в ленту.
+    assert await _count_events(db_session_factory, agent_id, EVENT_RESTRICTED) == 1
+    assert await _count_events(db_session_factory, agent_id, EVENT_RECOVERY_STARTED) == 1
+    assert await _count_events(db_session_factory, agent_id, EVENT_RECOVERED) == 0
+
+
+async def test_database_refuses_recovery_without_restriction(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    agent_id = await _create_agent(db_session_factory, clean_slot.persona("twofa").user_id)
+
+    async with db_session_factory() as session:
+        agent = await session.get(AgentModel, agent_id)
+        assert agent is not None
+        agent.warmup_recovery = True
+        with pytest.raises(IntegrityError):
+            await session.commit()
 
 
 async def test_history_counts_attempts_of_the_sender_and_of_the_recipient(

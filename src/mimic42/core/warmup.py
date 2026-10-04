@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import random
 from collections import deque
-from collections.abc import Collection, Iterable, Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any, Final, cast
@@ -58,8 +58,7 @@ class WarmupSettings:
     """Настройка прогрева (``agents.settings["warmup"]``): только то, что меняет пользователь.
 
     Прогрев выключен, пока пользователь сам его не включит. Ограничение Telegram и
-    режим восстановления сюда не входят: их ведёт сервер (см. ``WarmupState``), а
-    форма настроек перезаписывает ``settings`` целиком и могла бы их затереть.
+    режим восстановления сюда не входят: их ведёт сервер (см. ``WarmupState``).
     """
 
     enabled: bool = False
@@ -68,29 +67,14 @@ class WarmupSettings:
 
 @dataclass(frozen=True)
 class WarmupState:
-    """Ограничение аккаунта: когда Telegram запретил писать первым и выбрано ли восстановление."""
+    """Ограничение аккаунта: когда Telegram запретил писать первым и выбрано ли восстановление.
+
+    Хранится в колонках ``agents.warmup_restricted_at`` и ``agents.warmup_recovery``, а не в
+    ``settings``: форма настроек перезаписывает ``settings`` целиком.
+    """
 
     restricted_at: datetime | None = None
     recovery: bool = False
-
-
-def state_from_events(events: Iterable[tuple[str, datetime]]) -> WarmupState:
-    """Состояние по журналу событий, от старых к новым.
-
-    Журнал только дописывается, поэтому устаревший снимок формы или гонка двух
-    записей не могут откатить состояние: оно всегда равно последнему событию.
-    """
-    state = WarmupState()
-    for event_type, created_at in events:
-        if event_type == EVENT_RESTRICTED:
-            if state.restricted_at is None:
-                state = WarmupState(restricted_at=created_at)
-        elif event_type == EVENT_RECOVERY_STARTED:
-            if state.restricted_at is not None:
-                state = WarmupState(restricted_at=state.restricted_at, recovery=True)
-        elif event_type == EVENT_RECOVERED:
-            state = WarmupState()
-    return state
 
 
 def parse_warmup(raw: object) -> WarmupSettings:
