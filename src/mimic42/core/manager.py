@@ -23,6 +23,7 @@ from mimic42.core.media import MediaUploader
 from mimic42.core.media_download import MediaRefCache
 from mimic42.core.memory import RuntimeMemoryService
 from mimic42.core.send_window import SendWindowTracker
+from mimic42.core.warmup import WarmupState
 from mimic42.core.warmup_service import (
     PairPolicy,
     WarmupHistory,
@@ -302,6 +303,20 @@ class AgentManager:
         trigger: AgentTrigger,
     ) -> AgentTriggerResult:
         return await (await self.get_agent(agent_id)).trigger_message(trigger)
+
+    async def get_warmup_state(self, agent_id: UUID) -> WarmupState:
+        """Ограничение аккаунта и режим восстановления: то, по чему агент работает сейчас."""
+        runtime = await self.get_agent(agent_id)
+        return WarmupState(
+            restricted_at=runtime.warmup_restricted_at, recovery=runtime.warmup_recovery
+        )
+
+    async def start_warmup_recovery(self, agent_id: UUID) -> bool:
+        """Пользователь выбрал восстановление. False — агент не ограничен."""
+        await self.get_agent(agent_id)
+        if self.warmup is None:
+            return False
+        return await self.warmup.start_recovery(agent_id)
 
     async def shutdown(self) -> None:
         if self.warmup is not None:

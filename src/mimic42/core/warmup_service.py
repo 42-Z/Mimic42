@@ -7,10 +7,13 @@
 Режим восстановления. Аккаунт, которому Telegram запретил писать незнакомым
 (PeerFloodError), сам диалогов не начинает: до ответа пользователя («восстановить»
 или «удалить») он ничего не делает. Если выбрано восстановление, другие агенты
-сами пишут ему чаще и дольше обычного, а он отвечает — Telegram прямо разрешает
+сами пишут ему чаще и дольше обычного, а он отвечает: Telegram прямо разрешает
 ограниченному аккаунту отвечать тем, кто написал первым. Раз в несколько часов
 @SpamBot спрашивают, снято ли ограничение. Насколько это ускоряет снятие, неизвестно:
 Telegram досрочного снятия не обещает.
+
+Состояние ограничения пишется событиями в журнал (см. ``integrations.database_warmup``),
+а не в настройки агента: форма настроек перезаписывает их целиком.
 """
 
 from __future__ import annotations
@@ -20,28 +23,34 @@ import logging
 import random
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime, time
-from typing import Protocol
+from typing import Any, Literal, Protocol
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from mimic42.core.agent_runtime import AgentRuntimeState, MimicAgentRuntime, OpenerResult
 from mimic42.core.warmup import (
     EVENT_RECOVERED,
+    EVENT_RECOVERY_STARTED,
+    EVENT_RESTRICTED,
     SPAMBOT_CHECK_INTERVAL,
     DialogTracker,
     daily_slots,
     dialog_length,
     due_slot,
+    merge_attempts,
     pick_opener,
     pick_partner,
     reply_delay,
+    sender_may_open,
 )
 
 logger = logging.getLogger("mimic42.warmup")
 
 TICK_SECONDS = 60.0
+RESERVATION_KEEP_SECONDS = 2 * 24 * 3600
 
 PairPolicy = Callable[[MimicAgentRuntime, MimicAgentRuntime], bool]
+AttemptKind = Literal["sent", "received"]
 
 
 def allow_everyone(_a: MimicAgentRuntime, _b: MimicAgentRuntime) -> bool:
@@ -62,12 +71,12 @@ def pair_policy_for(scope: str) -> PairPolicy:
 class WarmupHistory(Protocol):
     """Что агент уже делал для прогрева: хранится вне процесса, переживает рестарт."""
 
-    async def attempts_since(self, agent_id: UUID, since: datetime) -> int:
-        """Сколько диалогов агент начал с ``since`` (включая неудавшиеся)."""
+    async def attempt_times_since(self, agent_id: UUID, since: datetime) -> list[datetime]:
+        """Когда агент начинал диалоги с ``since`` (включая неудавшиеся)."""
         ...
 
-    async def received_since(self, agent_id: UUID, since: datetime) -> int:
-        """Сколько диалогов другие агенты начали с этим агентом с ``since``."""
+    async def received_times_since(self, agent_id: UUID, since: datetime) -> list[datetime]:
+        """Когда другие агенты начинали диалоги с этим агентом с ``since``."""
         ...
 
     async def used_openers(self, agent_id: UUID) -> list[str]:
@@ -80,10 +89,10 @@ class WarmupHistory(Protocol):
 
 
 class WarmupStateStore(Protocol):
-    """Сохранение состояния ограничения в настройках агента."""
+    """Запись переходов состояния ограничения (ошибка записи не глотается)."""
 
-    async def save_state(
-        self, agent_id: UUID, *, restricted_at: datetime | None, recovery: bool
+    async def record(
+        self, agent_id: UUID, event_type: str, payload: dict[str, Any] | None = None
     ) -> None: ...
 
 
@@ -109,6 +118,9 @@ class WarmupService:
         self._rng = rng or random.Random()
         self._delay = delay or (lambda: reply_delay(self._rng))
         self._last_spambot_check: dict[UUID, datetime] = {}
+        # Попытка резервируется до отправки: запись в журнал приходит позже и может
+        # не дойти, а до этого та же попытка не должна выглядеть «ещё не начатой».
+        self._reserved: dict[tuple[AttemptKind, UUID], list[datetime]] = {}
         self._task: asyncio.Task[None] | None = None
 
     def start(self) -> None:
@@ -138,19 +150,45 @@ class WarmupService:
     # ── WarmupGate для рантаймов ──────────────────────────────────────────────
 
     def claim_reply(self, receiver_id: UUID, sender_telegram_id: int) -> bool | None:
-        sender = self._agent_by_telegram_id(sender_telegram_id)
-        if sender is None:
+        """None — обычная переписка, False — диалог окончен, True — ответить (и засчитать)."""
+        pair = self._warmup_pair(receiver_id, sender_telegram_id)
+        if pair is None:
             return None
-        receiver = self._agent_by_id(receiver_id)
-        # Прогрев выключен хоть у одного: это обычная переписка, и ограничивать её нельзя.
-        if receiver is None or not (
-            receiver.config.warmup.enabled and sender.config.warmup.enabled
-        ):
-            return None
+        sender = pair[1]
         return self._tracker.claim_reply(receiver_id, sender.config.agent_id, now=self._now())
+
+    def confirm_reply(self, receiver_id: UUID, sender_telegram_id: int) -> bool:
+        """Не отменён ли разрешённый ответ, пока агент «был занят»: диалог идёт, оба в прогреве.
+
+        Квоту не расходует (её уже занял ``claim_reply``). Отменённый ответ отбрасывается,
+        а не превращается в обычную переписку без ограничителя длины.
+        """
+        pair = self._warmup_pair(receiver_id, sender_telegram_id)
+        if pair is None:
+            return False
+        return self._tracker.is_active(receiver_id, pair[1].config.agent_id, now=self._now())
 
     def reply_delay_seconds(self) -> float:
         return self._delay()
+
+    async def report_peer_flood(self, agent_id: UUID) -> None:
+        """Telegram ответил PeerFloodError на любую отправку агента, не только на зачин."""
+        runtime = self._agent_by_id(agent_id)
+        if runtime is not None:
+            await self._mark_restricted(runtime)
+
+    def _warmup_pair(
+        self, receiver_id: UUID, sender_telegram_id: int
+    ) -> tuple[MimicAgentRuntime, MimicAgentRuntime] | None:
+        """(получатель, отправитель), если это прогрев двух мимиков; иначе обычная переписка."""
+        sender = self._agent_by_telegram_id(sender_telegram_id)
+        receiver = self._agent_by_id(receiver_id)
+        if sender is None or receiver is None:
+            return None
+        # Прогрев выключен хоть у одного: это обычная переписка, и ограничивать её нельзя.
+        if not (receiver.config.warmup.enabled and sender.config.warmup.enabled):
+            return None
+        return receiver, sender
 
     def _agent_by_id(self, agent_id: UUID) -> MimicAgentRuntime | None:
         for runtime in self._runtimes():
@@ -169,12 +207,12 @@ class WarmupService:
     async def tick(self) -> None:
         online = [r for r in self._runtimes() if self._is_reachable(r)]
         for runtime in online:
-            if not runtime.config.warmup.enabled:
-                continue
             try:
                 if runtime.warmup_restricted_at is not None:
+                    # Пользователь выбрал судьбу ограниченного аккаунта сам, поэтому
+                    # режим восстановления не зависит от переключателя обычного прогрева.
                     await self._tend_restricted(runtime, online)
-                else:
+                elif runtime.config.warmup.enabled:
                     await self._maybe_start_dialog(runtime, online)
             except asyncio.CancelledError:
                 raise
@@ -190,21 +228,46 @@ class WarmupService:
             and bool(runtime.telegram_username)
         )
 
-    def _day_bounds(self, runtime: MimicAgentRuntime) -> tuple[datetime, datetime]:
+    def _day_start(self, runtime: MimicAgentRuntime) -> tuple[datetime, datetime, ZoneInfo]:
         now = self._now()
         zone = ZoneInfo(runtime.config.warmup.timezone)
         today = now.astimezone(zone).date()
-        return now, datetime.combine(today, time(0), tzinfo=zone).astimezone(UTC)
+        return now, datetime.combine(today, time(0), tzinfo=zone).astimezone(UTC), zone
+
+    async def _attempt_times(
+        self, kind: AttemptKind, agent_id: UUID, since: datetime
+    ) -> list[datetime]:
+        """Попытки из журнала плюс резервы текущего процесса."""
+        if kind == "sent":
+            stored = await self._history.attempt_times_since(agent_id, since)
+        else:
+            stored = await self._history.received_times_since(agent_id, since)
+        reserved = [m for m in self._reserved.get((kind, agent_id), []) if m >= since]
+        return merge_attempts(stored, reserved)
+
+    def _reserve(self, kind: AttemptKind, agent_id: UUID, moment: datetime) -> None:
+        kept = [
+            m
+            for m in self._reserved.get((kind, agent_id), [])
+            if (moment - m).total_seconds() < RESERVATION_KEEP_SECONDS
+        ]
+        kept.append(moment)
+        self._reserved[(kind, agent_id)] = kept
+
+    async def _sender_may_open(self, runtime: MimicAgentRuntime) -> bool:
+        """Бюджет исходящих зачинов отправителя: один на обычный прогрев и на помощь другим."""
+        now, day_start, _ = self._day_start(runtime)
+        attempts = await self._attempt_times("sent", runtime.config.agent_id, day_start)
+        return sender_may_open(attempts, now=now)
 
     async def _maybe_start_dialog(
         self, runtime: MimicAgentRuntime, participants: list[MimicAgentRuntime]
     ) -> None:
         agent_id = runtime.config.agent_id
-        now, day_start = self._day_bounds(runtime)
-        today = day_start.astimezone(ZoneInfo(runtime.config.warmup.timezone)).date()
-        slots = daily_slots(agent_id, today, runtime.config.warmup.timezone)
-        done = await self._history.attempts_since(agent_id, day_start)
-        if due_slot(slots, now=now, done_today=done) is None:
+        now, day_start, zone = self._day_start(runtime)
+        slots = daily_slots(agent_id, day_start.astimezone(zone).date(), zone.key)
+        attempts = await self._attempt_times("sent", agent_id, day_start)
+        if due_slot(slots, now=now, attempts=attempts) is None:
             return
         await self.start_dialog(runtime, participants)
 
@@ -218,10 +281,13 @@ class WarmupService:
     ) -> bool:
         """Начать диалог сейчас, не глядя на расписание. True — зачин ушёл.
 
-        ``target`` задан в режиме восстановления: собеседник известен заранее.
+        ``target`` задан в режиме восстановления: собеседник известен заранее. Бюджет
+        отправителя проверяется всегда: исчерпанный бюджет ничего не расходует.
         """
         agent_id = runtime.config.agent_id
         now = self._now()
+        if not await self._sender_may_open(runtime):
+            return False
         if target is None:
             candidates = [
                 other
@@ -248,8 +314,11 @@ class WarmupService:
 
         text = pick_opener(await self._history.used_openers(agent_id), self._rng)
         length = dialog_length(self._rng, recovery=recovery)
-        # Диалог открывается до отправки: ответ может прийти раньше, чем отправка вернётся.
+        # Диалог и попытка резервируются до отправки: ответ может прийти раньше, чем
+        # отправка вернётся, а запись в журнал может не дойти (отмена, сбой базы).
         self._tracker.start(agent_id, partner_id, length=length, now=now)
+        self._reserve("sent", agent_id, now)
+        self._reserve("received", partner_id, now)
         result = await runtime.send_warmup_opener(
             username=username,
             user_id=user_id,
@@ -266,25 +335,33 @@ class WarmupService:
 
     # ── Ограниченные аккаунты ─────────────────────────────────────────────────
 
-    async def _mark_restricted(self, runtime: MimicAgentRuntime) -> None:
-        """Аккаунт ограничен: сам диалогов не начинает, пока пользователь не выберет."""
-        runtime.warmup_restricted_at = self._now()
-        runtime.warmup_recovery = False
-        await self._persist(runtime)
-        # Сразу проверим, а не через шесть часов: статус и дата в ответе бота уточняют картину.
-        self._last_spambot_check.pop(runtime.config.agent_id, None)
-
-    async def _persist(self, runtime: MimicAgentRuntime) -> None:
+    async def _record_transition(self, runtime: MimicAgentRuntime, event_type: str) -> None:
         if self._state_store is None:
             return
         try:
-            await self._state_store.save_state(
-                runtime.config.agent_id,
-                restricted_at=runtime.warmup_restricted_at,
-                recovery=runtime.warmup_recovery,
-            )
+            await self._state_store.record(runtime.config.agent_id, event_type)
         except Exception:
-            logger.exception("Failed to save warmup state of %s", runtime.config.agent_id)
+            logger.exception("Failed to record %s for %s", event_type, runtime.config.agent_id)
+
+    async def _mark_restricted(self, runtime: MimicAgentRuntime) -> None:
+        """Аккаунт ограничен: сам диалогов не начинает, пока пользователь не выберет."""
+        if runtime.warmup_restricted_at is not None:
+            return
+        runtime.warmup_restricted_at = self._now()
+        runtime.warmup_recovery = False
+        await self._record_transition(runtime, EVENT_RESTRICTED)
+        # Сразу проверим, а не через шесть часов: статус и дата в ответе бота уточняют картину.
+        self._last_spambot_check.pop(runtime.config.agent_id, None)
+
+    async def start_recovery(self, agent_id: UUID) -> bool:
+        """Пользователь выбрал восстановление. False — агент не ограничен или не найден."""
+        runtime = self._agent_by_id(agent_id)
+        if runtime is None or runtime.warmup_restricted_at is None:
+            return False
+        if not runtime.warmup_recovery:
+            runtime.warmup_recovery = True
+            await self._record_transition(runtime, EVENT_RECOVERY_STARTED)
+        return True
 
     async def _tend_restricted(
         self, runtime: MimicAgentRuntime, participants: list[MimicAgentRuntime]
@@ -307,8 +384,7 @@ class WarmupService:
             return False
         runtime.warmup_restricted_at = None
         runtime.warmup_recovery = False
-        await self._persist(runtime)
-        await runtime.note_warmup_event(EVENT_RECOVERED)
+        await self._record_transition(runtime, EVENT_RECOVERED)
         logger.info("Warmup: restriction lifted for agent %s", agent_id)
         return True
 
@@ -317,11 +393,10 @@ class WarmupService:
     ) -> None:
         """Восстановление: подходящий агент пишет ограниченному по его усиленному расписанию."""
         agent_id = runtime.config.agent_id
-        now, day_start = self._day_bounds(runtime)
-        zone = ZoneInfo(runtime.config.warmup.timezone)
+        now, day_start, zone = self._day_start(runtime)
         slots = daily_slots(agent_id, day_start.astimezone(zone).date(), zone.key, recovery=True)
-        done = await self._history.received_since(agent_id, day_start)
-        if due_slot(slots, now=now, done_today=done) is None:
+        received = await self._attempt_times("received", agent_id, day_start)
+        if due_slot(slots, now=now, attempts=received) is None:
             return
         helpers = [
             other
@@ -331,6 +406,7 @@ class WarmupService:
             and other.warmup_restricted_at is None
             and self._pair_policy(other, runtime)
             and not self._tracker.is_active(agent_id, other.config.agent_id, now=now)
+            and await self._sender_may_open(other)
         ]
         if not helpers:
             return

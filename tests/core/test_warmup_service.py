@@ -12,6 +12,9 @@ import pytest
 from mimic42.core.agent_runtime import AgentRuntimeState, MimicAgentRuntime, OpenerResult
 from mimic42.core.warmup import (
     EVENT_RECOVERED,
+    EVENT_RECOVERY_STARTED,
+    EVENT_RESTRICTED,
+    MAX_OPENERS_PER_DAY,
     SPAMBOT_CHECK_INTERVAL,
     DialogTracker,
     WarmupSettings,
@@ -55,7 +58,6 @@ class StubRuntime:
         self.warmup_recovery = recovery
         self.spambot = spambot
         self.spambot_checks = 0
-        self.events: list[str] = []
 
     async def send_warmup_opener(self, **kwargs: Any) -> OpenerResult:
         self.openers.append(kwargs)
@@ -65,22 +67,19 @@ class StubRuntime:
         self.spambot_checks += 1
         return self.spambot
 
-    async def note_warmup_event(self, event_type: str, **_: Any) -> None:
-        self.events.append(event_type)
-
 
 class MemoryHistory:
     def __init__(self) -> None:
-        self.attempts = 0
-        self.received = 0
+        self.attempts: list[datetime] = []
+        self.received: list[datetime] = []
         self.openers: list[str] = []
         self.partners: list[UUID] = []
 
-    async def attempts_since(self, agent_id: UUID, since: datetime) -> int:
-        return self.attempts
+    async def attempt_times_since(self, agent_id: UUID, since: datetime) -> list[datetime]:
+        return [t for t in self.attempts if t >= since]
 
-    async def received_since(self, agent_id: UUID, since: datetime) -> int:
-        return self.received
+    async def received_times_since(self, agent_id: UUID, since: datetime) -> list[datetime]:
+        return [t for t in self.received if t >= since]
 
     async def used_openers(self, agent_id: UUID) -> list[str]:
         return self.openers
@@ -91,12 +90,12 @@ class MemoryHistory:
 
 class MemoryStateStore:
     def __init__(self) -> None:
-        self.saved: list[tuple[UUID, datetime | None, bool]] = []
+        self.events: list[tuple[UUID, str]] = []
 
-    async def save_state(
-        self, agent_id: UUID, *, restricted_at: datetime | None, recovery: bool
+    async def record(
+        self, agent_id: UUID, event_type: str, payload: dict[str, Any] | None = None
     ) -> None:
-        self.saved.append((agent_id, restricted_at, recovery))
+        self.events.append((agent_id, event_type))
 
 
 def make_service(
@@ -160,7 +159,7 @@ async def test_nothing_happens_before_slot_or_after_quota_is_used() -> None:
     # У b слот мог выпасть на то же время: второй проход проверяем с чистого листа.
     a.openers.clear()
     b.openers.clear()
-    history.attempts = 3
+    history.attempts = [due_moment(a) - timedelta(minutes=1)] * 3
     service, _ = make_service([a, b], history, due_moment(a))
     await service.tick()
     assert a.openers == [] and b.openers == []
@@ -280,7 +279,7 @@ async def test_peer_flood_marks_agent_restricted_and_saves_it() -> None:
 
     assert a.warmup_restricted_at is not None
     assert a.warmup_recovery is False
-    assert any(saved[0] == a.config.agent_id and saved[1] is not None for saved in store.saved)
+    assert (a.config.agent_id, EVENT_RESTRICTED) in store.events
     assert not tracker.is_active(a.config.agent_id, b.config.agent_id, now=due_moment(a))
 
 
@@ -329,7 +328,7 @@ async def test_recovery_ignores_restricted_helpers_and_used_quota() -> None:
 
     helper = StubRuntime(user_id=3)
     history = MemoryHistory()
-    history.received = 99
+    history.received = [due_moment(limited, recovery=True) - timedelta(minutes=1)] * 99
     service, _ = make_service([limited, helper], history, due_moment(limited, recovery=True))
     await service.tick()
     assert [o for o in helper.openers if o["partner_agent_id"] == limited.config.agent_id] == []
@@ -345,8 +344,7 @@ async def test_spambot_all_clear_lifts_restriction_and_resumes_warmup() -> None:
 
     assert limited.warmup_restricted_at is None
     assert limited.warmup_recovery is False
-    assert limited.events == [EVENT_RECOVERED]
-    assert store.saved[-1] == (limited.config.agent_id, None, False)
+    assert store.events[-1] == (limited.config.agent_id, EVENT_RECOVERED)
 
 
 @pytest.mark.asyncio
@@ -378,3 +376,172 @@ async def test_messages_between_mimics_are_left_alone_when_warmup_is_off() -> No
     assert service.claim_reply(b.config.agent_id, 1) is False
     tracker.start(a.config.agent_id, b.config.agent_id, length=4, now=due_moment(a))
     assert service.claim_reply(b.config.agent_id, 1) is True
+
+
+def _agent_with_slots(count: int, *, recovery: bool = False) -> StubRuntime:
+    while True:
+        runtime = StubRuntime(user_id=1)
+        if len(daily_slots(runtime.config.agent_id, _today(), recovery=recovery)) >= count:
+            return runtime
+
+
+@pytest.mark.asyncio
+async def test_late_slot_is_used_once_even_if_the_early_one_was_skipped() -> None:
+    a = _agent_with_slots(2)
+    b = StubRuntime(user_id=2)
+    slots = daily_slots(a.config.agent_id, _today())
+    now = slots[1] + timedelta(minutes=5)
+    history = MemoryHistory()
+    service, _ = make_service([a, b], history, now)
+
+    await service.tick()
+    assert len(a.openers) == 1
+
+    # Журнал ещё ничего не знает (запись не дошла), но резерв процесса помнит попытку.
+    service._now = lambda: now + timedelta(minutes=1)  # noqa: SLF001
+    await service.tick()
+    assert len(a.openers) == 1
+
+    # И когда запись дошла, слот тоже считается занятым.
+    history.attempts = [now + timedelta(seconds=30)]
+    service._now = lambda: now + timedelta(minutes=2)  # noqa: SLF001
+    await service.tick()
+    assert len(a.openers) == 1
+
+
+@pytest.mark.asyncio
+async def test_late_recovery_slot_is_used_once_even_if_early_ones_were_skipped() -> None:
+    limited = _agent_with_slots(3, recovery=True)
+    limited.warmup_restricted_at = datetime(2026, 10, 1, tzinfo=UTC)
+    limited.warmup_recovery = True
+    helper = StubRuntime(user_id=2)
+    slots = daily_slots(limited.config.agent_id, _today(), recovery=True)
+    now = slots[2] + timedelta(minutes=5)
+    service, _ = make_service([limited, helper], MemoryHistory(), now)
+
+    await service.tick()
+    assert len(helper.openers) == 1
+
+    # Отправитель отдыхал бы и без этого, поэтому интервал берём заведомо большим.
+    service._now = lambda: now + timedelta(minutes=45)  # noqa: SLF001
+    await service.tick()
+    assert len(helper.openers) == 1
+
+
+@pytest.mark.asyncio
+async def test_helper_without_budget_is_not_used_and_does_not_burn_the_recipients_slot() -> None:
+    limited = StubRuntime(user_id=1, restricted=True, recovery=True)
+    helper = StubRuntime(user_id=2)
+    now = due_moment(limited, recovery=True)
+    history = MemoryHistory()
+    history.attempts = [now - timedelta(minutes=10)]
+    service, _ = make_service([limited, helper], history, now)
+
+    await service.tick()
+    assert helper.openers == []
+    assert limited.warmup_restricted_at is not None
+
+    # Пауза прошла, слот получателя на месте: помощник пишет.
+    history.attempts = [now - timedelta(hours=1)]
+    service, _ = make_service([limited, helper], history, now)
+    await service.tick()
+    assert len(helper.openers) == 1
+
+
+@pytest.mark.asyncio
+async def test_helper_that_spent_the_daily_budget_stays_silent() -> None:
+    limited = StubRuntime(user_id=1, restricted=True, recovery=True)
+    helper = StubRuntime(user_id=2)
+    now = due_moment(limited, recovery=True)
+    history = MemoryHistory()
+    history.attempts = [now - timedelta(hours=1 + i) for i in range(MAX_OPENERS_PER_DAY)]
+    service, _ = make_service([limited, helper], history, now)
+
+    await service.tick()
+
+    assert helper.openers == []
+
+
+@pytest.mark.asyncio
+async def test_one_helper_does_not_write_to_every_limited_account_in_one_tick() -> None:
+    first = StubRuntime(user_id=1, restricted=True, recovery=True)
+    second = StubRuntime(user_id=2, restricted=True, recovery=True)
+    helper = StubRuntime(user_id=3)
+    now = max(due_moment(first, recovery=True), due_moment(second, recovery=True))
+    service, _ = make_service([first, second, helper], MemoryHistory(), now)
+
+    await service.tick()
+
+    assert len(helper.openers) <= 1
+
+
+@pytest.mark.asyncio
+async def test_peer_flood_from_any_send_restricts_the_agent_once() -> None:
+    a = StubRuntime(user_id=1)
+    store = MemoryStateStore()
+    service, _ = make_service([a], MemoryHistory(), due_moment(a), store=store)
+
+    await service.report_peer_flood(a.config.agent_id)
+    await service.report_peer_flood(a.config.agent_id)
+    await service.report_peer_flood(uuid4())
+
+    assert a.warmup_restricted_at is not None
+    assert store.events == [(a.config.agent_id, EVENT_RESTRICTED)]
+
+
+@pytest.mark.asyncio
+async def test_recovery_can_only_be_started_for_a_restricted_agent_and_only_once() -> None:
+    healthy = StubRuntime(user_id=1)
+    limited = StubRuntime(user_id=2, restricted=True)
+    store = MemoryStateStore()
+    service, _ = make_service([healthy, limited], MemoryHistory(), due_moment(healthy), store=store)
+
+    assert await service.start_recovery(healthy.config.agent_id) is False
+    assert await service.start_recovery(uuid4()) is False
+    assert await service.start_recovery(limited.config.agent_id) is True
+    assert await service.start_recovery(limited.config.agent_id) is True
+
+    assert limited.warmup_recovery is True
+    assert store.events == [(limited.config.agent_id, EVENT_RECOVERY_STARTED)]
+
+
+@pytest.mark.asyncio
+async def test_recovery_runs_even_if_the_ordinary_warmup_switch_is_off() -> None:
+    limited = StubRuntime(user_id=1, enabled=False, restricted=True, recovery=True)
+    helper = StubRuntime(user_id=2)
+    service, _ = make_service(
+        [limited, helper], MemoryHistory(), due_moment(limited, recovery=True)
+    )
+
+    await service.tick()
+
+    assert [o["partner_agent_id"] for o in helper.openers] == [limited.config.agent_id]
+
+
+@pytest.mark.asyncio
+async def test_delayed_reply_is_confirmed_only_while_the_warmup_dialog_stands() -> None:
+    a, b = StubRuntime(user_id=1), StubRuntime(user_id=2)
+    service, tracker = make_service([a, b], MemoryHistory(), due_moment(a))
+    now = due_moment(a)
+
+    assert service.confirm_reply(b.config.agent_id, 1) is False  # диалога нет
+    tracker.start(a.config.agent_id, b.config.agent_id, length=6, now=now)
+    assert service.claim_reply(b.config.agent_id, 1) is True
+    assert service.confirm_reply(b.config.agent_id, 1) is True
+
+    a.config.warmup = WarmupSettings(enabled=False)  # пока b «был занят», прогрев у a выключили
+    assert service.confirm_reply(b.config.agent_id, 1) is False
+    assert service.confirm_reply(b.config.agent_id, 99999) is False  # не мимик
+
+
+@pytest.mark.asyncio
+async def test_confirming_a_reply_does_not_spend_the_dialog_quota() -> None:
+    a, b = StubRuntime(user_id=1), StubRuntime(user_id=2)
+    service, tracker = make_service([a, b], MemoryHistory(), due_moment(a))
+    tracker.start(a.config.agent_id, b.config.agent_id, length=3, now=due_moment(a))
+
+    assert service.claim_reply(b.config.agent_id, 1) is True
+    for _ in range(5):
+        assert service.confirm_reply(b.config.agent_id, 1) is True
+    assert service.claim_reply(a.config.agent_id, 2) is True
+    assert service.claim_reply(b.config.agent_id, 1) is False

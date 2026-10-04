@@ -41,9 +41,9 @@ from mimic42.core.telegram_attrs import read_optional_attr
 from mimic42.core.warmup import (
     EVENT_OPENER_FAILED,
     EVENT_OPENER_SENT,
-    EVENT_RESTRICTED,
     SPAMBOT_REPLY_WAIT_SECONDS,
     WarmupSettings,
+    WarmupState,
     classify_spambot_reply,
 )
 from mimic42.integrations.tracing import TurnTrace, turn_span
@@ -66,6 +66,10 @@ FIRST_COMMENT_FLOOD_WAIT_LIMIT = 10
 # соединение, которое уже никто не закроет. Менеджер закрывает агентов разом,
 # так что это ожидание укладывается в 10 секунд, которые Docker даёт на остановку.
 CLOSE_GRACE_SECONDS = 5.0
+
+
+class OpenerTargetMismatch(RuntimeError):
+    """@username партнёра теперь принадлежит другому аккаунту: зачин туда не уходит."""
 
 
 class TelegramAuthorizationRequired(RuntimeError):
@@ -134,6 +138,7 @@ class AgentRuntimeConfig(BaseModel):
     name: str = Field(default="AI", min_length=1, max_length=120)
     first_comment: FirstCommentSettings = Field(default_factory=FirstCommentSettings)
     warmup: WarmupSettings = Field(default_factory=WarmupSettings)
+    warmup_state: WarmupState = Field(default_factory=WarmupState)
 
     @property
     def combined_prompt(self) -> str:
@@ -215,8 +220,16 @@ class WarmupGate(Protocol):
         """None — отправитель не мимик, остальное обычный ход; False — диалог исчерпан."""
         ...
 
+    def confirm_reply(self, receiver_id: UUID, sender_telegram_id: int) -> bool:
+        """Не отменён ли разрешённый ответ за время ожидания; квоту не расходует."""
+        ...
+
     def reply_delay_seconds(self) -> float:
         """Сколько секунд выждать, прежде чем отвечать другому мимику."""
+        ...
+
+    async def report_peer_flood(self, agent_id: UUID) -> None:
+        """Telegram ответил PeerFloodError на отправку агента."""
         ...
 
 
@@ -314,13 +327,15 @@ class MimicAgentRuntime:
         self._first_comment_media: dict[str, Any] = {}
         self._activity = ActivityRecorder(session_factory) if session_factory is not None else None
         self._warmup_gate: WarmupGate | None = None
+        if hasattr(telegram_client, "peer_flood_handler"):
+            cast(Any, telegram_client).peer_flood_handler = self._on_peer_flood
         # Кто этот аккаунт в Telegram: по ним прогрев находит собеседников и узнаёт
         # в личке другого мимика.
         self.telegram_user_id: int | None = None
         self.telegram_username: str | None = None
         # Состояние прогрева живёт в рантайме, а сохраняет его WarmupService в настройки агента.
-        self.warmup_restricted_at: datetime | None = config.warmup.restricted_at
-        self.warmup_recovery: bool = config.warmup.recovery
+        self.warmup_restricted_at: datetime | None = config.warmup_state.restricted_at
+        self.warmup_recovery: bool = config.warmup_state.recovery
         # Id @SpamBot: его ответ на проверку не повод для хода агента.
         self._spambot_user_id: int | None = None
 
@@ -440,29 +455,16 @@ class MimicAgentRuntime:
         }
         try:
             async with self._trigger_lock:
-                # По @username сущность разрешается и попадает в кэш сессии; по голому
-                # числовому id Telethon незнакомого пользователя не найдёт.
-                await self._humanized_send(f"@{username}", text)
-                thread_id = await self._upsert_thread(
-                    peer=peer, title=partner_name or None, last_message_at=started_at
-                )
-                await self._memory_service.save_messages(
-                    agent_id=self.config.agent_id,
-                    peer=peer,
-                    input_messages=[],
-                    output_messages=[{"type": "ai", "role": "assistant", "content": text}],
-                    structured_response={"send_any_message": True, "text": text},
-                    peer_name=partner_name,
-                    agent_name=self.config.name,
-                    thread_id=thread_id,
-                )
+                target = await self._resolve_opener_target(username, user_id)
+                await self._humanized_send(target, text)
         except errors.PeerFloodError as e:
-            # Не «ошибка отправки»: аккаунт ограничен, и это отдельное состояние.
+            # Не «ошибка отправки»: аккаунт ограничен. Попытка всё равно записывается
+            # с партнёром, чтобы слот получателя не считался неотработанным.
             logger.warning(
                 "Warmup: account of agent %s is limited by Telegram", self.config.agent_id
             )
             await self._record_event(
-                event_type=EVENT_RESTRICTED,
+                event_type=EVENT_OPENER_FAILED,
                 status="failed",
                 payload={**payload, "error_code": type(e).__name__},
                 error=str(e),
@@ -484,14 +486,65 @@ class MimicAgentRuntime:
                 completed_at=datetime.now(UTC),
             )
             return OpenerResult.FAILED
-        await self._record_event(
-            event_type=EVENT_OPENER_SENT,
-            status="succeeded",
-            payload=payload,
-            started_at=started_at,
-            completed_at=datetime.now(UTC),
+        # Доставлено: попытка фиксируется сразу и под щитом от отмены (остановка сервиса),
+        # до сохранения истории, которое может долго ждать внешнюю память или упасть.
+        await asyncio.shield(
+            self._record_event(
+                event_type=EVENT_OPENER_SENT,
+                status="succeeded",
+                payload=payload,
+                started_at=started_at,
+                completed_at=datetime.now(UTC),
+            )
         )
+        await self._remember_opener(peer=peer, partner_name=partner_name, text=text)
         return OpenerResult.SENT
+
+    async def _resolve_opener_target(self, username: str, user_id: int) -> Any:
+        """Получатель зачина, проверенный по Telegram ID, а не только по @username.
+
+        Партнёр мог сменить имя, и прежнее заняли посторонние: по имени уйдёт им.
+        Telethon разрешает незакэшированное имя через API, поэтому ID сверяется с ожидаемым.
+        """
+        get_input_entity = getattr(self._telegram_client, "get_input_entity", None)
+        if not callable(get_input_entity):
+            return f"@{username}"
+        entity = await get_input_entity(f"@{username}")
+        resolved_id = getattr(entity, "user_id", None)
+        if resolved_id != user_id:
+            raise OpenerTargetMismatch(
+                f"@{username} теперь принадлежит другому аккаунту, зачин не отправлен"
+            )
+        return entity
+
+    async def _remember_opener(self, *, peer: str, partner_name: str, text: str) -> None:
+        """История и память агента о зачине; сбой не отменяет уже доставленное сообщение."""
+        try:
+            thread_id = await self._upsert_thread(
+                peer=peer, title=partner_name or None, last_message_at=datetime.now(UTC)
+            )
+            await self._memory_service.save_messages(
+                agent_id=self.config.agent_id,
+                peer=peer,
+                input_messages=[],
+                output_messages=[{"type": "ai", "role": "assistant", "content": text}],
+                structured_response={"send_any_message": True, "text": text},
+                peer_name=partner_name,
+                agent_name=self.config.name,
+                thread_id=thread_id,
+            )
+        except Exception:
+            logger.warning("Failed to remember warmup opener for %s", peer, exc_info=True)
+
+    async def _on_peer_flood(self) -> None:
+        """Любая отправка агента (ответ, инструмент, комментарий) упёрлась в PeerFloodError."""
+        gate = self._warmup_gate
+        if gate is None:
+            return
+        try:
+            await gate.report_peer_flood(self.config.agent_id)
+        except Exception:
+            logger.warning("Failed to report PeerFloodError", exc_info=True)
 
     async def _remember_spambot_id(self) -> None:
         get_input_entity = getattr(self._telegram_client, "get_input_entity", None)
@@ -505,19 +558,6 @@ class MimicAgentRuntime:
         user_id = getattr(entity, "user_id", None)
         if isinstance(user_id, int):
             self._spambot_user_id = user_id
-
-    async def note_warmup_event(
-        self, event_type: str, *, status: str = "succeeded", payload: dict[str, Any] | None = None
-    ) -> None:
-        """Запись о прогреве в ленту активности (у сервиса своего рекордера нет)."""
-        now = datetime.now(UTC)
-        await self._record_event(
-            event_type=event_type,
-            status=status,
-            payload=payload,
-            started_at=now,
-            completed_at=now,
-        )
 
     async def check_spambot(self) -> bool | None:
         """Спросить @SpamBot, снято ли ограничение: True — свободен, False — ограничен.
@@ -538,7 +578,10 @@ class MimicAgentRuntime:
                 await self._telegram_client.send_message("@SpamBot", "/start")
                 await asyncio.sleep(SPAMBOT_REPLY_WAIT_SECONDS)
                 messages = await get_messages("@SpamBot", limit=1)
-        except Exception:
+        except Exception as exc:
+            if _is_dead_session_error(exc):
+                await self._revoke_dead_session()
+                await self._disconnect_revoked_client()
             logger.warning("SpamBot check failed for agent %s", self.config.agent_id, exc_info=True)
             return None
         latest = messages[0] if messages else None
@@ -1839,9 +1882,16 @@ class MimicAgentRuntime:
         if warmup_verdict is False:
             logger.info("Прогрев: диалог с мимиком %s окончен, входящее без ответа", peer)
             return
-        if warmup_verdict is True and self._warmup_gate is not None:
+        gate = self._warmup_gate
+        sender_id = getattr(event, "sender_id", None)
+        if warmup_verdict is True and gate is not None and isinstance(sender_id, int):
             # Вне замков: пока «человек занят», другие чаты отвечают как обычно.
-            await asyncio.sleep(self._warmup_gate.reply_delay_seconds())
+            await asyncio.sleep(gate.reply_delay_seconds())
+            # За это время прогрев могли выключить или диалог оборвать: такой ответ
+            # отбрасывается, а не превращается в обычную переписку без лимита длины.
+            if not gate.confirm_reply(self.config.agent_id, sender_id):
+                logger.info("Прогрев: ответ мимику %s отменён за время ожидания", peer)
+                return
         async with self._dispatch_lock:
             # Пока ждали очереди за чужим ходом, агента могли остановить: клиент
             # отключён, и разбор сообщения только насыпал бы ошибок в ленту.

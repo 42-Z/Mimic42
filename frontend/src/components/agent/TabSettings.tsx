@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { useAgentDetails, useUpdateAgentSettings } from '@/hooks/useAgent';
+import { useSyncedDraft } from '@/hooks/useSyncedDraft';
 import { useModelReasoning } from '@/hooks/useModelReasoning';
 import { useToast } from '@/components/ui/toast';
 import { Button } from '@/components/ui/button';
@@ -48,22 +49,18 @@ export function TabSettings({ agentId }: { agentId: string }) {
     enabled_tools: null,
   });
   const [formErrors, setFormErrors] = useState<Partial<Record<keyof AgentSettingsValues, string>>>({});
-  const [dirty, setDirty] = useState(false);
-
-  useEffect(() => {
-    if (details) {
-      setValues({
-        name: details.name,
-        soul_prompt: details.soul_prompt ?? '',
-        reasoning_effort:
-          (details.settings?.reasoning_effort as AgentSettingsValues['reasoning_effort']) ?? 'high',
-        model: (details.settings?.model as string) ?? DEFAULT_MODEL,
-        first_comment: readFirstComment(details.settings),
-        warmup: { enabled: readWarmup(details.settings).enabled },
-        enabled_tools: readEnabledTools(details.settings),
-      });
-    }
-  }, [details]);
+  const { dirty, setDirty } = useSyncedDraft(details, agentId, (fresh) => {
+    setValues({
+      name: fresh.name,
+      soul_prompt: fresh.soul_prompt ?? '',
+      reasoning_effort:
+        (fresh.settings?.reasoning_effort as AgentSettingsValues['reasoning_effort']) ?? 'high',
+      model: (fresh.settings?.model as string) ?? DEFAULT_MODEL,
+      first_comment: readFirstComment(fresh.settings),
+      warmup: readWarmup(fresh.settings),
+      enabled_tools: readEnabledTools(fresh.settings),
+    });
+  });
 
   const reasoningMeta = reasoningByModel?.[values.model];
   const reasoningOptions = reasoningOptionValues(reasoningMeta);
@@ -114,10 +111,12 @@ export function TabSettings({ agentId }: { agentId: string }) {
         settings: submissionSettings,
       };
       await update.mutateAsync(submissionData);
+      // Сохранённое становится базовой версией формы сразу: обновление данных,
+      // которое придёт следом, должно её подхватить, а не быть отброшено как «чужое».
+      setDirty(false);
       // The runtime is built once: new settings need a rebuild.
       await agentsApi.reload(agentId);
       toast('Настройки сохранены', 'success');
-      setDirty(false);
     } catch (e: unknown) {
       toast((e as ApiError).message ?? 'Ошибка сохранения', 'error');
     }
@@ -226,11 +225,7 @@ export function TabSettings({ agentId }: { agentId: string }) {
         error={formErrors.first_comment}
       />
 
-      <WarmupRestrictionNotice
-        agentId={agentId}
-        warmup={readWarmup(details?.settings)}
-        settings={details?.settings as Record<string, unknown> | null | undefined}
-      />
+      <WarmupRestrictionNotice agentId={agentId} />
 
       <WarmupSettingsSection
         value={values.warmup}

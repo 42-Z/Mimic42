@@ -43,6 +43,7 @@ export const EVENT_CATALOG: Record<string, EventMeta> = {
   'warmup.opener_sent': { ru: 'Прогрев: начал диалог с другим мимиком', icon: Flame },
   'warmup.opener_failed': { ru: 'Прогрев: не удалось начать диалог', icon: AlertTriangle },
   'warmup.restricted': { ru: 'Telegram ограничил аккаунт: писать первым нельзя', icon: AlertTriangle },
+  'warmup.recovery_started': { ru: 'Включено восстановление аккаунта', icon: Flame },
   'warmup.recovered': { ru: 'Ограничение Telegram снято', icon: Flame },
 };
 

@@ -1,8 +1,12 @@
-"""История прогрева из ``agent_events``: отдельной таблицы не нужно.
+"""История и состояние прогрева из ``agent_events``: отдельной таблицы не нужно.
 
 Каждый начатый диалог — событие ``warmup.opener_sent`` (или ``warmup.opener_failed``)
-с текстом зачина и партнёром в payload. По ним считаются диалоги за день,
-уже использованные зачины и знакомые собеседники, и всё переживает рестарт.
+с текстом зачина и партнёром в payload. По ним считаются попытки за день, уже
+использованные зачины и знакомые собеседники, и всё переживает рестарт.
+
+Ограничение аккаунта и режим восстановления тоже события (``warmup.restricted``,
+``warmup.recovery_started``, ``warmup.recovered``): журнал только дописывается, и форма
+настроек, которая перезаписывает ``agents.settings`` целиком, не может откатить состояние.
 """
 
 from __future__ import annotations
@@ -11,51 +15,67 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import func, select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from mimic42.core.warmup import EVENT_OPENER_FAILED, EVENT_OPENER_SENT, EVENT_RESTRICTED
-from mimic42.integrations.database_models import AgentEventModel, AgentModel
+from mimic42.core.warmup import (
+    EVENT_OPENER_FAILED,
+    EVENT_OPENER_SENT,
+    EVENT_RECOVERED,
+    EVENT_RECOVERY_STARTED,
+    EVENT_RESTRICTED,
+    WarmupState,
+    state_from_events,
+)
+from mimic42.integrations.database_models import AgentEventModel
 
 # Хватает с запасом на любую разумную базу зачинов и круг знакомых.
 HISTORY_LIMIT = 1000
+ATTEMPT_EVENTS = (EVENT_OPENER_SENT, EVENT_OPENER_FAILED)
+STATE_EVENTS = (EVENT_RESTRICTED, EVENT_RECOVERY_STARTED, EVENT_RECOVERED)
+
+
+async def load_warmup_state(session: AsyncSession, agent_id: UUID) -> WarmupState:
+    """Состояние ограничения агента по журналу событий."""
+    rows = await session.execute(
+        select(AgentEventModel.event_type, AgentEventModel.created_at)
+        .where(AgentEventModel.agent_id == agent_id, AgentEventModel.event_type.in_(STATE_EVENTS))
+        .order_by(AgentEventModel.created_at.asc())
+    )
+    return state_from_events((event_type, created_at) for event_type, created_at in rows)
 
 
 class DatabaseWarmupHistory:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
 
-    async def attempts_since(self, agent_id: UUID, since: datetime) -> int:
+    async def attempt_times_since(self, agent_id: UUID, since: datetime) -> list[datetime]:
+        """Когда агент начинал диалоги с ``since`` (включая неудавшиеся)."""
         async with self._session_factory() as session:
-            count = await session.scalar(
-                select(func.count())
-                .select_from(AgentEventModel)
+            rows = await session.scalars(
+                select(AgentEventModel.created_at)
                 .where(
                     AgentEventModel.agent_id == agent_id,
-                    AgentEventModel.event_type.in_(
-                        (EVENT_OPENER_SENT, EVENT_OPENER_FAILED, EVENT_RESTRICTED)
-                    ),
+                    AgentEventModel.event_type.in_(ATTEMPT_EVENTS),
                     AgentEventModel.created_at >= since,
                 )
+                .order_by(AgentEventModel.created_at.asc())
             )
-        return int(count or 0)
+            return list(rows)
 
-    async def received_since(self, agent_id: UUID, since: datetime) -> int:
+    async def received_times_since(self, agent_id: UUID, since: datetime) -> list[datetime]:
+        """Когда другие агенты начинали диалоги с этим агентом с ``since``."""
         async with self._session_factory() as session:
-            count = await session.scalar(
-                select(func.count())
-                .select_from(AgentEventModel)
+            rows = await session.scalars(
+                select(AgentEventModel.created_at)
                 .where(
-                    # Неудачные попытки тоже в счёт: иначе слот остаётся «неотработанным» и
-                    # помощник долбит ограниченный аккаунт на каждом тике.
-                    AgentEventModel.event_type.in_(
-                        (EVENT_OPENER_SENT, EVENT_OPENER_FAILED, EVENT_RESTRICTED)
-                    ),
+                    AgentEventModel.event_type.in_(ATTEMPT_EVENTS),
                     AgentEventModel.created_at >= since,
                     AgentEventModel.payload["partner_agent_id"].as_string() == str(agent_id),
                 )
+                .order_by(AgentEventModel.created_at.asc())
             )
-        return int(count or 0)
+            return list(rows)
 
     async def used_openers(self, agent_id: UUID) -> list[str]:
         payloads = await self._sent_payloads(agent_id)
@@ -87,28 +107,29 @@ class DatabaseWarmupHistory:
 
 
 class DatabaseWarmupStateStore:
-    """Состояние ограничения живёт в ``agents.settings["warmup"]`` рядом с остальным прогревом."""
+    """Состояние ограничения: чтение и запись событий-переходов."""
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
 
-    async def save_state(
-        self, agent_id: UUID, *, restricted_at: datetime | None, recovery: bool
-    ) -> None:
+    async def load(self, agent_id: UUID) -> WarmupState:
         async with self._session_factory() as session:
-            # Блокировка строки: дашборд сохраняет настройки в тот же JSON.
-            settings = await session.scalar(
-                select(AgentModel.settings).where(AgentModel.id == agent_id).with_for_update()
-            )
-            merged: dict[str, Any] = dict(settings or {})
-            warmup: dict[str, Any] = dict(merged.get("warmup") or {})
-            warmup["recovery"] = recovery
-            if restricted_at is None:
-                warmup.pop("restricted_at", None)
-            else:
-                warmup["restricted_at"] = restricted_at.isoformat()
-            merged["warmup"] = warmup
-            await session.execute(
-                update(AgentModel).where(AgentModel.id == agent_id).values(settings=merged)
+            return await load_warmup_state(session, agent_id)
+
+    async def record(
+        self, agent_id: UUID, event_type: str, payload: dict[str, Any] | None = None
+    ) -> None:
+        """Записать переход состояния. В отличие от ленты активности ошибка не глотается."""
+        async with self._session_factory() as session:
+            now = datetime.now().astimezone()
+            session.add(
+                AgentEventModel(
+                    agent_id=agent_id,
+                    event_type=event_type,
+                    status="succeeded",
+                    payload=payload or {},
+                    started_at=now,
+                    completed_at=now,
+                )
             )
             await session.commit()

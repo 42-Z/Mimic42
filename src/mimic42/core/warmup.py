@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import random
 from collections import deque
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any, Final, cast
@@ -38,6 +38,11 @@ DIALOG_IDLE_TIMEOUT: Final = timedelta(hours=3)
 RECOVERY_DIALOGS_PER_DAY: Final = (4, 5, 6, 7)
 RECOVERY_SLOT_GAP: Final = timedelta(minutes=75)
 RECOVERY_DIALOG_LENGTH_RANGE: Final = (7, 14)
+# Общий бюджет отправителя: зачины в обычном прогреве и в помощи ограниченным вместе.
+MAX_OPENERS_PER_DAY: Final = 6
+MIN_OPENER_INTERVAL: Final = timedelta(minutes=30)
+# Попытка и её запись в журнал разнесены во времени: так события считаются одной попыткой.
+ATTEMPT_MATCH_WINDOW: Final = timedelta(minutes=10)
 # Как часто спрашивать @SpamBot, снято ли ограничение.
 SPAMBOT_CHECK_INTERVAL: Final = timedelta(hours=6)
 SPAMBOT_REPLY_WAIT_SECONDS: Final = 6.0
@@ -50,18 +55,42 @@ EVENT_RECOVERED: Final = "warmup.recovered"
 
 @dataclass(frozen=True)
 class WarmupSettings:
-    """Настройка прогрева агента (``agents.settings["warmup"]``).
+    """Настройка прогрева (``agents.settings["warmup"]``): только то, что меняет пользователь.
 
-    Прогрев выключен, пока пользователь сам его не включит. ``restricted_at`` —
-    когда Telegram ограничил аккаунт за рассылку незнакомым (PeerFloodError);
-    ``recovery`` — пользователь выбрал восстановление: другие агенты усиленно
-    переписываются с этим, пока ограничение не снимется.
+    Прогрев выключен, пока пользователь сам его не включит. Ограничение Telegram и
+    режим восстановления сюда не входят: их ведёт сервер (см. ``WarmupState``), а
+    форма настроек перезаписывает ``settings`` целиком и могла бы их затереть.
     """
 
     enabled: bool = False
     timezone: str = DEFAULT_TIMEZONE
+
+
+@dataclass(frozen=True)
+class WarmupState:
+    """Ограничение аккаунта: когда Telegram запретил писать первым и выбрано ли восстановление."""
+
     restricted_at: datetime | None = None
     recovery: bool = False
+
+
+def state_from_events(events: Iterable[tuple[str, datetime]]) -> WarmupState:
+    """Состояние по журналу событий, от старых к новым.
+
+    Журнал только дописывается, поэтому устаревший снимок формы или гонка двух
+    записей не могут откатить состояние: оно всегда равно последнему событию.
+    """
+    state = WarmupState()
+    for event_type, created_at in events:
+        if event_type == EVENT_RESTRICTED:
+            if state.restricted_at is None:
+                state = WarmupState(restricted_at=created_at)
+        elif event_type == EVENT_RECOVERY_STARTED:
+            if state.restricted_at is not None:
+                state = WarmupState(restricted_at=state.restricted_at, recovery=True)
+        elif event_type == EVENT_RECOVERED:
+            state = WarmupState()
+    return state
 
 
 def parse_warmup(raw: object) -> WarmupSettings:
@@ -74,26 +103,13 @@ def parse_warmup(raw: object) -> WarmupSettings:
         return WarmupSettings()
     values = cast("Mapping[str, Any]", raw)
     enabled = values.get("enabled")
-    recovery = values.get("recovery")
     timezone = values.get("timezone")
     return WarmupSettings(
         enabled=enabled if isinstance(enabled, bool) else False,
         timezone=(
             timezone if isinstance(timezone, str) and _is_timezone(timezone) else DEFAULT_TIMEZONE
         ),
-        restricted_at=_parse_moment(values.get("restricted_at")),
-        recovery=recovery if isinstance(recovery, bool) else False,
     )
-
-
-def _parse_moment(value: object) -> datetime | None:
-    if not isinstance(value, str) or not value:
-        return None
-    try:
-        moment = datetime.fromisoformat(value)
-    except ValueError:
-        return None
-    return moment if moment.tzinfo is not None else moment.replace(tzinfo=UTC)
 
 
 def _is_timezone(value: object) -> bool:
@@ -140,23 +156,47 @@ def due_slot(
     slots: Sequence[datetime],
     *,
     now: datetime,
-    done_today: int,
+    attempts: Sequence[datetime],
     grace: timedelta = timedelta(hours=1),
 ) -> datetime | None:
-    """Слот, который пора отработать: наступил, не просрочен и ещё не использован.
+    """Слот, который пора отработать: наступил, не просрочен и ещё не занят попыткой.
 
-    Слоты считаются по порядку: первые done_today уже отработаны. Просроченный
-    более чем на grace слот пропускается (сервер был выключен) — писать
-    «задним числом» в час ночи нельзя.
+    Попытки (отправка или неудача) раскладываются по слотам в порядке времени: каждая
+    занимает самый ранний слот, который к тому моменту наступил и ещё не просрочился.
+    Слот, пропущенный из-за выключенного сервера, остаётся пропущенным, а не
+    «догоняется» следующим тиком: писать задним числом в час ночи нельзя, а поздний
+    слот, уже отработанный попыткой, повторно не берётся.
     """
-    if done_today >= len(slots):
-        return None
-    for slot in slots[done_today:]:
+    taken: set[int] = set()
+    for attempt in sorted(attempts):
+        for index, slot in enumerate(slots):
+            if index not in taken and slot <= attempt <= slot + grace:
+                taken.add(index)
+                break
+    for index, slot in enumerate(slots):
+        if index in taken:
+            continue
         if slot > now:
             return None
         if now - slot <= grace:
             return slot
     return None
+
+
+def merge_attempts(stored: Sequence[datetime], reserved: Sequence[datetime]) -> list[datetime]:
+    """Попытки из журнала плюс ещё не записанные резервы, без двойного счёта одной попытки."""
+    merged = list(stored)
+    for moment in reserved:
+        if not any(abs(moment - known) <= ATTEMPT_MATCH_WINDOW for known in stored):
+            merged.append(moment)
+    return sorted(merged)
+
+
+def sender_may_open(attempts: Sequence[datetime], *, now: datetime) -> bool:
+    """Хватает ли отправителю дневного бюджета и прошла ли пауза после прошлого зачина."""
+    if len(attempts) >= MAX_OPENERS_PER_DAY:
+        return False
+    return not attempts or now - max(attempts) >= MIN_OPENER_INTERVAL
 
 
 def pick_partner(

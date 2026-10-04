@@ -131,6 +131,7 @@ import type {
   AgentMemory,
   MemoryHistoryItem,
   UploadedMedia,
+  WarmupState,
 } from '@/types';
 
 export const agentsApi = {
@@ -175,6 +176,14 @@ export const agentsApi = {
     apiClient
       .post<{ context_reset_at: string }>(`/agents/${id}/context/reset`)
       .then((r) => r.data),
+
+  /** GET /api/v1/agents/:id/warmup — ограничение Telegram и режим восстановления */
+  getWarmupState: (id: string) =>
+    apiClient.get<WarmupState>(`/agents/${id}/warmup`).then((r) => r.data),
+
+  /** POST /api/v1/agents/:id/warmup/recovery — включить восстановление (409, если не ограничен) */
+  startWarmupRecovery: (id: string) =>
+    apiClient.post<WarmupState>(`/agents/${id}/warmup/recovery`).then((r) => r.data),
 
   /** GET /api/v1/agents/:id/conversation — cursor page, newest first */
   getConversation: (id: string, limit = 50, before?: string | null, beforeId?: string | null) =>

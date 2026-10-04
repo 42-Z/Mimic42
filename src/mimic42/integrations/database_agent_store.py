@@ -35,6 +35,7 @@ from mimic42.integrations.database_models import (
     AgentOnboardingSessionModel,
     TelegramSessionModel,
 )
+from mimic42.integrations.database_warmup import load_warmup_state
 
 logger = logging.getLogger("mimic42.agent_store")
 
@@ -302,6 +303,7 @@ class DatabaseAgentStore:
                     agent.settings.get("first_comment") if agent.settings else None
                 ),
                 warmup=parse_warmup(agent.settings.get("warmup") if agent.settings else None),
+                warmup_state=await load_warmup_state(db_session, agent.id),
             )
 
     async def get_telegram_rebind_credentials(self, agent_id: UUID) -> TelegramRebindCredentials:

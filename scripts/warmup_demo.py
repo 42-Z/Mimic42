@@ -49,6 +49,7 @@ from mimic42.integrations.telegram_tools import (
     TelethonRequestClient,
     build_telegram_langchain_tools,
 )
+from mimic42.integrations.telethon_client import MimicTelegramClient
 
 STORE = Path(__file__).resolve().parent.parent / "sessions" / "warmup_demo.json"
 BASE_PROMPT = (
@@ -94,7 +95,7 @@ def save_store(data: dict[str, Any]) -> None:
 
 def new_client(session: str, api_id: int, api_hash: str) -> TelegramClient:
     # Как в build_telegram_client: SlowModeWait не должен усыплять отправку внутри клиента.
-    client = TelegramClient(StringSession(session), api_id, api_hash, flood_sleep_threshold=0)
+    client = MimicTelegramClient(StringSession(session), api_id, api_hash, flood_sleep_threshold=0)
     client.parse_mode = cast(Any, CustomMarkdown())
     return client
 
@@ -171,8 +172,11 @@ class DemoHistory:
     def __init__(self) -> None:
         self.openers: list[str] = []
 
-    async def attempts_since(self, agent_id: UUID, since: datetime) -> int:
-        return 0
+    async def attempt_times_since(self, agent_id: UUID, since: datetime) -> list[datetime]:
+        return []
+
+    async def received_times_since(self, agent_id: UUID, since: datetime) -> list[datetime]:
+        return []
 
     async def used_openers(self, agent_id: UUID) -> list[str]:
         return list(self.openers)

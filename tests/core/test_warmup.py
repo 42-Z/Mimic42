@@ -11,17 +11,26 @@ from mimic42.core.warmup import (
     DEFAULT_TIMEZONE,
     DIALOG_IDLE_TIMEOUT,
     DIALOG_LENGTH_RANGE,
+    EVENT_RECOVERED,
+    EVENT_RECOVERY_STARTED,
+    EVENT_RESTRICTED,
+    MAX_OPENERS_PER_DAY,
+    MIN_OPENER_INTERVAL,
     MIN_SLOT_GAP,
     DialogTracker,
     WarmupSettings,
+    WarmupState,
     classify_spambot_reply,
     daily_slots,
     dialog_length,
     due_slot,
+    merge_attempts,
     parse_warmup,
     pick_opener,
     pick_partner,
     reply_delay,
+    sender_may_open,
+    state_from_events,
 )
 from mimic42.core.warmup_messages import OPENERS
 
@@ -53,12 +62,60 @@ def test_daily_slots_differ_between_agents_and_days() -> None:
 
 def test_due_slot_waits_then_fires_once_and_skips_stale() -> None:
     slots = [NOW + timedelta(hours=1), NOW + timedelta(hours=4)]
-    assert due_slot(slots, now=NOW, done_today=0) is None
-    assert due_slot(slots, now=NOW + timedelta(hours=1, minutes=5), done_today=0) == slots[0]
-    assert due_slot(slots, now=NOW + timedelta(hours=1, minutes=5), done_today=1) is None
+    first_done = [NOW + timedelta(hours=1, minutes=1)]
+    assert due_slot(slots, now=NOW, attempts=[]) is None
+    assert due_slot(slots, now=NOW + timedelta(hours=1, minutes=5), attempts=[]) == slots[0]
+    assert due_slot(slots, now=NOW + timedelta(hours=1, minutes=5), attempts=first_done) is None
     # Сервер был выключен: слот просрочен больше чем на час — пропускаем.
-    assert due_slot(slots, now=NOW + timedelta(hours=3), done_today=0) is None
-    assert due_slot(slots, now=NOW + timedelta(hours=4), done_today=2) is None
+    assert due_slot(slots, now=NOW + timedelta(hours=3), attempts=[]) is None
+    both_done = [*first_done, NOW + timedelta(hours=4, minutes=1)]
+    assert due_slot(slots, now=NOW + timedelta(hours=4), attempts=both_done) is None
+
+
+def test_skipped_early_slot_does_not_make_the_late_slot_fire_twice() -> None:
+    """Ранний слот пропущен, поздний отработан: следующий тик ничего не отправляет."""
+    early, late = NOW, NOW + timedelta(hours=3)
+    slots = [early, late]
+    now = late + timedelta(minutes=5)
+
+    assert due_slot(slots, now=now, attempts=[]) == late
+    attempts = [now]
+    assert due_slot(slots, now=now + timedelta(minutes=1), attempts=attempts) is None
+    assert due_slot(slots, now=now + timedelta(minutes=30), attempts=attempts) is None
+
+
+def test_failed_attempt_also_takes_its_slot() -> None:
+    slots = [NOW]
+    attempts = [NOW + timedelta(minutes=2)]
+    assert due_slot(slots, now=NOW + timedelta(minutes=3), attempts=attempts) is None
+
+
+def test_each_attempt_takes_one_slot_in_order() -> None:
+    slots = [NOW, NOW + timedelta(minutes=30), NOW + timedelta(minutes=60)]
+    now = NOW + timedelta(minutes=61)
+    attempts = [NOW + timedelta(minutes=1)]
+    assert due_slot(slots, now=now, attempts=attempts) == slots[1]
+    attempts.append(NOW + timedelta(minutes=31))
+    assert due_slot(slots, now=now, attempts=attempts) == slots[2]
+    attempts.append(NOW + timedelta(minutes=61))
+    assert due_slot(slots, now=now, attempts=attempts) is None
+
+
+def test_reserved_attempt_is_not_counted_twice_once_it_reaches_the_journal() -> None:
+    stored = [NOW + timedelta(seconds=40)]
+    reserved = [NOW]
+    assert merge_attempts(stored, reserved) == stored
+    assert merge_attempts([], reserved) == reserved
+    far = NOW + timedelta(hours=3)
+    assert merge_attempts(stored, [far]) == [*stored, far]
+
+
+def test_sender_budget_limits_per_day_and_spaces_openers() -> None:
+    assert sender_may_open([], now=NOW)
+    assert not sender_may_open([NOW - timedelta(minutes=10)], now=NOW)
+    assert sender_may_open([NOW - MIN_OPENER_INTERVAL], now=NOW)
+    many = [NOW - timedelta(hours=h) for h in range(1, MAX_OPENERS_PER_DAY + 1)]
+    assert not sender_may_open(many, now=NOW)
 
 
 def test_pick_partner_none_without_candidates() -> None:
@@ -147,35 +204,46 @@ def test_warmup_is_off_by_default_and_for_unrecognised_settings() -> None:
         assert parse_warmup(raw).enabled is False
 
 
-def test_parse_warmup_reads_enabled_recovery_restriction_and_timezone() -> None:
+def test_parse_warmup_reads_only_what_the_user_owns() -> None:
     parsed = parse_warmup(
         {
             "enabled": True,
-            "recovery": True,
             "timezone": "Asia/Yekaterinburg",
+            # Чужое для формы: состояние ограничения ведёт сервер и из настроек не читается.
             "restricted_at": "2026-10-02T10:00:00+00:00",
+            "recovery": True,
         }
     )
-    assert parsed == WarmupSettings(
-        enabled=True,
-        recovery=True,
-        timezone="Asia/Yekaterinburg",
-        restricted_at=datetime(2026, 10, 2, 10, 0, tzinfo=UTC),
-    )
+    assert parsed == WarmupSettings(enabled=True, timezone="Asia/Yekaterinburg")
 
 
 def test_parse_warmup_falls_back_for_bad_values() -> None:
-    parsed = parse_warmup(
-        {"enabled": True, "timezone": "Mars/Base", "restricted_at": "вчера", "recovery": "да"}
-    )
+    parsed = parse_warmup({"enabled": True, "timezone": "Mars/Base"})
     assert parsed.timezone == DEFAULT_TIMEZONE
-    assert parsed.restricted_at is None
-    assert parsed.recovery is False
 
 
-def test_restriction_time_without_zone_is_taken_as_utc() -> None:
-    parsed = parse_warmup({"restricted_at": "2026-10-02T10:00:00"})
-    assert parsed.restricted_at == datetime(2026, 10, 2, 10, 0, tzinfo=UTC)
+def test_state_follows_the_last_events_in_the_journal() -> None:
+    t1, t2, t3, t4 = (NOW + timedelta(hours=h) for h in range(4))
+    assert state_from_events([]) == WarmupState()
+    assert state_from_events([(EVENT_RESTRICTED, t1)]) == WarmupState(restricted_at=t1)
+    assert state_from_events([(EVENT_RESTRICTED, t1), (EVENT_RECOVERY_STARTED, t2)]) == WarmupState(
+        restricted_at=t1, recovery=True
+    )
+    # Повторное ограничение не сдвигает момент и не сбрасывает восстановление.
+    assert state_from_events(
+        [(EVENT_RESTRICTED, t1), (EVENT_RECOVERY_STARTED, t2), (EVENT_RESTRICTED, t3)]
+    ) == WarmupState(restricted_at=t1, recovery=True)
+    assert (
+        state_from_events(
+            [(EVENT_RESTRICTED, t1), (EVENT_RECOVERY_STARTED, t2), (EVENT_RECOVERED, t3)]
+        )
+        == WarmupState()
+    )
+    # Восстановление без ограничения ничего не значит; после снятия возможно новое ограничение.
+    assert state_from_events([(EVENT_RECOVERY_STARTED, t1)]) == WarmupState()
+    assert state_from_events(
+        [(EVENT_RESTRICTED, t1), (EVENT_RECOVERED, t2), (EVENT_RESTRICTED, t4)]
+    ) == WarmupState(restricted_at=t4)
 
 
 def test_recovery_has_more_and_longer_dialogs_than_ordinary_warmup() -> None:

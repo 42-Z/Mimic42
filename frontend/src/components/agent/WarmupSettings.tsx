@@ -8,12 +8,11 @@ import { Card, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
 import { useToast } from '@/components/ui/toast';
-import { useUpdateAgentSettings } from '@/hooks/useAgent';
+import { useStartWarmupRecovery, useWarmupState } from '@/hooks/useAgent';
 import { useDeleteAgent } from '@/hooks/useAgents';
-import { agentsApi } from '@/lib/api';
 import type { ApiError, WarmupSettings } from '@/types';
 
-export const EMPTY_WARMUP: WarmupSettings = { enabled: false, restricted_at: null, recovery: false };
+export const EMPTY_WARMUP: WarmupSettings = { enabled: false };
 
 /**
  * Прочитать настройку из нетипизированной JSON-колонки `agents.settings`.
@@ -24,21 +23,15 @@ export const EMPTY_WARMUP: WarmupSettings = { enabled: false, restricted_at: nul
 export function readWarmup(settings: Record<string, unknown> | null | undefined): WarmupSettings {
   const raw = settings?.['warmup'];
   if (typeof raw !== 'object' || raw === null) return EMPTY_WARMUP;
-  const source = raw as { enabled?: unknown; restricted_at?: unknown; recovery?: unknown };
-  return {
-    enabled: source.enabled === true,
-    restricted_at:
-      typeof source.restricted_at === 'string' && source.restricted_at ? source.restricted_at : null,
-    recovery: source.recovery === true,
-  };
+  return { enabled: (raw as { enabled?: unknown }).enabled === true };
 }
 
 export function WarmupSettingsSection({
   value,
   onChange,
 }: {
-  value: Pick<WarmupSettings, 'enabled'>;
-  onChange: (update: (prev: Pick<WarmupSettings, 'enabled'>) => Pick<WarmupSettings, 'enabled'>) => void;
+  value: WarmupSettings;
+  onChange: (update: (prev: WarmupSettings) => WarmupSettings) => void;
 }) {
   return (
     <Card variant="bordered" padding="md" className="space-y-4">
@@ -63,37 +56,27 @@ export function WarmupSettingsSection({
 
 /**
  * Telegram ограничил аккаунт за сообщения незнакомым: пользователь выбирает, ждать
- * восстановления или удалить агента. Сохраняется сразу, без общей кнопки формы.
+ * восстановления или удалить агента. Состояние живёт на сервере: выбор уходит отдельным
+ * запросом и не зависит от того, что сейчас в форме настроек.
  */
-export function WarmupRestrictionNotice({
-  agentId,
-  warmup,
-  settings,
-}: {
-  agentId: string;
-  warmup: WarmupSettings;
-  settings: Record<string, unknown> | null | undefined;
-}) {
+export function WarmupRestrictionNotice({ agentId }: { agentId: string }) {
   const { toast } = useToast();
   const router = useRouter();
-  const update = useUpdateAgentSettings(agentId);
+  const { data: state } = useWarmupState(agentId);
+  const recovery = useStartWarmupRecovery(agentId);
   const { mutate: remove, isPending: deleting } = useDeleteAgent();
   const [confirmDelete, setConfirmDelete] = useState(false);
 
-  if (warmup.restricted_at === null) return null;
+  if (!state || state.restricted_at === null) return null;
 
-  const since = new Date(warmup.restricted_at).toLocaleString('ru-RU');
+  const since = new Date(state.restricted_at).toLocaleString('ru-RU');
 
-  const startRecovery = async () => {
-    try {
-      const existing = (settings?.['warmup'] as Record<string, unknown> | undefined) ?? {};
-      await update.mutateAsync({ settings: { ...(settings ?? {}), warmup: { ...existing, recovery: true } } });
-      await agentsApi.reload(agentId);
-      toast('Режим восстановления включён', 'success');
-    } catch (e: unknown) {
-      toast((e as ApiError).message ?? 'Не удалось включить восстановление', 'error');
-    }
-  };
+  const startRecovery = () =>
+    recovery.mutate(undefined, {
+      onSuccess: () => toast('Режим восстановления включён', 'success'),
+      onError: (e: unknown) =>
+        toast((e as ApiError).message ?? 'Не удалось включить восстановление', 'error'),
+    });
 
   const deleteAgent = () =>
     remove(agentId, {
@@ -115,15 +98,16 @@ export function WarmupRestrictionNotice({
         </div>
       </div>
 
-      {warmup.recovery ? (
-        <p className="font-mono text-xs text-foreground">
+      {state.recovery ? (
+        <p className="font-mono text-xs text-foreground max-w-prose">
           Режим восстановления включён: другие агенты чаще пишут этому, а он отвечает. Раз в
           несколько часов мы спрашиваем @SpamBot, снято ли ограничение, и тогда возвращаем
-          обычный прогрев. Поможет ли это снять ограничение быстрее, неизвестно.
+          обычный прогрев. Поможет ли это снять ограничение быстрее, неизвестно. Работает, даже
+          если переключатель прогрева выключен.
         </p>
       ) : (
         <div className="flex flex-wrap gap-2">
-          <Button type="button" size="sm" onClick={startRecovery} isLoading={update.isPending}>
+          <Button type="button" size="sm" onClick={startRecovery} isLoading={recovery.isPending}>
             Восстановить перепиской
           </Button>
           {confirmDelete ? (
