@@ -362,6 +362,23 @@ export interface FirstCommentSettings {
 }
 
 /**
+ * Настройка прогрева, agents.settings.warmup — зеркало WarmupSettings из
+ * src/mimic42/core/warmup.py: только то, что меняет пользователь.
+ */
+export interface WarmupSettings {
+  enabled: boolean;
+}
+
+/**
+ * Ограничение аккаунта Telegram и выбор восстановления. Ведёт сервер, а не форма
+ * настроек (которая перезаписывает settings целиком): GET /agents/:id/warmup.
+ */
+export interface WarmupState {
+  restricted_at: string | null;
+  recovery: boolean;
+}
+
+/**
  * Form state for agent settings
  */
 export interface AgentSettingsForm {

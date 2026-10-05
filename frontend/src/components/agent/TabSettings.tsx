@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { useAgentDetails, useUpdateAgentSettings } from '@/hooks/useAgent';
+import { useSyncedDraft } from '@/hooks/useSyncedDraft';
 import { useModelReasoning } from '@/hooks/useModelReasoning';
 import { useToast } from '@/components/ui/toast';
 import { Button } from '@/components/ui/button';
@@ -15,19 +16,25 @@ import {
   readFirstComment,
   type FirstCommentDraft,
 } from '@/components/agent/FirstCommentSettings';
+import {
+  WarmupRestrictionNotice,
+  WarmupSettingsSection,
+  readWarmup,
+} from '@/components/agent/WarmupSettings';
 import { DEFAULT_MODEL, optionsIncluding } from '@/lib/models';
 import { agentsApi } from '@/lib/api';
 import { pickReasoningValue, reasoningLabel, reasoningOptionValues } from '@/lib/reasoning';
 import { readEnabledTools, mergeEnabledTools } from '@/lib/tools/agentTools';
-import { agentSettingsSchema, type AgentSettingsValues } from '@/lib/validators';
+import { agentSettingsSchema, type AgentSettingsValues, type WarmupValues } from '@/lib/validators';
 import type { ApiError } from '@/types';
 
 // В форме у вариантов первого комментария есть ключи строк; при разборе схемой
 // они отбрасываются и в настройки не попадают.
-type SettingsFormValues = Omit<AgentSettingsValues, 'first_comment'> & {
+type SettingsFormValues = Omit<AgentSettingsValues, 'first_comment' | 'warmup'> & {
   first_comment: FirstCommentDraft;
+  warmup: WarmupValues;
 };
-type TextField = Exclude<keyof AgentSettingsValues, 'first_comment'>;
+type TextField = Exclude<keyof AgentSettingsValues, 'first_comment' | 'warmup'>;
 
 export function TabSettings({ agentId }: { agentId: string }) {
   const { toast } = useToast();
@@ -38,24 +45,22 @@ export function TabSettings({ agentId }: { agentId: string }) {
   const [values, setValues] = useState<SettingsFormValues>({
     name: '', soul_prompt: '', reasoning_effort: 'high', model: DEFAULT_MODEL,
     first_comment: EMPTY_FIRST_COMMENT,
+    warmup: { enabled: false },
     enabled_tools: null,
   });
   const [formErrors, setFormErrors] = useState<Partial<Record<keyof AgentSettingsValues, string>>>({});
-  const [dirty, setDirty] = useState(false);
-
-  useEffect(() => {
-    if (details) {
-      setValues({
-        name: details.name,
-        soul_prompt: details.soul_prompt ?? '',
-        reasoning_effort:
-          (details.settings?.reasoning_effort as AgentSettingsValues['reasoning_effort']) ?? 'high',
-        model: (details.settings?.model as string) ?? DEFAULT_MODEL,
-        first_comment: readFirstComment(details.settings),
-        enabled_tools: readEnabledTools(details.settings),
-      });
-    }
-  }, [details]);
+  const { dirty, setDirty } = useSyncedDraft(details, agentId, (fresh) => {
+    setValues({
+      name: fresh.name,
+      soul_prompt: fresh.soul_prompt ?? '',
+      reasoning_effort:
+        (fresh.settings?.reasoning_effort as AgentSettingsValues['reasoning_effort']) ?? 'high',
+      model: (fresh.settings?.model as string) ?? DEFAULT_MODEL,
+      first_comment: readFirstComment(fresh.settings),
+      warmup: readWarmup(fresh.settings),
+      enabled_tools: readEnabledTools(fresh.settings),
+    });
+  });
 
   const reasoningMeta = reasoningByModel?.[values.model];
   const reasoningOptions = reasoningOptionValues(reasoningMeta);
@@ -93,6 +98,11 @@ export function TabSettings({ agentId }: { agentId: string }) {
         reasoning_effort: reasoningOptions === null ? 'none' : result.data.reasoning_effort,
         model: result.data.model,
         first_comment: result.data.first_comment ?? EMPTY_FIRST_COMMENT,
+        // Ключи прогрева, которых нет в форме (часовой пояс, ограничение), сохраняются.
+        warmup: {
+          ...((existingSettings.warmup as Record<string, unknown> | undefined) ?? {}),
+          enabled: result.data.warmup?.enabled ?? false,
+        },
       };
       const submissionSettings = mergeEnabledTools(mergedSettings, result.data.enabled_tools);
       const submissionData = {
@@ -101,10 +111,12 @@ export function TabSettings({ agentId }: { agentId: string }) {
         settings: submissionSettings,
       };
       await update.mutateAsync(submissionData);
+      // Сохранённое становится базовой версией формы сразу: обновление данных,
+      // которое придёт следом, должно её подхватить, а не быть отброшено как «чужое».
+      setDirty(false);
       // The runtime is built once: new settings need a rebuild.
       await agentsApi.reload(agentId);
       toast('Настройки сохранены', 'success');
-      setDirty(false);
     } catch (e: unknown) {
       toast((e as ApiError).message ?? 'Ошибка сохранения', 'error');
     }
@@ -211,6 +223,16 @@ export function TabSettings({ agentId }: { agentId: string }) {
           setDirty(true);
         }}
         error={formErrors.first_comment}
+      />
+
+      <WarmupRestrictionNotice agentId={agentId} />
+
+      <WarmupSettingsSection
+        value={values.warmup}
+        onChange={(update) => {
+          setValues((v) => ({ ...v, warmup: update(v.warmup) }));
+          setDirty(true);
+        }}
       />
 
       <div className="flex items-center gap-3 pt-2">

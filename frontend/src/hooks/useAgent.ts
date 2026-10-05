@@ -84,3 +84,30 @@ export function useUpdateAgentSettings(agentId: string) {
     },
   });
 }
+
+/**
+ * Ограничение аккаунта Telegram и режим восстановления: ведёт сервер, поэтому
+ * читается отдельно от настроек и обновляется опросом, пока агент работает.
+ */
+export function useWarmupState(agentId: string) {
+  const isValidId = agentIdSchema.safeParse(agentId).success;
+
+  return useQuery({
+    queryKey: [...queryKeys.agents.detail(agentId), 'warmup'],
+    queryFn: () => agentsApi.getWarmupState(agentId),
+    enabled: isValidId,
+    refetchInterval: 30_000,
+  });
+}
+
+/** Включить восстановление: сервер сам записывает выбор, форма настроек не участвует. */
+export function useStartWarmupRecovery(agentId: string) {
+  const qc = useQueryClient();
+
+  return useMutation({
+    mutationFn: () => agentsApi.startWarmupRecovery(agentId),
+    onSuccess: (state) => {
+      qc.setQueryData([...queryKeys.agents.detail(agentId), 'warmup'], state);
+    },
+  });
+}

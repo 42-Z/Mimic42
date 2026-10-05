@@ -5,7 +5,7 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import Annotated, Any, Literal, Protocol
+from typing import Annotated, Any, Literal, Protocol, runtime_checkable
 from uuid import UUID, uuid4
 
 from fastapi import (
@@ -64,6 +64,8 @@ from mimic42.core.onboarding import (
     TelegramPasswordRequiredError,
     TelegramRebindUnavailableError,
 )
+from mimic42.core.warmup import WarmupState
+from mimic42.core.warmup_service import pair_policy_for
 from mimic42.integrations import openrouter_catalog
 from mimic42.integrations.database_agent_store import DatabaseAgentStore
 from mimic42.integrations.database_memory import DatabaseShortTermMemory
@@ -71,6 +73,7 @@ from mimic42.integrations.database_onboarding import (
     DatabaseOnboardingRepository,
 )
 from mimic42.integrations.database_session import create_engine, create_session_factory
+from mimic42.integrations.database_warmup import DatabaseWarmupHistory, DatabaseWarmupStateStore
 from mimic42.integrations.mem0_memory import build_mem0_memory
 from mimic42.integrations.supabase_media import SupabaseMediaStorage
 from mimic42.integrations.telegram_auth import TelethonAuthClientFactory
@@ -108,6 +111,22 @@ class AgentManagerLike(Protocol):
     ) -> AgentTriggerResult: ...
 
     async def shutdown(self) -> None: ...
+
+
+@runtime_checkable
+class WarmupControl(Protocol):
+    """Управление прогревом: есть не у всякого менеджера (подделки в тестах его не имеют)."""
+
+    async def get_warmup_state(self, agent_id: UUID) -> WarmupState: ...
+
+    async def start_warmup_recovery(self, agent_id: UUID) -> bool: ...
+
+
+class WarmupStateResponse(BaseModel):
+    """Ограничение Telegram и выбор восстановления; ведёт сервер, не форма настроек."""
+
+    restricted_at: datetime | None
+    recovery: bool
 
 
 class CreateAgentRequest(BaseModel):
@@ -363,6 +382,9 @@ def create_app(
                     telegram_client_factory=telegram_client_factory,
                     langchain_agent_factory=langchain_agent_factory,
                     media_uploader=app_media_storage,
+                    warmup_history=DatabaseWarmupHistory(session_factory),
+                    warmup_state_store=DatabaseWarmupStateStore(session_factory),
+                    warmup_pair_policy=pair_policy_for(app_settings.warmup_partners),
                 )
         try:
             setup_tracing(app_settings)
@@ -400,6 +422,10 @@ def create_app(
                             )
                 except Exception as exc:
                     logger.exception(f"[lifespan] Failed to restore running agents: {exc}")
+            if should_build_database and manager is None:
+                warmup = app.state.agent_manager.warmup
+                if warmup is not None:
+                    warmup.start()
             yield
         finally:
             # flush не должен отменять остановку агентов и cleanup: отмена
@@ -1053,6 +1079,42 @@ def create_app(
             raise _not_found(agent_id) from exc
         return ContextResetResult(context_reset_at=reset_at)
 
+    @app.get("/api/v1/agents/{agent_id}/warmup", response_model=WarmupStateResponse)
+    async def get_warmup_state(
+        agent_id: UUID,
+        current_user: CurrentUserDep,
+    ) -> WarmupStateResponse:
+        try:
+            await _ensure_runtime_owner(app, agent_id=agent_id, user_id=current_user.user_id)
+            state = await _get_warmup_control(app).get_warmup_state(agent_id)
+        except AgentNotFoundError as exc:
+            raise _not_found(exc.agent_id) from exc
+        return WarmupStateResponse(restricted_at=state.restricted_at, recovery=state.recovery)
+
+    @app.post("/api/v1/agents/{agent_id}/warmup/recovery", response_model=WarmupStateResponse)
+    async def start_warmup_recovery(
+        agent_id: UUID,
+        current_user: CurrentUserDep,
+    ) -> WarmupStateResponse:
+        """Включить режим восстановления у ограниченного агента.
+
+        Состояние меняет сервер атомарной записью события, поэтому устаревшая форма
+        настроек в браузере не может его откатить.
+        """
+        manager = _get_warmup_control(app)
+        try:
+            await _ensure_runtime_owner(app, agent_id=agent_id, user_id=current_user.user_id)
+            started = await manager.start_warmup_recovery(agent_id)
+            state = await manager.get_warmup_state(agent_id)
+        except AgentNotFoundError as exc:
+            raise _not_found(exc.agent_id) from exc
+        if not started:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Аккаунт не ограничен, восстанавливать нечего.",
+            )
+        return WarmupStateResponse(restricted_at=state.restricted_at, recovery=state.recovery)
+
     @app.get("/api/v1/openrouter/reasoning")
     async def openrouter_reasoning(current_user: CurrentUserDep) -> dict[str, Any]:
         """Per-model reasoning metadata, proxied so users behind blocks or
@@ -1198,6 +1260,16 @@ def _get_agent_manager(app: FastAPI) -> AgentManagerLike:
 
 def _get_agent_store(app: FastAPI) -> AgentStore | None:
     return app.state.agent_store
+
+
+def _get_warmup_control(app: FastAPI) -> WarmupControl:
+    manager = _get_agent_manager(app)
+    if not isinstance(manager, WarmupControl):
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail="Прогрев недоступен.",
+        )
+    return manager
 
 
 def _get_long_term_memory(app: FastAPI) -> LongTermMemoryLike | None:

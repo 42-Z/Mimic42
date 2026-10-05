@@ -92,6 +92,8 @@ class AgentModel(Base):
     last_stopped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # Short-term context only includes messages saved after this moment.
     context_reset_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    warmup_restricted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    warmup_recovery: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
