@@ -13,7 +13,7 @@ from uuid import UUID
 
 from langchain_core.tools import BaseTool, StructuredTool
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-from telethon import errors, functions, types
+from telethon import errors, functions, types, utils
 from telethon.extensions import markdown
 from telethon.helpers import generate_random_long
 
@@ -369,9 +369,16 @@ class TelegramToolbox:
         """Сообщение, из которого медиа попало в контекст, — чтобы обновить
         протухший file_reference перечитыванием."""
         ref = self._media_refs.lookup(media_id)
-        if ref is None or ref.peer is None or not isinstance(ref.message_id, int):
+        if ref is None or not isinstance(ref.message_id, int):
             return None
-        return (normalize_peer_ref(ref.peer), ref.message_id)
+        if ref.peer_id is not None:
+            if ref.peer_type == "user" and ref.peer_access_hash is not None:
+                return (types.InputPeerUser(ref.peer_id, ref.peer_access_hash), ref.message_id)
+            if ref.peer_type == "channel" and ref.peer_access_hash is not None:
+                return (types.InputPeerChannel(ref.peer_id, ref.peer_access_hash), ref.message_id)
+            if ref.peer_type == "chat":
+                return (types.InputPeerChat(ref.peer_id), ref.message_id)
+        return (normalize_peer_ref(ref.peer), ref.message_id) if ref.peer is not None else None
 
     async def _download_by_media_id(self, media_id: str, media_obj: Any, file: Any = bytes) -> Any:
         """Скачать объект, восстановленный из media_id.
@@ -730,6 +737,10 @@ class TelegramToolbox:
         """Get message history (annotated with Media IDs)."""
         try:
             entity = await self._resolve_peer(peer, as_input=False)
+            try:
+                input_peer = utils.get_input_peer(entity, allow_self=False)
+            except TypeError:
+                input_peer = None
             messages = []
             async for msg in self._client.iter_messages(entity, limit=limit, offset_id=offset_id):
                 text = msg.text or ""
@@ -737,7 +748,10 @@ class TelegramToolbox:
                 media_payload: dict[str, Any] = {}
                 if media_id:
                     ref = MediaRef.from_message(
-                        msg, peer=normalize_peer_ref(peer), message_id=msg.id
+                        msg,
+                        peer=normalize_peer_ref(peer),
+                        message_id=msg.id,
+                        input_peer=input_peer,
                     )
                     self._media_refs.remember(media_id, ref)
                     media_payload["media"] = {"media_id": media_id, **ref.as_payload()}

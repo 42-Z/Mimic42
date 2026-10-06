@@ -238,6 +238,8 @@ class FakeTelethonClient(FakeTelegramClient):
         elif peer == "group":
             channel = MagicMock(spec=types.Channel)
             channel.id = 456
+            channel.access_hash = 789
+            channel.min = False
             channel.title = "Test Group"
             channel.username = "test_group"
             channel.megagroup = True
@@ -1380,6 +1382,10 @@ async def test_database_lookup_does_not_reset_successfully_refreshed_reference(
 class PhotoHistoryClient(FakeTelethonClient):
     """История с одним фото-сообщением."""
 
+    async def get_entity(self, peer: Any) -> Any:
+        self.calls.append(("get_entity", {"peer": peer}))
+        return types.User(id=123, access_hash=789)
+
     def iter_messages(self, entity: Any, **kwargs: Any) -> Any:
         async def gen() -> Any:
             msg = MagicMock(spec=types.Message)
@@ -1401,6 +1407,120 @@ class PhotoHistoryClient(FakeTelethonClient):
         return gen()
 
 
+@pytest.mark.parametrize("media_kind", ["photo", "voice", "doc"])
+@pytest.mark.parametrize(
+    ("entity", "expected_peer"),
+    [
+        (types.User(id=42, access_hash=789), types.InputPeerUser(42, 789)),
+        (types.User(id=42, access_hash=789, is_self=True), types.InputPeerUser(42, 789)),
+        (
+            types.Channel(
+                id=42,
+                access_hash=789,
+                title="History",
+                photo=types.ChatPhotoEmpty(),
+                date=datetime.now(),
+            ),
+            types.InputPeerChannel(42, 789),
+        ),
+        (types.ChatForbidden(id=42, title="History"), types.InputPeerChat(42)),
+    ],
+    ids=["user", "saved-messages", "channel", "chat"],
+)
+async def test_history_media_survives_username_rename_and_restart(
+    monkeypatch: pytest.MonkeyPatch, entity: Any, expected_peer: Any, media_kind: str
+) -> None:
+    from uuid import uuid4
+
+    from mimic42.integrations.database_agent_store import DatabaseAgentStore
+
+    class RenamedHistoryClient(RefreshingMediaClient, PhotoHistoryClient):
+        renamed = False
+
+        async def get_entity(self, peer: Any) -> Any:
+            if self.renamed:
+                raise ValueError("Username no longer exists")
+            return entity
+
+        def iter_messages(self, entity: Any, **kwargs: Any) -> Any:
+            messages = super().iter_messages(entity, **kwargs)
+
+            async def history() -> Any:
+                async for message in messages:
+                    message.media = self.fresh.media
+                    yield message
+
+            return history()
+
+        async def get_messages(self, entity: Any, **kwargs: Any) -> Any:
+            assert entity == expected_peer
+            assert kwargs == {"ids": 42}
+            return await super().get_messages(entity, **kwargs)
+
+    client = RenamedHistoryClient()
+    if media_kind != "photo":
+        client.fresh.media = types.MessageMediaDocument(
+            document=types.Document(
+                id=123,
+                access_hash=456,
+                file_reference=b"\x03\x04",
+                date=datetime.now(),
+                mime_type="audio/ogg" if media_kind == "voice" else "text/plain",
+                size=16,
+                dc_id=2,
+                attributes=[types.DocumentAttributeAudio(duration=1, voice=True)]
+                if media_kind == "voice"
+                else [types.DocumentAttributeFilename(file_name="notes.txt")],
+            )
+        )
+    messages = await TelegramToolbox(client).get_messages("@old_name")
+    payload = json.loads(json.dumps(messages[0]["media"]))
+    lookup = AsyncMock(side_effect=lambda **_: MediaRef.from_payload(payload))
+    monkeypatch.setattr(DatabaseAgentStore, "lookup_media_ref", lookup)
+    client.renamed = True
+    agent_id = uuid4()
+    toolbox = TelegramToolbox(client, agent_id=agent_id, session_factory=MagicMock())
+
+    if media_kind == "photo":
+        read = toolbox.view_image
+        result = await read(payload["media_id"])
+        assert result[0]["type"] == "image_url", result
+        assert (
+            base64.b64decode(result[0]["image_url"]["url"].split(",", 1)[1]) == b"fresh_image_data"
+        )
+    elif media_kind == "voice":
+        transcribe = AsyncMock(return_value="Transcription")
+        monkeypatch.setattr(toolbox, "_transcribe_audio_via_openrouter_whisper", transcribe)
+        read = toolbox.transcribe_voice_note
+        result = await read(payload["media_id"])
+        assert result == {"success": True, "transcription": "Transcription"}
+        transcribe.assert_awaited_once_with(b"fresh_image_data", "audio.ogg", "audio/ogg")
+    else:
+        read = toolbox.read_document_file
+        result = await read(payload["media_id"])
+        assert result == {"success": True, "content": "fresh_image_data"}
+
+    assert await read(payload["media_id"]) == result
+    assert len([name for name, _ in client.calls if name == "get_messages"]) == 1
+    lookup.assert_awaited_with(agent_id=agent_id, media_id=payload["media_id"])
+
+
+@pytest.mark.parametrize("peer", ["@old_name", "42", "-100500"])
+async def test_view_image_refetches_legacy_payload_without_input_peer(peer: str) -> None:
+    client = RefreshingMediaClient()
+    cache = MediaRefCache()
+    cache.remember("photo:123:456:0102:2", MediaRef.from_payload({"peer": peer, "message_id": 55}))
+
+    result = await TelegramToolbox(client, media_refs=cache).view_image("photo:123:456:0102:2")
+
+    assert result[0]["type"] == "image_url"
+    refetch = next(call for name, call in client.calls if name == "get_messages")
+    assert refetch == {
+        "entity": int(peer) if peer.lstrip("-").isdigit() else peer,
+        "kwargs": {"ids": 55},
+    }
+
+
 @pytest.mark.asyncio
 async def test_get_messages_remembers_media_refs() -> None:
     cache = MediaRefCache()
@@ -1416,6 +1536,9 @@ async def test_get_messages_remembers_media_refs() -> None:
         "media_id": "photo:123:456:0102:2",
         "peer": "chat",
         "message_id": 42,
+        "peer_type": "user",
+        "peer_id": 123,
+        "peer_access_hash": 789,
     }
 
 
@@ -1431,6 +1554,21 @@ async def test_get_messages_stores_a_normalized_peer() -> None:
     ref = cache.lookup("photo:123:456:0102:2")
     assert ref is not None
     assert ref.peer == -100500
+
+
+async def test_get_messages_keeps_history_when_entity_has_no_usable_access_hash() -> None:
+    class MinimalUserHistoryClient(PhotoHistoryClient):
+        async def get_entity(self, peer: Any) -> Any:
+            return types.User(id=123, min=True)
+
+    messages = await TelegramToolbox(MinimalUserHistoryClient()).get_messages("@old_name")
+
+    assert messages[0]["id"] == 42
+    assert messages[0]["media"] == {
+        "media_id": "photo:123:456:0102:2",
+        "peer": "@old_name",
+        "message_id": 42,
+    }
 
 
 async def test_get_messages_keeps_sticker_emoji_separate_from_pack_name() -> None:
