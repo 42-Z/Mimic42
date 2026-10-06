@@ -4,11 +4,12 @@ from uuid import uuid4
 
 import pytest
 from pydantic import ValidationError
+from telethon import TelegramClient, errors
 from telethon.crypto import AuthKey
 from telethon.sessions import StringSession
 
 from mimic42.core.agent_runtime import AgentRuntimeConfig, TelegramAuthorizationRequired
-from mimic42.integrations.telethon_client import build_telegram_client
+from mimic42.integrations.telethon_client import MimicTelegramClient, build_telegram_client
 
 
 def _config(session_string: str | None) -> AgentRuntimeConfig:
@@ -53,3 +54,55 @@ def test_flood_waits_are_not_slept_through_by_telethon() -> None:
     под trigger_lock: ждать или нет решает окно отправки, а не библиотека."""
     client = build_telegram_client(_config(_valid_session_string()))
     assert client.flood_sleep_threshold == 0
+
+
+@pytest.mark.asyncio
+async def test_peer_flood_on_any_request_is_reported_and_still_raised(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = build_telegram_client(_config(_valid_session_string()))
+    assert isinstance(client, MimicTelegramClient)
+    reported: list[str] = []
+
+    async def handler() -> None:
+        reported.append("flood")
+
+    async def flooded(self: object, request: object, **_kwargs: object) -> object:
+        raise errors.PeerFloodError(request=request)
+
+    client.peer_flood_handler = handler
+    monkeypatch.setattr(TelegramClient, "__call__", flooded)
+
+    with pytest.raises(errors.PeerFloodError):
+        await client(object())
+
+    assert reported == ["flood"]
+
+
+@pytest.mark.asyncio
+async def test_other_errors_and_successes_pass_through_without_reports(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = build_telegram_client(_config(_valid_session_string()))
+    assert isinstance(client, MimicTelegramClient)
+    reported: list[str] = []
+
+    async def handler() -> None:
+        reported.append("flood")
+
+    client.peer_flood_handler = handler
+
+    async def ok(self: object, request: object, **_kwargs: object) -> object:
+        return "ответ"
+
+    monkeypatch.setattr(TelegramClient, "__call__", ok)
+    assert await client(object()) == "ответ"
+
+    async def other(self: object, request: object, **_kwargs: object) -> object:
+        raise errors.FloodWaitError(request=request, capture=30)
+
+    monkeypatch.setattr(TelegramClient, "__call__", other)
+    with pytest.raises(errors.FloodWaitError):
+        await client(object())
+
+    assert reported == []
