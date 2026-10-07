@@ -18,8 +18,8 @@ from telethon import errors
 
 from mimic42.core.activity import ActivityRecorder
 from mimic42.core.album_grouper import AlbumGrouper
-from mimic42.core.chat_access import ChatAccess
-from mimic42.core.chat_directory import ChatDirectory
+from mimic42.core.chat_access import ChatAccess, ChatDisabledError, link_hint
+from mimic42.core.chat_directory import ChatDirectory, ChatItem
 from mimic42.core.deferred_inbox import DeferredInbox
 from mimic42.core.first_comment import (
     FirstCommentSettings,
@@ -76,6 +76,10 @@ class OpenerTargetMismatch(RuntimeError):
 
 class TelegramAuthorizationRequired(RuntimeError):
     """Raised when a Telethon user session is connected but not authorized."""
+
+
+class ChatListUnavailableError(RuntimeError):
+    """Список чатов недоступен: агент не запущен, а клиент Telegram не подключён."""
 
 
 class FirstCommentImageUnavailable(RuntimeError):
@@ -698,6 +702,12 @@ class MimicAgentRuntime:
             state=self.state,
         )
 
+    async def list_chats(self) -> list[ChatItem]:
+        """Диалоги аккаунта для настроек; только у запущенного агента."""
+        if self._state is not AgentRuntimeState.RUNNING or self._chat_directory is None:
+            raise ChatListUnavailableError("Агент не запущен: запустите его, чтобы увидеть чаты.")
+        return await self._chat_directory.list_chats()
+
     async def start(self) -> None:
         async with self._lifecycle_lock:
             if self._state is AgentRuntimeState.RUNNING:
@@ -1316,6 +1326,8 @@ class MimicAgentRuntime:
             return
         if not _is_broadcast_post(event):
             return
+        if not await self._chat_allowed(event):
+            return
 
         message_id = _extract_incoming_message_id(event)
         if message_id is None:
@@ -1520,6 +1532,37 @@ class MimicAgentRuntime:
             await self._dispatch_incoming(events)
         except Exception:
             logger.exception("Failed to process grouped album")
+
+    async def _chat_allowed(self, event: TelegramEventLike) -> bool:
+        """Доступен ли агенту чат события: отключённые в настройках не получают ходов."""
+        access = self._chat_access
+        chat_id = getattr(event, "chat_id", None)
+        if access is None or not isinstance(chat_id, int) or chat_id not in access.disabled:
+            return True
+        hint: bool | None = None
+        get_chat = getattr(event, "get_chat", None)
+        if callable(get_chat):
+            try:
+                hint = link_hint(await get_chat())
+            except Exception:
+                logger.warning("Не удалось получить чат для проверки доступа", exc_info=True)
+        return await access.allows(chat_id, has_link=hint)
+
+    async def _ensure_peer_allowed(self, peer: str) -> None:
+        """Проверка чата по строке peer (таймеры): недоступен — ``ChatDisabledError``.
+
+        Не удалось разрешить peer — доступность не подтвердить, и ошибка идёт
+        вызывающему: таймер получит ``failed``, а не сработает вслепую.
+        """
+        access = self._chat_access
+        if access is None:
+            return
+        get_peer_id = getattr(self._telegram_client, "get_peer_id", None)
+        if not callable(get_peer_id):
+            raise ChatDisabledError()
+        chat_id = await get_peer_id(_peer_for_send(peer))
+        if not await access.allows(chat_id):
+            raise ChatDisabledError(chat_id)
 
     async def _is_chat_muted(self, event: TelegramEventLike, peer: str) -> bool:
         """Приглушён ли чат у самого агента (уведомления), а не запрет писать в него."""
@@ -1891,6 +1934,10 @@ class MimicAgentRuntime:
         if warmup_verdict is False:
             logger.info("Прогрев: диалог с мимиком %s окончен, входящее без ответа", peer)
             return
+        # Диалог с другим мимиком — служебный, он не подчиняется списку чатов.
+        if warmup_verdict is None and not await self._chat_allowed(event):
+            logger.info("Чат %s отключён в настройках агента, входящее без ответа", peer)
+            return
         gate = self._warmup_gate
         sender_id = getattr(event, "sender_id", None)
         if warmup_verdict is True and gate is not None and isinstance(sender_id, int):
@@ -2185,6 +2232,7 @@ class MimicAgentRuntime:
 
             for timer in due_timers:
                 try:
+                    await self._ensure_peer_allowed(timer.peer)
                     trigger_text = f"[Отложенное событие] Сработал таймер: {timer.description}"
                     await self.trigger_message(
                         AgentTrigger(
