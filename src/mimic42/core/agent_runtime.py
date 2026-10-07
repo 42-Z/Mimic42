@@ -18,6 +18,8 @@ from telethon import errors
 
 from mimic42.core.activity import ActivityRecorder
 from mimic42.core.album_grouper import AlbumGrouper
+from mimic42.core.chat_access import ChatAccess
+from mimic42.core.chat_directory import ChatDirectory
 from mimic42.core.deferred_inbox import DeferredInbox
 from mimic42.core.first_comment import (
     FirstCommentSettings,
@@ -133,6 +135,8 @@ class AgentRuntimeConfig(BaseModel):
     # None — allowlist не задан: доступны все инструменты. Иначе — только
     # перечисленные имена.
     enabled_tools: frozenset[str] | None = Field(default=None)
+    # ID чатов, отключённых в настройках; пусто — доступны все.
+    disabled_chats: frozenset[int] = Field(default=frozenset())
     system_prompt: str = Field(min_length=1)
     soul_prompt: str = Field(default="", max_length=20_000)
     name: str = Field(default="AI", min_length=1, max_length=120)
@@ -293,6 +297,8 @@ class MimicAgentRuntime:
         media_uploader: MediaUploader | None = None,
         send_window: SendWindowTracker | None = None,
         media_refs: MediaRefCache | None = None,
+        chat_access: ChatAccess | None = None,
+        chat_directory: ChatDirectory | None = None,
     ) -> None:
         self.config = config
         self._telegram_client = telegram_client
@@ -304,6 +310,9 @@ class MimicAgentRuntime:
         # Общий с тулзами кеш media_id → сообщение/архив: без него
         # протухшую file_reference нечем обновить (issue #98).
         self._media_refs = media_refs or MediaRefCache()
+        # Правило доступа к чатам общее с инструментами; None — отключённых нет.
+        self._chat_access = chat_access
+        self._chat_directory = chat_directory
         self._state = AgentRuntimeState.STOPPED
         self._lifecycle_lock = asyncio.Lock()
         self._trigger_lock = asyncio.Lock()

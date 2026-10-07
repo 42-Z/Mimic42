@@ -17,6 +17,7 @@ from telethon import errors, functions, types, utils
 from telethon.extensions import markdown
 from telethon.helpers import generate_random_long
 
+from mimic42.core.chat_access import ChatAccess
 from mimic42.core.media import MediaUploader
 from mimic42.core.media_download import (
     RETRYABLE_DOWNLOAD_ERRORS,
@@ -324,6 +325,7 @@ class TelegramToolbox:
         media_uploader: MediaUploader | None = None,
         send_window: Any | None = None,
         media_refs: MediaRefCache | None = None,
+        chat_access: ChatAccess | None = None,
     ) -> None:
         self._client = client
         self._agent_id = agent_id
@@ -332,6 +334,7 @@ class TelegramToolbox:
         self._media_uploader = media_uploader
         self._send_window = send_window
         self._media_refs = media_refs if media_refs is not None else MediaRefCache()
+        self._chat_access = chat_access
 
     async def _resolve_media_ref(self, media_id: str) -> MediaRef | None:
         """Restore durable metadata first, then merge the current process cache."""
@@ -2906,11 +2909,13 @@ def build_telegram_langchain_tools(
     send_window: Any | None = None,
     media_refs: MediaRefCache | None = None,
     enabled_tools: frozenset[str] | None = None,
+    chat_access: ChatAccess | None = None,
 ) -> list[BaseTool]:
     """Expose the Telegram tools as LangChain StructuredTools.
 
     ``enabled_tools`` limits the exposed set to the given allowlist; ``None``
-    keeps the full catalog of 91 tools.
+    keeps the full catalog of 91 tools. ``chat_access`` closes the chats the
+    user disabled in the settings; ``None`` leaves every chat available.
     """
     toolbox = TelegramToolbox(
         client,
@@ -2919,6 +2924,7 @@ def build_telegram_langchain_tools(
         media_uploader=media_uploader,
         send_window=send_window,
         media_refs=media_refs,
+        chat_access=chat_access,
     )
 
     async def view_image_for_agent(

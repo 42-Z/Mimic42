@@ -23,6 +23,7 @@ from mimic42.core.agent_store import (
     ToolCallRecord,
     reply_target_of,
 )
+from mimic42.core.chat_access import parse_disabled_chats
 from mimic42.core.first_comment import parse_first_comment
 from mimic42.core.media_download import MediaRef
 from mimic42.core.onboarding import OnboardingSession, SecretCipher
@@ -295,6 +296,9 @@ class DatabaseAgentStore:
                 else "high",
                 enabled_tools=parse_enabled_tools(
                     agent.settings.get("enabled_tools") if agent.settings else None
+                ),
+                disabled_chats=parse_disabled_chats(
+                    agent.settings.get("disabled_chats") if agent.settings else None
                 ),
                 system_prompt=load_default_system_prompt(),
                 soul_prompt=agent.soul_prompt,

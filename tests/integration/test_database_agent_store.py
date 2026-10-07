@@ -609,6 +609,41 @@ async def test_get_runtime_config_without_enabled_tools_enables_all(
     assert config.enabled_tools is None
 
 
+async def test_get_runtime_config_parses_disabled_chats(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    owner_id = clean_slot.persona("full").user_id
+    agent_id = uuid4()
+    store = DatabaseAgentStore(db_session_factory)
+    await store.create_from_onboarding(_make_session(owner_id, agent_id, "Mimic"))
+    async with db_session_factory() as db_session:
+        await db_session.execute(
+            update(AgentModel)
+            .where(AgentModel.id == agent_id)
+            .values(settings={"disabled_chats": [-1001234567890, 42, "junk", True]})
+        )
+        await db_session.commit()
+
+    config = await store.get_runtime_config(agent_id)
+
+    assert config.disabled_chats == frozenset({-1001234567890, 42})
+
+
+async def test_get_runtime_config_without_disabled_chats_disables_nothing(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    owner_id = clean_slot.persona("full").user_id
+    agent_id = uuid4()
+    store = DatabaseAgentStore(db_session_factory)
+    await store.create_from_onboarding(_make_session(owner_id, agent_id, "Mimic"))
+
+    config = await store.get_runtime_config(agent_id)
+
+    assert config.disabled_chats == frozenset()
+
+
 async def test_create_from_onboarding_carries_tool_settings(
     db_session_factory: async_sessionmaker[AsyncSession],
     clean_slot: Slot,
