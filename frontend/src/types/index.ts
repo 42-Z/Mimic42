@@ -378,6 +378,20 @@ export interface WarmupState {
   recovery: boolean;
 }
 
+/** Вид диалога в настройке «Чаты и каналы» — зеркало ChatKind из core/chat_directory.py. */
+export type AgentChatKind = 'channel' | 'group' | 'private';
+
+/** Диалог аккаунта: GET /agents/:id/chats. */
+export interface AgentChat {
+  /** ID в формате Telethon (marked): `-100…` у каналов и супергрупп. */
+  id: number;
+  title: string;
+  username: string | null;
+  kind: AgentChatKind;
+  /** ID канала, если это группа обсуждения (комментарии) его постов. */
+  discussion_of: number | null;
+}
+
 /**
  * Form state for agent settings
  */

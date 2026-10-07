@@ -15,6 +15,7 @@ const ERROR_CATALOG: Record<string, string> = {
   ChatSendGameForbiddenError: 'Нельзя отправлять игры в этот чат',
   ChatForwardsRestrictedError: 'В чате запрещены пересылки',
   PeerIdInvalidError: 'Не удалось определить собеседника',
+  ChatDisabledError: 'Чат отключён в настройках агента',
   UserIsBlockedError: 'Пользователь заблокировал агента',
   UserDeactivatedBanError: 'Аккаунт пользователя заблокирован',
   UserNotMutualContactError: 'Нет взаимного контакта с пользователем',
