@@ -4,6 +4,7 @@ import pytest
 
 from mimic42.core.onboarding import TelegramPasswordRequiredError
 from mimic42.testing.telegram import (
+    FakeDialog,
     FakeTelegramAccount,
     FakeTelegramAuthClientFactory,
     FakeTelegramClient,
@@ -85,6 +86,22 @@ async def test_incoming_message_reaches_the_registered_handler() -> None:
     await account.deliver(chat_id=42, text="как дела")
 
     assert seen == ["как дела"]
+
+
+async def test_fake_client_lists_dialogs_by_folder() -> None:
+    client = FakeTelegramClient()
+    client.account.dialogs = [
+        FakeDialog(id=42, title="Анна", kind="private"),
+        FakeDialog(id=-1001000000001, title="Новости", kind="channel", archived=True),
+    ]
+
+    main = [d async for d in client.iter_dialogs(folder=0)]
+    archive = [d async for d in client.iter_dialogs(folder=1)]
+
+    assert [d.id for d in main] == [42]
+    assert [d.id for d in archive] == [-1001000000001]
+    assert main[0].entity.first_name == "Анна"
+    assert archive[0].entity.broadcast is True
 
 
 async def _remember(seen: list[str], event: object) -> None:

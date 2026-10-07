@@ -109,6 +109,21 @@ class FakeTelegramClient:
         for callback in list(self.account.handlers):
             await callback(event)
 
+    def iter_dialogs(self, limit: int | None = None, **kwargs: Any) -> Any:
+        """Диалоги папки: 0 — основной список, 1 — архив (как у Telethon)."""
+        archived = kwargs.get("folder") == 1
+        dialogs = [d for d in self.account.dialogs if d.archived == archived]
+
+        async def gen() -> Any:
+            for dialog in dialogs:
+                yield type(
+                    "Dialog",
+                    (),
+                    {"id": dialog.id, "title": dialog.title, "entity": dialog.entity},
+                )()
+
+        return gen()
+
     @property
     def sent_messages(self) -> list[tuple[str, str]]:
         return [(message.chat_id, message.text) for message in self.account.sent]

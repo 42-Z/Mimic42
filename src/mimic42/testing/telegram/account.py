@@ -5,7 +5,42 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any
+from datetime import UTC, datetime
+from typing import Any, Literal
+
+from telethon import types, utils
+
+_FAKE_DATE = datetime(2026, 1, 1, tzinfo=UTC)
+
+
+@dataclass
+class FakeDialog:
+    """Диалог подделки аккаунта: ``entity`` — настоящая сущность Telethon,
+    потому что каталог чатов различает виды по её типу."""
+
+    id: int
+    title: str
+    kind: Literal["channel", "group", "private"]
+    username: str | None = None
+    archived: bool = False
+
+    @property
+    def entity(self) -> Any:
+        real_id, _ = utils.resolve_id(self.id)
+        if self.kind == "private":
+            return types.User(
+                id=real_id, first_name=self.title, username=self.username, access_hash=1
+            )
+        return types.Channel(
+            id=real_id,
+            title=self.title,
+            photo=types.ChatPhotoEmpty(),
+            date=_FAKE_DATE,
+            access_hash=1,
+            username=self.username,
+            broadcast=True if self.kind == "channel" else None,
+            megagroup=True if self.kind == "group" else None,
+        )
 
 
 @dataclass
@@ -95,6 +130,7 @@ class FakeTelegramAccount:
         self.sent: list[SentMessage] = []
         self.incoming: list[IncomingMessage] = []
         self.read_marks: list[str] = []
+        self.dialogs: list[FakeDialog] = []
         self.handlers: list[Callable[[Any], Awaitable[None]]] = []
         self._next_message_id = 1000
         self._next_order_value = 0

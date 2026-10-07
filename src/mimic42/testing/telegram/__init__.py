@@ -1,4 +1,5 @@
 from mimic42.testing.telegram.account import (
+    FakeDialog,
     FakeIncomingEvent,
     FakeTelegramAccount,
     IncomingMessage,
@@ -11,6 +12,7 @@ from mimic42.testing.telegram.auth_client import (
 from mimic42.testing.telegram.client import FakeTelegramClient
 
 __all__ = [
+    "FakeDialog",
     "FakeIncomingEvent",
     "FakeTelegramAccount",
     "FakeTelegramAuthClient",

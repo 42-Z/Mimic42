@@ -15,6 +15,7 @@ from tests.e2e.helpers import (
     deliver_message,
     record_agent_event,
     script_agent_reply,
+    seed_dialogs,
 )
 
 pytestmark = pytest.mark.e2e
@@ -294,6 +295,51 @@ class TestAgentPage:
         expect(tools.get_by_role("switch", name="Удаление канала")).to_have_attribute(
             "aria-checked", "false"
         )
+
+    def test_chat_toggle_survives_save_and_reload(
+        self, persona_page: Callable[..., Page], api: httpx.Client, users: dict
+    ) -> None:
+        agent_id = _new_agent(api, users, "Чаты", "running")
+        seed_dialogs(
+            api,
+            agent_id,
+            [
+                {"id": -1001000000001, "title": "Новости дня", "kind": "channel"},
+                {"id": -1001000000002, "title": "Чат друзей", "kind": "group"},
+                {"id": 4242, "title": "Анна", "kind": "private"},
+            ],
+        )
+        page = persona_page("full")
+        page.goto(f"/agent/{agent_id}?tab=settings")
+
+        chats = page.get_by_test_id("chats-settings")
+        expect(chats.get_by_text("Доступно 3 из 3")).to_be_visible()
+
+        chats.get_by_label("Поиск чатов", exact=True).fill("Новости")
+        toggle = chats.get_by_role("switch", name="Новости дня")
+        expect(toggle).to_have_attribute("aria-checked", "true")
+        toggle.click()
+        expect(chats.get_by_text("Доступно 2 из 3")).to_be_visible()
+
+        page.get_by_role("button", name="Сохранить изменения").click()
+        expect(page.get_by_test_id("toast-container")).to_contain_text("Настройки сохранены")
+
+        page.reload()
+        chats = page.get_by_test_id("chats-settings")
+        expect(chats.get_by_text("Доступно 2 из 3")).to_be_visible()
+        chats.get_by_label("Поиск чатов", exact=True).fill("Новости")
+        expect(chats.get_by_role("switch", name="Новости дня")).to_have_attribute(
+            "aria-checked", "false"
+        )
+
+    def test_chats_need_a_running_agent(
+        self, persona_page: Callable[..., Page], api: httpx.Client, users: dict
+    ) -> None:
+        agent_id = _new_agent(api, users, "Чаты остановленного")
+        page = persona_page("full")
+        page.goto(f"/agent/{agent_id}?tab=settings")
+
+        expect(page.get_by_test_id("chats-not-running")).to_contain_text("Запустите агента")
 
 
 class TestEmptyStates:

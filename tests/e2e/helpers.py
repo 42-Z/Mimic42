@@ -76,6 +76,10 @@ def deliver_message(api: httpx.Client, agent_id: str, chat_id: int, text: str) -
     _post(api, f"/__test__/telegram/{agent_id}/deliver", {"chat_id": chat_id, "text": text})
 
 
+def seed_dialogs(api: httpx.Client, agent_id: str, dialogs: list[dict[str, object]]) -> None:
+    _post(api, f"/__test__/telegram/{agent_id}/dialogs", {"dialogs": dialogs})
+
+
 def script_agent_reply(api: httpx.Client, agent_id: str, text: str) -> None:
     _post(api, f"/__test__/agents/{agent_id}/script", {"text": text})
 
