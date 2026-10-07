@@ -16,7 +16,7 @@ describe('ToolsSettings', () => {
     const user = userEvent.setup();
     render(<ToolsSettings value={null} onChange={() => {}} />);
     const section = screen.getByTestId('tools-settings');
-    expect(within(section).getByText('Включено 91 из 91')).toBeTruthy();
+    expect(within(section).getByText('Включено 90 из 90')).toBeTruthy();
     expect(within(section).queryByRole('switch', { name: 'Отправка сообщения' })).toBeNull();
 
     await user.click(within(section).getByTestId('tool-group-messages'));
@@ -34,7 +34,7 @@ describe('ToolsSettings', () => {
     const [next] = onChange.mock.calls[0] as [string[]];
     expect(next).not.toContain('send_text_message');
     expect(next).toContain('view_image');
-    expect(next.length).toBe(90);
+    expect(next.length).toBe(89);
   });
 
   test('поиск находит по названию и раскрывает группы', async () => {
@@ -70,19 +70,19 @@ describe('ToolsSettings', () => {
     expect(next).not.toContain('send_text_message');
   });
 
-  test('пустой allowlist: счётчик нулевой, группа включает ровно свои 12', async () => {
+  test('пустой allowlist: счётчик нулевой, группа включает ровно свои 11', async () => {
     const user = userEvent.setup();
     const onChange = mock((_next: string[] | null) => {});
     render(<ToolsSettings value={[]} onChange={onChange} />);
     const section = screen.getByTestId('tools-settings');
-    expect(within(section).getByText('Включено 0 из 91')).toBeTruthy();
+    expect(within(section).getByText('Включено 0 из 90')).toBeTruthy();
 
     await user.click(
       within(section).getByRole('switch', { name: 'Все инструменты группы «Сообщения»' }),
     );
 
     const [next] = onChange.mock.calls[0] as [string[]];
-    expect(next.length).toBe(12);
+    expect(next.length).toBe(11);
     expect(next).toEqual(MESSAGES_NAMES);
     expect(next).toContain('send_text_message');
   });
@@ -114,7 +114,7 @@ describe('ToolsSettings', () => {
     await user.click(groupSwitch);
 
     const [next] = onChange.mock.calls[0] as [string[]];
-    expect(next.length).toBe(12);
+    expect(next.length).toBe(11);
     for (const name of MESSAGES_NAMES) expect(next).toContain(name);
     for (const name of OTHER_NAMES) expect(next).not.toContain(name);
   });

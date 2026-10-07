@@ -643,19 +643,13 @@ class TelegramToolbox:
             return _tool_failure(e)
 
     async def unpin_message(self, peer: str, message_id: int | None = None) -> dict[str, Any]:
-        """Unpin a message in a chat."""
+        """Unpin a message in a chat, or all pinned messages if message_id is omitted."""
         try:
             entity = await self._resolve_peer(peer)
-            await self._client.unpin_message(entity, message_id)
-            return {"success": True}
-        except Exception as e:
-            return _tool_failure(e)
-
-    async def unpin_all_messages(self, peer: str) -> dict[str, Any]:
-        """Unpin all pinned messages in a chat."""
-        try:
-            entity = await self._resolve_peer(peer)
-            await self._client(functions.messages.UnpinAllMessagesRequest(peer=entity))
+            if message_id is None:
+                await self._client(functions.messages.UnpinAllMessagesRequest(peer=entity))
+            else:
+                await self._client.unpin_message(entity, message_id)
             return {"success": True}
         except Exception as e:
             return _tool_failure(e)
@@ -2964,12 +2958,10 @@ def build_telegram_langchain_tools(
         StructuredTool.from_function(
             coroutine=toolbox.unpin_message,
             name="unpin_message",
-            description="Unpin a message in a chat.",
-        ),
-        StructuredTool.from_function(
-            coroutine=toolbox.unpin_all_messages,
-            name="unpin_all_messages",
-            description="Unpin all pinned messages in a chat.",
+            description=(
+                "Unpin a specific message in a chat, or all pinned messages "
+                "if message_id is omitted."
+            ),
         ),
         StructuredTool.from_function(
             coroutine=toolbox.send_chat_action,
