@@ -30,6 +30,7 @@ from mimic42.core.agent_runtime import (
     AgentStatus,
     AgentTrigger,
     AgentTriggerResult,
+    ChatListUnavailableError,
     TelegramAuthorizationRequired,
 )
 from mimic42.core.agent_store import (
@@ -41,6 +42,7 @@ from mimic42.core.agent_store import (
     ConversationPage,
     TelegramAccountMismatchError,
 )
+from mimic42.core.chat_directory import ChatItem
 from mimic42.core.crypto import FernetSecretCipher
 from mimic42.core.manager import (
     AgentManager,
@@ -120,6 +122,13 @@ class WarmupControl(Protocol):
     async def get_warmup_state(self, agent_id: UUID) -> WarmupState: ...
 
     async def start_warmup_recovery(self, agent_id: UUID) -> bool: ...
+
+
+@runtime_checkable
+class ChatDirectoryControl(Protocol):
+    """Список диалогов агента: есть не у всякого менеджера (подделки в тестах его не имеют)."""
+
+    async def list_chats(self, agent_id: UUID) -> list[ChatItem]: ...
 
 
 class WarmupStateResponse(BaseModel):
@@ -1115,6 +1124,29 @@ def create_app(
             )
         return WarmupStateResponse(restricted_at=state.restricted_at, recovery=state.recovery)
 
+    @app.get("/api/v1/agents/{agent_id}/chats", response_model=list[ChatItem])
+    async def list_agent_chats(
+        agent_id: UUID,
+        current_user: CurrentUserDep,
+    ) -> list[ChatItem]:
+        """Диалоги аккаунта для настройки «Чаты и каналы»; нужен запущенный агент."""
+        directory = _get_chat_directory_control(app)
+        try:
+            await _ensure_runtime_owner(app, agent_id=agent_id, user_id=current_user.user_id)
+            return await directory.list_chats(agent_id)
+        except AgentNotFoundError as exc:
+            raise _not_found(exc.agent_id) from exc
+        except ChatListUnavailableError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.exception("Failed to list chats of agent %s", agent_id)
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Не удалось получить список чатов из Telegram.",
+            ) from exc
+
     @app.get("/api/v1/openrouter/reasoning")
     async def openrouter_reasoning(current_user: CurrentUserDep) -> dict[str, Any]:
         """Per-model reasoning metadata, proxied so users behind blocks or
@@ -1268,6 +1300,16 @@ def _get_warmup_control(app: FastAPI) -> WarmupControl:
         raise HTTPException(
             status_code=status.HTTP_501_NOT_IMPLEMENTED,
             detail="Прогрев недоступен.",
+        )
+    return manager
+
+
+def _get_chat_directory_control(app: FastAPI) -> ChatDirectoryControl:
+    manager = _get_agent_manager(app)
+    if not isinstance(manager, ChatDirectoryControl):
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail="Список чатов недоступен.",
         )
     return manager
 

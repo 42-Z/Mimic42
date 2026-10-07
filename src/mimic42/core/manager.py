@@ -20,6 +20,7 @@ from mimic42.core.agent_runtime import (
     TelegramClientLike,
 )
 from mimic42.core.chat_access import ChatAccess
+from mimic42.core.chat_directory import ChatItem
 from mimic42.core.media import MediaUploader
 from mimic42.core.media_download import MediaRefCache
 from mimic42.core.memory import RuntimeMemoryService
@@ -319,6 +320,10 @@ class AgentManager:
         if self.warmup is None:
             return False
         return await self.warmup.start_recovery(agent_id)
+
+    async def list_chats(self, agent_id: UUID) -> list[ChatItem]:
+        """Диалоги аккаунта агента; у остановленного рантайма — ChatListUnavailableError."""
+        return await (await self.get_agent(agent_id)).list_chats()
 
     async def shutdown(self) -> None:
         if self.warmup is not None:

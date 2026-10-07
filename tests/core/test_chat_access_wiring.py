@@ -8,7 +8,7 @@ from uuid import uuid4
 import pytest
 
 from mimic42.core import manager as manager_module
-from mimic42.core.agent_runtime import AgentRuntimeConfig
+from mimic42.core.agent_runtime import AgentRuntimeConfig, ChatListUnavailableError
 from mimic42.core.chat_access import ChatAccess
 from mimic42.core.manager import AgentManager
 from mimic42.core.memory import RuntimeMemoryService
@@ -88,3 +88,14 @@ def test_default_runtime_passes_the_access_rule(monkeypatch: pytest.MonkeyPatch)
     assert isinstance(captured["chat_access"], ChatAccess)
     assert runtime._chat_access is captured["chat_access"]
     assert runtime._chat_directory is not None
+
+
+@pytest.mark.asyncio
+async def test_manager_lists_chats_through_the_runtime() -> None:
+    manager = _memory_manager()
+    config = _config()
+    await manager.create_agent(config)
+
+    # Агент не запущен: клиент не подключён, список недоступен.
+    with pytest.raises(ChatListUnavailableError):
+        await manager.list_chats(config.agent_id)
