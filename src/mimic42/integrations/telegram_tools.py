@@ -17,7 +17,7 @@ from telethon import errors, functions, types, utils
 from telethon.extensions import markdown
 from telethon.helpers import generate_random_long
 
-from mimic42.core.chat_access import ChatAccess
+from mimic42.core.chat_access import ChatAccess, ChatDisabledError, link_hint
 from mimic42.core.media import MediaUploader
 from mimic42.core.media_download import (
     RETRYABLE_DOWNLOAD_ERRORS,
@@ -49,6 +49,8 @@ class TelethonRequestClient(Protocol):
     async def get_input_entity(self, entity: Any) -> Any: ...
     async def get_messages(self, entity: Any, **kwargs: Any) -> Any: ...
     async def get_dialogs(self, **kwargs: Any) -> Any: ...
+    async def get_peer_id(self, peer: Any, add_mark: bool = True) -> int: ...
+    def iter_dialogs(self, limit: int | None = None, **kwargs: Any) -> Any: ...
     async def get_permissions(self, entity: Any, user: Any) -> Any: ...
     async def edit_permissions(self, entity: Any, user: Any, **kwargs: Any) -> Any: ...
     async def edit_admin(self, entity: Any, user: Any, **kwargs: Any) -> Any: ...
@@ -170,9 +172,13 @@ def _tool_failure_list(exc: Exception) -> list[dict[str, Any]]:
 def _safe_failure(exc: Exception, message: str) -> dict[str, Any]:
     """_tool_failure с безопасным текстом: результат целиком попадает в
     ToolMessage.content, который читает модель, — сырые ошибки Telegram
-    («caused by GetFileRequest» и т.п.) ей показывать нельзя."""
+    («caused by GetFileRequest» и т.п.) ей показывать нельзя.
+
+    Отказ доступа — наш собственный текст: подменять его общим «не удалось»
+    значит скрыть от модели настоящую причину."""
     failure = _tool_failure(exc)
-    failure["error"] = message
+    if not isinstance(exc, ChatDisabledError):
+        failure["error"] = message
     return failure
 
 
@@ -533,6 +539,56 @@ class TelegramToolbox:
                 ) from e
         raise ValueError("Telethon client missing entity resolution method")
 
+    async def _resolve_chat(self, peer: Any, as_input: bool = True) -> Any:
+        """Разрешить чат и убедиться, что он не отключён в настройках агента."""
+        entity = await self._resolve_peer(peer, as_input=as_input)
+        await self._ensure_chat_allowed(entity)
+        return entity
+
+    async def _guard_chat(self, peer: Any) -> None:
+        """Проверка для инструментов, отдающих Telethon сырой peer без разрешения."""
+        if self._chat_access is not None:
+            await self._resolve_chat(peer)
+
+    async def _ensure_chat_allowed(self, entity: Any) -> None:
+        if self._chat_access is None:
+            return
+        # Собственный чат («me», Избранное) приходит как InputPeerSelf; документация
+        # client.get_peer_id описывает его только для 'me'.
+        subject = "me" if isinstance(entity, types.InputPeerSelf) else entity
+        chat_id = await self._client.get_peer_id(subject)
+        if not await self._chat_access.allows(chat_id, has_link=link_hint(entity)):
+            raise ChatDisabledError(chat_id)
+
+    async def _visible_dialogs(self, limit: int) -> list[Any]:
+        """Диалоги без отключённых; читаются порциями, пока не наберётся лимит."""
+        access = self._chat_access
+        if access is None:
+            return list(await self._client.get_dialogs(limit=limit))
+        visible: list[Any] = []
+        async for dialog in self._client.iter_dialogs():
+            if await access.allows(dialog.id, has_link=link_hint(dialog.entity)):
+                visible.append(dialog)
+                if len(visible) >= limit:
+                    break
+        return visible
+
+    async def _visible_peers(self, peers: Any) -> list[dict[str, Any]]:
+        """Сериализованные пиры папки без отключённых чатов."""
+        visible: list[dict[str, Any]] = []
+        for peer in peers or []:
+            if self._chat_access is not None:
+                try:
+                    chat_id = utils.get_peer_id(peer)
+                except TypeError:
+                    chat_id = None  # InputPeerSelf: свой чат не отфильтровать по ID
+                if chat_id is not None and not await self._chat_access.allows(
+                    chat_id, has_link=link_hint(peer)
+                ):
+                    continue
+            visible.append(self._serialize_peer(peer))
+        return visible
+
     @asynccontextmanager
     async def _sending(
         self, peer: str, *, comment_to_msg_id: int | None = None
@@ -586,7 +642,7 @@ class TelegramToolbox:
             }
         try:
             async with self._sending(peer, comment_to_msg_id=comment_to_msg_id):
-                entity = await self._resolve_peer(peer)
+                entity = await self._resolve_chat(peer)
                 msg = await self._client.send_message(
                     entity,
                     message,
@@ -604,7 +660,7 @@ class TelegramToolbox:
     ) -> dict[str, Any]:
         """Edit a message previously sent by the bot."""
         try:
-            entity = await self._resolve_peer(peer)
+            entity = await self._resolve_chat(peer)
             msg = await self._client.edit_message(
                 entity, message_id, new_message, parse_mode=CustomMarkdown()
             )
@@ -617,7 +673,7 @@ class TelegramToolbox:
     ) -> dict[str, Any]:
         """Delete messages by ID."""
         try:
-            entity = await self._resolve_peer(peer)
+            entity = await self._resolve_chat(peer)
             await self._client.delete_messages(entity, message_ids, revoke=revoke)
             return {"success": True}
         except Exception as e:
@@ -629,8 +685,8 @@ class TelegramToolbox:
         """Forward messages from one chat to another."""
         try:
             async with self._sending(to_peer):
-                from_entity = await self._resolve_peer(from_peer)
-                to_entity = await self._resolve_peer(to_peer)
+                from_entity = await self._resolve_chat(from_peer)
+                to_entity = await self._resolve_chat(to_peer)
                 await self._client.forward_messages(to_entity, message_ids, from_peer=from_entity)
                 return {"success": True}
         except Exception as e:
@@ -639,7 +695,7 @@ class TelegramToolbox:
     async def pin_message(self, peer: str, message_id: int, silent: bool = False) -> dict[str, Any]:
         """Pin a message in a chat."""
         try:
-            entity = await self._resolve_peer(peer)
+            entity = await self._resolve_chat(peer)
             await self._client.pin_message(entity, message_id, silent=silent)
             return {"success": True}
         except Exception as e:
@@ -648,7 +704,7 @@ class TelegramToolbox:
     async def unpin_message(self, peer: str, message_id: int | None = None) -> dict[str, Any]:
         """Unpin a message in a chat."""
         try:
-            entity = await self._resolve_peer(peer)
+            entity = await self._resolve_chat(peer)
             await self._client.unpin_message(entity, message_id)
             return {"success": True}
         except Exception as e:
@@ -657,7 +713,7 @@ class TelegramToolbox:
     async def unpin_all_messages(self, peer: str) -> dict[str, Any]:
         """Unpin all pinned messages in a chat."""
         try:
-            entity = await self._resolve_peer(peer)
+            entity = await self._resolve_chat(peer)
             await self._client(functions.messages.UnpinAllMessagesRequest(peer=entity))
             return {"success": True}
         except Exception as e:
@@ -666,7 +722,7 @@ class TelegramToolbox:
     async def send_chat_action(self, peer: str, action: str) -> dict[str, Any]:
         """Send a chat action indicator (typing, record_audio, etc.)."""
         try:
-            entity = await self._resolve_peer(peer)
+            entity = await self._resolve_chat(peer)
             # Map simple strings to Telethon actions
             action_obj: Any = types.SendMessageTypingAction()
             if action == "record_audio":
@@ -685,8 +741,8 @@ class TelegramToolbox:
     async def send_reaction(self, peer: str, message_id: int, emoji: str) -> dict[str, Any]:
         """Set a reaction on a message."""
         try:
-            entity = await self._resolve_peer(peer)
-            reaction_list: list[Any] = [types.ReactionEmoji(emoticon=emoji)] if emoji else []
+            entity = await self._resolve_chat(peer)
+            reaction_list: list[Any] =[types.ReactionEmoji(emoticon=emoji)] if emoji else []
             await self._client(
                 functions.messages.SendReactionRequest(
                     peer=entity,
@@ -701,7 +757,7 @@ class TelegramToolbox:
     async def get_message_reactions(self, peer: str, message_id: int) -> dict[str, Any]:
         """Get the reactions of a message."""
         try:
-            entity = await self._resolve_peer(peer)
+            entity = await self._resolve_chat(peer)
             result = await self._client(
                 functions.messages.GetMessageReactionsListRequest(
                     peer=entity,
@@ -726,7 +782,7 @@ class TelegramToolbox:
     async def mark_chat_as_read(self, peer: str, max_id: int | None = None) -> dict[str, Any]:
         """Mark messages in a chat as read."""
         try:
-            entity = await self._resolve_peer(peer)
+            entity = await self._resolve_chat(peer)
             await self._client(
                 functions.messages.ReadHistoryRequest(peer=entity, max_id=max_id or 0)
             )
@@ -739,7 +795,7 @@ class TelegramToolbox:
     ) -> list[dict[str, Any]]:
         """Get message history (annotated with Media IDs)."""
         try:
-            entity = await self._resolve_peer(peer, as_input=False)
+            entity = await self._resolve_chat(peer, as_input=False)
             try:
                 input_peer = utils.get_input_peer(entity, allow_self=False)
             except TypeError:
@@ -785,7 +841,7 @@ class TelegramToolbox:
     async def get_dialogs(self, limit: int = 20) -> list[dict[str, Any]]:
         """Get recent dialogs."""
         try:
-            dialogs_list = await self._client.get_dialogs(limit=limit)
+            dialogs_list = await self._visible_dialogs(limit)
             result = []
             for d in dialogs_list:
                 is_self = bool(getattr(d.entity, "is_self", False))
@@ -805,7 +861,7 @@ class TelegramToolbox:
     async def search_messages(self, peer: str, query: str, limit: int = 20) -> list[dict[str, Any]]:
         """Search messages in a chat."""
         try:
-            entity = await self._resolve_peer(peer, as_input=False)
+            entity = await self._resolve_chat(peer, as_input=False)
             messages = []
             async for msg in self._client.iter_messages(entity, search=query, limit=limit):
                 messages.append(
@@ -824,7 +880,7 @@ class TelegramToolbox:
     async def delete_dialog(self, peer: str, revoke: bool = True) -> dict[str, Any]:
         """Delete a dialog or leave a group/channel."""
         try:
-            entity = await self._resolve_peer(peer)
+            entity = await self._resolve_chat(peer)
             await self._client.delete_dialog(entity, revoke=revoke)
             return {"success": True}
         except Exception as e:
@@ -833,8 +889,10 @@ class TelegramToolbox:
     async def archive_dialogs(self, peers: list[str]) -> dict[str, Any]:
         """Archive dialogs."""
         try:
-            for p in peers:
-                entity = await self._resolve_peer(p)
+            # Сначала проверяются все чаты: отказ на одном не должен оставить
+            # остальные уже заархивированными.
+            entities = [await self._resolve_chat(p) for p in peers]
+            for entity in entities:
                 await self._client(
                     functions.folders.EditPeerFoldersRequest(
                         folder_peers=[types.InputFolderPeer(peer=entity, folder_id=1)]
@@ -847,8 +905,8 @@ class TelegramToolbox:
     async def unarchive_dialogs(self, peers: list[str]) -> dict[str, Any]:
         """Unarchive dialogs."""
         try:
-            for p in peers:
-                entity = await self._resolve_peer(p)
+            entities = [await self._resolve_chat(p) for p in peers]
+            for entity in entities:
                 await self._client(
                     functions.folders.EditPeerFoldersRequest(
                         folder_peers=[types.InputFolderPeer(peer=entity, folder_id=0)]
@@ -861,7 +919,7 @@ class TelegramToolbox:
     async def mute_chat(self, peer: str, duration_hours: int | None = None) -> dict[str, Any]:
         """Mute a chat. If duration_hours is not specified, muted indefinitely (10 years)."""
         try:
-            entity = await self._resolve_peer(peer)
+            entity = await self._resolve_chat(peer)
             notify_peer = types.InputNotifyPeer(peer=entity)
             if duration_hours is not None:
                 until = datetime.now() + timedelta(hours=duration_hours)
@@ -882,7 +940,7 @@ class TelegramToolbox:
     async def unmute_chat(self, peer: str) -> dict[str, Any]:
         """Unmute a chat, enabling notifications."""
         try:
-            entity = await self._resolve_peer(peer)
+            entity = await self._resolve_chat(peer)
             notify_peer = types.InputNotifyPeer(peer=entity)
             await self._client(
                 functions.account.UpdateNotifySettingsRequest(
@@ -905,6 +963,10 @@ class TelegramToolbox:
             )
             chats = []
             for chat in res.chats:
+                if self._chat_access is not None and not await self._chat_access.allows(
+                    utils.get_peer_id(chat), has_link=link_hint(chat)
+                ):
+                    continue
                 chats.append(
                     {
                         "id": chat.id,
@@ -929,7 +991,7 @@ class TelegramToolbox:
         """Send a file by URL or Media ID."""
         try:
             async with self._sending(peer, comment_to_msg_id=comment_to_msg_id) as slot:
-                entity = await self._resolve_peer(peer)
+                entity = await self._resolve_chat(peer)
                 if file_source.startswith("http://") or file_source.startswith("https://"):
                     msg = await self._client.send_file(
                         entity,
@@ -1192,7 +1254,7 @@ class TelegramToolbox:
         """Send voice note by URL or Media ID."""
         try:
             async with self._sending(peer, comment_to_msg_id=comment_to_msg_id) as slot:
-                entity = await self._resolve_peer(peer)
+                entity = await self._resolve_chat(peer)
                 if file_source.startswith("http://") or file_source.startswith("https://"):
                     msg = await self._client.send_file(
                         entity,
@@ -1239,7 +1301,7 @@ class TelegramToolbox:
         """Send video note (round video) by URL or Media ID."""
         try:
             async with self._sending(peer, comment_to_msg_id=comment_to_msg_id) as slot:
-                entity = await self._resolve_peer(peer)
+                entity = await self._resolve_chat(peer)
                 if file_source.startswith("http://") or file_source.startswith("https://"):
                     msg = await self._client.send_file(
                         entity,
@@ -1279,7 +1341,7 @@ class TelegramToolbox:
         """Send a map location pin with specific latitude and longitude."""
         try:
             async with self._sending(peer):
-                entity = await self._resolve_peer(peer)
+                entity = await self._resolve_chat(peer)
                 msg = await self._client.send_file(
                     entity,
                     types.InputMediaGeoPoint(
@@ -1296,7 +1358,7 @@ class TelegramToolbox:
         """Send a beautiful venue location card with a map pin, title, and address."""
         try:
             async with self._sending(peer):
-                entity = await self._resolve_peer(peer)
+                entity = await self._resolve_chat(peer)
                 msg = await self._client.send_file(
                     entity,
                     types.InputMediaVenue(
@@ -1460,7 +1522,7 @@ class TelegramToolbox:
         """Send a sticker by its Media ID."""
         try:
             async with self._sending(peer, comment_to_msg_id=comment_to_msg_id) as slot:
-                entity = await self._resolve_peer(peer)
+                entity = await self._resolve_chat(peer)
                 media_type, obj_id, access_hash, file_reference, dc_id = parse_media_id(media_id)
                 if media_type != "sticker":
                     slot.spent = False
@@ -1515,6 +1577,8 @@ class TelegramToolbox:
                     "status": status_str,
                 }
             else:
+                # Чат, а не человек: название и @username отключённого чата не отдаём.
+                await self._ensure_chat_allowed(entity)
                 return {
                     "id": entity.id,
                     "title": getattr(entity, "title", ""),
@@ -1603,7 +1667,7 @@ class TelegramToolbox:
     async def get_message_buttons(self, peer: str, message_id: int) -> dict[str, Any]:
         """Get inline or reply keyboard buttons from a message."""
         try:
-            entity = await self._resolve_peer(peer)
+            entity = await self._resolve_chat(peer)
             msg = await self._client.get_messages(entity, ids=message_id)
             if not msg or not msg.reply_markup:
                 return {"buttons": []}
@@ -1640,7 +1704,7 @@ class TelegramToolbox:
     ) -> dict[str, Any]:
         """Click an inline callback button on a message."""
         try:
-            entity = await self._resolve_peer(peer)
+            entity = await self._resolve_chat(peer)
             data: bytes | None = None
             if button_data is not None:
                 data = button_data.encode("utf-8")
@@ -1688,7 +1752,7 @@ class TelegramToolbox:
     async def click_reply_keyboard_button(self, peer: str, button_text: str) -> dict[str, Any]:
         """Press a reply keyboard button by sending its text as a message."""
         try:
-            entity = await self._resolve_peer(peer)
+            entity = await self._resolve_chat(peer)
             msg = await self._client.send_message(entity, button_text)
             return {"success": True, "message_id": msg.id}
         except Exception as e:
@@ -1700,7 +1764,7 @@ class TelegramToolbox:
         """Query an inline bot and return results."""
         try:
             bot_entity = await self._resolve_peer(bot_username)
-            peer_entity = await self._resolve_peer(peer) if peer else types.InputPeerEmpty()
+            peer_entity = await self._resolve_chat(peer) if peer else types.InputPeerEmpty()
             result = await self._client(
                 functions.messages.GetInlineBotResultsRequest(
                     bot=bot_entity,
@@ -1737,7 +1801,7 @@ class TelegramToolbox:
         """Send an inline bot result to a chat."""
         try:
             async with self._sending(peer):
-                entity = await self._resolve_peer(peer)
+                entity = await self._resolve_chat(peer)
                 reply_to = None
                 if reply_to_msg_id is not None:
                     reply_to = types.InputReplyToMessage(reply_to_msg_id=reply_to_msg_id)
@@ -1759,7 +1823,7 @@ class TelegramToolbox:
         """Start a bot with an optional deep-link parameter."""
         try:
             target = peer or bot_username
-            entity = await self._resolve_peer(target)
+            entity = await self._resolve_chat(target)
             start_msg = f"/start {parameter}".strip()
             msg = await self._client.send_message(entity, start_msg)
             return {"success": True, "message_id": msg.id}
@@ -1771,7 +1835,7 @@ class TelegramToolbox:
     async def get_chat_info(self, peer: str) -> dict[str, Any]:
         """Get high-level details of a group/channel (participants, about description)."""
         try:
-            entity = await self._resolve_peer(peer, as_input=False)
+            entity = await self._resolve_chat(peer, as_input=False)
             if isinstance(entity, types.User):
                 return {"error": "Target entity is a user, not a chat/channel"}
 
@@ -1810,7 +1874,7 @@ class TelegramToolbox:
     async def check_admin_permissions(self, peer: str) -> dict[str, Any]:
         """Check administrative rights of the bot inside a chat/group."""
         try:
-            entity = await self._resolve_peer(peer)
+            entity = await self._resolve_chat(peer)
             if isinstance(entity, types.User):
                 return {"is_admin": False, "reason": "Target is a user"}
 
@@ -1858,7 +1922,7 @@ class TelegramToolbox:
     async def invite_to_channel(self, channel: str, users: list[str]) -> dict[str, Any]:
         """Invite users to channel/supergroup."""
         try:
-            ch_entity = await self._resolve_peer(channel)
+            ch_entity = await self._resolve_chat(channel)
             resolved_users = [await self._resolve_peer(u) for u in users]
             await self._client(
                 functions.channels.InviteToChannelRequest(channel=ch_entity, users=resolved_users)
@@ -1870,6 +1934,7 @@ class TelegramToolbox:
     async def kick_chat_member(self, peer: str, user: str) -> dict[str, Any]:
         """Kick participant from chat."""
         try:
+            await self._guard_chat(peer)
             await self._client.kick_participant(peer, user)
             return {"success": True}
         except Exception as e:
@@ -1880,6 +1945,7 @@ class TelegramToolbox:
     ) -> dict[str, Any]:
         """Ban participant."""
         try:
+            await self._guard_chat(peer)
             until = datetime.fromtimestamp(until_date) if until_date else None
             await self._client.edit_permissions(peer, user, view_messages=False, until_date=until)
             return {"success": True}
@@ -1897,6 +1963,7 @@ class TelegramToolbox:
     ) -> dict[str, Any]:
         """Restrict user permissions in chat."""
         try:
+            await self._guard_chat(peer)
             until = datetime.fromtimestamp(until_date) if until_date else None
             await self._client.edit_permissions(
                 peer,
@@ -1920,6 +1987,7 @@ class TelegramToolbox:
     ) -> dict[str, Any]:
         """Promote user to admin with custom title."""
         try:
+            await self._guard_chat(peer)
             await self._client.edit_admin(
                 peer,
                 user,
@@ -1936,7 +2004,7 @@ class TelegramToolbox:
     ) -> list[dict[str, Any]]:
         """Get members of a group/channel (with custom titles)."""
         try:
-            entity = await self._resolve_peer(peer)
+            entity = await self._resolve_chat(peer)
             filter_obj = types.ChannelParticipantsRecent()
             if filter_type == "admins":
                 filter_obj = types.ChannelParticipantsAdmins()
@@ -1968,7 +2036,7 @@ class TelegramToolbox:
     async def get_chat_admin_log(self, peer: str, limit: int = 20) -> list[dict[str, Any]]:
         """Get administrative audit log."""
         try:
-            entity = await self._resolve_peer(peer)
+            entity = await self._resolve_chat(peer)
             log_entries = []
             async for event in self._client.iter_admin_log(entity, limit=limit):
                 log_entries.append(
@@ -1986,7 +2054,7 @@ class TelegramToolbox:
     async def edit_chat_title(self, peer: str, title: str) -> dict[str, Any]:
         """Change the title of a channel, group or supergroup."""
         try:
-            entity = await self._resolve_peer(peer)
+            entity = await self._resolve_chat(peer)
             await self._client(functions.channels.EditTitleRequest(channel=entity, title=title))
             return {"success": True}
         except Exception as e:
@@ -1995,7 +2063,7 @@ class TelegramToolbox:
     async def edit_chat_about(self, peer: str, about: str) -> dict[str, Any]:
         """Change the about/description of a channel, group or supergroup."""
         try:
-            entity = await self._resolve_peer(peer)
+            entity = await self._resolve_chat(peer)
             await self._client(functions.messages.EditChatAboutRequest(peer=entity, about=about))
             return {"success": True}
         except Exception as e:
@@ -2004,7 +2072,7 @@ class TelegramToolbox:
     async def edit_chat_photo(self, peer: str, photo: str) -> dict[str, Any]:
         """Change the photo of a channel, group or supergroup. photo can be a file path or URL."""
         try:
-            entity = await self._resolve_peer(peer)
+            entity = await self._resolve_chat(peer)
             # Handle URL download if needed
             photo_path = photo
             if photo.startswith("http://") or photo.startswith("https://"):
@@ -2034,7 +2102,7 @@ class TelegramToolbox:
         """Set or change the public username/link of a channel or supergroup.
         Pass empty string to remove."""
         try:
-            entity = await self._resolve_peer(peer)
+            entity = await self._resolve_chat(peer)
             result = await self._client(
                 functions.channels.UpdateUsernameRequest(channel=entity, username=username)
             )
@@ -2051,7 +2119,7 @@ class TelegramToolbox:
         invite_users, pin_messages, manage_topics, send_photos, send_videos,
         send_roundvideos, send_audios, send_voices, send_docs, send_plain."""
         try:
-            entity = await self._resolve_peer(peer)
+            entity = await self._resolve_chat(peer)
             rights_dict = json.loads(rights) if isinstance(rights, str) else rights
             banned = types.ChatBannedRights(**rights_dict)
             await self._client(
@@ -2068,7 +2136,7 @@ class TelegramToolbox:
     ) -> dict[str, Any]:
         """Toggle message signatures in a channel (shows admin name on posts)."""
         try:
-            entity = await self._resolve_peer(peer)
+            entity = await self._resolve_chat(peer)
             await self._client(
                 functions.channels.ToggleSignaturesRequest(
                     channel=entity,
@@ -2083,7 +2151,7 @@ class TelegramToolbox:
     async def delete_channel(self, peer: str) -> dict[str, Any]:
         """Delete a channel or supergroup entirely."""
         try:
-            entity = await self._resolve_peer(peer)
+            entity = await self._resolve_chat(peer)
             await self._client(functions.channels.DeleteChannelRequest(channel=entity))
             return {"success": True}
         except Exception as e:
@@ -2092,7 +2160,7 @@ class TelegramToolbox:
     async def toggle_join_requests(self, peer: str, enabled: bool) -> dict[str, Any]:
         """Enable or disable join requests (approval required to join)."""
         try:
-            entity = await self._resolve_peer(peer)
+            entity = await self._resolve_chat(peer)
             await self._client(
                 functions.channels.ToggleJoinRequestRequest(channel=entity, enabled=enabled)
             )
@@ -2103,7 +2171,7 @@ class TelegramToolbox:
     async def toggle_join_to_send(self, peer: str, enabled: bool) -> dict[str, Any]:
         """Enable or disable the requirement to join the channel before sending messages."""
         try:
-            entity = await self._resolve_peer(peer)
+            entity = await self._resolve_chat(peer)
             await self._client(
                 functions.channels.ToggleJoinToSendRequest(channel=entity, enabled=enabled)
             )
@@ -2115,7 +2183,7 @@ class TelegramToolbox:
         """Enable or disable slow mode in a group.
         seconds can be 0 (off), 10, 30, 60, 300, 900, 3600."""
         try:
-            entity = await self._resolve_peer(peer)
+            entity = await self._resolve_chat(peer)
             await self._client(
                 functions.channels.ToggleSlowModeRequest(channel=entity, seconds=seconds)
             )
@@ -2126,8 +2194,8 @@ class TelegramToolbox:
     async def set_discussion_group(self, broadcast: str, group: str) -> dict[str, Any]:
         """Link a discussion group (supergroup) to a broadcast channel."""
         try:
-            broadcast_entity = await self._resolve_peer(broadcast)
-            group_entity = await self._resolve_peer(group)
+            broadcast_entity = await self._resolve_chat(broadcast)
+            group_entity = await self._resolve_chat(group)
             result = await self._client(
                 functions.channels.SetDiscussionGroupRequest(
                     broadcast=broadcast_entity, group=group_entity
@@ -2140,7 +2208,7 @@ class TelegramToolbox:
     async def join_channel_discussion(self, peer: str) -> dict[str, Any]:
         """Join the linked discussion group of a broadcast channel."""
         try:
-            entity = await self._resolve_peer(peer, as_input=False)
+            entity = await self._resolve_chat(peer, as_input=False)
             if not isinstance(entity, types.Channel):
                 return {"error": "Entity is not a channel"}
             full_info = await self._client(functions.channels.GetFullChannelRequest(channel=entity))
@@ -2165,7 +2233,7 @@ class TelegramToolbox:
     ) -> list[dict[str, Any]]:
         """Get comments/messages from the discussion group of a channel post."""
         try:
-            entity = await self._resolve_peer(peer, as_input=False)
+            entity = await self._resolve_chat(peer, as_input=False)
             messages = []
             async for msg in self._client.iter_messages(entity, reply_to=message_id, limit=limit):
                 messages.append(
@@ -2183,7 +2251,7 @@ class TelegramToolbox:
     async def toggle_forum(self, peer: str, enabled: bool, tabs: bool = False) -> dict[str, Any]:
         """Enable or disable forum mode in a supergroup (creates topics)."""
         try:
-            entity = await self._resolve_peer(peer)
+            entity = await self._resolve_chat(peer)
             await self._client(
                 functions.channels.ToggleForumRequest(channel=entity, enabled=enabled, tabs=tabs)
             )
@@ -2194,7 +2262,7 @@ class TelegramToolbox:
     async def toggle_pre_history_hidden(self, peer: str, enabled: bool) -> dict[str, Any]:
         """Hide or show previous chat history for new members."""
         try:
-            entity = await self._resolve_peer(peer)
+            entity = await self._resolve_chat(peer)
             await self._client(
                 functions.channels.TogglePreHistoryHiddenRequest(channel=entity, enabled=enabled)
             )
@@ -2205,7 +2273,7 @@ class TelegramToolbox:
     async def toggle_participants_hidden(self, peer: str, enabled: bool) -> dict[str, Any]:
         """Hide or show the list of participants in a channel/group."""
         try:
-            entity = await self._resolve_peer(peer)
+            entity = await self._resolve_chat(peer)
             await self._client(
                 functions.channels.ToggleParticipantsHiddenRequest(channel=entity, enabled=enabled)
             )
@@ -2218,7 +2286,7 @@ class TelegramToolbox:
     ) -> dict[str, Any]:
         """Set a geolocation for a group/channel (appears in info)."""
         try:
-            entity = await self._resolve_peer(peer)
+            entity = await self._resolve_chat(peer)
             geo_point = types.InputGeoPoint(lat=latitude, long=longitude)
             result = await self._client(
                 functions.channels.EditLocationRequest(
@@ -2232,7 +2300,7 @@ class TelegramToolbox:
     async def toggle_anti_spam(self, peer: str, enabled: bool) -> dict[str, Any]:
         """Enable or disable native Telegram anti-spam protection in a group."""
         try:
-            entity = await self._resolve_peer(peer)
+            entity = await self._resolve_chat(peer)
             await self._client(
                 functions.channels.ToggleAntiSpamRequest(channel=entity, enabled=enabled)
             )
@@ -2251,7 +2319,7 @@ class TelegramToolbox:
         other, manage_topics, post_stories, edit_stories, delete_stories,
         manage_direct_messages, manage_ranks."""
         try:
-            entity = await self._resolve_peer(peer)
+            entity = await self._resolve_chat(peer)
             user_entity = await self._resolve_peer(user)
             rights_dict = json.loads(rights) if isinstance(rights, str) else rights
             admin_rights = types.ChatAdminRights(**rights_dict)
@@ -2276,7 +2344,7 @@ class TelegramToolbox:
         send_roundvideos, send_audios, send_voices, send_docs, send_plain, edit_rank.
         until_date is Unix timestamp for when the restriction expires."""
         try:
-            entity = await self._resolve_peer(peer)
+            entity = await self._resolve_chat(peer)
             user_entity = await self._resolve_peer(user)
             rights_dict = json.loads(rights) if isinstance(rights, str) else rights
             if until_date is not None:
@@ -2336,7 +2404,7 @@ class TelegramToolbox:
                     raise e
             else:
                 # Public channel or exact peer
-                entity = await self._resolve_peer(channel)
+                entity = await self._resolve_chat(channel)
                 updates = await self._client(functions.channels.JoinChannelRequest(channel=entity))
                 result: dict[str, Any] = {"success": True, "type": "public"}
                 if hasattr(updates, "chats") and updates.chats:
@@ -2344,6 +2412,8 @@ class TelegramToolbox:
                     result["chat_id"] = getattr(chat, "id", None)
                     result["title"] = getattr(chat, "title", None)
                 return result
+        except ChatDisabledError as e:
+            return _tool_failure(e)
         except Exception as e:
             error_str = str(e)
             error_type = str(type(e))
@@ -2367,7 +2437,7 @@ class TelegramToolbox:
         """Send a poll or quiz."""
         try:
             async with self._sending(peer):
-                entity = await self._resolve_peer(peer)
+                entity = await self._resolve_chat(peer)
                 poll = types.Poll(
                     # Id опроса генерирует клиент: эталонные реализации
                     # (Pyrogram) всегда отправляют случайный long (rnd_id),
@@ -2611,6 +2681,7 @@ class TelegramToolbox:
             }
 
         try:
+            await self._guard_chat(peer)
             from datetime import UTC, datetime, timedelta
 
             from mimic42.integrations.database_models import AgentTimerModel
@@ -2661,15 +2732,9 @@ class TelegramToolbox:
                             "title": f.title.text if hasattr(f.title, "text") else str(f.title),
                             "emoticon": f.emoticon,
                             "color": f.color,
-                            "pinned_peers": [
-                                self._serialize_peer(p) for p in (f.pinned_peers or [])
-                            ],
-                            "include_peers": [
-                                self._serialize_peer(p) for p in (f.include_peers or [])
-                            ],
-                            "exclude_peers": [
-                                self._serialize_peer(p) for p in (f.exclude_peers or [])
-                            ],
+                            "pinned_peers": await self._visible_peers(f.pinned_peers),
+                            "include_peers": await self._visible_peers(f.include_peers),
+                            "exclude_peers": await self._visible_peers(f.exclude_peers),
                             "contacts": bool(f.contacts),
                             "non_contacts": bool(f.non_contacts),
                             "groups": bool(f.groups),
@@ -2713,8 +2778,12 @@ class TelegramToolbox:
                 resolved = []
                 for p in peer_list:
                     try:
-                        entity = await self._resolve_peer(p)
+                        entity = await self._resolve_chat(p)
                         resolved.append(entity)
+                    except ChatDisabledError:
+                        # Не «пропуск нераспознанного»: папка не должна молча
+                        # собраться без чата, который агент просил добавить.
+                        raise
                     except Exception:
                         pass
                 return resolved
