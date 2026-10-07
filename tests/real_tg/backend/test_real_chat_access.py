@@ -66,13 +66,13 @@ async def disabled_chats(
         try:
             if original is None:
                 await conn.execute(
-                    "update agents set settings = settings - 'disabled_chats'"
-                    " where id = $1::uuid",
+                    "update agents set settings = settings - 'disabled_chats' where id = $1::uuid",
                     agent_id,
                 )
             else:
                 await conn.execute(
-                    "update agents set settings = jsonb_set(settings, '{disabled_chats}', $2::jsonb)"
+                    "update agents"
+                    " set settings = jsonb_set(settings, '{disabled_chats}', $2::jsonb)"
                     " where id = $1::uuid",
                     agent_id,
                     original,
@@ -103,9 +103,7 @@ async def test_disabled_private_chat_gets_no_reply_and_enabled_one_does(
     token = await jwt()
 
     async with disabled_chats(client, token, agent_id, [checker_id]):
-        watcher = asyncio.ensure_future(
-            checker.collect_messages(mimic_id, seconds=SILENCE_SECONDS)
-        )
+        watcher = asyncio.ensure_future(checker.collect_messages(mimic_id, seconds=SILENCE_SECONDS))
         await asyncio.sleep(1)
         await checker.send(phone, "Ты меня слышишь?")
         seen = await watcher
@@ -134,9 +132,7 @@ async def test_disabled_channel_gets_no_first_comment_and_enabled_one_gets(
 
     async with first_comment(client, token, agent_id, [{"text": comment}]):
         async with disabled_chats(client, token, agent_id, [channel_id]):
-            watcher = asyncio.ensure_future(
-                checker.collect_thread(group_id, seconds=WATCH_SECONDS)
-            )
+            watcher = asyncio.ensure_future(checker.collect_thread(group_id, seconds=WATCH_SECONDS))
             await asyncio.sleep(1)
             muted_post = await checker.post(channel_id, "Пост в отключённый канал")
             muted_seen = await watcher

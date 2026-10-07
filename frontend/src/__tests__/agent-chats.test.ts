@@ -80,22 +80,22 @@ describe('buildChatRows', () => {
   test('группа обсуждения включённого канала включена и заблокирована им', () => {
     const rows = buildChatRows([NEWS, COMMENTS], new Set([COMMENTS.id]));
     const comments = rows[1];
-    expect(comments.enabled).toBe(true);
-    expect(comments.lockedBy).toEqual({ id: NEWS.id, title: 'Новости' });
+    expect(comments?.enabled).toBe(true);
+    expect(comments?.lockedBy).toEqual({ id: NEWS.id, title: 'Новости' });
   });
 
   test('при отключённом канале группа живёт своим состоянием', () => {
     const rows = buildChatRows([NEWS, COMMENTS], new Set([NEWS.id, COMMENTS.id]));
-    expect(rows[1].enabled).toBe(false);
-    expect(rows[1].lockedBy).toBeNull();
+    expect(rows[1]?.enabled).toBe(false);
+    expect(rows[1]?.lockedBy).toBeNull();
     const rowsEnabledOwn = buildChatRows([NEWS, COMMENTS], new Set([NEWS.id]));
-    expect(rowsEnabledOwn[1].enabled).toBe(true);
-    expect(rowsEnabledOwn[1].lockedBy).toBeNull();
+    expect(rowsEnabledOwn[1]?.enabled).toBe(true);
+    expect(rowsEnabledOwn[1]?.lockedBy).toBeNull();
   });
 
   test('канал вне списка диалогов тоже блокирует группу', () => {
     const rows = buildChatRows([COMMENTS], new Set());
-    expect(rows[0].lockedBy).toEqual({ id: NEWS.id, title: `Канал ${NEWS.id}` });
+    expect(rows[0]?.lockedBy).toEqual({ id: NEWS.id, title: `Канал ${NEWS.id}` });
   });
 });
 
