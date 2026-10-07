@@ -56,6 +56,13 @@ def test_link_hint_trusts_only_real_booleans() -> None:
     assert link_hint(SimpleNamespace(has_link=object())) is None
 
 
+def test_link_hint_says_no_for_a_broadcast_channel_even_with_comments() -> None:
+    """У канала с комментариями has_link истинен, но группой обсуждения он быть не может."""
+    assert link_hint(SimpleNamespace(broadcast=True, has_link=True)) is False
+    assert link_hint(SimpleNamespace(broadcast=False, has_link=True)) is True
+    assert link_hint(SimpleNamespace(broadcast=None, has_link=True)) is True
+
+
 def test_disabled_error_tells_the_model_why() -> None:
     error = ChatDisabledError(42)
     assert error.chat_id == 42

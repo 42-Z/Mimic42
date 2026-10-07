@@ -15,7 +15,9 @@ from mimic42.core.chat_directory import ChatItem, ChatKind
 logger = logging.getLogger("mimic42.chat_directory")
 
 LINK_CACHE_TTL_SECONDS = 3600.0
-LIST_CACHE_TTL_SECONDS = 60.0
+# Короткий: кнопка «Обновить список» в настройках должна показывать новые чаты, а кеш
+# только гасит повторные запросы при перемонтировании секции.
+LIST_CACHE_TTL_SECONDS = 10.0
 SAVED_MESSAGES_TITLE = "Избранное"
 # Основной список и архив: Telegram отдаёт архив папкой 1.
 _DIALOG_FOLDERS = (0, 1)

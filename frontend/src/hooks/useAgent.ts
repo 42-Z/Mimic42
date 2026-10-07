@@ -103,7 +103,7 @@ export function useWarmupState(agentId: string) {
 /**
  * Диалоги аккаунта для настройки «Чаты и каналы». Читаются из клиента запущенного
  * агента: 409 — штатное «агент не запущен», поэтому без повторов и без перезапроса
- * на каждый возврат в окно (список кешируется на бэкенде на минуту).
+ * на каждый возврат в окно; новые чаты подтягивает кнопка «Обновить список».
  */
 export function useAgentChats(agentId: string) {
   const isValidId = agentIdSchema.safeParse(agentId).success;

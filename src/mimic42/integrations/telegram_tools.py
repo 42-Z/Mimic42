@@ -609,6 +609,9 @@ class TelegramToolbox:
         Окно — источник дешёвой правды, ошибка Telegram — источник точной:
         обе ветки кормят трекер, иначе он разойдётся с реальностью.
         """
+        # Отключённый чат отказывает раньше окна: проверка окна читает чат из Telegram
+        # и в отказе подсказывает, как обойти закрытое окно.
+        await self._guard_chat(peer)
         slot = _SendSlot()
         # Комментарий уходит в связанную группу, а не в peer: окно канала к нему
         # не относится, а права и кд группы мы здесь не знаем.
@@ -753,7 +756,7 @@ class TelegramToolbox:
         """Set a reaction on a message."""
         try:
             entity = await self._resolve_chat(peer)
-            reaction_list: list[Any] =[types.ReactionEmoji(emoticon=emoji)] if emoji else []
+            reaction_list: list[Any] = [types.ReactionEmoji(emoticon=emoji)] if emoji else []
             await self._client(
                 functions.messages.SendReactionRequest(
                     peer=entity,

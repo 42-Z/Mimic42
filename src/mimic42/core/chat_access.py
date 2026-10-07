@@ -42,11 +42,15 @@ def parse_disabled_chats(raw: Any) -> frozenset[int]:
 
 
 def link_hint(entity: Any) -> bool | None:
-    """Признак ``Channel.has_link`` у сущности: связана ли она с обсуждением или каналом.
+    """Может ли сущность быть группой обсуждения какого-то канала.
 
-    Настоящий ``bool`` приходит у разобранных сущностей Telegram; у остальных
-    (InputPeer, заглушки) признак неизвестен, и вызывающему придётся спросить.
+    ``False`` — точно нет: вещательный канал (обсуждение у него есть, но сам он
+    ничьё обсуждение не ведёт) или сущность без ``Channel.has_link``. Настоящий
+    ``bool`` приходит у разобранных сущностей Telegram; у остальных (InputPeer,
+    заглушки) признак неизвестен, и вызывающему придётся спросить.
     """
+    if getattr(entity, "broadcast", None) is True:
+        return False
     value = getattr(entity, "has_link", None)
     return value if isinstance(value, bool) else None
 

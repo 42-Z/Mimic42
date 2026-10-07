@@ -213,6 +213,44 @@ async def test_admin_tools_keep_the_raw_peer_without_an_access_rule() -> None:
     assert entity == "@allowed"
 
 
+class _UntouchableWindow:
+    """Окно отправки: его опрос читает чат из Telegram, а отказ окна подсказывает обход."""
+
+    def __init__(self) -> None:
+        self.checked: list[str] = []
+
+    async def check(self, peer: str) -> Any:
+        self.checked.append(peer)
+        raise AssertionError("окно опрошено раньше проверки доступа")
+
+    def note_error(self, peer: str, exc: Exception) -> None:
+        raise AssertionError("ошибка записана в окно отключённого чата")
+
+    def note_sent(self, peer: str) -> None:
+        raise AssertionError("отправка записана в окно отключённого чата")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda tb: tb.send_text_message("@blocked", "привет"),
+        lambda tb: tb.send_text_message("@blocked", "привет", comment_to_msg_id=5),
+        lambda tb: tb.forward_messages("@allowed", "@blocked", [1]),
+        lambda tb: tb.send_poll("@blocked", "Вопрос?", ["да", "нет"]),
+    ],
+    ids=["text", "comment", "forward_target", "poll"],
+)
+async def test_disabled_chat_is_refused_before_the_send_window_reads_it(call: Call) -> None:
+    window = _UntouchableWindow()
+    toolbox, _ = _toolbox({BLOCKED}, send_window=window)
+
+    result = await call(toolbox)
+
+    assert _refused(result)
+    assert window.checked == []
+
+
 @pytest.mark.asyncio
 async def test_enabled_chat_keeps_working() -> None:
     toolbox, client = _toolbox({BLOCKED})

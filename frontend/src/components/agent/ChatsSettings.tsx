@@ -49,7 +49,8 @@ export function ChatsSettings({
   const disabled = useMemo(() => new Set(value), [value]);
   const rows = useMemo(() => buildChatRows(chats ?? [], disabled), [chats, disabled]);
   const knownIds = useMemo(() => new Set((chats ?? []).map((chat) => chat.id)), [chats]);
-  const orphans = value.filter((id) => !knownIds.has(id));
+  // Пока список грузится, неизвестными были бы все отключённые ID: блок не мигает.
+  const orphans = isLoading ? [] : value.filter((id) => !knownIds.has(id));
 
   const normalizedQuery = query.trim().toLowerCase();
   const matches = (row: ChatRow) =>
