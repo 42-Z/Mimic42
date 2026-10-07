@@ -10,6 +10,7 @@ import { Input, Textarea, Label } from '@/components/ui/input';
 import { Skeleton, Badge } from '@/components/ui/card';
 import { PresetPicker } from '@/components/agent/PresetPicker';
 import { ToolsSettings } from '@/components/agent/ToolsSettings';
+import { ChatsSettings } from '@/components/agent/ChatsSettings';
 import {
   EMPTY_FIRST_COMMENT,
   FirstCommentSettingsSection,
@@ -24,6 +25,7 @@ import {
 import { DEFAULT_MODEL, optionsIncluding } from '@/lib/models';
 import { agentsApi } from '@/lib/api';
 import { pickReasoningValue, reasoningLabel, reasoningOptionValues } from '@/lib/reasoning';
+import { readDisabledChats, mergeDisabledChats } from '@/lib/chats/agentChats';
 import { readEnabledTools, mergeEnabledTools } from '@/lib/tools/agentTools';
 import { agentSettingsSchema, type AgentSettingsValues, type WarmupValues } from '@/lib/validators';
 import type { ApiError } from '@/types';
@@ -47,6 +49,7 @@ export function TabSettings({ agentId }: { agentId: string }) {
     first_comment: EMPTY_FIRST_COMMENT,
     warmup: { enabled: false },
     enabled_tools: null,
+    disabled_chats: [],
   });
   const [formErrors, setFormErrors] = useState<Partial<Record<keyof AgentSettingsValues, string>>>({});
   const { dirty, setDirty } = useSyncedDraft(details, agentId, (fresh) => {
@@ -59,6 +62,7 @@ export function TabSettings({ agentId }: { agentId: string }) {
       first_comment: readFirstComment(fresh.settings),
       warmup: readWarmup(fresh.settings),
       enabled_tools: readEnabledTools(fresh.settings),
+      disabled_chats: readDisabledChats(fresh.settings),
     });
   });
 
@@ -104,7 +108,10 @@ export function TabSettings({ agentId }: { agentId: string }) {
           enabled: result.data.warmup?.enabled ?? false,
         },
       };
-      const submissionSettings = mergeEnabledTools(mergedSettings, result.data.enabled_tools);
+      const submissionSettings = mergeDisabledChats(
+        mergeEnabledTools(mergedSettings, result.data.enabled_tools),
+        result.data.disabled_chats,
+      );
       const submissionData = {
         name: result.data.name,
         soul_prompt: result.data.soul_prompt,
@@ -211,6 +218,15 @@ export function TabSettings({ agentId }: { agentId: string }) {
         value={values.enabled_tools ?? null}
         onChange={(enabled) => {
           setValues((v) => ({ ...v, enabled_tools: enabled }));
+          setDirty(true);
+        }}
+      />
+
+      <ChatsSettings
+        agentId={agentId}
+        value={values.disabled_chats ?? []}
+        onChange={(disabledChats) => {
+          setValues((v) => ({ ...v, disabled_chats: disabledChats }));
           setDirty(true);
         }}
       />
