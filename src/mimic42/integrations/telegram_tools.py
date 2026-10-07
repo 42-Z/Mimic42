@@ -546,9 +546,20 @@ class TelegramToolbox:
         return entity
 
     async def _guard_chat(self, peer: Any) -> None:
-        """Проверка для инструментов, отдающих Telethon сырой peer без разрешения."""
+        """Проверка чата, который инструмент сам больше нигде не использует (таймер)."""
         if self._chat_access is not None:
             await self._resolve_chat(peer)
+
+    async def _chat_target(self, peer: Any) -> Any:
+        """Чат для вызова Telethon, который принимает peer как есть.
+
+        При включённой проверке уходит та самая сущность, что проверена: строку
+        Telethon разобрал бы заново, и два разбора одного peer могли бы разойтись.
+        Без проверки поведение прежнее — peer передаётся как пришёл.
+        """
+        if self._chat_access is None:
+            return peer
+        return await self._resolve_chat(peer)
 
     async def _ensure_chat_allowed(self, entity: Any) -> None:
         if self._chat_access is None:
@@ -1934,8 +1945,8 @@ class TelegramToolbox:
     async def kick_chat_member(self, peer: str, user: str) -> dict[str, Any]:
         """Kick participant from chat."""
         try:
-            await self._guard_chat(peer)
-            await self._client.kick_participant(peer, user)
+            chat = await self._chat_target(peer)
+            await self._client.kick_participant(chat, user)
             return {"success": True}
         except Exception as e:
             return _tool_failure(e)
@@ -1945,9 +1956,9 @@ class TelegramToolbox:
     ) -> dict[str, Any]:
         """Ban participant."""
         try:
-            await self._guard_chat(peer)
+            chat = await self._chat_target(peer)
             until = datetime.fromtimestamp(until_date) if until_date else None
-            await self._client.edit_permissions(peer, user, view_messages=False, until_date=until)
+            await self._client.edit_permissions(chat, user, view_messages=False, until_date=until)
             return {"success": True}
         except Exception as e:
             return _tool_failure(e)
@@ -1963,10 +1974,10 @@ class TelegramToolbox:
     ) -> dict[str, Any]:
         """Restrict user permissions in chat."""
         try:
-            await self._guard_chat(peer)
+            chat = await self._chat_target(peer)
             until = datetime.fromtimestamp(until_date) if until_date else None
             await self._client.edit_permissions(
-                peer,
+                chat,
                 user,
                 send_messages=send_messages,
                 send_media=send_media,
@@ -1987,9 +1998,9 @@ class TelegramToolbox:
     ) -> dict[str, Any]:
         """Promote user to admin with custom title."""
         try:
-            await self._guard_chat(peer)
+            chat = await self._chat_target(peer)
             await self._client.edit_admin(
-                peer,
+                chat,
                 user,
                 post_messages=post_messages,
                 delete_messages=delete_messages,

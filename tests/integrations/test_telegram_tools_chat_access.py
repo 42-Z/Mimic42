@@ -188,6 +188,32 @@ async def test_archive_changes_nothing_when_one_of_the_chats_is_disabled() -> No
 
 
 @pytest.mark.asyncio
+async def test_admin_tools_hand_telethon_the_checked_entity_not_the_raw_string() -> None:
+    """Проверенный и действующий чат — один объект: строку Telethon разобрал бы заново."""
+    toolbox, client = _toolbox({BLOCKED})
+
+    await toolbox.kick_chat_member("@allowed", "username")
+    await toolbox.ban_chat_member("@allowed", "username")
+    await toolbox.restrict_chat_member("@allowed", "username")
+    await toolbox.promote_chat_member("@allowed", "username")
+
+    handed = [call[1]["entity"] for call in client.calls if call[0] != "get_input_entity"]
+    assert len(handed) == 4
+    assert all(isinstance(entity, types.InputPeerChannel) for entity in handed)
+
+
+@pytest.mark.asyncio
+async def test_admin_tools_keep_the_raw_peer_without_an_access_rule() -> None:
+    client = AccessClient()
+    toolbox = TelegramToolbox(cast(Any, client))
+
+    await toolbox.kick_chat_member("@allowed", "username")
+
+    (entity,) = [call[1]["entity"] for call in client.calls if call[0] == "kick_participant"]
+    assert entity == "@allowed"
+
+
+@pytest.mark.asyncio
 async def test_enabled_chat_keeps_working() -> None:
     toolbox, client = _toolbox({BLOCKED})
 
@@ -329,6 +355,7 @@ def test_every_chat_addressed_tool_goes_through_the_access_guard() -> None:
         if not CHAT_PARAMS & set(inspect.signature(method).parameters):
             continue
         source = inspect.getsource(method)
-        if "_resolve_chat(" not in source and "_guard_chat(" not in source:
+        guards = ("_resolve_chat(", "_guard_chat(", "_chat_target(")
+        if not any(guard in source for guard in guards):
             unguarded.append(name)
     assert unguarded == []
