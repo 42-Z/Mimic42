@@ -2904,7 +2904,7 @@ def build_telegram_langchain_tools(
     """Expose the Telegram tools as LangChain StructuredTools.
 
     ``enabled_tools`` limits the exposed set to the given allowlist; ``None``
-    keeps the full catalog of 91 tools.
+    keeps the full catalog of 90 tools.
     """
     toolbox = TelegramToolbox(
         client,
