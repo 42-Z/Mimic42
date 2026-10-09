@@ -3,10 +3,10 @@ import { TOOL_CATALOG } from '@/lib/activity/toolCatalog';
 import { TOOL_GROUP_ORDER, TOOL_INFO } from '@/lib/tools/toolInfo';
 
 describe('toolInfo', () => {
-  test('перечисляет все 91 инструмент каталога действий без повторов', () => {
+  test('перечисляет все 90 инструментов каталога действий без повторов', () => {
     const names = TOOL_INFO.map((tool) => tool.name);
-    expect(names.length).toBe(91);
-    expect(new Set(names).size).toBe(91);
+    expect(names.length).toBe(90);
+    expect(new Set(names).size).toBe(90);
     expect(new Set(names)).toEqual(new Set(Object.keys(TOOL_CATALOG)));
   });
 

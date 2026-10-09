@@ -1687,7 +1687,7 @@ async def test_tools_exposed_in_langchain() -> None:
     client = FakeTelethonClient()
     tools = build_telegram_langchain_tools(cast(TelethonRequestClient, client))
 
-    assert len(tools) == 91
+    assert len(tools) == 90
     tool_names = [t.name for t in tools]
     assert "send_text_message" in tool_names
     assert "join_channel_discussion" in tool_names
@@ -1933,13 +1933,17 @@ async def test_remaining_message_tools() -> None:
     res = await toolbox.pin_message("group", 123)
     assert res["success"] is True
 
-    # unpin_message
+    # unpin_message (concrete message)
     res = await toolbox.unpin_message("group", 123)
     assert res["success"] is True
 
-    # unpin_all_messages
-    res = await toolbox.unpin_all_messages("group")
+    # unpin_message without id unpins all pinned messages
+    res = await toolbox.unpin_message("group")
     assert res["success"] is True
+    unpinned_all = [
+        r for r in client.requests if isinstance(r, functions.messages.UnpinAllMessagesRequest)
+    ]
+    assert len(unpinned_all) == 1
 
     # send_chat_action
     res = await toolbox.send_chat_action("group", "record_audio")
@@ -2844,7 +2848,7 @@ async def test_tools_unfiltered_without_allowlist() -> None:
     client = FakeTelethonClient()
     tools = build_telegram_langchain_tools(cast(TelethonRequestClient, client))
 
-    assert len(tools) == 91
+    assert len(tools) == 90
 
 
 @pytest.mark.asyncio
