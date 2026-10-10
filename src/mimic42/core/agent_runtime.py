@@ -747,6 +747,9 @@ class MimicAgentRuntime:
                 logger.debug("Authorized. Storing Telegram username...")
                 await self._remember_identity()
                 await self._store_telegram_username()
+                # До обработчика сообщений: ответы @SpamBot, дошедшие после рестарта,
+                # не должны начинать ход агента (он иначе нажимает кнопки апелляции).
+                await self._remember_spambot_id()
                 logger.debug("Authorized. Registering message handler...")
                 self._register_message_handler()
                 logger.info("Message handler registered")

@@ -6,6 +6,7 @@ import time
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any, cast
+from unittest.mock import MagicMock
 
 import pytest
 from telethon import errors, functions, types
@@ -216,6 +217,51 @@ async def test_recoverable_refusals_are_not_remembered() -> None:
 
     assert again["error_code"] == "ChatGuestSendForbiddenError"
     assert client.attempts == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "peer", ["@SpamBot", "SpamBot", "spambot", "https://t.me/SpamBot", "t.me/spambot/"]
+)
+async def test_the_spam_bot_is_off_limits_for_the_agent(peer: str) -> None:
+    client = FailingSendClient(RuntimeError("до Telegram не должно дойти"))
+    toolbox = TelegramToolbox(cast(Any, client))
+
+    sent = await toolbox.send_text_message(peer, "Это ошибка")
+    started = await toolbox.start_bot(peer)
+    history = await toolbox.get_messages(peer)
+
+    assert sent["error_code"] == "OffLimitsBotError"
+    assert started["error_code"] == "OffLimitsBotError"
+    assert history[0]["error_code"] == "OffLimitsBotError"
+    assert "владелец" in sent["error"]
+    assert client.attempts == 0
+
+
+@pytest.mark.asyncio
+async def test_no_timers_for_the_spam_bot() -> None:
+    session_factory = MagicMock()
+    toolbox = TelegramToolbox(
+        cast(Any, FailingSendClient(RuntimeError("нет"))),
+        agent_id=MagicMock(),
+        session_factory=session_factory,
+    )
+
+    result = await toolbox.set_wakeup_timer("@SpamBot", 1800, "Проверить апелляцию")
+
+    assert result["error_code"] == "OffLimitsBotError"
+    session_factory.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_other_bots_stay_available() -> None:
+    client = FailingSendClient(RuntimeError("сбой"))
+    toolbox = TelegramToolbox(cast(Any, client))
+
+    result = await toolbox.send_text_message("@BotFather", "/help")
+
+    assert result["error_code"] == "RuntimeError"
+    assert client.attempts == 1
 
 
 @pytest.mark.asyncio

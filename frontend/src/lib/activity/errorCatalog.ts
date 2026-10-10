@@ -28,6 +28,7 @@ const ERROR_CATALOG: Record<string, string> = {
   UserBannedInChannelError: 'Telegram запретил аккаунту писать в группы и каналы',
   ChatGuestSendForbiddenError: 'В группу обсуждения нужно сначала вступить',
   SendRefusedRecently: 'Повтор отправки после отказа Telegram не выполнен',
+  OffLimitsBotError: 'Диалог с @SpamBot ведёт владелец, а не агент',
   PeerFloodError: 'Telegram ограничил переписку с незнакомыми',
   InputUserDeactivatedError: 'Аккаунт пользователя деактивирован',
   ChannelPrivateError: 'Канал приватный и недоступен',

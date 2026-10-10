@@ -137,6 +137,30 @@ class SendWindowClosed(RuntimeError):
         super().__init__(message)
 
 
+class OffLimitsBotError(RuntimeError):
+    """Диалог со служебным ботом Telegram ведёт система и владелец, а не агент."""
+
+    def __init__(self, username: str) -> None:
+        super().__init__(
+            f"Бот @{username} не для агента: состояние аккаунта система проверяет сама, "
+            "а апелляцию подаёт владелец. Ничего ему не отправляй, кнопок не нажимай и "
+            "таймеров на него не ставь."
+        )
+
+
+# Через этого бота Telegram снимает ограничения аккаунта: его кнопки — заявления
+# от имени владельца («я не рассылал спам»), и решать такое должен человек.
+_OFF_LIMITS_BOTS = frozenset({"spambot"})
+
+
+def _off_limits_bot(peer: Any) -> str | None:
+    """Юзернейм служебного бота, если peer указывает на него (@имя, имя, t.me/имя)."""
+    if not isinstance(peer, str):
+        return None
+    name = peer.strip().rstrip("/").rsplit("/", 1)[-1].lstrip("@").lower()
+    return name if name in _OFF_LIMITS_BOTS else None
+
+
 class SendRefusedRecently(RuntimeError):
     """Telegram только что отказал в отправке в этот чат: повтор ничего не изменит."""
 
@@ -181,7 +205,8 @@ _ERROR_HINTS: tuple[tuple[tuple[type[Exception], ...], str], ...] = (
         "Telegram запретил этому аккаунту писать в группы и каналы (USER_BANNED_IN_CHANNEL). "
         "Это решение Telegram, а не настройка агента. Причину он не называет: либо тебя "
         "заблокировали в этом чате, либо ограничен весь аккаунт. Состояние аккаунта "
-        "показывает @SpamBot (start_bot, потом get_messages). Повторять отправку "
+        "система проверяет сама через @SpamBot: сам к нему не обращайся и кнопки "
+        "апелляции в нём не нажимай, это решение владельца. Повторять отправку "
         "бесполезно. Скажи, что именно ответил Telegram, и не утверждай, что точно "
         "знаешь причину.",
     ),
@@ -205,7 +230,8 @@ _ERROR_HINTS: tuple[tuple[tuple[type[Exception], ...], str], ...] = (
     (
         (errors.PeerFloodError,),
         "Telegram ограничил переписку с незнакомыми (PEER_FLOOD). Не начинай новые диалоги, "
-        "отвечай только тем, кто написал первым. Состояние аккаунта показывает @SpamBot.",
+        "отвечай только тем, кто написал первым. Состояние аккаунта система проверяет сама "
+        "через @SpamBot: сам к нему не обращайся и кнопки апелляции не нажимай.",
     ),
     (
         (errors.MsgIdInvalidError,),
@@ -618,6 +644,9 @@ class TelegramToolbox:
 
     async def _resolve_peer(self, peer: Any, as_input: bool = True) -> Any:
         """Resolve a peer string/int to a Telethon entity."""
+        blocked = _off_limits_bot(peer)
+        if blocked is not None:
+            raise OffLimitsBotError(blocked)
         if isinstance(peer, str):
             if "#" in peer:
                 peer = peer.split("#", 1)[-1]
@@ -2855,6 +2884,9 @@ class TelegramToolbox:
             }
 
         try:
+            blocked = _off_limits_bot(peer)
+            if blocked is not None:
+                raise OffLimitsBotError(blocked)
             await self._guard_chat(peer)
             from datetime import UTC, datetime, timedelta
 
