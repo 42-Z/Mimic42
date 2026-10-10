@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import replace
@@ -136,6 +137,31 @@ class SendWindowClosed(RuntimeError):
         super().__init__(message)
 
 
+class SendRefusedRecently(RuntimeError):
+    """Telegram только что отказал в отправке в этот чат: повтор ничего не изменит."""
+
+    def __init__(self, error_code: str, retry_after_seconds: int) -> None:
+        self.error_code = error_code
+        # Читает _tool_failure: остаток попадает в retry_after_seconds.
+        self.seconds = retry_after_seconds
+        super().__init__(
+            f"Telegram только что отказал в отправке в этот чат ({error_code}), и с тех пор "
+            "ничего не изменилось: повторять бесполезно, запрос в Telegram не отправлен. "
+            f"Новая попытка имеет смысл не раньше чем через {retry_after_seconds} с. "
+            "Скажи владельцу, что именно ответил Telegram."
+        )
+
+
+# Отказы, после которых та же отправка в тот же чат заведомо не пройдёт: слабая модель
+# повторяет её по кругу, а лишние неудачные запросы аккаунту не на пользу.
+_HARD_REFUSALS: tuple[type[Exception], ...] = (errors.UserBannedInChannelError,)
+_REFUSAL_TTL_SECONDS = 300.0
+
+
+def _refusal_key(peer: Any) -> str:
+    return str(peer).strip().lstrip("@").lower()
+
+
 class _SendSlot:
     """Расходуется ли слот медленного режима на этой отправке.
 
@@ -146,6 +172,80 @@ class _SendSlot:
     spent = True
 
 
+# Что значит ошибка Telegram и что делать дальше. Сырой текст вроде «You're banned from
+# sending messages…» модель пересказывает как «меня забанили в чате», хотя Telegram
+# не говорит, почему отправка запрещена; подсказка закрывает этот пробел.
+_ERROR_HINTS: tuple[tuple[tuple[type[Exception], ...], str], ...] = (
+    (
+        (errors.UserBannedInChannelError,),
+        "Telegram запретил этому аккаунту писать в группы и каналы (USER_BANNED_IN_CHANNEL). "
+        "Это решение Telegram, а не настройка агента. Причину он не называет: либо тебя "
+        "заблокировали в этом чате, либо ограничен весь аккаунт. Состояние аккаунта "
+        "показывает @SpamBot (start_bot, потом get_messages). Повторять отправку "
+        "бесполезно. Скажи, что именно ответил Telegram, и не утверждай, что точно "
+        "знаешь причину.",
+    ),
+    (
+        (errors.ChatGuestSendForbiddenError,),
+        "В эту группу обсуждения можно писать только после вступления. Вызови "
+        "join_channel_discussion для канала и повтори отправку с тем же comment_to_msg_id.",
+    ),
+    (
+        (errors.ChatWriteForbiddenError, errors.ChatRestrictedError),
+        "В этом чате тебе нельзя писать: он только для чтения или у тебя отозвано право "
+        "писать. Прочитай историю (get_messages): часто это бот-верификатор с капчей, "
+        "пройди её и повтори. Если капчи нет, чат для тебя закрыт.",
+    ),
+    (
+        (errors.UserNotParticipantError, errors.ChannelPrivateError),
+        "Ты не состоишь в этом чате, или он приватный. Публичный канал или группу открывает "
+        "join_channel, группу обсуждения канала — join_channel_discussion, закрытый чат — "
+        "join_channel с инвайт-ссылкой.",
+    ),
+    (
+        (errors.PeerFloodError,),
+        "Telegram ограничил переписку с незнакомыми (PEER_FLOOD). Не начинай новые диалоги, "
+        "отвечай только тем, кто написал первым. Состояние аккаунта показывает @SpamBot.",
+    ),
+    (
+        (errors.MsgIdInvalidError,),
+        "Сообщения с таким ID нет в этом чате. Если это был комментарий "
+        "(comment_to_msg_id), у канала может не быть группы обсуждения или ID поста "
+        "неверный: проверь пост через get_messages канала.",
+    ),
+)
+
+
+def _discussion_info(full_chat: Any, chats: Any) -> dict[str, Any]:
+    """Есть ли у вещательного канала группа обсуждения и нужно ли в неё вступать.
+
+    Комментарий уходит в эту группу; если админы включили «вступать, чтобы писать»
+    (``join_to_send``), без вступления Telegram откажет.
+    """
+    linked_id = getattr(full_chat, "linked_chat_id", None)
+    if not isinstance(linked_id, int) or not linked_id:
+        return {"has_discussion": False}
+    linked = next((c for c in chats or [] if getattr(c, "id", None) == linked_id), None)
+    left = getattr(linked, "left", None)
+    join_required = getattr(linked, "join_to_send", None)
+    return {
+        "has_discussion": True,
+        "discussion": {
+            "id": utils.get_peer_id(types.PeerChannel(linked_id)),
+            "title": getattr(linked, "title", None),
+            "joined": (not left) if isinstance(left, bool) else None,
+            "join_required_to_comment": join_required if isinstance(join_required, bool) else None,
+        },
+    }
+
+
+def _error_hint(exc: Exception) -> str | None:
+    for classes, hint in _ERROR_HINTS:
+        if isinstance(exc, classes):
+            return hint
+    return None
+
+
 def _tool_failure(exc: Exception) -> dict[str, Any]:
     """Structured tool failure: machine-readable error identity for the activity log."""
     failure: dict[str, Any] = {
@@ -153,6 +253,9 @@ def _tool_failure(exc: Exception) -> dict[str, Any]:
         "error": str(exc),
         "error_code": type(exc).__name__,
     }
+    hint = _error_hint(exc)
+    if hint is not None:
+        failure["hint"] = hint
     if isinstance(exc, SendWindowClosed):
         failure["reason"] = exc.reason
         failure["retry_after_seconds"] = exc.retry_after_seconds
@@ -337,6 +440,8 @@ class TelegramToolbox:
         self._agent_id = agent_id
         self._session_factory = session_factory
         self._last_send_text_message: dict[str, datetime] = {}
+        # Чат → (до какого time.monotonic() отправка не повторяется, код отказа).
+        self._refusals: dict[str, tuple[float, str]] = {}
         self._media_uploader = media_uploader
         self._send_window = send_window
         self._media_refs = media_refs if media_refs is not None else MediaRefCache()
@@ -623,24 +728,44 @@ class TelegramToolbox:
         # Отключённый чат отказывает раньше окна: проверка окна читает чат из Telegram
         # и в отказе подсказывает, как обойти закрытое окно.
         await self._guard_chat(peer)
+        self._raise_if_recently_refused(peer)
         slot = _SendSlot()
-        # Комментарий уходит в связанную группу, а не в peer: окно канала к нему
-        # не относится, а права и кд группы мы здесь не знаем.
-        if self._send_window is None or comment_to_msg_id is not None:
-            yield slot
-            return
-        now = datetime.now(UTC)
-        window = await self._send_window.check(peer)
-        if not window.is_open(now):
-            raise SendWindowClosed(window.reason, window.retry_after(now))
         try:
-            yield slot
-        except Exception as exc:
-            self._send_window.note_error(peer, exc)
+            # Комментарий уходит в связанную группу, а не в peer: окно канала к нему
+            # не относится, а права и кд группы мы здесь не знаем.
+            if self._send_window is None or comment_to_msg_id is not None:
+                yield slot
+                return
+            now = datetime.now(UTC)
+            window = await self._send_window.check(peer)
+            if not window.is_open(now):
+                raise SendWindowClosed(window.reason, window.retry_after(now))
+            try:
+                yield slot
+            except Exception as exc:
+                self._send_window.note_error(peer, exc)
+                raise
+            else:
+                if slot.spent:
+                    self._send_window.note_sent(peer)
+        except _HARD_REFUSALS as exc:
+            self._refusals[_refusal_key(peer)] = (
+                time.monotonic() + _REFUSAL_TTL_SECONDS,
+                type(exc).__name__,
+            )
             raise
-        else:
-            if slot.spent:
-                self._send_window.note_sent(peer)
+
+    def _raise_if_recently_refused(self, peer: str) -> None:
+        """Та же отправка после жёсткого отказа Telegram не уходит в сеть повторно."""
+        key = _refusal_key(peer)
+        refused = self._refusals.get(key)
+        if refused is None:
+            return
+        until, code = refused
+        remaining = until - time.monotonic()
+        if remaining > 0:
+            raise SendRefusedRecently(code, int(remaining) + 1)
+        self._refusals.pop(key, None)
 
     # Category 1: Messages and Basic Communication (1-12)
 
@@ -1856,9 +1981,14 @@ class TelegramToolbox:
         try:
             entity = await self._resolve_chat(peer, as_input=False)
             if isinstance(entity, types.User):
-                return {"error": "Target entity is a user, not a chat/channel"}
+                return {
+                    "success": False,
+                    "error": "Target entity is a user, not a chat/channel",
+                    "error_code": "NotAChat",
+                    "hint": "Это человек или бот. Профиль человека показывает get_profile.",
+                }
 
-            info = {
+            info: dict[str, Any] = {
                 "id": entity.id,
                 "title": getattr(entity, "title", ""),
                 "username": getattr(entity, "username", None),
@@ -1875,6 +2005,8 @@ class TelegramToolbox:
                 info["about"] = full_chat.about or ""
                 info["participants_count"] = full_chat.participants_count or 0
                 info["admins_count"] = full_chat.admins_count or 0
+                if not entity.megagroup:
+                    info.update(_discussion_info(full_chat, full_info.chats))
             elif isinstance(entity, types.Chat):
                 full_info = await self._client(
                     functions.messages.GetFullChatRequest(chat_id=entity.id)
@@ -2229,20 +2361,41 @@ class TelegramToolbox:
         try:
             entity = await self._resolve_chat(peer, as_input=False)
             if not isinstance(entity, types.Channel):
-                return {"error": "Entity is not a channel"}
+                return {
+                    "success": False,
+                    "error": "Entity is not a channel",
+                    "error_code": "NotAChannel",
+                    "hint": "Укажи канал, под постами которого хочешь писать.",
+                }
             full_info = await self._client(functions.channels.GetFullChannelRequest(channel=entity))
             full_chat = full_info.full_chat
             linked_chat_id = getattr(full_chat, "linked_chat_id", None)
             if not linked_chat_id:
-                return {"error": "This channel has no linked discussion group"}
+                return {
+                    "success": False,
+                    "error": "This channel has no linked discussion group",
+                    "error_code": "NoDiscussionGroup",
+                    "hint": "У канала нет обсуждения: комментариев под постами там нет.",
+                }
             linked_chat = await self._client.get_entity(linked_chat_id)
-            await self._client(functions.channels.JoinChannelRequest(channel=linked_chat))
+            already_joined = False
+            try:
+                await self._client(functions.channels.JoinChannelRequest(channel=linked_chat))
+            except errors.UserAlreadyParticipantError:
+                already_joined = True
+            # Членство изменилось: отправка, которой Telegram отказал, стоит новой попытки.
+            self._refusals.clear()
             return {
                 "success": True,
                 "linked_chat_id": linked_chat_id,
                 "title": getattr(linked_chat, "title", ""),
                 "username": getattr(linked_chat, "username", None),
                 "is_group": isinstance(linked_chat, types.Channel) and linked_chat.megagroup,
+                "already_joined": already_joined,
+                "hint": (
+                    "Теперь комментируй: send_text_message с peer=<этот канал> и "
+                    "comment_to_msg_id=<ID поста>."
+                ),
             }
         except Exception as e:
             return _tool_failure(e)
@@ -2425,6 +2578,8 @@ class TelegramToolbox:
                 # Public channel or exact peer
                 entity = await self._resolve_chat(channel)
                 updates = await self._client(functions.channels.JoinChannelRequest(channel=entity))
+                # Членство изменилось: отправка, которой Telegram отказал, стоит новой попытки.
+                self._refusals.clear()
                 result: dict[str, Any] = {"success": True, "type": "public"}
                 if hasattr(updates, "chats") and updates.chats:
                     chat = updates.chats[0]
@@ -3040,8 +3195,10 @@ def build_telegram_langchain_tools(
             description=(
                 "Send a text message (markdown supported). "
                 "Set comment_to_msg_id to the ID of a channel post to leave a comment "
-                "under it: the message goes to the channel's linked discussion group. "
-                "It takes precedence over reply_to_msg_id."
+                "under it (peer is the channel): the message goes to the channel's linked "
+                "discussion group. It takes precedence over reply_to_msg_id. If Telegram "
+                "says you must join the discussion first, call join_channel_discussion "
+                "and repeat the send once."
             ),
         ),
         StructuredTool.from_function(
@@ -3375,7 +3532,9 @@ def build_telegram_langchain_tools(
             name="join_channel_discussion",
             description=(
                 "Join the linked discussion group of a broadcast channel "
-                "and return its info (ID, title, username)."
+                "and return its info (ID, title, username). Needed only when a comment "
+                "was refused because the group requires joining first; then repeat the "
+                "send with the same comment_to_msg_id."
             ),
         ),
         StructuredTool.from_function(

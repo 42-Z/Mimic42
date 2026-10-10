@@ -2566,7 +2566,10 @@ async def test_join_channel_discussion_no_linked_chat() -> None:
     toolbox = TelegramToolbox(client)
 
     result = await toolbox.join_channel_discussion("group")
-    assert result == {"error": "This channel has no linked discussion group"}
+    assert result["success"] is False
+    assert result["error"] == "This channel has no linked discussion group"
+    assert result["error_code"] == "NoDiscussionGroup"
+    assert "комментариев" in result["hint"]
 
 
 @pytest.mark.asyncio

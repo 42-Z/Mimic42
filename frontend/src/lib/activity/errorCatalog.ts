@@ -23,7 +23,12 @@ const ERROR_CATALOG: Record<string, string> = {
   UserChannelsTooMuchError: 'У пользователя слишком много каналов',
   UserNotParticipantError: 'Пользователь не участник этого чата',
   UserAdminInvalidError: 'Нельзя применить действие к администратору',
-  UserBannedInChannelError: 'Пользователь заблокирован в этом чате',
+  // Telegram: «You're banned from sending messages in supergroups/channels». Причина
+  // может быть и в этом чате, и в ограничении всего аккаунта, поэтому формулировка общая.
+  UserBannedInChannelError: 'Telegram запретил аккаунту писать в группы и каналы',
+  ChatGuestSendForbiddenError: 'В группу обсуждения нужно сначала вступить',
+  SendRefusedRecently: 'Повтор отправки после отказа Telegram не выполнен',
+  PeerFloodError: 'Telegram ограничил переписку с незнакомыми',
   InputUserDeactivatedError: 'Аккаунт пользователя деактивирован',
   ChannelPrivateError: 'Канал приватный и недоступен',
   ChannelInvalidError: 'Не удалось определить канал',
