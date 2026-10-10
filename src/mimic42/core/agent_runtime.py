@@ -68,6 +68,11 @@ FIRST_COMMENT_FLOOD_WAIT_LIMIT = 10
 # соединение, которое уже никто не закроет. Менеджер закрывает агентов разом,
 # так что это ожидание укладывается в 10 секунд, которые Docker даёт на остановку.
 CLOSE_GRACE_SECONDS = 5.0
+# Потолок одного шага остановки. Шаги упираются во внешние соединения (база,
+# HTTP, Telegram), а после смены сети такое соединение молчит до 15 минут:
+# остановка не должна ждать его, иначе агент висит в «Остановке», а Telegram-сессия
+# остаётся подключённой. Шаг, не уложившийся в срок, добивается в фоне.
+STOP_STEP_TIMEOUT_SECONDS = 5.0
 
 
 class OpenerTargetMismatch(RuntimeError):
@@ -806,34 +811,66 @@ class MimicAgentRuntime:
             self._state = AgentRuntimeState.STOPPING
             try:
                 if self._scheduler_task is not None:
-                    self._scheduler_task.cancel()
-                    try:
-                        await self._scheduler_task
-                    except asyncio.CancelledError:
-                        pass
+                    scheduler_task = self._scheduler_task
+                    scheduler_task.cancel()
+                    # Планировщик ходит в базу: мёртвое соединение держит его
+                    # закрытие сессии под щитом SQLAlchemy, и отмена не помогает.
+                    await self._within_stop_step(scheduler_task, "планировщик таймеров")
                     self._scheduler_task = None
 
-                await self._album_grouper.close()
-                await self._deferred_inbox.close()
+                await self._within_stop_step(self._album_grouper.close(), "буфер альбомов")
+                await self._within_stop_step(self._deferred_inbox.close(), "отложенные входящие")
 
                 if self._http_client is not None:
                     try:
-                        await self._http_client.aclose()
+                        await self._within_stop_step(self._http_client.aclose(), "HTTP-клиент")
                     finally:
                         self._http_client = None
             finally:
                 # The Telegram client must be disconnected even if a previous
                 # step failed — otherwise the userbot keeps answering messages
                 # for a runtime nobody can reach anymore.
-                await self._telegram_client.disconnect()
-                self._state = AgentRuntimeState.STOPPED
+                try:
+                    await self._within_stop_step(
+                        self._telegram_client.disconnect(), "отключение от Telegram"
+                    )
+                finally:
+                    self._state = AgentRuntimeState.STOPPED
 
-            await self._record_event(
-                event_type="agent.stopped",
-                status="succeeded",
-                started_at=datetime.now(UTC),
-                completed_at=datetime.now(UTC),
+            await self._within_stop_step(
+                self._record_event(
+                    event_type="agent.stopped",
+                    status="succeeded",
+                    started_at=datetime.now(UTC),
+                    completed_at=datetime.now(UTC),
+                ),
+                "запись события остановки",
             )
+
+    async def _within_stop_step(self, step: Awaitable[Any], name: str) -> None:
+        """Дождаться шага остановки не дольше STOP_STEP_TIMEOUT_SECONDS.
+
+        Исключение шага пробрасывается как раньше. Не уложившийся шаг не отменяется:
+        отмена на мёртвом сокете не прерывает закрытие соединения, а недоделанный
+        disconnect хуже затянувшегося. Он дорабатывает в фоне, его итог только
+        логируется, а остановка идёт дальше.
+        """
+        task = asyncio.ensure_future(step)
+        done, _ = await asyncio.wait({task}, timeout=STOP_STEP_TIMEOUT_SECONDS)
+        if task in done:
+            # Отменённый шаг (планировщик отменяют намеренно) — не ошибка.
+            if not task.cancelled():
+                task.result()
+            return
+        logger.warning(
+            "Остановка агента %s: шаг «%s» не завершился за %.0f с, продолжаю без него",
+            self.config.agent_id,
+            name,
+            STOP_STEP_TIMEOUT_SECONDS,
+        )
+        task.add_done_callback(
+            lambda finished: _log_late_stop_failure(finished, self.config.agent_id, name)
+        )
 
     async def close(self) -> None:
         """Stop for good and release what only a restart would need.
@@ -2215,7 +2252,10 @@ class MimicAgentRuntime:
 
     async def _run_scheduler_loop(self) -> None:
         """Background loop to check and trigger pending agent timers."""
-        while self._state is AgentRuntimeState.RUNNING:
+        # Остановка не ждёт зависший шаг и идёт дальше: после быстрого перезапуска
+        # старый цикл, дожив до следующей итерации, не должен стать вторым планировщиком.
+        me = asyncio.current_task()
+        while self._state is AgentRuntimeState.RUNNING and self._scheduler_task is me:
             try:
                 await self._check_and_trigger_timers()
             except asyncio.CancelledError:
@@ -2299,6 +2339,19 @@ class MimicAgentRuntime:
                         .values(status=timer.status)
                     )
                     await update_session.commit()
+
+
+def _log_late_stop_failure(task: asyncio.Future[Any], agent_id: UUID, name: str) -> None:
+    """Итог шага остановки, не уложившегося в срок: только в лог, остановка уже ушла дальше."""
+    if task.cancelled():
+        return
+    error = task.exception()
+    if error is None:
+        logger.info("Остановка агента %s: шаг «%s» всё же завершился", agent_id, name)
+    else:
+        logger.warning(
+            "Остановка агента %s: шаг «%s» завершился ошибкой: %r", agent_id, name, error
+        )
 
 
 def _delay_until(window: SendWindow, now: datetime) -> float:

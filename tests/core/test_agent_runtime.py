@@ -146,6 +146,96 @@ async def test_runtime_start_and_stop_are_idempotent() -> None:
     assert telegram.disconnect_calls == 1
 
 
+class _HangingHttpClient:
+    """HTTP-клиент, чьё закрытие упёрлось в мёртвый сокет и не возвращается."""
+
+    def __init__(self) -> None:
+        self.release = asyncio.Event()
+
+    async def aclose(self) -> None:
+        await self.release.wait()
+
+
+class _FailingHttpClient:
+    async def aclose(self) -> None:
+        raise RuntimeError("не удалось закрыть соединения")
+
+
+@pytest.mark.asyncio
+async def test_stop_does_not_wait_for_a_scheduler_stuck_on_a_dead_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("mimic42.core.agent_runtime.STOP_STEP_TIMEOUT_SECONDS", 0.05)
+    telegram = FakeTelegramClient()
+    runtime = MimicAgentRuntime(
+        config=make_config(), telegram_client=telegram, langchain_agent=FakeLangChainAgent()
+    )
+    await runtime.start()
+    release = asyncio.Event()
+
+    async def stuck_on_session_close() -> None:
+        # Закрытие сессии SQLAlchemy идёт под щитом: отмена его не прерывает.
+        while not release.is_set():
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                continue
+
+    stuck = asyncio.create_task(stuck_on_session_close())
+    cast(Any, runtime)._scheduler_task = stuck
+    await asyncio.sleep(0)
+
+    try:
+        await asyncio.wait_for(runtime.stop(), timeout=2)
+
+        assert runtime.state is AgentRuntimeState.STOPPED
+        assert telegram.disconnect_calls == 1
+        assert not stuck.done()
+    finally:
+        release.set()
+        stuck.cancel()
+        await asyncio.gather(stuck, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_stop_disconnects_telegram_even_if_http_close_hangs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("mimic42.core.agent_runtime.STOP_STEP_TIMEOUT_SECONDS", 0.05)
+    telegram = FakeTelegramClient()
+    runtime = MimicAgentRuntime(
+        config=make_config(), telegram_client=telegram, langchain_agent=FakeLangChainAgent()
+    )
+    await runtime.start()
+    hanging = _HangingHttpClient()
+    cast(Any, runtime)._http_client = hanging
+
+    try:
+        await asyncio.wait_for(runtime.stop(), timeout=2)
+
+        assert runtime.state is AgentRuntimeState.STOPPED
+        assert telegram.disconnect_calls == 1
+    finally:
+        hanging.release.set()
+        await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_a_failing_stop_step_still_disconnects_telegram_and_raises() -> None:
+    telegram = FakeTelegramClient()
+    runtime = MimicAgentRuntime(
+        config=make_config(), telegram_client=telegram, langchain_agent=FakeLangChainAgent()
+    )
+    await runtime.start()
+    cast(Any, runtime)._http_client = _FailingHttpClient()
+
+    with pytest.raises(RuntimeError, match="не удалось закрыть"):
+        await runtime.stop()
+
+    assert runtime.state is AgentRuntimeState.STOPPED
+    assert telegram.disconnect_calls == 1
+
+
 @pytest.mark.asyncio
 async def test_runtime_refuses_unauthorized_userbot_session() -> None:
     runtime = MimicAgentRuntime(
