@@ -339,6 +339,43 @@ async def test_chat_folders_hide_disabled_peers() -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_dialogs_with_zero_limit_returns_nothing() -> None:
+    toolbox, client = _toolbox({BLOCKED})
+    client.dialog_list = [_dialog(ALLOWED, "Открытый")]
+
+    assert await toolbox.get_dialogs(limit=0) == []
+
+
+@pytest.mark.asyncio
+async def test_folder_rewrite_keeps_the_peers_hidden_from_the_agent() -> None:
+    # В папке 2 включён channel 456: он отключён, агент его не видел и не передаёт.
+    hidden = -1000000000456
+    toolbox, client = _toolbox({hidden})
+
+    result = await toolbox.create_or_update_chat_folder(2, "Work", include_peers=["@allowed"])
+
+    assert result["success"] is True
+    (request,) = [
+        r for r in client.requests if isinstance(r, functions.messages.UpdateDialogFilterRequest)
+    ]
+    folder = request.filter
+    assert isinstance(folder, types.DialogFilter)
+    assert [utils.get_peer_id(p) for p in folder.include_peers] == [ALLOWED, hidden]
+
+
+@pytest.mark.asyncio
+async def test_folder_rewrite_without_an_access_rule_does_not_read_the_folder() -> None:
+    client = AccessClient()
+    toolbox = TelegramToolbox(cast(Any, client))
+
+    await toolbox.create_or_update_chat_folder(2, "Work", include_peers=["@allowed"])
+
+    assert not [
+        r for r in client.requests if isinstance(r, functions.messages.GetDialogFiltersRequest)
+    ]
+
+
+@pytest.mark.asyncio
 async def test_common_chats_hide_disabled_chats() -> None:
     # AccessClient отдаёт общий канал с ID 789.
     toolbox, _ = _toolbox({-1000000000789})

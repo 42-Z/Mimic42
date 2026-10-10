@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from mimic42.core.agent_runtime import ChatListUnavailableError, MimicAgentRuntime
@@ -47,6 +49,25 @@ async def test_incoming_from_a_disabled_chat_starts_no_turn() -> None:
 
     assert agent.inputs == []
     assert telegram.sent_messages == []
+
+
+@pytest.mark.asyncio
+async def test_refused_incoming_leaves_no_trace_in_the_activity_feed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime, telegram, _ = _runtime(_access({99}))
+    recorded: list[str] = []
+
+    async def record_event(**kwargs: Any) -> None:
+        recorded.append(kwargs["event_type"])
+
+    monkeypatch.setattr(runtime, "_record_event", record_event)
+    await runtime.start()
+    recorded.clear()
+
+    await telegram.account.deliver(chat_id=99, text="привет")
+
+    assert recorded == []
 
 
 @pytest.mark.asyncio
@@ -112,20 +133,20 @@ def _comment_runtime(access: ChatAccess) -> tuple[MimicAgentRuntime, FakeTelegra
 
 @pytest.mark.asyncio
 async def test_disabled_channel_gets_no_first_comment() -> None:
-    runtime, telegram = _comment_runtime(_access({-100500}))
+    runtime, telegram = _comment_runtime(_access({CHANNEL}))
     await runtime.start()
 
-    await telegram.account.deliver_post(chat_id=-100500, text="Новый пост")
+    await telegram.account.deliver_post(chat_id=CHANNEL, text="Новый пост")
 
     assert [m for m in telegram.account.sent if "comment_to" in m.kwargs] == []
 
 
 @pytest.mark.asyncio
 async def test_other_channels_still_get_the_first_comment() -> None:
-    runtime, telegram = _comment_runtime(_access({-100600}))
+    runtime, telegram = _comment_runtime(_access({GROUP}))
     await runtime.start()
 
-    await telegram.account.deliver_post(chat_id=-100500, text="Новый пост")
+    await telegram.account.deliver_post(chat_id=CHANNEL, text="Новый пост")
 
     assert len([m for m in telegram.account.sent if "comment_to" in m.kwargs]) == 1
 
@@ -147,6 +168,27 @@ async def test_peer_check_resolves_the_peer_through_the_client() -> None:
     with pytest.raises(ChatDisabledError):
         await runtime._ensure_peer_allowed(str(CHANNEL))
     await runtime._ensure_peer_allowed("-1009999999999")
+
+
+@pytest.mark.asyncio
+async def test_peer_check_fails_closed_when_the_peer_cannot_be_resolved() -> None:
+    runtime, telegram, _ = _runtime(_access({CHANNEL}))
+
+    async def get_peer_id(peer: object, add_mark: bool = True) -> int:
+        raise ValueError("Cannot find any entity")
+
+    telegram.get_peer_id = get_peer_id  # ty: ignore[unresolved-attribute]
+
+    with pytest.raises(ValueError):
+        await runtime._ensure_peer_allowed("@unknown")
+
+
+@pytest.mark.asyncio
+async def test_peer_check_refuses_when_the_client_cannot_resolve_ids() -> None:
+    runtime, _, _ = _runtime(_access({CHANNEL}))
+
+    with pytest.raises(ChatDisabledError):
+        await runtime._ensure_peer_allowed("@news")
 
 
 @pytest.mark.asyncio

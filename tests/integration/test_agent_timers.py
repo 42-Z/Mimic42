@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from uuid import uuid4
 
+import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -68,6 +70,7 @@ async def test_set_wakeup_timer_tool_and_scheduler(
 async def test_timer_for_a_disabled_chat_fails_without_a_turn(
     db_session_factory: async_sessionmaker[AsyncSession],
     clean_slot: Slot,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     owner_id = clean_slot.persona("empty").user_id
     agent_id = uuid4()
@@ -102,6 +105,12 @@ async def test_timer_for_a_disabled_chat_fails_without_a_turn(
         session_factory=db_session_factory,
         chat_access=ChatAccess(frozenset({12345}), never_linked),
     )
+    events: list[dict[str, Any]] = []
+
+    async def record_event(**kwargs: Any) -> None:
+        events.append(kwargs)
+
+    monkeypatch.setattr(runtime, "_record_event", record_event)
 
     await runtime._check_and_trigger_timers()
 
@@ -113,3 +122,6 @@ async def test_timer_for_a_disabled_chat_fails_without_a_turn(
         )
     assert [timer.status for timer in timers] == ["failed"]
     assert telegram.sent_messages == []
+    assert [(e["event_type"], e["status"], e["payload"]["error_code"]) for e in events] == [
+        ("timer.failed", "failed", "ChatDisabledError")
+    ]

@@ -577,6 +577,8 @@ class TelegramToolbox:
         if access is None:
             return list(await self._client.get_dialogs(limit=limit))
         visible: list[Any] = []
+        if limit <= 0:
+            return visible
         async for dialog in self._client.iter_dialogs():
             if await access.allows(dialog.id, has_link=link_hint(dialog.entity)):
                 visible.append(dialog)
@@ -584,21 +586,30 @@ class TelegramToolbox:
                     break
         return visible
 
+    async def _peer_allowed(self, peer: Any) -> bool:
+        """Доступен ли пир папки; свой чат (InputPeerSelf) по ID не проверить — он доступен."""
+        if self._chat_access is None:
+            return True
+        try:
+            chat_id = utils.get_peer_id(peer)
+        except TypeError:
+            return True
+        return await self._chat_access.allows(chat_id, has_link=link_hint(peer))
+
     async def _visible_peers(self, peers: Any) -> list[dict[str, Any]]:
         """Сериализованные пиры папки без отключённых чатов."""
-        visible: list[dict[str, Any]] = []
-        for peer in peers or []:
-            if self._chat_access is not None:
-                try:
-                    chat_id = utils.get_peer_id(peer)
-                except TypeError:
-                    chat_id = None  # InputPeerSelf: свой чат не отфильтровать по ID
-                if chat_id is not None and not await self._chat_access.allows(
-                    chat_id, has_link=link_hint(peer)
-                ):
-                    continue
-            visible.append(self._serialize_peer(peer))
-        return visible
+        return [self._serialize_peer(p) for p in peers or [] if await self._peer_allowed(p)]
+
+    async def _hidden_peers(self, peers: Any) -> list[Any]:
+        """Пиры папки, скрытые от агента: при перезаписи папки они должны в ней остаться."""
+        return [p for p in peers or [] if not await self._peer_allowed(p)]
+
+    async def _existing_folder(self, folder_id: int) -> Any | None:
+        res = await self._client(functions.messages.GetDialogFiltersRequest())
+        filters = res.filters if hasattr(res, "filters") else res
+        return next(
+            (f for f in filters if isinstance(f, types.DialogFilter) and f.id == folder_id), None
+        )
 
     @asynccontextmanager
     async def _sending(
@@ -2799,6 +2810,15 @@ class TelegramToolbox:
             pinned = await resolve_peers(pinned_peers)
             included = await resolve_peers(include_peers)
             excluded = await resolve_peers(exclude_peers)
+
+            # Папка перезаписывается целиком, а отключённых чатов агент не видел:
+            # без них в папке пользователя они бы пропали.
+            if self._chat_access is not None:
+                existing = await self._existing_folder(folder_id)
+                if existing is not None:
+                    pinned += await self._hidden_peers(existing.pinned_peers)
+                    included += await self._hidden_peers(existing.include_peers)
+                    excluded += await self._hidden_peers(existing.exclude_peers)
 
             folder = types.DialogFilter(
                 id=folder_id,

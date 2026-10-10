@@ -50,10 +50,13 @@ class FakeDirectoryClient:
         main: list[Any] | None = None,
         archive: list[Any] | None = None,
         links: dict[int, int | None] | None = None,
+        discussions: dict[int, int] | None = None,
     ) -> None:
         self.folders = {0: main or [], 1: archive or []}
         # реальный ID группы → реальный ID канала (или None)
         self.links = links or {}
+        # реальный ID вещательного канала → реальный ID его группы обсуждения
+        self.discussions = discussions or {}
         self.requests: list[Any] = []
         self.fail_lookups = False
 
@@ -79,9 +82,10 @@ class FakeDirectoryClient:
         real_id = cast(Any, request.channel).channel_id
         if real_id in self.links:
             group = _channel(real_id, "g", megagroup=True, has_link=True)
+            linked = self.links[real_id]
         else:
             group = _channel(real_id, "c", megagroup=False, has_link=True)
-        linked = self.links.get(real_id)
+            linked = self.discussions.get(real_id)
         return SimpleNamespace(full_chat=SimpleNamespace(linked_chat_id=linked), chats=[group])
 
 
@@ -182,11 +186,13 @@ async def test_discussion_of_resolves_the_marked_id_of_the_channel() -> None:
 
 @pytest.mark.asyncio
 async def test_broadcast_channel_is_not_a_discussion_group() -> None:
-    # У вещательного канала linked_chat_id — его обсуждение, а не «его канал».
-    client = FakeDirectoryClient(links={})
+    # У вещательного канала linked_chat_id — его обсуждение, а не «его канал»:
+    # принять его за связь значило бы открыть отключённый канал через его группу.
+    client = FakeDirectoryClient(discussions={1000000001: 1000000002})
     directory = TelethonChatDirectory(client)
 
     assert await directory.discussion_of(CHANNEL_ID) is None
+    assert len(client.requests) == 1
 
 
 @pytest.mark.asyncio
@@ -218,7 +224,7 @@ async def test_failed_lookup_is_raised_and_not_cached() -> None:
 
 
 @pytest.mark.asyncio
-async def test_listing_is_cached_for_a_minute() -> None:
+async def test_listing_is_cached_for_ten_seconds() -> None:
     clock = Clock()
     anna = _dialog(7, "Анна", _user(7, "Анна"))
     client = FakeDirectoryClient(main=[anna])
