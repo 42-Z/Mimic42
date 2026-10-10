@@ -414,6 +414,64 @@ async def test_peer_flood_from_any_send_is_reported_to_the_warmup_gate() -> None
     assert gate.floods == [runtime.config.agent_id]
 
 
+class SuspectGate(StubGate):
+    def __init__(self) -> None:
+        super().__init__(None)
+        self.suspects: list[UUID] = []
+
+    async def report_spam_limit_suspect(self, agent_id: UUID) -> None:
+        self.suspects.append(agent_id)
+
+
+@pytest.mark.asyncio
+async def test_group_refusal_is_passed_to_the_gate_as_a_suspicion_not_as_a_flood() -> None:
+    telegram = FakeTelegramClient()
+    suspect_aware = cast(Any, telegram)
+    suspect_aware.spam_limit_suspect_handler = None
+    runtime = MimicAgentRuntime(
+        config=make_config(),
+        telegram_client=telegram,
+        langchain_agent=FakeLangChainAgent(),
+        memory_service=FakeRuntimeMemoryService(),
+    )
+    gate = SuspectGate()
+    runtime.set_warmup_gate(gate)
+
+    handler = suspect_aware.spam_limit_suspect_handler
+    assert handler is not None
+    await handler()
+
+    assert gate.suspects == [runtime.config.agent_id]
+    assert gate.floods == []
+
+
+@pytest.mark.asyncio
+async def test_a_gate_without_the_suspicion_report_does_not_break_the_runtime() -> None:
+    telegram = FakeTelegramClient()
+    suspect_aware = cast(Any, telegram)
+    suspect_aware.spam_limit_suspect_handler = None
+    runtime = MimicAgentRuntime(
+        config=make_config(),
+        telegram_client=telegram,
+        langchain_agent=FakeLangChainAgent(),
+        memory_service=FakeRuntimeMemoryService(),
+    )
+    runtime.set_warmup_gate(StubGate(None))
+
+    handler = suspect_aware.spam_limit_suspect_handler
+    assert handler is not None
+    await handler()
+
+
+@pytest.mark.asyncio
+async def test_runtime_is_busy_while_the_trigger_lock_is_held() -> None:
+    runtime, _, _ = make_runtime()
+
+    assert runtime.busy is False
+    async with runtime._trigger_lock:  # noqa: SLF001
+        assert runtime.busy is True
+
+
 @pytest.mark.asyncio
 async def test_dead_session_during_spambot_check_revokes_it(
     monkeypatch: pytest.MonkeyPatch,

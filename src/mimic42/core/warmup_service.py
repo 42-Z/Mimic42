@@ -12,6 +12,11 @@
 @SpamBot спрашивают, снято ли ограничение. Насколько это ускоряет снятие, неизвестно:
 Telegram досрочного снятия не обещает.
 
+Ограничение распознаётся двумя путями. PeerFloodError помечает аккаунт сразу. Отказ писать
+в группы и каналы (USER_BANNED_IN_CHANNEL, USER_RESTRICTED; Telegram приписывает к ним
+«check @SpamBot») — только подозрение: так отвечает и бан в одном чате, поэтому решает ответ
+@SpamBot, который агента проверяют вне его хода (см. ``report_spam_limit_suspect``).
+
 Состояние ограничения хранится в колонках ``agents`` (см. ``integrations.database_warmup``),
 а не в настройках агента: форма настроек перезаписывает их целиком.
 """
@@ -33,6 +38,9 @@ from mimic42.core.warmup import (
     EVENT_RECOVERY_STARTED,
     EVENT_RESTRICTED,
     SPAMBOT_CHECK_INTERVAL,
+    SUSPECT_CHECK_COOLDOWN,
+    SUSPECT_HISTORY_LOOKBACK,
+    SUSPECT_MAX_UNCLEAR_CHECKS,
     DialogTracker,
     daily_slots,
     dialog_length,
@@ -79,6 +87,10 @@ class WarmupHistory(Protocol):
         """Когда другие агенты начинали диалоги с этим агентом с ``since``."""
         ...
 
+    async def spam_limit_refusal_since(self, agent_id: UUID, since: datetime) -> datetime | None:
+        """Когда Telegram последний раз отказал агенту писать в группы и каналы."""
+        ...
+
     async def used_openers(self, agent_id: UUID) -> list[str]:
         """Отправленные зачины, от старых к новым."""
         ...
@@ -118,6 +130,11 @@ class WarmupService:
         self._rng = rng or random.Random()
         self._delay = delay or (lambda: reply_delay(self._rng))
         self._last_spambot_check: dict[UUID, datetime] = {}
+        # Агенты, которым Telegram отказал в группах и каналах: решает ответ @SpamBot.
+        self._spam_suspects: dict[UUID, int] = {}
+        self._last_suspect_check: dict[UUID, datetime] = {}
+        # Чьи отказы прошлых запусков уже подняты из журнала: один запрос на агента.
+        self._history_checked: set[UUID] = set()
         # Попытка резервируется до отправки: запись в журнал приходит позже и может
         # не дойти, а до этого та же попытка не должна выглядеть «ещё не начатой».
         self._reserved: dict[tuple[AttemptKind, UUID], list[datetime]] = {}
@@ -177,6 +194,18 @@ class WarmupService:
         if runtime is not None:
             await self._mark_restricted(runtime)
 
+    async def report_spam_limit_suspect(self, agent_id: UUID) -> None:
+        """Telegram отказал агенту писать в группы и каналы (USER_BANNED_IN_CHANNEL).
+
+        Сама по себе ошибка не доказывает ограничение аккаунта: так же отвечает и бан в
+        одном чате. Поэтому агент ставится в очередь на проверку @SpamBot, который
+        и решает, помечать ли аккаунт ограниченным.
+        """
+        runtime = self._agent_by_id(agent_id)
+        if runtime is None or runtime.warmup_restricted_at is not None:
+            return
+        self._spam_suspects.setdefault(agent_id, 0)
+
     def _warmup_pair(
         self, receiver_id: UUID, sender_telegram_id: int
     ) -> tuple[MimicAgentRuntime, MimicAgentRuntime] | None:
@@ -205,6 +234,8 @@ class WarmupService:
     # ── Обход агентов ─────────────────────────────────────────────────────────
 
     async def tick(self) -> None:
+        await self._raise_suspicion_from_history()
+        await self._verify_suspects()
         online = [r for r in self._runtimes() if self._is_reachable(r)]
         for runtime in online:
             try:
@@ -218,6 +249,80 @@ class WarmupService:
                 raise
             except Exception:
                 logger.exception("Warmup failed for agent %s", runtime.config.agent_id)
+
+    async def _raise_suspicion_from_history(self) -> None:
+        """Отказ, случившийся до запуска процесса, тоже ставит агента в очередь на проверку.
+
+        Подозрение живёт в памяти и пропадает при рестарте, а ограничение держится дни:
+        без этого аккаунт, получивший отказ перед перезапуском, остался бы «здоровым».
+        Журнал читается один раз на агента, пока он не упал с ошибкой запроса.
+        """
+        since = self._now() - SUSPECT_HISTORY_LOOKBACK
+        for runtime in list(self._runtimes()):
+            agent_id = runtime.config.agent_id
+            if (
+                agent_id in self._history_checked
+                or runtime.state is not AgentRuntimeState.RUNNING
+                or runtime.warmup_restricted_at is not None
+            ):
+                continue
+            try:
+                refusal = await self._history.spam_limit_refusal_since(agent_id, since)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Failed to read spam limit refusals of agent %s", agent_id)
+                continue
+            self._history_checked.add(agent_id)
+            if refusal is not None:
+                self._spam_suspects.setdefault(agent_id, 0)
+
+    async def _verify_suspects(self) -> None:
+        """Спросить @SpamBot у агентов, которым Telegram отказал в группах и каналах.
+
+        Идёт по всем запущенным, а не только по «достижимым»: аккаунту без @username
+        собеседников для прогрева не найти, а ограничение у него всё равно бывает.
+        """
+        for runtime in list(self._runtimes()):
+            agent_id = runtime.config.agent_id
+            if agent_id not in self._spam_suspects:
+                continue
+            try:
+                await self._verify_suspect(runtime)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Spam limit check failed for agent %s", agent_id)
+
+    async def _verify_suspect(self, runtime: MimicAgentRuntime) -> None:
+        agent_id = runtime.config.agent_id
+        if runtime.warmup_restricted_at is not None:
+            self._spam_suspects.pop(agent_id, None)
+            return
+        # Идёт ход агента: проверка заняла бы тот же замок и остановила обход остальных.
+        if runtime.state is not AgentRuntimeState.RUNNING or runtime.busy:
+            return
+        now = self._now()
+        last = self._last_suspect_check.get(agent_id)
+        if last is not None and now - last < SUSPECT_CHECK_COOLDOWN:
+            return
+        self._last_suspect_check[agent_id] = now
+        free = await runtime.check_spambot()
+        if free is False:
+            self._spam_suspects.pop(agent_id, None)
+            await self._mark_restricted(runtime)
+            # Бот только что ответил: повторно спрашивать в этом же тике незачем.
+            self._last_spambot_check[agent_id] = now
+            logger.warning("Spam limit confirmed by @SpamBot for agent %s", agent_id)
+        elif free is True:
+            # Ограничений на аккаунте нет: отказ был про конкретный чат.
+            self._spam_suspects.pop(agent_id, None)
+        else:
+            unclear = self._spam_suspects.get(agent_id, 0) + 1
+            if unclear >= SUSPECT_MAX_UNCLEAR_CHECKS:
+                self._spam_suspects.pop(agent_id, None)
+            else:
+                self._spam_suspects[agent_id] = unclear
 
     @staticmethod
     def _is_reachable(runtime: MimicAgentRuntime) -> bool:

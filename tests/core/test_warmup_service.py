@@ -16,6 +16,9 @@ from mimic42.core.warmup import (
     EVENT_RESTRICTED,
     MAX_OPENERS_PER_DAY,
     SPAMBOT_CHECK_INTERVAL,
+    SUSPECT_CHECK_COOLDOWN,
+    SUSPECT_HISTORY_LOOKBACK,
+    SUSPECT_MAX_UNCLEAR_CHECKS,
     DialogTracker,
     WarmupSettings,
     daily_slots,
@@ -58,6 +61,7 @@ class StubRuntime:
         self.warmup_recovery = recovery
         self.spambot = spambot
         self.spambot_checks = 0
+        self.busy = False
 
     async def send_warmup_opener(self, **kwargs: Any) -> OpenerResult:
         self.openers.append(kwargs)
@@ -74,6 +78,18 @@ class MemoryHistory:
         self.received: list[datetime] = []
         self.openers: list[str] = []
         self.partners: list[UUID] = []
+        self.refusal: datetime | None = None
+        self.refusal_queries = 0
+        self.refusal_failures = 0
+
+    async def spam_limit_refusal_since(self, agent_id: UUID, since: datetime) -> datetime | None:
+        self.refusal_queries += 1
+        if self.refusal_failures > 0:
+            self.refusal_failures -= 1
+            raise RuntimeError("база недоступна")
+        if self.refusal is not None and self.refusal >= since:
+            return self.refusal
+        return None
 
     async def attempt_times_since(self, agent_id: UUID, since: datetime) -> list[datetime]:
         return [t for t in self.attempts if t >= since]
@@ -361,6 +377,176 @@ async def test_spambot_is_asked_rarely_and_unknown_answer_changes_nothing() -> N
     service._now = lambda: later  # noqa: SLF001
     await service.tick()
     assert limited.spambot_checks == 2
+
+
+# ── Подозрение на спам-блок: USER_BANNED_IN_CHANNEL ────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_spambot_confirms_a_suspected_spam_limit_even_without_warmup_or_username() -> None:
+    agent = StubRuntime(user_id=1, username="", enabled=False, spambot=False)
+    store = MemoryStateStore()
+    service, _ = make_service([agent], MemoryHistory(), due_moment(agent), store=store)
+
+    await service.report_spam_limit_suspect(agent.config.agent_id)
+    assert agent.warmup_restricted_at is None  # само подозрение ничего не помечает
+    await service.tick()
+
+    assert agent.warmup_restricted_at is not None
+    assert (agent.config.agent_id, EVENT_RESTRICTED) in store.events
+    assert agent.spambot_checks == 1
+
+
+@pytest.mark.asyncio
+async def test_a_confirmed_limit_is_not_checked_a_second_time_in_the_same_tick() -> None:
+    agent = StubRuntime(user_id=1, enabled=False, spambot=False)
+    service, _ = make_service([agent], MemoryHistory(), due_moment(agent))
+
+    await service.report_spam_limit_suspect(agent.config.agent_id)
+    await service.tick()
+
+    assert agent.warmup_restricted_at is not None
+    assert agent.spambot_checks == 1
+
+
+@pytest.mark.asyncio
+async def test_spambot_all_clear_means_the_ban_was_about_one_chat() -> None:
+    agent = StubRuntime(user_id=1, spambot=True)
+    store = MemoryStateStore()
+    service, _ = make_service([agent], MemoryHistory(), due_moment(agent), store=store)
+
+    await service.report_spam_limit_suspect(agent.config.agent_id)
+    await service.tick()
+    await service.tick()
+
+    assert agent.warmup_restricted_at is None
+    assert store.events == []
+    assert agent.spambot_checks == 1
+
+
+@pytest.mark.asyncio
+async def test_suspicion_is_checked_at_most_once_per_cooldown() -> None:
+    agent = StubRuntime(user_id=1, enabled=False, spambot=None)
+    start = due_moment(agent)
+    service, _ = make_service([agent], MemoryHistory(), start)
+
+    await service.report_spam_limit_suspect(agent.config.agent_id)
+    await service.tick()
+    await service.tick()
+    assert agent.spambot_checks == 1
+
+    service._now = lambda: start + SUSPECT_CHECK_COOLDOWN + timedelta(minutes=1)  # noqa: SLF001
+    await service.tick()
+    assert agent.spambot_checks == 2
+
+
+@pytest.mark.asyncio
+async def test_unclear_spambot_answers_are_given_up_after_a_few_checks() -> None:
+    agent = StubRuntime(user_id=1, enabled=False, spambot=None)
+    start = due_moment(agent)
+    service, _ = make_service([agent], MemoryHistory(), start)
+    await service.report_spam_limit_suspect(agent.config.agent_id)
+
+    for step in range(SUSPECT_MAX_UNCLEAR_CHECKS + 2):
+        service._now = lambda step=step: (
+            start
+            + step
+            * (  # noqa: SLF001
+                SUSPECT_CHECK_COOLDOWN + timedelta(minutes=1)
+            )
+        )
+        await service.tick()
+
+    assert agent.spambot_checks == SUSPECT_MAX_UNCLEAR_CHECKS
+    assert agent.warmup_restricted_at is None
+
+
+@pytest.mark.asyncio
+async def test_a_busy_agent_is_checked_after_its_turn_ends() -> None:
+    agent = StubRuntime(user_id=1, enabled=False, spambot=False)
+    service, _ = make_service([agent], MemoryHistory(), due_moment(agent))
+    await service.report_spam_limit_suspect(agent.config.agent_id)
+
+    agent.busy = True
+    await service.tick()
+    assert agent.spambot_checks == 0
+
+    agent.busy = False
+    await service.tick()
+    assert agent.spambot_checks == 1
+    assert agent.warmup_restricted_at is not None
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_from_before_the_restart_is_checked_with_spambot() -> None:
+    agent = StubRuntime(user_id=1, enabled=False, spambot=False)
+    history = MemoryHistory()
+    now = due_moment(agent)
+    history.refusal = now - timedelta(hours=5)
+    store = MemoryStateStore()
+    service, _ = make_service([agent], history, now, store=store)
+
+    await service.tick()
+
+    assert agent.warmup_restricted_at is not None
+    assert (agent.config.agent_id, EVENT_RESTRICTED) in store.events
+
+
+@pytest.mark.asyncio
+async def test_refusals_older_than_the_lookback_are_not_checked() -> None:
+    agent = StubRuntime(user_id=1, enabled=False, spambot=False)
+    history = MemoryHistory()
+    now = due_moment(agent)
+    history.refusal = now - SUSPECT_HISTORY_LOOKBACK - timedelta(hours=1)
+    service, _ = make_service([agent], history, now)
+
+    await service.tick()
+
+    assert agent.spambot_checks == 0
+    assert agent.warmup_restricted_at is None
+
+
+@pytest.mark.asyncio
+async def test_the_journal_is_read_once_per_agent() -> None:
+    agent = StubRuntime(user_id=1, enabled=False, spambot=True)
+    history = MemoryHistory()
+    now = due_moment(agent)
+    history.refusal = now - timedelta(hours=1)
+    service, _ = make_service([agent], history, now)
+
+    await service.tick()
+    await service.tick()
+    await service.tick()
+
+    assert history.refusal_queries == 1
+
+
+@pytest.mark.asyncio
+async def test_a_failed_journal_read_is_retried_on_the_next_tick() -> None:
+    agent = StubRuntime(user_id=1, enabled=False, spambot=False)
+    history = MemoryHistory()
+    now = due_moment(agent)
+    history.refusal = now - timedelta(hours=1)
+    history.refusal_failures = 1
+    service, _ = make_service([agent], history, now)
+
+    await service.tick()
+    assert agent.warmup_restricted_at is None
+    await service.tick()
+
+    assert history.refusal_queries == 2
+    assert agent.warmup_restricted_at is not None
+
+
+@pytest.mark.asyncio
+async def test_suspicion_about_unknown_or_already_restricted_agents_is_ignored() -> None:
+    limited = StubRuntime(user_id=1, restricted=True, spambot=True)
+    service, _ = make_service([limited], MemoryHistory(), due_moment(limited))
+
+    await service.report_spam_limit_suspect(limited.config.agent_id)
+    await service.report_spam_limit_suspect(uuid4())
+
+    assert service._spam_suspects == {}  # noqa: SLF001
 
 
 @pytest.mark.asyncio

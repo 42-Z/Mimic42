@@ -16,7 +16,7 @@ from datetime import datetime
 from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -33,6 +33,10 @@ from mimic42.integrations.database_models import AgentEventModel, AgentModel
 # Хватает с запасом на любую разумную базу зачинов и круг знакомых.
 HISTORY_LIMIT = 1000
 ATTEMPT_EVENTS = (EVENT_OPENER_SENT, EVENT_OPENER_FAILED)
+# USER_BANNED_IN_CHANNEL («You're banned…» / «You are limited from sending messages in
+# supergroups/channels») и USER_RESTRICTED: Telegram отправляет к @SpamBot обе.
+SPAM_LIMIT_ERROR_CODES = ("UserBannedInChannelError", "UserRestrictedError")
+SPAM_LIMIT_ERROR_TEXT = "%sending messages in supergroups/channels%"
 
 
 async def load_warmup_state(session: AsyncSession, agent_id: UUID) -> WarmupState:
@@ -66,6 +70,30 @@ class DatabaseWarmupHistory:
                 .order_by(AgentEventModel.created_at.asc())
             )
             return list(rows)
+
+    async def spam_limit_refusal_since(self, agent_id: UUID, since: datetime) -> datetime | None:
+        """Когда Telegram последний раз отказал агенту писать в группы и каналы.
+
+        Отказ узнаётся по коду ошибки в результате или по тексту Telegram: у инструментов
+        в ленте остаётся только он («You're banned from sending messages in supergroups…»).
+        """
+        async with self._session_factory() as session:
+            return await session.scalar(
+                select(func.max(AgentEventModel.created_at)).where(
+                    AgentEventModel.agent_id == agent_id,
+                    AgentEventModel.status == "failed",
+                    AgentEventModel.created_at >= since,
+                    or_(
+                        AgentEventModel.error.ilike(SPAM_LIMIT_ERROR_TEXT),
+                        AgentEventModel.result["error_code"]
+                        .as_string()
+                        .in_(SPAM_LIMIT_ERROR_CODES),
+                        AgentEventModel.payload["error_code"]
+                        .as_string()
+                        .in_(SPAM_LIMIT_ERROR_CODES),
+                    ),
+                )
+            )
 
     async def received_times_since(self, agent_id: UUID, since: datetime) -> list[datetime]:
         """Когда другие агенты начинали диалоги с этим агентом с ``since``."""

@@ -342,6 +342,8 @@ class MimicAgentRuntime:
         self._warmup_gate: WarmupGate | None = None
         if hasattr(telegram_client, "peer_flood_handler"):
             cast(Any, telegram_client).peer_flood_handler = self._on_peer_flood
+        if hasattr(telegram_client, "spam_limit_suspect_handler"):
+            cast(Any, telegram_client).spam_limit_suspect_handler = self._on_spam_limit_suspect
         # Кто этот аккаунт в Telegram: по ним прогрев находит собеседников и узнаёт
         # в личке другого мимика.
         self.telegram_user_id: int | None = None
@@ -558,6 +560,25 @@ class MimicAgentRuntime:
             await gate.report_peer_flood(self.config.agent_id)
         except Exception:
             logger.warning("Failed to report PeerFloodError", exc_info=True)
+
+    @property
+    def busy(self) -> bool:
+        """Идёт ход агента или проверка: ``_trigger_lock`` занят."""
+        return self._trigger_lock.locked()
+
+    async def _on_spam_limit_suspect(self) -> None:
+        """Telegram отказал в отправке в группы и каналы: похоже на спам-блок, проверит @SpamBot.
+
+        Сама проверка не здесь: ошибка приходит изнутри хода или инструмента, где уже
+        занят ``_trigger_lock``, а проверка берёт его же.
+        """
+        report = getattr(self._warmup_gate, "report_spam_limit_suspect", None)
+        if not callable(report):
+            return
+        try:
+            await report(self.config.agent_id)
+        except Exception:
+            logger.warning("Failed to report a spam limit suspicion", exc_info=True)
 
     async def _remember_spambot_id(self) -> None:
         get_input_entity = getattr(self._telegram_client, "get_input_entity", None)

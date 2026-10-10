@@ -167,3 +167,52 @@ async def test_history_counts_attempts_of_the_sender_and_of_the_recipient(
     assert await history.used_openers(helper) == ["привет"]
     assert await history.recent_partners(helper) == [limited]
     assert await history.attempt_times_since(helper, datetime.now(UTC) + timedelta(hours=1)) == []
+
+
+async def test_spam_limit_refusals_are_found_by_error_text_and_by_code(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    agent_id = await _create_agent(db_session_factory, clean_slot.persona("twofa").user_id)
+    other_id = await _create_agent(db_session_factory, clean_slot.persona("twofa").user_id)
+    history = DatabaseWarmupHistory(db_session_factory)
+    since = datetime.now(UTC) - timedelta(days=1)
+    assert await history.spam_limit_refusal_since(agent_id, since) is None
+
+    async with db_session_factory() as session:
+        session.add_all(
+            [
+                # У инструментов в ленте остаётся только текст ошибки Telegram.
+                AgentEventModel(
+                    agent_id=agent_id,
+                    event_type="tool.send_text_message",
+                    status="failed",
+                    error=(
+                        "You're banned from sending messages in supergroups/channels "
+                        "(caused by SendMessageRequest)"
+                    ),
+                ),
+                # Обычный отказ другого рода не считается.
+                AgentEventModel(
+                    agent_id=agent_id,
+                    event_type="tool.send_text_message",
+                    status="failed",
+                    error="send_text_message for this peer was already used 149s ago.",
+                ),
+                # Чужой агент не попадает в выборку.
+                AgentEventModel(
+                    agent_id=other_id,
+                    event_type="tool.send_text_message",
+                    status="failed",
+                    result={"success": False, "error_code": "UserBannedInChannelError"},
+                ),
+            ]
+        )
+        await session.commit()
+
+    found = await history.spam_limit_refusal_since(agent_id, since)
+    assert found is not None
+
+    assert await history.spam_limit_refusal_since(other_id, since) is not None
+    future = datetime.now(UTC) + timedelta(hours=1)
+    assert await history.spam_limit_refusal_since(agent_id, future) is None
