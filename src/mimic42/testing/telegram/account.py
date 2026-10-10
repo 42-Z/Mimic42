@@ -26,10 +26,20 @@ class FakeDialog:
 
     @property
     def entity(self) -> Any:
-        real_id, _ = utils.resolve_id(self.id)
+        real_id, peer_type = utils.resolve_id(self.id)
         if self.kind == "private":
             return types.User(
                 id=real_id, first_name=self.title, username=self.username, access_hash=1
+            )
+        if peer_type is types.PeerChat:
+            # Обычная группа: у неё свой тип, а ID без префикса -100 (``-42``).
+            return types.Chat(
+                id=real_id,
+                title=self.title,
+                photo=types.ChatPhotoEmpty(),
+                participants_count=2,
+                date=_FAKE_DATE,
+                version=1,
             )
         return types.Channel(
             id=real_id,
