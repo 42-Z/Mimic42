@@ -133,10 +133,95 @@ describe('ChatsSettings', () => {
     const section = renderSection([]);
     await within(section).findByText(/Доступно/);
 
-    await user.type(within(section).getByLabelText('Поиск чатов'), 'daily_news');
+    await user.type(within(section).getByLabelText('Поиск чатов'), '@daily_news');
 
     expect(within(section).getByRole('switch', { name: 'Новости дня' })).toBeTruthy();
     expect(within(section).queryByRole('switch', { name: 'Чат друзей' })).toBeNull();
+  });
+
+  test('поиск по названию не различает регистр и «ё»', async () => {
+    mockChats([{ ...FRIENDS, title: 'Ёлки-палки' }, ANNA]);
+    const user = userEvent.setup();
+    const section = renderSection([]);
+    await within(section).findByText(/Доступно/);
+
+    await user.type(within(section).getByLabelText('Поиск чатов'), 'ЕЛКИ');
+
+    expect(within(section).getByRole('switch', { name: 'Ёлки-палки' })).toBeTruthy();
+  });
+
+  test('без совпадений и без диалогов — пояснение вместо пустоты', async () => {
+    mockChats([ANNA]);
+    const user = userEvent.setup();
+    const section = renderSection([]);
+    await within(section).findByText(/Доступно/);
+
+    await user.type(within(section).getByLabelText('Поиск чатов'), 'нет такого');
+    expect(within(section).getByText('Ничего не найдено.')).toBeTruthy();
+  });
+
+  test('у аккаунта без диалогов — пояснение', async () => {
+    mockChats([]);
+    const section = renderSection([]);
+
+    expect(await within(section).findByText('У аккаунта пока нет диалогов.')).toBeTruthy();
+  });
+
+  test('Enter в поиске не отправляет форму настроек', async () => {
+    mockChats([NEWS]);
+    const user = userEvent.setup();
+    const onSubmit = mock((event: { preventDefault: () => void }) => event.preventDefault());
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <form onSubmit={onSubmit}>
+          <ChatsSettings agentId={AGENT_ID} value={[]} onChange={() => {}} />
+          <button type="submit">Сохранить</button>
+        </form>
+      </QueryClientProvider>,
+    );
+    const search = await screen.findByLabelText('Поиск чатов');
+
+    await user.type(search, 'нов{Enter}');
+
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  test('при поиске переключатель группы действует только на найденные чаты', async () => {
+    mockChats([NEWS, FRIENDS]);
+    const user = userEvent.setup();
+    const onChange = mock((_next: number[]) => {});
+    const section = renderSection([], onChange);
+    await within(section).findByText(/Доступно/);
+
+    await user.type(within(section).getByLabelText('Поиск чатов'), 'друзей');
+    await user.click(
+      within(section).getByRole('switch', { name: 'Найденные чаты группы «Группы»' }),
+    );
+
+    expect(onChange).toHaveBeenCalledWith([FRIENDS.id]);
+  });
+
+  test('группа обсуждения канала вне списка отключается вместе с каналом', async () => {
+    mockChats([COMMENTS]);
+    const user = userEvent.setup();
+    const onChange = mock((_next: number[]) => {});
+    const section = renderSection([], onChange);
+    await user.click(await within(section).findByTestId('chat-group-group'));
+
+    const comments = within(section).getByRole('switch', { name: 'Комментарии дня' });
+    expect((comments as HTMLButtonElement).disabled).toBe(false);
+    await user.click(comments);
+
+    expect(onChange).toHaveBeenCalledWith([COMMENTS.id, NEWS.id]);
+  });
+
+  test('канал вне списка, связанный с группой из списка, отдельной строкой не показывается', async () => {
+    mockChats([COMMENTS]);
+    const section = renderSection([COMMENTS.id, NEWS.id]);
+    await within(section).findByText(/Доступно/);
+
+    expect(within(section).queryByText('Нет в списке диалогов')).toBeNull();
   });
 
   test('«Включить все» очищает список отключённых', async () => {
@@ -192,6 +277,48 @@ describe('ChatsSettings', () => {
     expect(await within(section).findByTestId('chats-not-running')).toBeTruthy();
     expect(within(section).getByRole('switch', { name: `Чат ${ANNA.id}` })).toBeTruthy();
     expect(within(section).queryByText(/Доступно/)).toBeNull();
+  });
+
+  test('агент остановился после загрузки списка: прежний список убирается', async () => {
+    listChats = spyOn(agentsApi, 'listChats')
+      .mockResolvedValueOnce([NEWS, ANNA])
+      .mockRejectedValueOnce({ status: 409, message: 'Агент не запущен.' });
+    const user = userEvent.setup();
+    const section = renderSection([ANNA.id]);
+    await within(section).findByText('Доступно 1 из 2');
+
+    await user.click(within(section).getByRole('button', { name: 'Обновить список' }));
+
+    expect(await within(section).findByTestId('chats-not-running')).toBeTruthy();
+    expect(within(section).queryByText(/Доступно/)).toBeNull();
+    expect(within(section).getByRole('switch', { name: `Чат ${ANNA.id}` })).toBeTruthy();
+  });
+
+  test('«Включить все» доступно и у остановленного агента', async () => {
+    listChats = spyOn(agentsApi, 'listChats').mockRejectedValue({
+      status: 409,
+      message: 'Агент не запущен.',
+    });
+    const user = userEvent.setup();
+    const onChange = mock((_next: number[]) => {});
+    const section = renderSection([ANNA.id, 777], onChange);
+    await within(section).findByTestId('chats-not-running');
+
+    await user.click(within(section).getByRole('button', { name: 'Включить все' }));
+
+    expect(onChange).toHaveBeenCalledWith([]);
+  });
+
+  test('длинный блок отсутствующих чатов показывается порциями', async () => {
+    mockChats([ANNA]);
+    const user = userEvent.setup();
+    const missing = Array.from({ length: 130 }, (_, index) => 5000 + index);
+    const section = renderSection(missing);
+    await within(section).findByText(/Доступно/);
+
+    expect(within(section).getAllByRole('switch', { name: /^Чат \d+$/ })).toHaveLength(100);
+    await user.click(within(section).getByRole('button', { name: 'Показать ещё' }));
+    expect(within(section).getAllByRole('switch', { name: /^Чат \d+$/ })).toHaveLength(130);
   });
 
   test('прочая ошибка показывает сообщение и «Повторить»', async () => {

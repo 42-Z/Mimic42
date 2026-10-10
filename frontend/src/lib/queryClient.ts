@@ -9,6 +9,9 @@ export const queryKeys = {
     list: () => [...queryKeys.agents.lists()] as const,
     details: () => [...queryKeys.agents.all, 'detail'] as const,
     detail: (id: string) => [...queryKeys.agents.details(), id] as const,
+    // Вне `detail`: сохранение настроек и realtime-обновления строки агента
+    // инвалидируют `detail`, а чтение всех диалогов от них не должно повторяться.
+    chats: (id: string) => [...queryKeys.agents.all, 'chats', id] as const,
     detailsAll: (agentIds: string[]) =>
       [...queryKeys.agents.all, 'details-all', [...agentIds].sort()] as const,
   },

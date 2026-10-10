@@ -103,13 +103,14 @@ export function useWarmupState(agentId: string) {
 /**
  * Диалоги аккаунта для настройки «Чаты и каналы». Читаются из клиента запущенного
  * агента: 409 — штатное «агент не запущен», поэтому без повторов и без перезапроса
- * на каждый возврат в окно; новые чаты подтягивает кнопка «Обновить список».
+ * на каждый возврат в окно; новые чаты подтягивает кнопка «Обновить список», а запуск
+ * и остановка агента сбрасывают список вместе со всем `agents`.
  */
 export function useAgentChats(agentId: string) {
   const isValidId = agentIdSchema.safeParse(agentId).success;
 
   return useQuery({
-    queryKey: [...queryKeys.agents.detail(agentId), 'chats'],
+    queryKey: queryKeys.agents.chats(agentId),
     queryFn: () => agentsApi.listChats(agentId),
     enabled: isValidId,
     retry: false,

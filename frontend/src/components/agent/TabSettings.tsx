@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { useAgentDetails, useUpdateAgentSettings } from '@/hooks/useAgent';
 import { useSyncedDraft } from '@/hooks/useSyncedDraft';
 import { useModelReasoning } from '@/hooks/useModelReasoning';
@@ -24,6 +25,7 @@ import {
 } from '@/components/agent/WarmupSettings';
 import { DEFAULT_MODEL, optionsIncluding } from '@/lib/models';
 import { agentsApi } from '@/lib/api';
+import { queryKeys } from '@/lib/queryClient';
 import { pickReasoningValue, reasoningLabel, reasoningOptionValues } from '@/lib/reasoning';
 import { readDisabledChats, mergeDisabledChats } from '@/lib/chats/agentChats';
 import { readEnabledTools, mergeEnabledTools } from '@/lib/tools/agentTools';
@@ -40,6 +42,7 @@ type TextField = Exclude<keyof AgentSettingsValues, 'first_comment' | 'warmup'>;
 
 export function TabSettings({ agentId }: { agentId: string }) {
   const { toast } = useToast();
+  const queryClient = useQueryClient();
   const { data: details, isLoading } = useAgentDetails(agentId);
   const update = useUpdateAgentSettings(agentId);
   const { data: reasoningByModel } = useModelReasoning();
@@ -122,7 +125,12 @@ export function TabSettings({ agentId }: { agentId: string }) {
       // которое придёт следом, должно её подхватить, а не быть отброшено как «чужое».
       setDirty(false);
       // The runtime is built once: new settings need a rebuild.
-      await agentsApi.reload(agentId);
+      try {
+        await agentsApi.reload(agentId);
+      } finally {
+        // Список чатов читается из клиента рантайма: после пересборки он новый.
+        void queryClient.invalidateQueries({ queryKey: queryKeys.agents.chats(agentId) });
+      }
       toast('Настройки сохранены', 'success');
     } catch (e: unknown) {
       toast((e as ApiError).message ?? 'Ошибка сохранения', 'error');
