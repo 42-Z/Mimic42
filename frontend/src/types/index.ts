@@ -21,6 +21,8 @@ export interface AgentRecord {
   owner_id: string;    // UUID
   name: string;
   state: AgentState;
+  /** Начало ограничения аккаунта Telegram (спам-блок); null — ограничения нет. */
+  warmup_restricted_at: string | null;
 }
 
 /**

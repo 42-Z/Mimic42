@@ -18,11 +18,7 @@ import {
   readFirstComment,
   type FirstCommentDraft,
 } from '@/components/agent/FirstCommentSettings';
-import {
-  WarmupRestrictionNotice,
-  WarmupSettingsSection,
-  readWarmup,
-} from '@/components/agent/WarmupSettings';
+import { WarmupSettingsSection, readWarmup } from '@/components/agent/WarmupSettings';
 import { DEFAULT_MODEL, optionsIncluding } from '@/lib/models';
 import { agentsApi } from '@/lib/api';
 import { queryKeys } from '@/lib/queryClient';
@@ -248,8 +244,6 @@ export function TabSettings({ agentId }: { agentId: string }) {
         }}
         error={formErrors.first_comment}
       />
-
-      <WarmupRestrictionNotice agentId={agentId} />
 
       <WarmupSettingsSection
         value={values.warmup}

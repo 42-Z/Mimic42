@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react';
 import { useParams, useSearchParams, useRouter } from 'next/navigation';
 import { agentIdSchema } from '@/lib/validators';
-import { useAgentStatus, useAgentDetails } from '@/hooks/useAgent';
+import { useAgentStatus, useAgentDetails, useWarmupState } from '@/hooks/useAgent';
 import { useAgentStatusRealtime } from '@/hooks/useRealtimeFeed';
 import { TabActivity } from '@/components/activity/TabActivity';
 import { TabAnalytics } from '@/components/agent/TabAnalytics';
@@ -25,6 +25,7 @@ import { sanitizeText } from '@/lib/sanitize';
 import { needsRebind } from '@/lib/telegram';
 import { AgentToggleButton } from '@/components/agents/AgentToggleButton';
 import { TelegramSessionDetails } from '@/components/agent/TelegramSessionDetails';
+import { WarmupRestrictionNotice } from '@/components/agent/WarmupSettings';
 import { formatTelegramUsername } from '@/components/agents/AgentIdentity';
 import { triggerMessageSchema, type TriggerMessageValues } from '@/lib/validators';
 import {
@@ -111,6 +112,7 @@ function AgentPageContent({
   const { data: status } = useAgentStatus(agentId);
   const { data: details } = useAgentDetails(agentId);
   const { data: telegramSession } = useTelegramSession(agentId);
+  const { data: warmup } = useWarmupState(agentId);
   useAgentStatusRealtime(agentId);
 
   return (
@@ -118,11 +120,11 @@ function AgentPageContent({
       {/* Page header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div className="flex items-center gap-4">
-          <div className="h-10 w-10 rounded-sm bg-plasma-950 border border-plasma-800 flex items-center justify-center">
+          <div className="h-10 w-10 shrink-0 rounded-sm bg-plasma-950 border border-plasma-800 flex items-center justify-center">
             <Bot className="h-5 w-5 text-plasma-400" />
           </div>
           <div>
-            <div className="flex items-center gap-3">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
               <h1 className="font-display text-xl font-bold text-foreground">
                 {details?.name ?? <Skeleton className="h-6 w-32 inline-block" />}
               </h1>
@@ -131,7 +133,12 @@ function AgentPageContent({
                   @{formatTelegramUsername(telegramSession?.username)}
                 </span>
               )}
-              {status && <AgentStatusBadge state={status.state} />}
+              {status && (
+                <AgentStatusBadge
+                  state={status.state}
+                  restricted={Boolean(warmup?.restricted_at)}
+                />
+              )}
             </div>
           </div>
         </div>
@@ -474,6 +481,8 @@ function TabTelegram({ agentId }: { agentId: string }) {
 
   return (
     <div className="max-w-xl space-y-4">
+      <WarmupRestrictionNotice agentId={agentId} />
+
       <TelegramSessionDetails session={session} />
 
       {needsRebind(session.authorization_status) && (

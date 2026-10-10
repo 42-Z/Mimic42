@@ -4,15 +4,30 @@ import type { AgentState } from '@/types';
 
 interface AgentStatusBadgeProps {
   state: AgentState;
+  /** Аккаунт в спам-блоке Telegram: у работающего агента вместо «Активен». */
+  restricted?: boolean;
   showLabel?: boolean;
   size?: 'sm' | 'md' | 'lg';
   className?: string;
 }
 
-const stateConfig: Record<
-  AgentState,
-  { label: string; dotClass: string; textClass: string; bgClass: string; borderClass: string }
-> = {
+interface StatusStyle {
+  label: string;
+  dotClass: string;
+  textClass: string;
+  bgClass: string;
+  borderClass: string;
+}
+
+const spamBlockStyle: StatusStyle = {
+  label: 'В СПАМ-БЛОКЕ',
+  dotClass: 'bg-warning',
+  textClass: 'text-warning',
+  bgClass: 'bg-warning/10',
+  borderClass: 'border-warning/30',
+};
+
+const stateConfig: Record<AgentState, StatusStyle> = {
   running: {
     label: 'АКТИВЕН',
     dotClass: 'bg-success animate-status-pulse',
@@ -65,19 +80,22 @@ const sizes = {
 
 export function AgentStatusBadge({
   state,
+  restricted = false,
   showLabel = true,
   size = 'md',
   className,
 }: AgentStatusBadgeProps) {
+  // Ограничение сильнее «Активен», но не сильнее запуска, остановки и ошибки:
+  // они говорят о самом рантайме, а не об аккаунте.
   // eslint-disable-next-line security/detect-object-injection -- key is typed AgentState union, not user input
-  const config = stateConfig[state];
+  const config = restricted && state === 'running' ? spamBlockStyle : stateConfig[state];
   // eslint-disable-next-line security/detect-object-injection -- key is typed size union, not user input
   const sizeConfig = sizes[size];
 
   return (
     <span
       className={cn(
-        'inline-flex items-center rounded-sm border font-mono font-medium',
+        'inline-flex shrink-0 items-center whitespace-nowrap rounded-sm border font-mono font-medium',
         sizeConfig.padding,
         sizeConfig.gap,
         config.bgClass,

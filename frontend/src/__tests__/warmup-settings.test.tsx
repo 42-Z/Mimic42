@@ -91,7 +91,15 @@ describe('WarmupRestrictionNotice', () => {
     renderNotice();
 
     await waitFor(() => expect(get).toHaveBeenCalledWith(AGENT_ID));
-    expect(screen.queryByText('Аккаунт ограничен Telegram')).toBeNull();
+    expect(screen.queryByText('Аккаунт в спам-блоке Telegram')).toBeNull();
+  });
+
+  test('при ограничении называет его спам-блоком и объясняет, что запрещено', async () => {
+    spyOn(agentsApi, 'getWarmupState').mockResolvedValue(restricted);
+    renderNotice();
+
+    expect(await screen.findByText('Аккаунт в спам-блоке Telegram')).toBeTruthy();
+    expect(screen.getByText(/в группы и каналы, в том числе комментарии под постами/)).toBeTruthy();
   });
 
   test('«Восстановить» уходит запросом к серверу, а не записью настроек', async () => {
