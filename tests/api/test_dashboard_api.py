@@ -72,12 +72,50 @@ async def test_dashboard_can_list_agents_messages_and_actions() -> None:
             "owner_id": str(owner_id),
             "name": "Mimic",
             "state": "stopped",
+            "warmup_restricted_at": None,
         }
     ]
     assert messages.status_code == 200
     assert messages.json()[0]["content"] == "hello"
     assert actions.status_code == 200
     assert actions.json()[0]["event_type"] == "telegram.message.received"
+
+
+@pytest.mark.asyncio
+async def test_agent_list_carries_the_spam_block_moment() -> None:
+    owner_id = uuid4()
+    blocked_id = uuid4()
+    free_id = uuid4()
+    blocked_since = datetime(2026, 10, 10, 20, 14, 44, tzinfo=UTC)
+    store = InMemoryAgentStore(
+        agents=[
+            AgentRecord(
+                agent_id=blocked_id,
+                owner_id=owner_id,
+                name="Серёга",
+                state=AgentRuntimeState.RUNNING,
+                warmup_restricted_at=blocked_since,
+            ),
+            AgentRecord(
+                agent_id=free_id,
+                owner_id=owner_id,
+                name="Аня",
+                state=AgentRuntimeState.RUNNING,
+            ),
+        ]
+    )
+    app = create_app(agent_store=store, auth_verifier=FakeAuthVerifier(owner_id))
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        response = await client.get("/api/v1/agents", headers=AUTH_HEADERS)
+
+    assert response.status_code == 200
+    by_id = {item["agent_id"]: item for item in response.json()}
+    assert by_id[str(blocked_id)]["warmup_restricted_at"] == "2026-10-10T20:14:44Z"
+    assert by_id[str(free_id)]["warmup_restricted_at"] is None
 
 
 @pytest.mark.asyncio

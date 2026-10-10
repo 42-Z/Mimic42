@@ -804,6 +804,7 @@ def _agent_record(agent: AgentModel) -> AgentRecord:
         owner_id=agent.owner_id,
         name=agent.name,
         state=state,
+        warmup_restricted_at=agent.warmup_restricted_at,
         restore_on_start=agent.restore_on_start,
     )
 

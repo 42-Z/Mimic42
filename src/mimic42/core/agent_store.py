@@ -17,6 +17,8 @@ class AgentRecord(BaseModel):
     owner_id: UUID
     name: str
     state: AgentRuntimeState
+    # С какого момента Telegram ограничил аккаунт (спам-блок); None — ограничения нет.
+    warmup_restricted_at: datetime | None = None
     # Внутренний признак восстановления при старте: в API-ответ не попадает.
     restore_on_start: bool = Field(default=True, exclude=True)
 
