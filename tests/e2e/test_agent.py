@@ -254,7 +254,7 @@ class TestAgentPage:
 
         page.reload()
         tools = page.get_by_test_id("tools-settings")
-        expect(tools.get_by_text(re.compile(r"Включено 90 из \d+"))).to_be_visible()
+        expect(tools.get_by_text(re.compile(r"Включено 89 из \d+"))).to_be_visible()
         tools.get_by_label("Поиск", exact=True).fill("Отправка сообщения")
         expect(tools.get_by_role("switch", name="Отправка сообщения")).to_have_attribute(
             "aria-checked", "false"
