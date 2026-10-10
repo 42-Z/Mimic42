@@ -300,6 +300,7 @@ async def test_spambot_reply_after_a_restart_does_not_start_a_turn() -> None:
         memory_service=FakeRuntimeMemoryService(),
     )
     await runtime.start()
+    assert cast(Any, telegram).spambot_user_id == spambot_id
 
     await telegram.account.deliver(
         chat_id=spambot_id, text="Please verify you are a human.", sender_id=spambot_id

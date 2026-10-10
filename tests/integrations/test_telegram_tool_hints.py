@@ -219,9 +219,65 @@ async def test_recoverable_refusals_are_not_remembered() -> None:
     assert client.attempts == 2
 
 
+SPAMBOT_ID = 178220800
+
+
+class SpamBotByIdClient(FailingSendClient):
+    """Клиент, который уже знает id @SpamBot и разрешает в него любую запись ссылки."""
+
+    spambot_user_id = SPAMBOT_ID
+
+    async def get_input_entity(self, peer: Any) -> Any:
+        user_id = SPAMBOT_ID if peer in (SPAMBOT_ID, "telegram_alias") else 555
+        return types.InputPeerUser(user_id=user_id, access_hash=1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("peer", ["178220800", "telegram_alias"])
+async def test_the_spam_bot_is_found_by_its_id_whatever_the_link_looks_like(peer: str) -> None:
+    client = SpamBotByIdClient(RuntimeError("до Telegram не должно дойти"))
+    toolbox = TelegramToolbox(cast(Any, client))
+
+    sent = await toolbox.send_text_message(peer, "Это ошибка")
+
+    assert sent["error_code"] == "OffLimitsBotError"
+    assert client.attempts == 0
+
+
+@pytest.mark.asyncio
+async def test_other_users_are_not_taken_for_the_spam_bot() -> None:
+    client = SpamBotByIdClient(RuntimeError("сбой"))
+    toolbox = TelegramToolbox(cast(Any, client))
+
+    result = await toolbox.send_text_message("555", "привет")
+
+    assert result["error_code"] == "RuntimeError"
+    assert client.attempts == 1
+
+
+def test_off_limits_entity_matches_users_and_input_peers_only() -> None:
+    from mimic42.integrations.telegram_tools import _is_off_limits_entity
+
+    assert _is_off_limits_entity(types.User(id=SPAMBOT_ID), SPAMBOT_ID)
+    assert _is_off_limits_entity(types.InputPeerUser(SPAMBOT_ID, 1), SPAMBOT_ID)
+    assert not _is_off_limits_entity(types.User(id=1), SPAMBOT_ID)
+    assert not _is_off_limits_entity(types.InputPeerChannel(SPAMBOT_ID, 1), SPAMBOT_ID)
+    assert not _is_off_limits_entity(types.User(id=SPAMBOT_ID), None)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "peer", ["@SpamBot", "SpamBot", "spambot", "https://t.me/SpamBot", "t.me/spambot/"]
+    "peer",
+    [
+        "@SpamBot",
+        "SpamBot",
+        "spambot",
+        "  @SpamBot  ",
+        "https://t.me/SpamBot",
+        "t.me/spambot/",
+        "telegram.me/SpamBot",
+        "Диалог#@SpamBot",
+    ],
 )
 async def test_the_spam_bot_is_off_limits_for_the_agent(peer: str) -> None:
     client = FailingSendClient(RuntimeError("до Telegram не должно дойти"))

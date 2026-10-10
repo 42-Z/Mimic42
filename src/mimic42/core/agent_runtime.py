@@ -592,6 +592,8 @@ class MimicAgentRuntime:
         user_id = getattr(entity, "user_id", None)
         if isinstance(user_id, int):
             self._spambot_user_id = user_id
+            # Инструменты по этому id отказывают в любой записи ссылки на бота.
+            cast(Any, self._telegram_client).spambot_user_id = user_id
 
     async def check_spambot(self) -> bool | None:
         """Спросить @SpamBot, снято ли ограничение: True — свободен, False — ограничен.

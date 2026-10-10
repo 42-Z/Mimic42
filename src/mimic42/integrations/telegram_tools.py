@@ -153,12 +153,41 @@ class OffLimitsBotError(RuntimeError):
 _OFF_LIMITS_BOTS = frozenset({"spambot"})
 
 
+def _normalize_peer(peer: Any) -> Any:
+    """Peer в том виде, в каком его получит Telethon: после «#» — адрес, число — int."""
+    if not isinstance(peer, str):
+        return peer
+    if "#" in peer:
+        peer = peer.split("#", 1)[-1]
+    peer = peer.strip()
+    if (peer.startswith("-") and peer[1:].isdigit()) or peer.isdigit():
+        return int(peer)
+    return peer
+
+
 def _off_limits_bot(peer: Any) -> str | None:
-    """Юзернейм служебного бота, если peer указывает на него (@имя, имя, t.me/имя)."""
+    """Юзернейм служебного бота, если peer указывает на него.
+
+    Строку разбирает тот же ``utils.parse_username``, что и Telethon при разрешении
+    чата: собственный разбор пропустил бы форму, которую Telethon всё равно распознает.
+    """
     if not isinstance(peer, str):
         return None
-    name = peer.strip().rstrip("/").rsplit("/", 1)[-1].lstrip("@").lower()
-    return name if name in _OFF_LIMITS_BOTS else None
+    username, is_invite = utils.parse_username(peer)
+    if is_invite or username is None:
+        return None
+    return username if username in _OFF_LIMITS_BOTS else None
+
+
+def _is_off_limits_entity(entity: Any, off_limits_user_id: Any) -> bool:
+    """Это пользователь с известным id служебного бота (имя, число, ссылка — всё сойдётся)."""
+    if not isinstance(off_limits_user_id, int):
+        return False
+    if isinstance(entity, types.User):
+        return entity.id == off_limits_user_id
+    if isinstance(entity, types.InputPeerUser):
+        return entity.user_id == off_limits_user_id
+    return False
 
 
 class SendRefusedRecently(RuntimeError):
@@ -644,17 +673,11 @@ class TelegramToolbox:
 
     async def _resolve_peer(self, peer: Any, as_input: bool = True) -> Any:
         """Resolve a peer string/int to a Telethon entity."""
+        peer = _normalize_peer(peer)
+        # Проверка по тому же значению, которое уйдёт в Telethon, а не по исходной строке.
         blocked = _off_limits_bot(peer)
         if blocked is not None:
             raise OffLimitsBotError(blocked)
-        if isinstance(peer, str):
-            if "#" in peer:
-                peer = peer.split("#", 1)[-1]
-            peer = peer.strip()
-            if peer.startswith("-") and peer[1:].isdigit():
-                peer = int(peer)
-            elif peer.isdigit():
-                peer = int(peer)
 
         if as_input:
             orig_func = getattr(self._client, "get_input_entity", None)
@@ -663,7 +686,11 @@ class TelegramToolbox:
 
         if orig_func is not None:
             try:
-                return await orig_func(peer)
+                entity = await orig_func(peer)
+                # Id бота известен рантайму: ловит и число, и любую запись имени.
+                if _is_off_limits_entity(entity, getattr(self._client, "spambot_user_id", None)):
+                    raise OffLimitsBotError("SpamBot")
+                return entity
             except ValueError as e:
                 # Provide a more helpful error for the LLM
                 raise ValueError(
@@ -692,6 +719,9 @@ class TelegramToolbox:
         Без проверки поведение прежнее — peer передаётся как пришёл.
         """
         if self._chat_access is None:
+            blocked = _off_limits_bot(_normalize_peer(peer))
+            if blocked is not None:
+                raise OffLimitsBotError(blocked)
             return peer
         return await self._resolve_chat(peer)
 
@@ -2884,7 +2914,7 @@ class TelegramToolbox:
             }
 
         try:
-            blocked = _off_limits_bot(peer)
+            blocked = _off_limits_bot(_normalize_peer(peer))
             if blocked is not None:
                 raise OffLimitsBotError(blocked)
             await self._guard_chat(peer)

@@ -20,6 +20,9 @@ class MimicTelegramClient(TelegramClient):
     """
 
     peer_flood_handler: Callable[[], Awaitable[None]] | None = None
+    # Id @SpamBot, который рантайм узнаёт при старте: инструменты по нему отказывают
+    # в любом обращении к боту, как бы ни была записана ссылка.
+    spambot_user_id: int | None = None
     # USER_BANNED_IN_CHANNEL и USER_RESTRICTED: Telegram описывает их как «ограничен,
     # проверь @SpamBot». Причина может быть и в одном чате, поэтому это лишь подозрение,
     # которое проверяет сам @SpamBot, а не метка ограничения.
