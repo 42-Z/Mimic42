@@ -245,7 +245,7 @@ function AgentCard({ agent, details }: { agent: AgentRecord; details?: AgentDeta
           href={`/agent/${agent.agent_id}?tab=telegram`}
           className="flex items-center gap-1.5 font-mono text-xs text-warning hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-sm"
         >
-          <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+          <AlertTriangle className="size-3.5 shrink-0" aria-hidden="true" />
           Telegram ограничил аккаунт{' '}
           {formatDistanceToNow(new Date(agent.warmup_restricted_at), { addSuffix: true, locale: ru })}
         </Link>

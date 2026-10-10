@@ -89,7 +89,7 @@ export function WarmupRestrictionNotice({ agentId }: { agentId: string }) {
     <Alert variant="warning" className="gap-y-1 px-4 py-3">
       <AlertTriangle aria-hidden="true" />
       <AlertTitle>Аккаунт в спам-блоке Telegram</AlertTitle>
-      <AlertDescription className="font-mono text-xs">
+      <AlertDescription>
         С {since} Telegram не даёт этому аккаунту писать первым незнакомым людям и отправлять
         сообщения в группы и каналы, в том числе комментарии под постами. Тем, кто написал сам,
         он отвечать может. Обычно ограничение снимается само через несколько дней, и ускорить
@@ -97,7 +97,7 @@ export function WarmupRestrictionNotice({ agentId }: { agentId: string }) {
       </AlertDescription>
 
       {state.recovery ? (
-        <p className="col-start-2 mt-2 font-mono text-xs text-foreground">
+        <p className="col-start-2 mt-2 text-sm text-foreground">
           Режим восстановления включён: другие агенты чаще пишут этому, а он отвечает. Раз в
           несколько часов мы спрашиваем @SpamBot, снято ли ограничение, и тогда возвращаем
           обычный прогрев. Поможет ли это снять ограничение быстрее, неизвестно. Работает, даже
