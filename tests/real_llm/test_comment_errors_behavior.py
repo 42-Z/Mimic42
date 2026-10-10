@@ -49,7 +49,9 @@ REQUEST = (
 class DiscussionClient:
     """Канал @strimrs с группой обсуждения; отправка комментария отказывает по сценарию."""
 
-    def __init__(self, *, refuse: Exception | None, requires_join: bool) -> None:
+    def __init__(
+        self, *, refuse: Exception | None, requires_join: bool, captcha: bool = False
+    ) -> None:
         self.channel = types.Channel(
             id=1,
             title="СТРИМЕРСКИЙ",
@@ -72,6 +74,10 @@ class DiscussionClient:
         )
         self.refuse = refuse
         self.requires_join = requires_join
+        # Бот-верификатор встречает вступившего капчей, пока её не решат, писать нельзя.
+        self.captcha = captcha
+        self.verified = False
+        self.refusals: list[str] = []
         self.joined = False
         self.attempts: list[dict[str, Any]] = []
         self.sent: list[dict[str, Any]] = []
@@ -101,12 +107,71 @@ class DiscussionClient:
             self.private.append({"to": str(entity), "text": message})
             return SimpleNamespace(id=7000 + len(self.private))
         self.attempts.append({"text": message, **kwargs})
+        refusal: Exception | None = None
         if self.refuse is not None:
-            raise self.refuse
-        if self.requires_join and not self.joined:
-            raise errors.ChatGuestSendForbiddenError(request=_send_request())
+            refusal = self.refuse
+        elif self.requires_join and not self.joined:
+            refusal = errors.ChatGuestSendForbiddenError(request=_send_request())
+        elif self.captcha and self.joined and not self.verified:
+            refusal = errors.ChatWriteForbiddenError(request=_send_request())
+        if refusal is not None:
+            self.refusals.append(type(refusal).__name__)
+            raise refusal
         self.sent.append({"text": message, **kwargs})
         return SimpleNamespace(id=9000 + len(self.sent))
+
+    def _captcha_message(self) -> Any:
+        keyboard = types.ReplyInlineMarkup(
+            rows=[
+                types.KeyboardButtonRow(
+                    buttons=[types.KeyboardButtonUrl(text="Правила", url="https://example.org")]
+                ),
+                types.KeyboardButtonRow(
+                    buttons=[
+                        types.KeyboardButtonCallback(text=answer, data=data)
+                        for answer, data in (
+                            ("19", b"wrong-19"),
+                            ("10", b"wrong-10"),
+                            ("59", b"right-59"),
+                            ("22", b"wrong-22"),
+                        )
+                    ]
+                ),
+            ]
+        )
+        return SimpleNamespace(
+            id=2557938,
+            text="Добро пожаловать! Для вступления в чат реши математический пример. "
+            "Captcha: 33+26",
+            sender_id=8172563028,
+            date=datetime.now(UTC),
+            reply_markup=keyboard,
+            media=None,
+        )
+
+    def _history(self, entity: Any) -> list[Any]:
+        name = self._name(entity)
+        if name in {"strimrs_chat", "2"} or "чат" in name:
+            if self.captcha and self.joined and not self.verified:
+                return [self._captcha_message()]
+            return []
+        return [
+            SimpleNamespace(
+                id=POST_ID,
+                text="Сегодня стрим по новому патчу, ждём всех",
+                sender_id=-1001,
+                date=DATE,
+                reply_markup=None,
+                media=None,
+            )
+        ]
+
+    async def get_messages(self, entity: Any, limit: int | None = None, **kwargs: Any) -> Any:
+        return self._history(entity)[: limit or None]
+
+    async def iter_messages(self, entity: Any, limit: int | None = None, **kwargs: Any) -> Any:
+        for message in self._history(entity)[: limit or None]:
+            yield message
 
     async def __call__(self, request: Any) -> Any:
         self.requests.append(type(request).__name__)
@@ -123,6 +188,11 @@ class DiscussionClient:
             return SimpleNamespace(updates=[], chats=[self.group], users=[])
         if isinstance(request, functions.messages.StartBotRequest):
             return SimpleNamespace(updates=[], chats=[], users=[])
+        if isinstance(request, functions.messages.GetBotCallbackAnswerRequest):
+            if request.data == b"right-59":
+                self.verified = True
+                return SimpleNamespace(message="Вы разблокированы", alert=True, url=None)
+            return SimpleNamespace(message="Неверно, попробуйте ещё раз", alert=True, url=None)
         raise RuntimeError("В замере Telegram недоступен")
 
 
@@ -170,6 +240,8 @@ async def outcomes(model: str, make_client: Callable[[], DiscussionClient]) -> l
                 "attempts": len(client.attempts),
                 "sent": len(client.sent),
                 "joined": client.joined,
+                "verified": client.verified,
+                "refusals": list(client.refusals),
             }
         )
     return rows
@@ -220,5 +292,24 @@ async def test_join_requirement_ends_with_a_joined_discussion_and_a_comment(
     done = count(rows, lambda row: row["joined"] and row["sent"] >= 1)
     assert done >= ATTEMPTS * 5 // 8, f"{done}/{ATTEMPTS} дошли до комментария: {rows}"
     # И не плодит одинаковые комментарии.
+    duplicated = count(rows, lambda row: row["sent"] > 1)
+    assert duplicated <= ATTEMPTS // 8, f"{duplicated}/{ATTEMPTS} продублировали: {rows}"
+
+
+async def test_model_looks_around_before_commenting_in_a_group_with_a_captcha(
+    weak_model: str,
+) -> None:
+    """Осмотр до действия: без слепых отправок, вступление, капча, затем комментарий."""
+    rows = await outcomes(
+        weak_model, lambda: DiscussionClient(refuse=None, requires_join=True, captcha=True)
+    )
+    print("\nнужно вступить и пройти капчу:", rows)  # noqa: T201
+
+    check_errors(rows)
+    done = count(rows, lambda row: row["joined"] and row["verified"] and row["sent"] >= 1)
+    assert done >= ATTEMPTS * 5 // 8, f"{done}/{ATTEMPTS} дошли до комментария: {rows}"
+    # Главное: комментарий не уходил вслепую и не упирался в отказ Telegram.
+    blind = count(rows, lambda row: len(row["refusals"]) > 0)
+    assert blind <= ATTEMPTS // 4, f"{blind}/{ATTEMPTS} получили отказ при отправке: {rows}"
     duplicated = count(rows, lambda row: row["sent"] > 1)
     assert duplicated <= ATTEMPTS // 8, f"{duplicated}/{ATTEMPTS} продублировали: {rows}"

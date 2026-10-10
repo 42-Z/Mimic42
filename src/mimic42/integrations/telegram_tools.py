@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
@@ -209,6 +210,51 @@ class SendRefusedRecently(RuntimeError):
 # повторяет её по кругу, а лишние неудачные запросы аккаунту не на пользу.
 _HARD_REFUSALS: tuple[type[Exception], ...] = (errors.UserBannedInChannelError,)
 _REFUSAL_TTL_SECONDS = 300.0
+# Бот-верификатор встречает новичка за секунду-две. После вступления инструмент
+# сам осматривает группу: иначе модель, получив «вступил», сразу пишет туда, где ей
+# ещё нельзя, и узнаёт про капчу только из отказа.
+JOIN_SETTLE_SECONDS = 2.0
+_JOIN_OVERVIEW_MESSAGES = 8
+_JOIN_OVERVIEW_TEXT_LIMIT = 600
+
+
+def _verification_hint(chat_id: Any) -> str:
+    """Что делать, если после вступления в группе ждёт сообщение с кнопками."""
+    return (
+        "В группе сразу после вступления появились сообщения с кнопками: это капча или "
+        "правила, и пока ты их не прошёл, писать туда нельзя. Прочитай text в "
+        "verification_messages, реши капчу и нажми кнопку с верным ответом через "
+        f"click_inline_button (peer={chat_id}, message_id и data кнопки из списка). "
+        "Наугад не нажимай. После этого комментируй или пиши."
+    )
+
+
+def _message_buttons(msg: Any) -> list[dict[str, Any]]:
+    """Кнопки сообщения (inline или клавиатура ответа) в виде, удобном модели."""
+    rows = getattr(getattr(msg, "reply_markup", None), "rows", None)
+    if not rows:
+        return []
+    buttons: list[dict[str, Any]] = []
+    for row_idx, row in enumerate(rows):
+        for col_idx, button in enumerate(row.buttons):
+            btn_info: dict[str, Any] = {
+                "row": row_idx,
+                "column": col_idx,
+                "text": getattr(button, "text", ""),
+                "type": type(button).__name__,
+            }
+            if isinstance(button, types.KeyboardButtonCallback):
+                btn_info["data"] = (
+                    button.data.decode("utf-8", errors="replace") if button.data else None
+                )
+            elif isinstance(button, types.KeyboardButtonUrl):
+                btn_info["url"] = button.url
+            elif isinstance(button, types.KeyboardButtonSwitchInline):
+                btn_info["switch_inline_query"] = button.query
+            elif isinstance(button, types.KeyboardButtonGame):
+                btn_info["game"] = True
+            buttons.append(btn_info)
+    return buttons
 
 
 def _refusal_key(peer: Any) -> str:
@@ -242,7 +288,9 @@ _ERROR_HINTS: tuple[tuple[tuple[type[Exception], ...], str], ...] = (
     (
         (errors.ChatGuestSendForbiddenError,),
         "В эту группу обсуждения можно писать только после вступления. Вызови "
-        "join_channel_discussion для канала и повтори отправку с тем же comment_to_msg_id.",
+        "join_channel_discussion для канала и прочитай его ответ целиком: в группе может "
+        "ждать капча (verification_messages), и только потом повтори отправку с тем же "
+        "comment_to_msg_id.",
     ),
     (
         (errors.ChatWriteForbiddenError, errors.ChatRestrictedError),
@@ -1874,27 +1922,7 @@ class TelegramToolbox:
             msg = await self._client.get_messages(entity, ids=message_id)
             if not msg or not msg.reply_markup:
                 return {"buttons": []}
-            buttons = []
-            for row_idx, row in enumerate(msg.reply_markup.rows):
-                for col_idx, button in enumerate(row.buttons):
-                    btn_info: dict[str, Any] = {
-                        "row": row_idx,
-                        "column": col_idx,
-                        "text": getattr(button, "text", ""),
-                        "type": type(button).__name__,
-                    }
-                    if isinstance(button, types.KeyboardButtonCallback):
-                        btn_info["data"] = (
-                            button.data.decode("utf-8", errors="replace") if button.data else None
-                        )
-                    elif isinstance(button, types.KeyboardButtonUrl):
-                        btn_info["url"] = button.url
-                    elif isinstance(button, types.KeyboardButtonSwitchInline):
-                        btn_info["switch_inline_query"] = button.query
-                    elif isinstance(button, types.KeyboardButtonGame):
-                        btn_info["game"] = True
-                    buttons.append(btn_info)
-            return {"buttons": buttons}
+            return {"buttons": _message_buttons(msg)}
         except Exception as e:
             return _tool_failure(e)
 
@@ -2415,6 +2443,32 @@ class TelegramToolbox:
         except Exception as e:
             return _tool_failure(e)
 
+    async def _newcomer_overview(self, entity: Any, joined_at: datetime) -> list[dict[str, Any]]:
+        """Что ждёт новичка в группе сразу после вступления: сообщения с кнопками.
+
+        Это капча или правила бота-верификатора. Они появляются за секунду-две, поэтому
+        инструмент подождёт и покажет их в своём ответе, а не оставит модель писать
+        в группу, где ей ещё нельзя. Сбой осмотра не мешает вступлению: возвращается пусто.
+        """
+        if JOIN_SETTLE_SECONDS > 0:
+            await asyncio.sleep(JOIN_SETTLE_SECONDS)
+        threshold = joined_at - timedelta(seconds=30)
+        overview: list[dict[str, Any]] = []
+        try:
+            recent = await self._client.get_messages(entity, limit=_JOIN_OVERVIEW_MESSAGES)
+            messages = recent if isinstance(recent, list) else ([recent] if recent else [])
+            for msg in messages:
+                date = getattr(msg, "date", None)
+                buttons = _message_buttons(msg)
+                if not buttons or date is None or date < threshold:
+                    continue
+                text = (getattr(msg, "text", "") or "")[:_JOIN_OVERVIEW_TEXT_LIMIT]
+                overview.append({"message_id": msg.id, "text": text, "buttons": buttons})
+        except Exception:
+            logger.debug("Не удалось осмотреть группу после вступления", exc_info=True)
+            return []
+        return overview
+
     async def join_channel_discussion(self, peer: str) -> dict[str, Any]:
         """Join the linked discussion group of a broadcast channel."""
         try:
@@ -2438,24 +2492,39 @@ class TelegramToolbox:
                 }
             linked_chat = await self._client.get_entity(linked_chat_id)
             already_joined = False
+            joined_at = datetime.now(UTC)
             try:
                 await self._client(functions.channels.JoinChannelRequest(channel=linked_chat))
             except errors.UserAlreadyParticipantError:
                 already_joined = True
             # Членство изменилось: отправка, которой Telegram отказал, стоит новой попытки.
             self._refusals.clear()
-            return {
+            result: dict[str, Any] = {
                 "success": True,
                 "linked_chat_id": linked_chat_id,
                 "title": getattr(linked_chat, "title", ""),
                 "username": getattr(linked_chat, "username", None),
                 "is_group": isinstance(linked_chat, types.Channel) and linked_chat.megagroup,
                 "already_joined": already_joined,
-                "hint": (
-                    "Теперь комментируй: send_text_message с peer=<этот канал> и "
-                    "comment_to_msg_id=<ID поста>."
-                ),
             }
+            verification = (
+                [] if already_joined else await self._newcomer_overview(linked_chat, joined_at)
+            )
+            if already_joined:
+                result["hint"] = (
+                    "Ты уже в этой группе. Комментируй: send_text_message с peer=<этот канал> "
+                    "и comment_to_msg_id=<ID поста>."
+                )
+            elif verification:
+                result["verification_messages"] = verification
+                result["hint"] = _verification_hint(linked_chat_id)
+            else:
+                result["hint"] = (
+                    "В группе нет сообщений с кнопками, проверки не видно. Комментируй: "
+                    "send_text_message с peer=<этот канал> и comment_to_msg_id=<ID поста>. "
+                    "Если Telegram всё же не даст писать, прочитай историю группы."
+                )
+            return result
         except Exception as e:
             return _tool_failure(e)
 
@@ -2636,6 +2705,7 @@ class TelegramToolbox:
             else:
                 # Public channel or exact peer
                 entity = await self._resolve_chat(channel)
+                joined_at = datetime.now(UTC)
                 updates = await self._client(functions.channels.JoinChannelRequest(channel=entity))
                 # Членство изменилось: отправка, которой Telegram отказал, стоит новой попытки.
                 self._refusals.clear()
@@ -2644,6 +2714,12 @@ class TelegramToolbox:
                     chat = updates.chats[0]
                     result["chat_id"] = getattr(chat, "id", None)
                     result["title"] = getattr(chat, "title", None)
+                    # В группе новичка встречает бот-верификатор; у канала некому.
+                    if isinstance(chat, types.Channel) and chat.megagroup:
+                        verification = await self._newcomer_overview(chat, joined_at)
+                        if verification:
+                            result["verification_messages"] = verification
+                            result["hint"] = _verification_hint(result["chat_id"])
                 return result
         except ChatDisabledError as e:
             return _tool_failure(e)
@@ -3594,9 +3670,13 @@ def build_telegram_langchain_tools(
             name="join_channel_discussion",
             description=(
                 "Join the linked discussion group of a broadcast channel "
-                "and return its info (ID, title, username). Needed only when a comment "
-                "was refused because the group requires joining first; then repeat the "
-                "send with the same comment_to_msg_id."
+                "and return its info (ID, title, username). Use it when get_chat_info "
+                "says discussion.join_required_to_comment is true and joined is false, "
+                "or when a comment was refused because the group requires joining first. "
+                "After joining it waits a moment and looks the group over: "
+                "verification_messages lists the captcha or rules message with its buttons "
+                "that greets newcomers. Pass it first (click_inline_button) and only then "
+                "send with comment_to_msg_id."
             ),
         ),
         StructuredTool.from_function(

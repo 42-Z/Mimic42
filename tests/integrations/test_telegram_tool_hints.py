@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import MagicMock
@@ -85,10 +85,24 @@ def _discussion(*, joined: bool, join_to_send: bool) -> Any:
 class NewsClient(FakeTelethonClient):
     """Канал «Новости» с обсуждением; ``linked`` — что вернёт GetFullChannel."""
 
-    def __init__(self, linked: Any | None, *, already_participant: bool = False) -> None:
+    def __init__(
+        self,
+        linked: Any | None,
+        *,
+        already_participant: bool = False,
+        recent: list[Any] | Exception | None = None,
+    ) -> None:
         super().__init__()
         self._linked = linked
         self._already_participant = already_participant
+        # Что увидит осмотр группы после вступления: сообщения или сбой чтения.
+        self._recent = recent if recent is not None else []
+
+    async def get_messages(self, entity: Any, **kwargs: Any) -> Any:
+        self.calls.append(("get_messages", {"entity": entity, "kwargs": kwargs}))
+        if isinstance(self._recent, Exception):
+            raise self._recent
+        return self._recent
 
     async def get_entity(self, peer: Any) -> Any:
         return self._linked if peer == 2 else NEWS
@@ -149,6 +163,115 @@ async def test_joining_a_discussion_the_agent_is_already_in_is_not_a_failure() -
 
     assert result["success"] is True
     assert result["already_joined"] is True
+    assert "уже в этой группе" in result["hint"]
+    assert not any(name == "get_messages" for name, _ in client.calls)
+
+
+def _captcha_message(*, age_seconds: float = 0.0) -> Any:
+    markup = types.ReplyInlineMarkup(
+        rows=[
+            types.KeyboardButtonRow(
+                buttons=[types.KeyboardButtonUrl(text="Правила", url="https://example.org/rules")]
+            ),
+            types.KeyboardButtonRow(
+                buttons=[
+                    types.KeyboardButtonCallback(text="19", data=b"wrong"),
+                    types.KeyboardButtonCallback(text="59", data=b"right"),
+                ]
+            ),
+        ]
+    )
+    return SimpleNamespace(
+        id=2557938,
+        text="Для вступления в чат реши пример. Captcha: 33+26",
+        date=datetime.now(UTC) - timedelta(seconds=age_seconds),
+        reply_markup=markup,
+    )
+
+
+@pytest.mark.asyncio
+async def test_join_shows_the_captcha_that_greets_newcomers() -> None:
+    client = NewsClient(_discussion(joined=False, join_to_send=True), recent=[_captcha_message()])
+
+    result = await TelegramToolbox(cast(Any, client)).join_channel_discussion("news")
+
+    assert result["success"] is True
+    (greeting,) = result["verification_messages"]
+    assert greeting["message_id"] == 2557938
+    assert "Captcha: 33+26" in greeting["text"]
+    answers = {button["text"]: button.get("data") for button in greeting["buttons"]}
+    assert answers["59"] == "right"
+    assert "click_inline_button" in result["hint"]
+    assert f"peer={result['linked_chat_id']}" in result["hint"]
+    assert "писать туда нельзя" in result["hint"]
+
+
+@pytest.mark.asyncio
+async def test_join_without_a_greeting_says_that_no_check_is_visible() -> None:
+    client = NewsClient(_discussion(joined=False, join_to_send=True), recent=[])
+
+    result = await TelegramToolbox(cast(Any, client)).join_channel_discussion("news")
+
+    assert "verification_messages" not in result
+    assert "проверки не видно" in result["hint"]
+
+
+@pytest.mark.asyncio
+async def test_an_old_message_with_buttons_is_not_a_greeting() -> None:
+    client = NewsClient(
+        _discussion(joined=False, join_to_send=True), recent=[_captcha_message(age_seconds=3600)]
+    )
+
+    result = await TelegramToolbox(cast(Any, client)).join_channel_discussion("news")
+
+    assert "verification_messages" not in result
+
+
+@pytest.mark.asyncio
+async def test_failed_look_around_does_not_break_the_join() -> None:
+    client = NewsClient(
+        _discussion(joined=False, join_to_send=True), recent=RuntimeError("чтение недоступно")
+    )
+
+    result = await TelegramToolbox(cast(Any, client)).join_channel_discussion("news")
+
+    assert result["success"] is True
+    assert "verification_messages" not in result
+
+
+@pytest.mark.asyncio
+async def test_joining_a_public_group_shows_its_captcha_too() -> None:
+    group = _discussion(joined=False, join_to_send=False)
+
+    class GroupClient(NewsClient):
+        async def __call__(self, request: object) -> Any:
+            if isinstance(request, functions.channels.JoinChannelRequest):
+                return SimpleNamespace(chats=[group])
+            return await super().__call__(request)
+
+    client = GroupClient(group, recent=[_captcha_message()])
+
+    result = await TelegramToolbox(cast(Any, client)).join_channel("group")
+
+    assert result["success"] is True
+    assert result["verification_messages"][0]["message_id"] == 2557938
+    assert "click_inline_button" in result["hint"]
+
+
+@pytest.mark.asyncio
+async def test_joining_a_broadcast_channel_is_not_looked_over() -> None:
+    class ChannelClient(NewsClient):
+        async def __call__(self, request: object) -> Any:
+            if isinstance(request, functions.channels.JoinChannelRequest):
+                return SimpleNamespace(chats=[NEWS])
+            return await super().__call__(request)
+
+    client = ChannelClient(None, recent=[_captcha_message()])
+
+    result = await TelegramToolbox(cast(Any, client)).join_channel("news")
+
+    assert result["success"] is True
+    assert "verification_messages" not in result
 
 
 @pytest.mark.asyncio
