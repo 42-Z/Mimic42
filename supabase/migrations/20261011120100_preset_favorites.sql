@@ -31,11 +31,14 @@ create trigger preset_favorites_set_updated_at
 alter table public.preset_favorites enable row level security;
 
 -- Платформа выдаёт authenticated все DML-привилегии по умолчанию: сужаем до
--- нужного. owner_id ставит триггер, поэтому вставка только по preset_id.
+-- нужного. owner_id клиент передаёт из своей сессии, RLS with check проверяет
+-- его, а триггер перепроверяет.
 revoke insert, update, delete on public.preset_favorites from authenticated;
 
 grant select, delete on public.preset_favorites to authenticated;
-grant insert (preset_id) on public.preset_favorites to authenticated;
+-- owner_id клиент даёт из сессии (как в онбординге), правду проверяет RLS
+-- with check; триггер перепроверяет и переписывает.
+grant insert (owner_id, preset_id) on public.preset_favorites to authenticated;
 
 create or replace function public.set_favorite_owner() returns trigger
 language plpgsql
