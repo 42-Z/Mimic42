@@ -9,7 +9,7 @@ import httpx
 import pytest
 from playwright.sync_api import Locator, Page, expect
 
-from tests.e2e.helpers import create_test_agent
+from tests.e2e.helpers import create_test_agent, login_via_form
 
 pytestmark = pytest.mark.e2e
 
@@ -35,16 +35,14 @@ class TestPresetCatalog:
         # Рантайму читателя нужен мимик: делаем тестового через тестовый API.
         reader_agent_id = create_test_agent(api, users["flow"].id, "Мимик читателя")
 
-        # Автор создаёт пресет.
+        # Автор создаёт пресет. Алфавитный порядок e2e: тест выхода из
+        # аккаунта в test_auth отзывает общий storage-стейт «full», так что
+        # после него автор перелогинивается и по redirect попадает на /presets.
         author.goto("/presets")
-        try:
-            author.get_by_test_id("open-preset-editor").click(timeout=15_000)
-        except Exception:
-            author.screenshot(path="test-results/presets-failure.png")
-            html = author.content()
-            print("FAIL-URL:", author.url)
-            print("FAIL-HTML:", html[:2000])
-            raise
+        if "/login" in author.url:
+            login_via_form(author, users["full"])
+            expect(author).to_have_url(re.compile(r"/presets"))
+        author.get_by_test_id("open-preset-editor").click()
         editor = author.get_by_role("dialog")
         editor.get_by_label("Название").fill(TITLE)
         editor.get_by_label("Короткое описание").fill(SUMMARY)
