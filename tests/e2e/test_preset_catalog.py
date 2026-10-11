@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
+from uuid import uuid4
 
 import httpx
 import pytest
@@ -13,7 +14,7 @@ from tests.e2e.helpers import create_test_agent, login_via_form
 
 pytestmark = pytest.mark.e2e
 
-TITLE = "Ламповый олд"
+TITLE = f"Ламповый олд {uuid4().hex[:6]}"
 SUMMARY = "говорит как с туса 2007"
 PROMPT = "Ты ламповый олд интернета и помнишь, как звучали модемы."
 
