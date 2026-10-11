@@ -81,16 +81,15 @@ export function ChatsSettings({
   const foundCount = rows.filter(matches).length;
 
   const setRow = (row: ChatRow, next: boolean) => onChange(toggleChats(value, row.ids, next));
-  const setRows = (scope: ChatRow[], next: boolean) =>
-    onChange(
-      toggleChats(
-        value,
-        scope
-          .filter((row) => (next ? row.lockedBy === null : canDisable(row)))
-          .flatMap((row) => row.ids),
-        next,
-      ),
-    );
+  /** Строки, которые переключатель группы может сдвинуть в нужную сторону. */
+  const movable = (scope: ChatRow[], next: boolean) =>
+    scope.filter((row) => (next ? row.lockedBy === null : canDisable(row)));
+  const setRows = (scope: ChatRow[], next: boolean) => {
+    const ids = movable(scope, next).flatMap((row) => row.ids);
+    // Нечего менять — не сообщаем форме об изменении: иначе она посчитает себя «грязной».
+    if (ids.length === 0) return;
+    onChange(toggleChats(value, ids, next));
+  };
 
   return (
     <section className="space-y-3" data-testid="chats-settings">
@@ -196,6 +195,7 @@ export function ChatsSettings({
               // При поиске переключатель группы действует на найденные чаты, а не на скрытые.
               const scope = searching ? visibleRows : groupRows;
               const onCount = scope.filter((row) => row.enabled).length;
+              const allOn = onCount === scope.length;
               const Icon = GROUP_ICONS[group.id];
 
               return (
@@ -235,14 +235,14 @@ export function ChatsSettings({
                       </span>
                     </button>
                     <Switch
-                      checked={onCount === scope.length}
+                      checked={allOn}
                       onChange={(next) => setRows(scope, next)}
                       label={
                         searching
                           ? `Найденные чаты группы «${group.title}»`
                           : `Все чаты группы «${group.title}»`
                       }
-                      disabled={scope.every((row) => row.lockedBy !== null)}
+                      disabled={movable(scope, !allOn).length === 0}
                     />
                   </div>
 

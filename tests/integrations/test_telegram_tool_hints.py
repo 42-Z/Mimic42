@@ -420,6 +420,133 @@ async def test_another_spelling_of_the_refused_chat_is_still_refused() -> None:
     assert client.attempts == 1
 
 
+class _OpenWindow:
+    def is_open(self, now: object) -> bool:
+        return True
+
+
+class _OwnerSwapWindow:
+    """Окно отправки, чья проверка тянет чат из Telegram и обновляет кеш имени."""
+
+    def __init__(self, client: FlippingOwnerClient) -> None:
+        self._client = client
+
+    async def check(self, peer: str) -> _OpenWindow:
+        self._client.owner_id = 2
+        return _OpenWindow()
+
+    def note_error(self, peer: str, exc: Exception) -> None:
+        pass
+
+    def note_sent(self, peer: str) -> None:
+        pass
+
+
+class FlippingOwnerClient(FakeTelethonClient):
+    """Имя «alice» после проверки окна оказывается у другого пользователя."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.owner_id = 1
+        self.sent_to: list[int] = []
+
+    async def get_input_entity(self, peer: Any) -> Any:
+        return types.InputPeerUser(user_id=self.owner_id, access_hash=1)
+
+    async def get_peer_id(self, peer: Any, add_mark: bool = True) -> int:
+        return utils.get_peer_id(peer)
+
+    async def send_message(self, entity: Any, message: str, **kwargs: Any) -> object:
+        self.sent_to.append(entity.user_id)
+        raise errors.UserBannedInChannelError(request=None)
+
+
+@pytest.mark.asyncio
+async def test_the_refusal_is_kept_for_the_chat_the_message_really_went_to() -> None:
+    """Имя могло перейти к другому владельцу между разрешением и отправкой: ключ и отправка
+    берутся от одного и того же разрешённого адресата."""
+    client = FlippingOwnerClient()
+    toolbox = TelegramToolbox(cast(Any, client), send_window=_OwnerSwapWindow(client))
+
+    result = await toolbox.send_text_message("alice", "привет")
+
+    assert result["error_code"] == "UserBannedInChannelError"
+    assert client.sent_to == [1]
+    assert list(toolbox._refusals) == ["1"]
+
+
+class RealIdsClient(FakeTelethonClient):
+    """Канал «news» (ID 1) и его группа обсуждения «news_chat» (ID 2) с настоящими ID."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.attempts = 0
+        self.group = types.Channel(
+            id=2,
+            title="Чат новостей",
+            photo=types.ChatPhotoEmpty(),
+            date=DATE,
+            access_hash=1,
+            megagroup=True,
+            has_link=True,
+            username="news_chat",
+        )
+
+    async def get_input_entity(self, peer: Any) -> Any:
+        key = str(peer).lstrip("@").lower()
+        if key in {"news", "-1000000000001"}:
+            return types.InputPeerChannel(channel_id=1, access_hash=1)
+        if key in {"news_chat", "-1000000000002"}:
+            return types.InputPeerChannel(channel_id=2, access_hash=1)
+        raise ValueError(f"Cannot find any entity corresponding to {peer!r}")
+
+    async def get_peer_id(self, peer: Any, add_mark: bool = True) -> int:
+        return utils.get_peer_id(peer)
+
+    async def send_message(self, entity: Any, message: str, **kwargs: Any) -> object:
+        self.attempts += 1
+        raise errors.UserBannedInChannelError(request=None)
+
+    async def get_messages(self, entity: Any, **kwargs: Any) -> Any:
+        return []
+
+    async def __call__(self, request: object) -> Any:
+        if isinstance(request, functions.channels.GetFullChannelRequest):
+            full = SimpleNamespace(linked_chat_id=1, about="", participants_count=1, admins_count=1)
+            return SimpleNamespace(full_chat=full, chats=[self.group], users=[])
+        if isinstance(request, functions.channels.JoinChannelRequest):
+            return SimpleNamespace(chats=[self.group])
+        return await super().__call__(request)
+
+
+@pytest.mark.asyncio
+async def test_joining_the_discussion_group_directly_reopens_comments_of_its_channel() -> None:
+    client = RealIdsClient()
+    toolbox = TelegramToolbox(cast(Any, client))
+
+    await toolbox.send_text_message("news", "привет", comment_to_msg_id=5)
+    assert (await toolbox.join_channel("news_chat"))["success"] is True
+    again = await toolbox.send_text_message("news", "привет", comment_to_msg_id=5)
+
+    assert again["error_code"] == "UserBannedInChannelError"
+    assert client.attempts == 2
+
+
+@pytest.mark.asyncio
+async def test_joining_a_group_keeps_comment_refusals_of_unrelated_channels() -> None:
+    client = RealIdsClient()
+    toolbox = TelegramToolbox(cast(Any, client))
+    # Отказ комментариев другого канала (ID 9): к группе «news_chat» он не относится.
+    toolbox._refusals["-1000000000009:comment"] = (
+        time.monotonic() + 100,
+        "UserBannedInChannelError",
+    )
+
+    assert (await toolbox.join_channel("news_chat"))["success"] is True
+
+    assert "-1000000000009:comment" in toolbox._refusals
+
+
 @pytest.mark.asyncio
 async def test_joining_an_unrelated_group_keeps_the_refusal_of_another_chat() -> None:
     client = FailingSendClient(errors.UserBannedInChannelError(request=None))

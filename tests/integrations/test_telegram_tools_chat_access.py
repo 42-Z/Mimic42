@@ -430,7 +430,14 @@ def test_every_chat_addressed_tool_goes_through_the_access_guard() -> None:
         if not CHAT_PARAMS & set(inspect.signature(method).parameters):
             continue
         source = inspect.getsource(method)
-        guards = ("_resolve_chat(", "_guard_chat(", "_chat_target(")
+        # ``_sending`` — охрана отправки: сама разрешает и проверяет чат (тест ниже).
+        guards = ("_resolve_chat(", "_guard_chat(", "_chat_target(", "_sending(")
         if not any(guard in source for guard in guards):
             unguarded.append(name)
     assert unguarded == []
+
+
+def test_the_send_guard_resolves_and_checks_the_chat() -> None:
+    """Инструменты отправки берут чат из ``_sending``, и без этой проверки они не охранены."""
+    source = inspect.getsource(TelegramToolbox._sending)
+    assert "_resolve_chat(" in source

@@ -762,10 +762,18 @@ class MimicAgentRuntime:
                 logger.debug(f"Agent {self.config.agent_id} already running")
                 return
 
-            await _await_telegram_teardown(self.config.agent_id)
+            # Ожидание закрытия прошлого соединения уже запуск: перезагрузка конфигурации,
+            # заставшая его, считает агента активным и сама запустит замену, а не
+            # оставит остановленным при «запущен» в базе.
+            previous_state = self._state
+            self._state = AgentRuntimeState.STARTING
+            try:
+                await _await_telegram_teardown(self.config.agent_id)
+            except BaseException:
+                self._state = previous_state
+                raise
 
             logger.info(f"Starting agent {self.config.agent_id}")
-            self._state = AgentRuntimeState.STARTING
             try:
                 logger.debug("Connecting to Telegram...")
                 await self._telegram_client.connect()

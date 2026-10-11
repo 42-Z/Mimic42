@@ -1689,13 +1689,8 @@ async def test_send_file() -> None:
     result = await toolbox.send_file("username", media_id, caption="Hello")
     assert result["success"] is True
     assert result["message_id"] == 999
-    # Адресат разрешается дважды: охраной отправки (ключ отказа и права) и самой отправкой.
-    # Оба раза — из кеша сессии, лишних запросов к Telegram нет.
-    assert [name for name, _ in client.calls] == [
-        "get_input_entity",
-        "get_input_entity",
-        "send_file",
-    ]
+    # Адресат разрешается один раз: охраной отправки, и им же уходит файл.
+    assert [name for name, _ in client.calls] == ["get_input_entity", "send_file"]
 
 
 @pytest.mark.asyncio

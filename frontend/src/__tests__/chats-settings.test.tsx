@@ -135,6 +135,21 @@ describe('ChatsSettings', () => {
     expect(next).not.toContain(unknown.id);
   });
 
+  test('переключатель группы заблокирован, когда отключать в ней нечего', async () => {
+    const unknown: AgentChat = { ...COMMENTS, discussion_of: null, discussion_unknown: true };
+    mockChats([unknown]);
+    const user = userEvent.setup();
+    const onChange = mock((_next: number[]) => {});
+    const section = renderSection([], onChange);
+    await within(section).findByText(/Доступно/);
+
+    const groupSwitch = within(section).getByRole('switch', { name: 'Все чаты группы «Группы»' });
+    expect((groupSwitch as HTMLButtonElement).disabled).toBe(true);
+
+    await user.click(groupSwitch);
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
   test('отключённую группу с неизвестной связью можно включить', async () => {
     const unknown: AgentChat = { ...COMMENTS, discussion_of: null, discussion_unknown: true };
     mockChats([unknown]);

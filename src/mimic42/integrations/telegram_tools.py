@@ -272,9 +272,14 @@ class _SendSlot:
 
     По умолчанию да; ветка, которая вернулась, ничего не отправив (невалидный
     ввод), сбрасывает флаг, чтобы не сжигать кд впустую.
+
+    ``entity`` — адресат, которого охрана отправки разрешила и проверила: им же идёт
+    отправка и по нему же записывается отказ. Повторное разрешение строки успело бы
+    отдать другого владельца того же имени.
     """
 
     spent = True
+    entity: Any = None
 
 
 # Что значит ошибка Telegram и что делать дальше. Сырой текст вроде «You're banned from
@@ -851,10 +856,12 @@ class TelegramToolbox:
         """
         # Отключённый чат отказывает раньше окна: проверка окна читает чат из Telegram
         # и в отказе подсказывает, как обойти закрытое окно.
-        chat_id = await self._guard_chat(peer)
+        entity = await self._resolve_chat(peer)
+        chat_id = await self._chat_id_of(entity)
         refusal_key = _refusal_key(chat_id, comment=comment_to_msg_id is not None)
         self._raise_if_recently_refused(refusal_key)
         slot = _SendSlot()
+        slot.entity = entity
         try:
             # Комментарий уходит в связанную группу, а не в peer: окно канала к нему
             # не относится, а права и кд группы мы здесь не знаем.
@@ -899,6 +906,24 @@ class TelegramToolbox:
         if chat_id is not None:
             self._refusals.pop(_refusal_key(chat_id, comment=comment), None)
 
+    async def _forget_comment_refusal_via(self, group: Any) -> None:
+        """Вступление в группу обсуждения открывает и комментарии её канала.
+
+        Отказ комментария записан за каналом (``<канал>:комментарий``), а не за группой,
+        куда он ушёл, так что канал узнаётся по связи группы. Запрос нужен, только если
+        есть что забывать.
+        """
+        if not any(key.endswith(":comment") for key in self._refusals):
+            return
+        try:
+            full = await self._client(functions.channels.GetFullChannelRequest(channel=group))
+        except Exception:
+            logger.debug("Не удалось узнать канал группы обсуждения", exc_info=True)
+            return
+        linked = getattr(getattr(full, "full_chat", None), "linked_chat_id", None)
+        if isinstance(linked, int) and linked:
+            self._forget_refusal(utils.get_peer_id(types.PeerChannel(linked)), comment=True)
+
     # Category 1: Messages and Basic Communication (1-12)
 
     async def send_text_message(
@@ -923,8 +948,8 @@ class TelegramToolbox:
                 ),
             }
         try:
-            async with self._sending(peer, comment_to_msg_id=comment_to_msg_id):
-                entity = await self._resolve_chat(peer)
+            async with self._sending(peer, comment_to_msg_id=comment_to_msg_id) as slot:
+                entity = slot.entity
                 msg = await self._client.send_message(
                     entity,
                     message,
@@ -999,9 +1024,9 @@ class TelegramToolbox:
     ) -> dict[str, Any]:
         """Forward messages from one chat to another."""
         try:
-            async with self._sending(to_peer):
+            async with self._sending(to_peer) as slot:
                 from_entity = await self._resolve_chat(from_peer)
-                to_entity = await self._resolve_chat(to_peer)
+                to_entity = slot.entity
                 await self._client.forward_messages(to_entity, message_ids, from_peer=from_entity)
                 return {"success": True}
         except Exception as e:
@@ -1300,7 +1325,7 @@ class TelegramToolbox:
         """Send a file by URL or Media ID."""
         try:
             async with self._sending(peer, comment_to_msg_id=comment_to_msg_id) as slot:
-                entity = await self._resolve_chat(peer)
+                entity = slot.entity
                 if file_source.startswith("http://") or file_source.startswith("https://"):
                     msg = await self._client.send_file(
                         entity,
@@ -1563,7 +1588,7 @@ class TelegramToolbox:
         """Send voice note by URL or Media ID."""
         try:
             async with self._sending(peer, comment_to_msg_id=comment_to_msg_id) as slot:
-                entity = await self._resolve_chat(peer)
+                entity = slot.entity
                 if file_source.startswith("http://") or file_source.startswith("https://"):
                     msg = await self._client.send_file(
                         entity,
@@ -1610,7 +1635,7 @@ class TelegramToolbox:
         """Send video note (round video) by URL or Media ID."""
         try:
             async with self._sending(peer, comment_to_msg_id=comment_to_msg_id) as slot:
-                entity = await self._resolve_chat(peer)
+                entity = slot.entity
                 if file_source.startswith("http://") or file_source.startswith("https://"):
                     msg = await self._client.send_file(
                         entity,
@@ -1649,8 +1674,8 @@ class TelegramToolbox:
     async def send_location(self, peer: str, latitude: float, longitude: float) -> dict[str, Any]:
         """Send a map location pin with specific latitude and longitude."""
         try:
-            async with self._sending(peer):
-                entity = await self._resolve_chat(peer)
+            async with self._sending(peer) as slot:
+                entity = slot.entity
                 msg = await self._client.send_file(
                     entity,
                     types.InputMediaGeoPoint(
@@ -1666,8 +1691,8 @@ class TelegramToolbox:
     ) -> dict[str, Any]:
         """Send a beautiful venue location card with a map pin, title, and address."""
         try:
-            async with self._sending(peer):
-                entity = await self._resolve_chat(peer)
+            async with self._sending(peer) as slot:
+                entity = slot.entity
                 msg = await self._client.send_file(
                     entity,
                     types.InputMediaVenue(
@@ -1831,7 +1856,7 @@ class TelegramToolbox:
         """Send a sticker by its Media ID."""
         try:
             async with self._sending(peer, comment_to_msg_id=comment_to_msg_id) as slot:
-                entity = await self._resolve_chat(peer)
+                entity = slot.entity
                 media_type, obj_id, access_hash, file_reference, dc_id = parse_media_id(media_id)
                 if media_type != "sticker":
                     slot.spent = False
@@ -2089,8 +2114,8 @@ class TelegramToolbox:
     ) -> dict[str, Any]:
         """Send an inline bot result to a chat."""
         try:
-            async with self._sending(peer):
-                entity = await self._resolve_chat(peer)
+            async with self._sending(peer) as slot:
+                entity = slot.entity
                 reply_to = None
                 if reply_to_msg_id is not None:
                     reply_to = types.InputReplyToMessage(reply_to_msg_id=reply_to_msg_id)
@@ -2796,6 +2821,7 @@ class TelegramToolbox:
                     result["title"] = getattr(chat, "title", None)
                     # В группе новичка встречает бот-верификатор; у канала некому.
                     if isinstance(chat, types.Channel) and chat.megagroup:
+                        await self._forget_comment_refusal_via(entity)
                         verification = await self._newcomer_overview(chat, joined_at)
                         if verification is None:
                             result["inspection_failed"] = True
@@ -2828,8 +2854,8 @@ class TelegramToolbox:
     ) -> dict[str, Any]:
         """Send a poll or quiz."""
         try:
-            async with self._sending(peer):
-                entity = await self._resolve_chat(peer)
+            async with self._sending(peer) as slot:
+                entity = slot.entity
                 poll = types.Poll(
                     # Id опроса генерирует клиент: эталонные реализации
                     # (Pyrogram) всегда отправляют случайный long (rnd_id),

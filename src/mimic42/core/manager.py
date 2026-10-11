@@ -277,6 +277,11 @@ class AgentManager:
             if was_active:
                 try:
                     await runtime.start()
+                except TelegramTeardownPendingError:
+                    # Замена не смогла подключиться, пока закрывается прошлое соединение:
+                    # агент остановлен, а не сломан, и в базе должно быть видно именно это.
+                    await self._save_status(agent_id, AgentRuntimeState.STOPPED)
+                    raise
                 except Exception:
                     # Persist the failure like start_agent does: without this the
                     # database keeps RUNNING while the rebuilt runtime is ERROR.

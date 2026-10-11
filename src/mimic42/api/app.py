@@ -1066,6 +1066,11 @@ def create_app(
             await _get_agent_manager(app).reload_agent(agent_id)
         except AgentNotFoundError as exc:
             raise _not_found(exc.agent_id) from exc
+        except TelegramTeardownPendingError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(exc),
+            ) from exc
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     @app.post(
