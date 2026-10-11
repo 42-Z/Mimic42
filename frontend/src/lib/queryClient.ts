@@ -61,6 +61,8 @@ export const queryKeys = {
   presets: {
     all: ['presets'] as const,
     list: () => [...queryKeys.presets.all, 'list'] as const,
+    favorites: () => [...queryKeys.presets.all, 'favorites'] as const,
+    authors: () => [...queryKeys.presets.all, 'authors'] as const,
   },
 
   // Memories
