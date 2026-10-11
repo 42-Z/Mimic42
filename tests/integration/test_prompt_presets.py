@@ -405,3 +405,155 @@ async def test_user_can_remove_own_favorite(test_dsn: str) -> None:
     finally:
         await _cleanup_personas(connection, author, reader)
         await connection.close()
+
+
+async def test_unpublish_freezes_favorites(test_dsn: str) -> None:
+    connection = await asyncpg.connect(plain_dsn(test_dsn))
+    try:
+        author = _persona("empty")
+        reader = _persona("full")
+        preset_id = await _publish_preset(
+            connection, author, title="Заморозка", body="текст на витрине"
+        )
+        async with connection.transaction():
+            await _act_as_user(connection, reader)
+            await connection.execute(
+                "insert into public.preset_favorites (preset_id) values ($1)", preset_id
+            )
+        async with connection.transaction():
+            await _act_as_user(connection, author)
+            await connection.execute(
+                "update public.prompt_presets set published_at = null where id = $1",
+                preset_id,
+            )
+        async with connection.transaction():
+            await _act_as_user(connection, reader)
+            row = await connection.fetchrow(
+                "select preset_id, frozen_title, frozen_body, frozen_at "
+                "from public.preset_favorites"
+            )
+            assert row["preset_id"] is None
+            assert row["frozen_title"] == "Заморозка"
+            assert row["frozen_body"] == "текст на витрине"
+            assert row["frozen_at"] is not None
+    finally:
+        await _cleanup_personas(connection, author, reader)
+        await connection.close()
+
+
+async def test_delete_freezes_favorites(test_dsn: str) -> None:
+    connection = await asyncpg.connect(plain_dsn(test_dsn))
+    try:
+        author = _persona("empty")
+        reader = _persona("full")
+        preset_id = await _publish_preset(
+            connection, author, title="Удаляемый", body="пропадёт с витрины"
+        )
+        async with connection.transaction():
+            await _act_as_user(connection, reader)
+            await connection.execute(
+                "insert into public.preset_favorites (preset_id) values ($1)", preset_id
+            )
+        async with connection.transaction():
+            await _act_as_user(connection, author)
+            await connection.execute(
+                "delete from public.prompt_presets where id = $1", preset_id
+            )
+        # Строка пресета удалена, избранное осталось замороженной копией.
+        assert await connection.fetchval(
+            "select count(*) from public.prompt_presets where id = $1", preset_id
+        ) == 0
+        async with connection.transaction():
+            await _act_as_user(connection, reader)
+            row = await connection.fetchrow(
+                "select preset_id, frozen_body, frozen_at from public.preset_favorites"
+            )
+            assert row["preset_id"] is None
+            assert row["frozen_body"] == "пропадёт с витрины"
+            assert row["frozen_at"] is not None
+    finally:
+        await _cleanup_personas(connection, author, reader)
+        await connection.close()
+
+
+async def test_republish_keeps_old_copy_frozen(test_dsn: str) -> None:
+    connection = await asyncpg.connect(plain_dsn(test_dsn))
+    try:
+        author = _persona("empty")
+        reader = _persona("full")
+        preset_id = await _publish_preset(connection, author, title="Возвращение")
+        async with connection.transaction():
+            await _act_as_user(connection, reader)
+            await connection.execute(
+                "insert into public.preset_favorites (preset_id) values ($1)", preset_id
+            )
+        async with connection.transaction():
+            await _act_as_user(connection, author)
+            await connection.execute(
+                "update public.prompt_presets set published_at = null where id = $1",
+                preset_id,
+            )
+            await connection.execute(
+                "update public.prompt_presets set published_at = now() where id = $1",
+                preset_id,
+            )
+        async with connection.transaction():
+            await _act_as_user(connection, reader)
+            # Старая копия остаётся замороженной, повторное сохранение даёт
+            # вторую запись — уникальность (owner_id, preset_id) не мешает.
+            assert await connection.fetchval(
+                "select count(*) from public.preset_favorites where frozen_at is not null"
+            ) == 1
+            await connection.execute(
+                "insert into public.preset_favorites (preset_id) values ($1)", preset_id
+            )
+            assert await connection.fetchval("select count(*) from public.preset_favorites") == 2
+    finally:
+        await _cleanup_personas(connection, author, reader)
+        await connection.close()
+
+
+async def test_preset_authors_view(test_dsn: str) -> None:
+    connection = await asyncpg.connect(plain_dsn(test_dsn))
+    try:
+        author = _persona("empty")
+        original_name = await connection.fetchval(
+            "select display_name from public.profiles where id = $1", author
+        )
+        draft_id = await _publish_preset(connection, author, title='Черновик автора')
+        # Пока снимаем публикацию, автор не должен попасть в вид.
+        async with connection.transaction():
+            await _act_as_user(connection, author)
+            await connection.execute(
+                "update public.prompt_presets set published_at = null where id = $1",
+                draft_id,
+            )
+        names = await connection.fetch(
+            "select display_name from public.preset_authors where id = $1", author
+        )
+        assert names == []
+
+        await connection.execute(
+            "update public.profiles set display_name = 'Витринный автор' where id = $1",
+            author,
+        )
+        await _publish_preset(connection, author, title="Публичный")
+        names = await connection.fetch(
+            "select display_name from public.preset_authors where id = $1", author
+        )
+        assert [row["display_name"] for row in names] == ["Витринный автор"]
+
+        # Почта наружу не идёт: в виде только id и display_name.
+        columns = await connection.fetch(
+            "select column_name from information_schema.columns "
+            "where table_schema = 'public' and table_name = 'preset_authors'"
+        )
+        assert {row["column_name"] for row in columns} == {"id", "display_name"}
+    finally:
+        await _cleanup_personas(connection, author)
+        await connection.execute(
+            "update public.profiles set display_name = $1 where id = $2",
+            original_name,
+            author,
+        )
+        await connection.close()
