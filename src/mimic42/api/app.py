@@ -32,6 +32,7 @@ from mimic42.core.agent_runtime import (
     AgentTriggerResult,
     ChatListUnavailableError,
     TelegramAuthorizationRequired,
+    TelegramTeardownPendingError,
 )
 from mimic42.core.agent_store import (
     AgentActivity,
@@ -1028,6 +1029,11 @@ def create_app(
         except TelegramAuthorizationRequired as exc:
             raise HTTPException(
                 status_code=status.HTTP_428_PRECONDITION_REQUIRED,
+                detail=str(exc),
+            ) from exc
+        except TelegramTeardownPendingError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
                 detail=str(exc),
             ) from exc
         return Response(status_code=status.HTTP_204_NO_CONTENT)

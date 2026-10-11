@@ -364,6 +364,44 @@ async def test_spambot_all_clear_lifts_restriction_and_resumes_warmup() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_restricted_agent_without_a_username_is_released_by_the_all_clear() -> None:
+    """Метка спам-блока не должна висеть бессрочно из-за отсутствия @username."""
+    limited = StubRuntime(user_id=1, username="", restricted=True, spambot=True)
+    store = MemoryStateStore()
+    service, _ = make_service([limited], MemoryHistory(), due_moment(limited), store=store)
+
+    await service.tick()
+
+    assert limited.spambot_checks == 1
+    assert limited.warmup_restricted_at is None
+    assert store.events[-1] == (limited.config.agent_id, EVENT_RECOVERED)
+
+
+@pytest.mark.asyncio
+async def test_a_restricted_agent_without_a_username_gets_no_recovery_dialog() -> None:
+    limited = StubRuntime(user_id=1, username="", restricted=True, recovery=True, spambot=None)
+    helper = StubRuntime(user_id=2)
+    now = due_moment(limited, recovery=True)
+    service, _ = make_service([limited, helper], MemoryHistory(), now)
+
+    await service.tick()
+
+    assert limited.spambot_checks == 1
+    assert helper.openers == []
+
+
+@pytest.mark.asyncio
+async def test_a_stopped_restricted_agent_is_not_asked_about_spambot() -> None:
+    limited = StubRuntime(user_id=1, restricted=True, spambot=True, state=AgentRuntimeState.STOPPED)
+    service, _ = make_service([limited], MemoryHistory(), due_moment(limited))
+
+    await service.tick()
+
+    assert limited.spambot_checks == 0
+    assert limited.warmup_restricted_at is not None
+
+
+@pytest.mark.asyncio
 async def test_spambot_is_asked_rarely_and_unknown_answer_changes_nothing() -> None:
     limited = StubRuntime(user_id=1, restricted=True, recovery=True, spambot=None)
     start = due_moment(limited)

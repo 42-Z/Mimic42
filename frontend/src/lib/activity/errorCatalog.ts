@@ -30,6 +30,7 @@ const ERROR_CATALOG: Record<string, string> = {
   SendRefusedRecently: 'Повтор отправки после отказа Telegram не выполнен',
   OffLimitsBotError: 'Диалог с @SpamBot ведёт владелец, а не агент',
   PeerFloodError: 'Telegram ограничил переписку с незнакомыми',
+  MessagesNotInChatError: 'Этих сообщений нет в выбранном чате',
   NotAChat: 'Это человек или бот, а не чат',
   NotAChannel: 'Это не канал',
   NoDiscussionGroup: 'У канала нет группы обсуждения',

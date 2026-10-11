@@ -237,13 +237,16 @@ class WarmupService:
         await self._raise_suspicion_from_history()
         await self._verify_suspects()
         online = [r for r in self._runtimes() if self._is_reachable(r)]
-        for runtime in online:
+        for runtime in list(self._runtimes()):
+            if runtime.state is not AgentRuntimeState.RUNNING:
+                continue
+            reachable = runtime in online
             try:
                 if runtime.warmup_restricted_at is not None:
                     # Пользователь выбрал судьбу ограниченного аккаунта сам, поэтому
                     # режим восстановления не зависит от переключателя обычного прогрева.
-                    await self._tend_restricted(runtime, online)
-                elif runtime.config.warmup.enabled:
+                    await self._tend_restricted(runtime, online, can_converse=reachable)
+                elif reachable and runtime.config.warmup.enabled:
                     await self._maybe_start_dialog(runtime, online)
             except asyncio.CancelledError:
                 raise
@@ -469,11 +472,21 @@ class WarmupService:
         return True
 
     async def _tend_restricted(
-        self, runtime: MimicAgentRuntime, participants: list[MimicAgentRuntime]
+        self,
+        runtime: MimicAgentRuntime,
+        participants: list[MimicAgentRuntime],
+        *,
+        can_converse: bool,
     ) -> None:
+        """Снятие ограничения проверяется у любого запущенного; диалоги — лишь у достижимого.
+
+        Аккаунту без @username собеседника для восстановления не найти, но ответ
+        @SpamBot «ограничений нет» он получить может, и без проверки метка спам-блока
+        висела бы на нём бессрочно, в том числе после рестарта.
+        """
         if await self._release_if_free(runtime):
             return
-        if runtime.warmup_recovery:
+        if can_converse and runtime.warmup_recovery:
             await self._maybe_start_recovery_dialog(runtime, participants)
 
     async def _release_if_free(self, runtime: MimicAgentRuntime) -> bool:

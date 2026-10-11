@@ -78,6 +78,7 @@ async def test_owner_gets_the_dialogs() -> None:
             "username": "news",
             "kind": "channel",
             "discussion_of": None,
+            "discussion_unknown": False,
         },
         {
             "id": -1001000000002,
@@ -85,8 +86,16 @@ async def test_owner_gets_the_dialogs() -> None:
             "username": None,
             "kind": "group",
             "discussion_of": -1001000000001,
+            "discussion_unknown": False,
         },
-        {"id": 42, "title": "Анна", "username": None, "kind": "private", "discussion_of": None},
+        {
+            "id": 42,
+            "title": "Анна",
+            "username": None,
+            "kind": "private",
+            "discussion_of": None,
+            "discussion_unknown": False,
+        },
     ]
 
 

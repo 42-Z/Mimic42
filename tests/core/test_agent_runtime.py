@@ -14,6 +14,7 @@ from mimic42.core.agent_runtime import (
     AgentTrigger,
     MimicAgentRuntime,
     TelegramAuthorizationRequired,
+    TelegramTeardownPendingError,
 )
 from mimic42.core.manager import AgentManager
 from mimic42.core.media_download import MediaRefCache
@@ -218,6 +219,96 @@ async def test_stop_disconnects_telegram_even_if_http_close_hangs(
     finally:
         hanging.release.set()
         await asyncio.sleep(0)
+
+
+class _SlowDisconnectClient(FakeTelegramClient):
+    """Клиент, чьё отключение зависло на мёртвом сокете, пока его не отпустят."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.release = asyncio.Event()
+
+    async def disconnect(self) -> None:
+        self.disconnect_calls += 1
+        await self.release.wait()
+        self.connected = False
+
+
+@pytest.mark.asyncio
+async def test_start_waits_for_a_telegram_disconnect_that_overran_the_stop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Два соединения одной сессии Telegram отзывает (AUTH_KEY_DUPLICATED): ждём закрытия."""
+    monkeypatch.setattr("mimic42.core.agent_runtime.STOP_STEP_TIMEOUT_SECONDS", 0.05)
+    old_client = _SlowDisconnectClient()
+    config = make_config()
+    old_runtime = MimicAgentRuntime(
+        config=config, telegram_client=old_client, langchain_agent=FakeLangChainAgent()
+    )
+    await old_runtime.start()
+    await asyncio.wait_for(old_runtime.stop(), timeout=2)
+    assert old_runtime.state is AgentRuntimeState.STOPPED
+
+    # Перезагрузка конфигурации строит новый рантайм с тем же агентом и новым клиентом.
+    new_client = FakeTelegramClient()
+    new_runtime = MimicAgentRuntime(
+        config=config, telegram_client=new_client, langchain_agent=FakeLangChainAgent()
+    )
+    starting = asyncio.create_task(new_runtime.start())
+    await asyncio.sleep(0.1)
+
+    assert not starting.done()
+    assert new_client.connect_calls == 0
+
+    old_client.release.set()
+    await asyncio.wait_for(starting, timeout=2)
+
+    assert new_runtime.state is AgentRuntimeState.RUNNING
+    assert new_client.connect_calls == 1
+    await new_runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_start_is_declined_while_the_old_connection_is_still_closing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("mimic42.core.agent_runtime.STOP_STEP_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr("mimic42.core.agent_runtime.TELEGRAM_TEARDOWN_WAIT_SECONDS", 0.05)
+    stuck = _SlowDisconnectClient()
+    runtime = MimicAgentRuntime(
+        config=make_config(), telegram_client=stuck, langchain_agent=FakeLangChainAgent()
+    )
+    await runtime.start()
+    await runtime.stop()
+
+    try:
+        with pytest.raises(TelegramTeardownPendingError, match="закрывается"):
+            await runtime.start()
+        # Отказ ничего не подключил: состояние осталось «остановлен», не «ошибка».
+        assert runtime.state is AgentRuntimeState.STOPPED
+        assert stuck.connect_calls == 1
+    finally:
+        stuck.release.set()
+        await asyncio.sleep(0)
+
+    await runtime.start()
+    assert runtime.state is AgentRuntimeState.RUNNING
+    await runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_quick_disconnect_leaves_nothing_to_wait_for() -> None:
+    telegram = FakeTelegramClient()
+    runtime = MimicAgentRuntime(
+        config=make_config(), telegram_client=telegram, langchain_agent=FakeLangChainAgent()
+    )
+    await runtime.start()
+    await runtime.stop()
+
+    await runtime.start()
+
+    assert runtime.state is AgentRuntimeState.RUNNING
+    await runtime.stop()
 
 
 @pytest.mark.asyncio

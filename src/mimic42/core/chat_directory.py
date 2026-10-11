@@ -20,6 +20,10 @@ class ChatItem(BaseModel):
     kind: ChatKind
     # Marked ID канала, если это группа обсуждения (комментарии) его постов.
     discussion_of: int | None = None
+    # Группа — чьё-то обсуждение, но чьё именно, узнать не удалось (сбой запроса к
+    # Telegram). Пока связь неизвестна, отключить такую группу отдельно нельзя: правило
+    # доступа может отпустить её вместе с каналом.
+    discussion_unknown: bool = False
 
 
 class ChatDirectory(Protocol):

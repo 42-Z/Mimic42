@@ -9,8 +9,9 @@ from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
-from telethon import errors, functions, types
+from telethon import errors, functions, types, utils
 
+from mimic42.core.off_limits import is_off_limits_entity
 from mimic42.integrations.telegram_tools import TelegramToolbox
 from tests.integrations.test_telegram_tools import FakeTelethonClient
 
@@ -270,6 +271,34 @@ async def test_failed_look_around_does_not_break_the_join() -> None:
 
 
 @pytest.mark.asyncio
+async def test_failed_look_around_is_not_reported_as_no_check() -> None:
+    """«Не смог посмотреть» не должно читаться как «капчи нет»: модель написала бы вслепую."""
+    client = NewsClient(
+        _discussion(joined=False, join_to_send=True), recent=RuntimeError("FloodWaitError")
+    )
+
+    result = await TelegramToolbox(cast(Any, client)).join_channel_discussion("news")
+
+    assert result["inspection_failed"] is True
+    # Подсказка «в группе нет сообщений с кнопками» здесь была бы ложью.
+    assert "В группе нет сообщений с кнопками" not in result["hint"]
+    assert "не потому, что её нет" in result["hint"]
+    assert "get_messages" in result["hint"]
+    assert f"peer={result['linked_chat_id']}" in result["hint"]
+
+
+@pytest.mark.asyncio
+async def test_the_group_is_named_by_its_marked_id() -> None:
+    """Голый номер 2 Telethon ищет и среди пользователей; модели отдаётся ID с -100."""
+    client = NewsClient(_discussion(joined=False, join_to_send=True), recent=[_captcha_message()])
+
+    result = await TelegramToolbox(cast(Any, client)).join_channel_discussion("news")
+
+    assert result["linked_chat_id"] == utils.get_peer_id(types.PeerChannel(2))
+    assert f"peer={result['linked_chat_id']}" in result["hint"]
+
+
+@pytest.mark.asyncio
 async def test_joining_a_public_group_shows_its_captcha_too() -> None:
     group = _discussion(joined=False, join_to_send=False)
 
@@ -286,6 +315,9 @@ async def test_joining_a_public_group_shows_its_captcha_too() -> None:
     assert result["success"] is True
     assert result["verification_messages"][0]["message_id"] == 2557938
     assert "click_inline_button" in result["hint"]
+    # Группа названа ID с пометкой типа, а не голым номером канала.
+    assert result["chat_id"] == utils.get_peer_id(group)
+    assert f"peer={result['chat_id']}" in result["hint"]
 
 
 @pytest.mark.asyncio
@@ -352,12 +384,74 @@ async def test_the_refusal_expires() -> None:
     toolbox = TelegramToolbox(cast(Any, client))
 
     await toolbox.send_text_message("strimrs", "привет")
-    code = toolbox._refusals["strimrs"][1]
-    toolbox._refusals["strimrs"] = (time.monotonic() - 1, code)
+    (key,) = toolbox._refusals
+    code = toolbox._refusals[key][1]
+    toolbox._refusals[key] = (time.monotonic() - 1, code)
     again = await toolbox.send_text_message("strimrs", "привет")
 
     assert again["error_code"] == "UserBannedInChannelError"
     assert client.attempts == 2
+
+
+@pytest.mark.asyncio
+async def test_a_refused_comment_does_not_block_a_plain_send_to_the_same_channel() -> None:
+    """Комментарий уходит в группу обсуждения: её отказ не про сам канал."""
+    client = FailingSendClient(errors.UserBannedInChannelError(request=None))
+    toolbox = TelegramToolbox(cast(Any, client))
+
+    await toolbox.send_text_message("strimrs", "комментарий", comment_to_msg_id=5)
+    plain = await toolbox.send_text_message("strimrs", "в канал")
+    another_comment = await toolbox.send_text_message("strimrs", "ещё", comment_to_msg_id=6)
+
+    assert plain["error_code"] == "UserBannedInChannelError"
+    assert another_comment["error_code"] == "SendRefusedRecently"
+    assert client.attempts == 2
+
+
+@pytest.mark.asyncio
+async def test_another_spelling_of_the_refused_chat_is_still_refused() -> None:
+    client = FailingSendClient(errors.UserBannedInChannelError(request=None))
+    toolbox = TelegramToolbox(cast(Any, client))
+
+    await toolbox.send_text_message("strimrs", "привет")
+    labeled = await toolbox.send_text_message("Стримеры#@strimrs", "привет")
+
+    assert labeled["error_code"] == "SendRefusedRecently"
+    assert client.attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_joining_an_unrelated_group_keeps_the_refusal_of_another_chat() -> None:
+    client = FailingSendClient(errors.UserBannedInChannelError(request=None))
+    toolbox = TelegramToolbox(cast(Any, client))
+
+    await toolbox.send_text_message("strimrs", "привет")
+    assert (await toolbox.join_channel("another"))["success"] is True
+    again = await toolbox.send_text_message("strimrs", "привет")
+
+    assert again["error_code"] == "SendRefusedRecently"
+    assert client.attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_an_already_completed_join_keeps_the_refusal() -> None:
+    class BannedNewsClient(NewsClient):
+        attempts = 0
+
+        async def send_message(self, entity: Any, message: str, **kwargs: Any) -> object:
+            self.attempts += 1
+            raise errors.UserBannedInChannelError(request=None)
+
+    client = BannedNewsClient(_discussion(joined=True, join_to_send=True), already_participant=True)
+    toolbox = TelegramToolbox(cast(Any, client))
+
+    await toolbox.send_text_message("news", "привет", comment_to_msg_id=5)
+    joined = await toolbox.join_channel_discussion("news")
+    again = await toolbox.send_text_message("news", "привет", comment_to_msg_id=5)
+
+    assert joined["already_joined"] is True
+    assert again["error_code"] == "SendRefusedRecently"
+    assert client.attempts == 1
 
 
 @pytest.mark.asyncio
@@ -409,13 +503,27 @@ async def test_other_users_are_not_taken_for_the_spam_bot() -> None:
 
 
 def test_off_limits_entity_matches_users_and_input_peers_only() -> None:
-    from mimic42.integrations.telegram_tools import _is_off_limits_entity
+    assert is_off_limits_entity(types.User(id=SPAMBOT_ID), SPAMBOT_ID)
+    assert is_off_limits_entity(types.InputPeerUser(SPAMBOT_ID, 1), SPAMBOT_ID)
+    assert not is_off_limits_entity(types.User(id=1), SPAMBOT_ID)
+    assert not is_off_limits_entity(types.InputPeerChannel(SPAMBOT_ID, 1), SPAMBOT_ID)
+    assert not is_off_limits_entity(types.User(id=SPAMBOT_ID), None)
 
-    assert _is_off_limits_entity(types.User(id=SPAMBOT_ID), SPAMBOT_ID)
-    assert _is_off_limits_entity(types.InputPeerUser(SPAMBOT_ID, 1), SPAMBOT_ID)
-    assert not _is_off_limits_entity(types.User(id=1), SPAMBOT_ID)
-    assert not _is_off_limits_entity(types.InputPeerChannel(SPAMBOT_ID, 1), SPAMBOT_ID)
-    assert not _is_off_limits_entity(types.User(id=SPAMBOT_ID), None)
+
+@pytest.mark.asyncio
+async def test_no_timers_for_the_spam_bot_named_by_its_number() -> None:
+    """Без правила доступа к чатам номер бота тоже разрешается, а не уходит в базу как есть."""
+    session_factory = MagicMock()
+    toolbox = TelegramToolbox(
+        cast(Any, SpamBotByIdClient(RuntimeError("нет"))),
+        agent_id=MagicMock(),
+        session_factory=session_factory,
+    )
+
+    result = await toolbox.set_wakeup_timer("178220800", 1800, "Проверить апелляцию")
+
+    assert result["error_code"] == "OffLimitsBotError"
+    session_factory.assert_not_called()
 
 
 @pytest.mark.asyncio

@@ -6,6 +6,7 @@ import {
   ChevronDown,
   ChevronRight,
   ChevronsDown,
+  Link2Off,
   MessagesSquare,
   Radio,
   RefreshCw,
@@ -19,6 +20,7 @@ import { Switch } from '@/components/ui/switch';
 import { useAgentChats } from '@/hooks/useAgent';
 import {
   buildChatRows,
+  canDisable,
   CHAT_GROUPS,
   chatMatches,
   hiddenChannelIds,
@@ -83,7 +85,9 @@ export function ChatsSettings({
     onChange(
       toggleChats(
         value,
-        scope.filter((row) => row.lockedBy === null).flatMap((row) => row.ids),
+        scope
+          .filter((row) => (next ? row.lockedBy === null : canDisable(row)))
+          .flatMap((row) => row.ids),
         next,
       ),
     );
@@ -314,7 +318,7 @@ function ChatItemRow({
   row: ChatRow;
   onToggle: (row: ChatRow, next: boolean) => void;
 }) {
-  const { chat, enabled, lockedBy } = row;
+  const { chat, enabled, lockedBy, linkUnknown } = row;
   return (
     <li className="flex items-start justify-between gap-3 px-3 py-2">
       <div className="min-w-0">
@@ -330,12 +334,21 @@ function ChatItemRow({
             Комментарии канала «{lockedBy.title}»: доступна, пока канал включён
           </span>
         )}
+        {linkUnknown && (
+          <span
+            data-testid="chat-link-unknown"
+            className="mt-0.5 flex items-center gap-1 font-mono text-[11px] text-muted-foreground"
+          >
+            <Link2Off className="size-3 shrink-0" aria-hidden="true" />
+            Канал обсуждения не определён: обновите список, чтобы отключить группу
+          </span>
+        )}
       </div>
       <Switch
         checked={enabled}
         onChange={(next) => onToggle(row, next)}
         label={chat.title}
-        disabled={lockedBy !== null}
+        disabled={lockedBy !== null || (linkUnknown && enabled)}
       />
     </li>
   );

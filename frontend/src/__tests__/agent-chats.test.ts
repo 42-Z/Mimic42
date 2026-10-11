@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
   buildChatRows,
+  canDisable,
   chatMatches,
   hiddenChannelIds,
   mergeDisabledChats,
@@ -117,6 +118,20 @@ describe('buildChatRows', () => {
   test('переключатель обычного чата меняет только его ID', () => {
     const rows = buildChatRows([NEWS, COMMENTS, ANNA], new Set());
     expect(rows.map((row) => row.ids)).toEqual([[NEWS.id], [COMMENTS.id], [ANNA.id]]);
+  });
+
+  test('группа с неизвестной связью помечена, остальные нет', () => {
+    const unknown: AgentChat = { ...COMMENTS, discussion_of: null, discussion_unknown: true };
+    const rows = buildChatRows([NEWS, unknown, COMMENTS], new Set());
+    expect(rows.map((row) => row.linkUnknown)).toEqual([false, true, false]);
+  });
+});
+
+describe('canDisable', () => {
+  test('отключить можно обычный чат, но не заблокированный каналом и не с неизвестной связью', () => {
+    const unknown: AgentChat = { ...COMMENTS, discussion_of: null, discussion_unknown: true };
+    const rows = buildChatRows([NEWS, COMMENTS, unknown, ANNA], new Set());
+    expect(rows.map(canDisable)).toEqual([true, false, false, true]);
   });
 });
 

@@ -19,7 +19,7 @@ from typing import Any, cast
 from uuid import uuid4
 
 import pytest
-from telethon import errors, functions, types
+from telethon import errors, functions, types, utils
 
 from mimic42.core.agent_runtime import AgentRuntimeConfig, _extract_structured_response
 from mimic42.core.onboarding import load_default_system_prompt
@@ -34,6 +34,7 @@ pytestmark = pytest.mark.real_llm
 ATTEMPTS = 8
 CALL_TIMEOUT = 180.0
 POST_ID = 5428
+CAPTCHA_MESSAGE_ID = 2557938
 DATE = datetime(2026, 1, 1, tzinfo=UTC)
 
 REQUEST = (
@@ -80,28 +81,55 @@ class DiscussionClient:
         self.refusals: list[str] = []
         self.joined = False
         self.attempts: list[dict[str, Any]] = []
+        # Только настоящие комментарии под нужным постом: именно их ждёт задача.
         self.sent: list[dict[str, Any]] = []
+        # Отправки, ушедшие не туда: в канал без comment_to или не под тот пост.
+        self.stray: list[dict[str, Any]] = []
         self.private: list[dict[str, Any]] = []
         self.requests: list[str] = []
+        # Вступления и нажатия не в ту группу, не на то сообщение, не той кнопкой.
+        self.wrong_joins: list[str] = []
+        self.wrong_clicks: list[str] = []
+        # Что делала модель, по порядку: нужно при разборе упавшего прогона.
+        self.log: list[str] = []
 
     async def get_input_entity(self, peer: Any) -> Any:
         return peer
 
+    async def get_peer_id(self, peer: Any, add_mark: bool = True) -> int:
+        """ID с пометкой типа: у канала и группы разные, у человека — обычный."""
+        if isinstance(peer, int):
+            return peer
+        if self._is_group(peer):
+            return utils.get_peer_id(types.PeerChannel(self.group.id))
+        if self._is_channel(peer):
+            return utils.get_peer_id(types.PeerChannel(self.channel.id))
+        return 6121153070
+
     @staticmethod
     def _name(peer: Any) -> str:
-        return str(peer).lstrip("@").lower()
+        return str(getattr(peer, "username", None) or peer).lstrip("@").lower()
+
+    def _is_group(self, peer: Any) -> bool:
+        name = self._name(peer)
+        marked = str(utils.get_peer_id(types.PeerChannel(self.group.id)))
+        return peer is self.group or name in {"strimrs_chat", "2", marked} or "чат" in name
+
+    def _is_channel(self, peer: Any) -> bool:
+        name = self._name(peer)
+        marked = str(utils.get_peer_id(types.PeerChannel(self.channel.id)))
+        return not self._is_group(peer) and (
+            peer is self.channel or name in {"strimrs", "1", marked} or "стример" in name
+        )
 
     def _is_group_or_channel(self, peer: Any) -> bool:
-        name = self._name(peer)
-        return name in {"strimrs", "strimrs_chat", "1", "2"} or "стример" in name
+        return self._is_group(peer) or self._is_channel(peer)
 
     async def get_entity(self, peer: Any) -> Any:
-        name = self._name(peer)
-        if name in {"strimrs_chat", "2"} or "чат" in name:
-            return self.group
-        return self.channel
+        return self.group if self._is_group(peer) else self.channel
 
     async def send_message(self, entity: Any, message: str = "", **kwargs: Any) -> Any:
+        self.log.append(f"send {self._name(entity)} comment_to={kwargs.get('comment_to')}")
         # Отказ касается групп и каналов: личная переписка у аккаунта работает.
         if not self._is_group_or_channel(entity):
             self.private.append({"to": str(entity), "text": message})
@@ -117,6 +145,17 @@ class DiscussionClient:
         if refusal is not None:
             self.refusals.append(type(refusal).__name__)
             raise refusal
+        # Комментарий — это отправка в канал с comment_to=ID поста. Простая отправка в
+        # вещательный канал без прав администратора Telegram не пропускает, а сообщение
+        # прямо в группу — не комментарий под постом.
+        is_comment = self._is_channel(entity) and kwargs.get("comment_to") == POST_ID
+        if not is_comment:
+            self.stray.append({"to": self._name(entity), "text": message, **kwargs})
+            if self._is_channel(entity):
+                refusal = errors.ChatWriteForbiddenError(request=_send_request())
+                self.refusals.append(type(refusal).__name__)
+                raise refusal
+            return SimpleNamespace(id=8000 + len(self.stray))
         self.sent.append({"text": message, **kwargs})
         return SimpleNamespace(id=9000 + len(self.sent))
 
@@ -140,7 +179,7 @@ class DiscussionClient:
             ]
         )
         return SimpleNamespace(
-            id=2557938,
+            id=CAPTCHA_MESSAGE_ID,
             text="Добро пожаловать! Для вступления в чат реши математический пример. "
             "Captcha: 33+26",
             sender_id=8172563028,
@@ -150,8 +189,7 @@ class DiscussionClient:
         )
 
     def _history(self, entity: Any) -> list[Any]:
-        name = self._name(entity)
-        if name in {"strimrs_chat", "2"} or "чат" in name:
+        if self._is_group(entity):
             if self.captcha and self.joined and not self.verified:
                 return [self._captcha_message()]
             return []
@@ -167,14 +205,22 @@ class DiscussionClient:
         ]
 
     async def get_messages(self, entity: Any, limit: int | None = None, **kwargs: Any) -> Any:
+        self.log.append(f"get_messages {self._name(entity)}")
         return self._history(entity)[: limit or None]
 
     async def iter_messages(self, entity: Any, limit: int | None = None, **kwargs: Any) -> Any:
+        self.log.append(f"iter_messages {self._name(entity)}")
         for message in self._history(entity)[: limit or None]:
             yield message
 
     async def __call__(self, request: Any) -> Any:
         self.requests.append(type(request).__name__)
+        detail = ""
+        if isinstance(request, functions.channels.JoinChannelRequest):
+            detail = f" {self._name(request.channel)}"
+        elif isinstance(request, functions.messages.GetBotCallbackAnswerRequest):
+            detail = f" {self._name(request.peer)} msg={request.msg_id} data={request.data!r}"
+        self.log.append(f"{type(request).__name__}{detail}")
         if isinstance(request, functions.channels.GetFullChannelRequest):
             full = SimpleNamespace(
                 about="Стримеры и всё про них",
@@ -184,12 +230,22 @@ class DiscussionClient:
             )
             return SimpleNamespace(full_chat=full, chats=[self.channel, self.group], users=[])
         if isinstance(request, functions.channels.JoinChannelRequest):
+            # Комментировать пускает только вступление в группу обсуждения: вступление
+            # в сам канал её не открывает.
+            if not self._is_group(request.channel):
+                self.wrong_joins.append(self._name(request.channel))
+                return SimpleNamespace(updates=[], chats=[self.channel], users=[])
             self.joined = True
             return SimpleNamespace(updates=[], chats=[self.group], users=[])
         if isinstance(request, functions.messages.StartBotRequest):
             return SimpleNamespace(updates=[], chats=[], users=[])
         if isinstance(request, functions.messages.GetBotCallbackAnswerRequest):
-            if request.data == b"right-59":
+            # Капча живёт в сообщении группы: нажатие по другому чату или сообщению
+            # ничего не решает, как и неверный ответ.
+            if not self._is_group(request.peer) or request.msg_id != CAPTCHA_MESSAGE_ID:
+                self.wrong_clicks.append(f"{self._name(request.peer)}:{request.msg_id}")
+                return SimpleNamespace(message="Сообщение не найдено", alert=True, url=None)
+            if self.joined and request.data == b"right-59":
                 self.verified = True
                 return SimpleNamespace(message="Вы разблокированы", alert=True, url=None)
             return SimpleNamespace(message="Неверно, попробуйте ещё раз", alert=True, url=None)
@@ -232,16 +288,20 @@ async def outcomes(model: str, make_client: Callable[[], DiscussionClient]) -> l
     rows: list[dict[str, Any]] = []
     for client, result in zip(clients, results, strict=True):
         if isinstance(result, BaseException):
-            rows.append({"error": repr(result)})
+            rows.append({"error": repr(result), "log": list(client.log)})
             continue
         rows.append(
             {
+                "log": list(client.log),
                 "text": str(result.get("text") or ""),
                 "attempts": len(client.attempts),
                 "sent": len(client.sent),
                 "joined": client.joined,
                 "verified": client.verified,
                 "refusals": list(client.refusals),
+                "stray": len(client.stray),
+                "wrong_joins": list(client.wrong_joins),
+                "wrong_clicks": list(client.wrong_clicks),
             }
         )
     return rows
@@ -311,5 +371,10 @@ async def test_model_looks_around_before_commenting_in_a_group_with_a_captcha(
     # Главное: комментарий не уходил вслепую и не упирался в отказ Telegram.
     blind = count(rows, lambda row: len(row["refusals"]) > 0)
     assert blind <= ATTEMPTS // 4, f"{blind}/{ATTEMPTS} получили отказ при отправке: {rows}"
+    # И путь был верным: не в тот чат, не на то сообщение, не простой отправкой в канал.
+    misdirected = count(
+        rows, lambda row: row["stray"] > 0 or bool(row["wrong_joins"] or row["wrong_clicks"])
+    )
+    assert misdirected <= ATTEMPTS // 4, f"{misdirected}/{ATTEMPTS} действовали не туда: {rows}"
     duplicated = count(rows, lambda row: row["sent"] > 1)
     assert duplicated <= ATTEMPTS // 8, f"{duplicated}/{ATTEMPTS} продублировали: {rows}"

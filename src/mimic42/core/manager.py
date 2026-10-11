@@ -18,6 +18,7 @@ from mimic42.core.agent_runtime import (
     LangChainAgentLike,
     MimicAgentRuntime,
     TelegramClientLike,
+    TelegramTeardownPendingError,
 )
 from mimic42.core.chat_access import ChatAccess
 from mimic42.core.chat_directory import ChatItem
@@ -230,6 +231,10 @@ class AgentManager:
     async def start_agent(self, agent_id: UUID) -> None:
         try:
             await (await self.get_agent(agent_id)).start()
+        except TelegramTeardownPendingError:
+            # Запуск лишь отложен, пока закрывается прошлое соединение: агент не в ошибке,
+            # и статус в базе остаётся прежним.
+            raise
         except Exception:
             # Persist the failure: without this the database keeps the stale
             # status and the dashboard badge lies about the runtime state.

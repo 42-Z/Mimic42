@@ -7,6 +7,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from telethon import types, utils
 
 from mimic42.core.agent_runtime import MimicAgentRuntime
 from mimic42.core.chat_access import ChatAccess
@@ -94,9 +95,13 @@ async def test_timer_for_a_disabled_chat_fails_without_a_turn(
 
     telegram = FakeTelegramClient()
 
-    async def get_peer_id(peer: object, add_mark: bool = True) -> int:
-        return int(str(peer))
+    async def get_input_entity(peer: object) -> Any:
+        return types.InputPeerUser(user_id=int(str(peer)), access_hash=1)
 
+    async def get_peer_id(peer: object, add_mark: bool = True) -> int:
+        return utils.get_peer_id(peer)
+
+    telegram.get_input_entity = get_input_entity  # ty: ignore[unresolved-attribute]
     telegram.get_peer_id = get_peer_id  # ty: ignore[unresolved-attribute]
     runtime = MimicAgentRuntime(
         config=make_config(agent_id=agent_id, owner_id=owner_id),

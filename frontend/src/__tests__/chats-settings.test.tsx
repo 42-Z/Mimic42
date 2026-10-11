@@ -116,6 +116,40 @@ describe('ChatsSettings', () => {
     ).toBeTruthy();
   });
 
+  test('группа с неизвестной связью с каналом не отключается отдельно', async () => {
+    const unknown: AgentChat = { ...COMMENTS, discussion_of: null, discussion_unknown: true };
+    mockChats([unknown, FRIENDS]);
+    const user = userEvent.setup();
+    const onChange = mock((_next: number[]) => {});
+    const section = renderSection([], onChange);
+    await user.click(await within(section).findByTestId('chat-group-group'));
+
+    const comments = within(section).getByRole('switch', { name: 'Комментарии дня' });
+    expect((comments as HTMLButtonElement).disabled).toBe(true);
+    expect(within(section).getByTestId('chat-link-unknown')).toBeTruthy();
+
+    // Групповое выключение обходит такую строку, а обычный чат отключает.
+    await user.click(within(section).getByRole('switch', { name: 'Все чаты группы «Группы»' }));
+    const [next] = onChange.mock.calls[0] as [number[]];
+    expect(next).toContain(FRIENDS.id);
+    expect(next).not.toContain(unknown.id);
+  });
+
+  test('отключённую группу с неизвестной связью можно включить', async () => {
+    const unknown: AgentChat = { ...COMMENTS, discussion_of: null, discussion_unknown: true };
+    mockChats([unknown]);
+    const user = userEvent.setup();
+    const onChange = mock((_next: number[]) => {});
+    const section = renderSection([unknown.id], onChange);
+    await user.click(await within(section).findByTestId('chat-group-group'));
+
+    const comments = within(section).getByRole('switch', { name: 'Комментарии дня' });
+    expect((comments as HTMLButtonElement).disabled).toBe(false);
+    await user.click(comments);
+
+    expect(onChange).toHaveBeenCalledWith([]);
+  });
+
   test('при отключённом канале группа обсуждения переключается сама', async () => {
     mockChats([NEWS, COMMENTS]);
     const user = userEvent.setup();

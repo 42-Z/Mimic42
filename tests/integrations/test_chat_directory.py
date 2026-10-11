@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any, cast
@@ -11,6 +12,7 @@ from telethon import functions, types
 
 from mimic42.core.chat_directory import ChatItem
 from mimic42.integrations.chat_directory import (
+    _LOOKUP_CONCURRENCY,
     LINK_CACHE_TTL_SECONDS,
     LIST_CACHE_TTL_SECONDS,
     TelethonChatDirectory,
@@ -174,6 +176,107 @@ async def test_failed_lookup_leaves_the_link_empty_without_breaking_the_list() -
 
     assert item.title == "Комментарии"
     assert item.discussion_of is None
+    # «Не узнали» отмечено: это не то же, что «у группы нет своего канала».
+    assert item.discussion_unknown is True
+
+
+@pytest.mark.asyncio
+async def test_a_group_without_a_link_flag_is_not_marked_unknown() -> None:
+    group = _dialog(GROUP_ID, "Чат", _channel(1000000002, "Чат", megagroup=True))
+
+    (item,) = await TelethonChatDirectory(FakeDirectoryClient(main=[group])).list_chats()
+
+    assert item.discussion_unknown is False
+
+
+class GatedClient(FakeDirectoryClient):
+    """Ответ Telegram держится, пока тест не откроет ворота; считаются одновременные запросы."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.gate = asyncio.Event()
+        self.active = 0
+        self.peak = 0
+
+    async def __call__(self, request: object) -> Any:
+        self.active += 1
+        self.peak = max(self.peak, self.active)
+        try:
+            await self.gate.wait()
+            return await super().__call__(request)
+        finally:
+            self.active -= 1
+
+
+async def _let_tasks_run() -> None:
+    for _ in range(20):
+        await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_concurrent_checks_of_one_group_share_a_single_request() -> None:
+    """Проверка доступа идёт на каждое сообщение: всплеск не должен плодить запросы."""
+    client = GatedClient(links={1000000002: 1000000001})
+    directory = TelethonChatDirectory(client)
+    checks = [asyncio.create_task(directory.discussion_of(GROUP_ID)) for _ in range(10)]
+    await _let_tasks_run()
+
+    client.gate.set()
+    results = await asyncio.gather(*checks)
+
+    assert results == [CHANNEL_ID] * 10
+    assert len(client.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_direct_checks_of_many_groups_respect_the_concurrency_limit() -> None:
+    real_ids = [1000000100 + n for n in range(_LOOKUP_CONCURRENCY * 3)]
+    client = GatedClient(links={real_id: 1000000001 for real_id in real_ids})
+    directory = TelethonChatDirectory(client)
+    checks = [
+        asyncio.create_task(directory.discussion_of(-1_000_000_000_000 - real_id))
+        for real_id in real_ids
+    ]
+    await _let_tasks_run()
+    assert client.active == _LOOKUP_CONCURRENCY
+
+    client.gate.set()
+    await asyncio.gather(*checks)
+
+    assert client.peak == _LOOKUP_CONCURRENCY
+
+
+@pytest.mark.asyncio
+async def test_cancelling_one_waiter_does_not_cancel_the_shared_lookup() -> None:
+    client = GatedClient(links={1000000002: 1000000001})
+    directory = TelethonChatDirectory(client)
+    first = asyncio.create_task(directory.discussion_of(GROUP_ID))
+    second = asyncio.create_task(directory.discussion_of(GROUP_ID))
+    await _let_tasks_run()
+
+    first.cancel()
+    client.gate.set()
+
+    assert await second == CHANNEL_ID
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    assert len(client.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_failed_shared_lookup_reaches_every_waiter_and_is_not_kept() -> None:
+    client = GatedClient(links={1000000002: 1000000001})
+    client.fail_lookups = True
+    directory = TelethonChatDirectory(client)
+    checks = [asyncio.create_task(directory.discussion_of(GROUP_ID)) for _ in range(3)]
+    await _let_tasks_run()
+    client.gate.set()
+
+    outcomes = await asyncio.gather(*checks, return_exceptions=True)
+
+    assert all(isinstance(outcome, RuntimeError) for outcome in outcomes)
+    client.fail_lookups = False
+    assert await directory.discussion_of(GROUP_ID) == CHANNEL_ID
 
 
 @pytest.mark.asyncio

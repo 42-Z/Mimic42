@@ -59,6 +59,11 @@ export interface ChatRow {
    * переключателя канала нет, а правило доступа отпустило бы группу вместе с ним.
    */
   ids: number[];
+  /**
+   * Группа обсуждения, чей канал определить не удалось. Включить её можно, а отключить
+   * отдельно нельзя, пока связь неизвестна: отключение могло бы не подействовать.
+   */
+  linkUnknown: boolean;
 }
 
 /** Строки списка с учётом правила комментариев: группа обсуждения идёт за своим каналом. */
@@ -67,7 +72,13 @@ export function buildChatRows(chats: AgentChat[], disabled: ReadonlySet<number>)
   return chats.map((chat) => {
     const channelId = chat.discussion_of;
     if (channelId === null) {
-      return { chat, enabled: !disabled.has(chat.id), lockedBy: null, ids: [chat.id] };
+      return {
+        chat,
+        enabled: !disabled.has(chat.id),
+        lockedBy: null,
+        ids: [chat.id],
+        linkUnknown: chat.discussion_unknown === true,
+      };
     }
     const channel = byId.get(channelId);
     if (channel === undefined) {
@@ -76,6 +87,7 @@ export function buildChatRows(chats: AgentChat[], disabled: ReadonlySet<number>)
         enabled: !disabled.has(chat.id) || !disabled.has(channelId),
         lockedBy: null,
         ids: [chat.id, channelId],
+        linkUnknown: false,
       };
     }
     const channelEnabled = !disabled.has(channelId);
@@ -84,8 +96,14 @@ export function buildChatRows(chats: AgentChat[], disabled: ReadonlySet<number>)
       enabled: !disabled.has(chat.id) || channelEnabled,
       lockedBy: channelEnabled ? { id: channelId, title: channel.title } : null,
       ids: [chat.id],
+      linkUnknown: false,
     };
   });
+}
+
+/** Можно ли сейчас отключить строку: отключение группы с неизвестной связью не гарантировано. */
+export function canDisable(row: ChatRow): boolean {
+  return row.lockedBy === null && !row.linkUnknown;
 }
 
 /**

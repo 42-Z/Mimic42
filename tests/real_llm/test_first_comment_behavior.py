@@ -46,6 +46,9 @@ class RecordingClient:
     async def get_input_entity(self, peer: Any) -> Any:
         return peer
 
+    async def get_peer_id(self, peer: Any, add_mark: bool = True) -> int:
+        return peer if isinstance(peer, int) else 1987654321
+
     async def get_entity(self, peer: Any) -> Any:
         return type("Entity", (), {"id": peer, "title": "Будни айтишника"})()
 
