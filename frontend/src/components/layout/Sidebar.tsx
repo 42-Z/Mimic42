@@ -7,6 +7,7 @@ import { cn } from '@/lib/utils';
 import {
   LayoutDashboard,
   Bot,
+  Library,
   LogOut,
   ChevronLeft,
   ChevronRight,
@@ -28,6 +29,7 @@ interface NavItem {
 
 const mainNav: NavItem[] = [
   { href: '/dashboard', label: 'Главная', icon: LayoutDashboard, exact: true },
+  { href: '/presets', label: 'Пресеты', icon: Library, exact: true },
 ];
 
 // Общие классы состояний навигации: фокус виден, активный пункт несёт
