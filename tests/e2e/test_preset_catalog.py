@@ -64,6 +64,9 @@ class TestPresetCatalog:
         foreign_card = _card(reader, TITLE)
         expect(foreign_card).to_be_visible()
         foreign_card.get_by_test_id("preset-favorite").click()
+        # Ждём вставку: кнопка переходит в состояние «В избранном», иначе уход
+        # на страницу агента отменяет POST и избранное не сохранится.
+        expect(foreign_card.get_by_test_id("preset-unfavorite")).to_be_visible()
 
         # Избранное попадает в меню у мимика читателя.
         reader_agent_page = f"/agent/{reader_agent_id}?tab=settings"
