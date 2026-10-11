@@ -37,7 +37,14 @@ class TestPresetCatalog:
 
         # Автор создаёт пресет.
         author.goto("/presets")
-        author.get_by_test_id("open-preset-editor").click()
+        try:
+            author.get_by_test_id("open-preset-editor").click(timeout=15_000)
+        except Exception:
+            author.screenshot(path="test-results/presets-failure.png")
+            html = author.content()
+            print("FAIL-URL:", author.url)
+            print("FAIL-HTML:", html[:2000])
+            raise
         editor = author.get_by_role("dialog")
         editor.get_by_label("Название").fill(TITLE)
         editor.get_by_label("Короткое описание").fill(SUMMARY)
