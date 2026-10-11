@@ -100,6 +100,25 @@ export function useWarmupState(agentId: string) {
   });
 }
 
+/**
+ * Диалоги аккаунта для настройки «Чаты и каналы». Читаются из клиента запущенного
+ * агента: 409 — штатное «агент не запущен», поэтому без повторов и без перезапроса
+ * на каждый возврат в окно; новые чаты подтягивает кнопка «Обновить список», а запуск
+ * и остановка агента сбрасывают список вместе со всем `agents`.
+ */
+export function useAgentChats(agentId: string) {
+  const isValidId = agentIdSchema.safeParse(agentId).success;
+
+  return useQuery({
+    queryKey: queryKeys.agents.chats(agentId),
+    queryFn: () => agentsApi.listChats(agentId),
+    enabled: isValidId,
+    retry: false,
+    staleTime: 60_000,
+    refetchOnWindowFocus: false,
+  });
+}
+
 /** Включить восстановление: сервер сам записывает выбор, форма настроек не участвует. */
 export function useStartWarmupRecovery(agentId: string) {
   const qc = useQueryClient();

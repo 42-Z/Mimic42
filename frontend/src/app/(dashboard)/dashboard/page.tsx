@@ -12,6 +12,7 @@ import { Button, buttonVariants } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { maskPhoneNumber, sanitizeText, truncate } from '@/lib/sanitize';
 import { needsRebind } from '@/lib/telegram';
+import { isSpamBlocked, spamBlockedFirst } from '@/lib/spamBlock';
 import { getSupabaseClient } from '@/lib/supabase/client';
 import { formatDistanceToNow } from 'date-fns';
 import { ru } from 'date-fns/locale';
@@ -172,7 +173,7 @@ function AgentsGrid({ agents }: { agents: AgentRecord[] }) {
 
   return (
     <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-      {agents.map((agent) => (
+      {spamBlockedFirst(agents).map((agent) => (
         <AgentCard
           key={agent.agent_id}
           agent={agent}
@@ -224,8 +225,8 @@ function AgentCard({ agent, details }: { agent: AgentRecord; details?: AgentDeta
       className="space-y-3 transition-colors hover:border-primary/25"
       data-testid={`agent-card-${agent.agent_id}`}
     >
-      <div className="flex items-start justify-between gap-2">
-        <div className="flex items-center gap-3 min-w-0">
+      <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-2">
+        <div className="flex min-w-0 flex-1 basis-56 items-center gap-3">
           <div className="h-9 w-9 rounded-sm bg-muted border border-border flex items-center justify-center shrink-0" aria-hidden="true">
             <Bot className="h-4 w-4 text-primary" />
           </div>
@@ -236,8 +237,19 @@ function AgentCard({ agent, details }: { agent: AgentRecord; details?: AgentDeta
             subtitle={details?.phone_number ? maskPhoneNumber(details.phone_number) : 'Telegram не подключён'}
           />
         </div>
-        <AgentStatusBadge state={agent.state} />
+        <AgentStatusBadge state={agent.state} restricted={isSpamBlocked(agent)} />
       </div>
+
+      {agent.warmup_restricted_at !== null && (
+        <Link
+          href={`/agent/${agent.agent_id}?tab=telegram`}
+          className="flex items-center gap-1.5 font-mono text-xs text-warning hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-sm"
+        >
+          <AlertTriangle className="size-3.5 shrink-0" aria-hidden="true" />
+          Telegram ограничил аккаунт{' '}
+          {formatDistanceToNow(new Date(agent.warmup_restricted_at), { addSuffix: true, locale: ru })}
+        </Link>
+      )}
 
       <p className="font-mono text-xs text-muted-foreground">
         {details?.last_started_at

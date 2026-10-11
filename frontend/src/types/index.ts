@@ -21,6 +21,8 @@ export interface AgentRecord {
   owner_id: string;    // UUID
   name: string;
   state: AgentState;
+  /** Начало ограничения аккаунта Telegram (спам-блок); null — ограничения нет. */
+  warmup_restricted_at: string | null;
 }
 
 /**
@@ -376,6 +378,26 @@ export interface WarmupSettings {
 export interface WarmupState {
   restricted_at: string | null;
   recovery: boolean;
+}
+
+/** Вид диалога в настройке «Чаты и каналы» — зеркало ChatKind из core/chat_directory.py. */
+export type AgentChatKind = 'channel' | 'group' | 'private';
+
+/** Диалог аккаунта: GET /agents/:id/chats. */
+export interface AgentChat {
+  /** ID в формате Telethon (marked): `-100…` у каналов и супергрупп. */
+  id: number;
+  title: string;
+  username: string | null;
+  kind: AgentChatKind;
+  /** ID канала, если это группа обсуждения (комментарии) его постов. */
+  discussion_of: number | null;
+  /**
+   * Группа — чьё-то обсуждение, но чьё, узнать не удалось (сбой запроса к Telegram).
+   * Пока связь неизвестна, отключить группу отдельно нельзя: правило доступа может
+   * отпустить её вместе с каналом. Нет поля — связь известна.
+   */
+  discussion_unknown?: boolean;
 }
 
 /**

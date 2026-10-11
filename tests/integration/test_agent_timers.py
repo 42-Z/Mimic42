@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+from typing import Any
 from uuid import uuid4
 
+import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from telethon import types, utils
 
 from mimic42.core.agent_runtime import MimicAgentRuntime
+from mimic42.core.chat_access import ChatAccess
 from mimic42.integrations.database_models import AgentModel, AgentTimerModel
 from mimic42.integrations.telegram_tools import TelegramToolbox
 from mimic42.testing.slots import Slot
@@ -61,3 +66,67 @@ async def test_set_wakeup_timer_tool_and_scheduler(
 
     assert len(telegram.sent_messages) == 1
     assert telegram.sent_messages[0] == ("12345", "timer triggered reply")
+
+
+async def test_timer_for_a_disabled_chat_fails_without_a_turn(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    owner_id = clean_slot.persona("empty").user_id
+    agent_id = uuid4()
+    async with db_session_factory() as session:
+        session.add(AgentModel(id=agent_id, owner_id=owner_id, name="Test Agent"))
+        await session.commit()
+    async with db_session_factory() as session:
+        session.add(
+            AgentTimerModel(
+                agent_id=agent_id,
+                peer="12345",
+                trigger_at=datetime.now(UTC) - timedelta(seconds=1),
+                description="Напомнить",
+                status="pending",
+            )
+        )
+        await session.commit()
+
+    async def never_linked(chat_id: int) -> int | None:
+        return None
+
+    telegram = FakeTelegramClient()
+
+    async def get_input_entity(peer: object) -> Any:
+        return types.InputPeerUser(user_id=int(str(peer)), access_hash=1)
+
+    async def get_peer_id(peer: object, add_mark: bool = True) -> int:
+        return utils.get_peer_id(peer)
+
+    telegram.get_input_entity = get_input_entity  # ty: ignore[unresolved-attribute]
+    telegram.get_peer_id = get_peer_id  # ty: ignore[unresolved-attribute]
+    runtime = MimicAgentRuntime(
+        config=make_config(agent_id=agent_id, owner_id=owner_id),
+        telegram_client=telegram,
+        langchain_agent=FakeLangChainAgent(response="не должен ответить"),
+        session_factory=db_session_factory,
+        chat_access=ChatAccess(frozenset({12345}), never_linked),
+    )
+    events: list[dict[str, Any]] = []
+
+    async def record_event(**kwargs: Any) -> None:
+        events.append(kwargs)
+
+    monkeypatch.setattr(runtime, "_record_event", record_event)
+
+    await runtime._check_and_trigger_timers()
+
+    async with db_session_factory() as session:
+        timers = list(
+            await session.scalars(
+                select(AgentTimerModel).where(AgentTimerModel.agent_id == agent_id)
+            )
+        )
+    assert [timer.status for timer in timers] == ["failed"]
+    assert telegram.sent_messages == []
+    assert [(e["event_type"], e["status"], e["payload"]["error_code"]) for e in events] == [
+        ("timer.failed", "failed", "ChatDisabledError")
+    ]

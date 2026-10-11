@@ -20,6 +20,13 @@ class MimicTelegramClient(TelegramClient):
     """
 
     peer_flood_handler: Callable[[], Awaitable[None]] | None = None
+    # Id @SpamBot, который рантайм узнаёт при старте: инструменты по нему отказывают
+    # в любом обращении к боту, как бы ни была записана ссылка.
+    spambot_user_id: int | None = None
+    # USER_BANNED_IN_CHANNEL и USER_RESTRICTED: Telegram описывает их как «ограничен,
+    # проверь @SpamBot». Причина может быть и в одном чате, поэтому это лишь подозрение,
+    # которое проверяет сам @SpamBot, а не метка ограничения.
+    spam_limit_suspect_handler: Callable[[], Awaitable[None]] | None = None
 
     async def __call__(
         self, request: Any, ordered: bool = False, flood_sleep_threshold: Any = None
@@ -32,6 +39,11 @@ class MimicTelegramClient(TelegramClient):
             handler = self.peer_flood_handler
             if handler is not None:
                 await handler()
+            raise
+        except (errors.UserBannedInChannelError, errors.UserRestrictedError):
+            suspect_handler = self.spam_limit_suspect_handler
+            if suspect_handler is not None:
+                await suspect_handler()
             raise
 
 

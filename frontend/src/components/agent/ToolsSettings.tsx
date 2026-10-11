@@ -89,6 +89,10 @@ export function ToolsSettings({
         placeholder="Название, описание или имя инструмента"
         value={query}
         onChange={(event) => setQuery(event.target.value)}
+        // Enter внутри формы настроек иначе сохранил бы её и перезапустил агента.
+        onKeyDown={(event) => {
+          if (event.key === 'Enter') event.preventDefault();
+        }}
       />
 
       <div className="space-y-2">

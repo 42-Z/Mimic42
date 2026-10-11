@@ -18,7 +18,10 @@ from mimic42.core.agent_runtime import (
     LangChainAgentLike,
     MimicAgentRuntime,
     TelegramClientLike,
+    TelegramTeardownPendingError,
 )
+from mimic42.core.chat_access import ChatAccess
+from mimic42.core.chat_directory import ChatItem
 from mimic42.core.media import MediaUploader
 from mimic42.core.media_download import MediaRefCache
 from mimic42.core.memory import RuntimeMemoryService
@@ -31,6 +34,7 @@ from mimic42.core.warmup_service import (
     WarmupStateStore,
     allow_everyone,
 )
+from mimic42.integrations.chat_directory import DirectoryClient, TelethonChatDirectory
 from mimic42.integrations.langchain_agent import build_langchain_agent
 from mimic42.integrations.telegram_tools import (
     TelethonRequestClient,
@@ -227,6 +231,10 @@ class AgentManager:
     async def start_agent(self, agent_id: UUID) -> None:
         try:
             await (await self.get_agent(agent_id)).start()
+        except TelegramTeardownPendingError:
+            # Запуск лишь отложен, пока закрывается прошлое соединение: агент не в ошибке,
+            # и статус в базе остаётся прежним.
+            raise
         except Exception:
             # Persist the failure: without this the database keeps the stale
             # status and the dashboard badge lies about the runtime state.
@@ -269,6 +277,11 @@ class AgentManager:
             if was_active:
                 try:
                     await runtime.start()
+                except TelegramTeardownPendingError:
+                    # Замена не смогла подключиться, пока закрывается прошлое соединение:
+                    # агент остановлен, а не сломан, и в базе должно быть видно именно это.
+                    await self._save_status(agent_id, AgentRuntimeState.STOPPED)
+                    raise
                 except Exception:
                     # Persist the failure like start_agent does: without this the
                     # database keeps RUNNING while the rebuilt runtime is ERROR.
@@ -318,6 +331,10 @@ class AgentManager:
             return False
         return await self.warmup.start_recovery(agent_id)
 
+    async def list_chats(self, agent_id: UUID) -> list[ChatItem]:
+        """Диалоги аккаунта агента; у остановленного рантайма — ChatListUnavailableError."""
+        return await (await self.get_agent(agent_id)).list_chats()
+
     async def shutdown(self) -> None:
         if self.warmup is not None:
             await self.warmup.stop()
@@ -332,6 +349,8 @@ class AgentManager:
         else:
             memory_service = self._memory_service_factory(config)
         media_refs = MediaRefCache()
+        directory = _chat_directory_for(telegram_client)
+        chat_access = _chat_access_for(config, directory)
         return MimicAgentRuntime(
             config=config,
             telegram_client=telegram_client,
@@ -345,6 +364,7 @@ class AgentManager:
                     send_window=send_window,
                     media_refs=media_refs,
                     enabled_tools=config.enabled_tools,
+                    chat_access=chat_access,
                 ),
                 self.session_factory,
             ),
@@ -353,12 +373,27 @@ class AgentManager:
             media_uploader=self.media_uploader,
             send_window=send_window,
             media_refs=media_refs,
+            chat_access=chat_access,
+            chat_directory=directory,
         )
 
     async def _save_status(self, agent_id: UUID, state: AgentRuntimeState) -> None:
         if self._status_sink is None:
             return
         await _await_result(self._status_sink(agent_id, state))
+
+
+def _chat_directory_for(telegram_client: TelegramClientLike) -> TelethonChatDirectory:
+    return TelethonChatDirectory(cast(DirectoryClient, telegram_client))
+
+
+def _chat_access_for(
+    config: AgentRuntimeConfig, directory: TelethonChatDirectory
+) -> ChatAccess | None:
+    """Правило доступа есть только у агента с отключёнными чатами."""
+    if not config.disabled_chats:
+        return None
+    return ChatAccess(config.disabled_chats, directory.discussion_of)
 
 
 def _build_runtime(
@@ -369,6 +404,8 @@ def _build_runtime(
     telegram_client = cast(TelegramClientLike, build_telegram_client(config))
     send_window = SendWindowTracker(telegram_client)
     media_refs = MediaRefCache()
+    directory = _chat_directory_for(telegram_client)
+    chat_access = _chat_access_for(config, directory)
     return MimicAgentRuntime(
         config=config,
         telegram_client=telegram_client,
@@ -382,6 +419,7 @@ def _build_runtime(
                 send_window=send_window,
                 media_refs=media_refs,
                 enabled_tools=config.enabled_tools,
+                chat_access=chat_access,
             ),
             session_factory=session_factory,
         ),
@@ -389,6 +427,8 @@ def _build_runtime(
         media_uploader=media_uploader,
         send_window=send_window,
         media_refs=media_refs,
+        chat_access=chat_access,
+        chat_directory=directory,
     )
 
 

@@ -18,6 +18,8 @@ from telethon import errors
 
 from mimic42.core.activity import ActivityRecorder
 from mimic42.core.album_grouper import AlbumGrouper
+from mimic42.core.chat_access import ChatAccess, ChatDisabledError, link_hint
+from mimic42.core.chat_directory import ChatDirectory, ChatItem
 from mimic42.core.deferred_inbox import DeferredInbox
 from mimic42.core.first_comment import (
     FirstCommentSettings,
@@ -36,6 +38,7 @@ from mimic42.core.media_download import (
 )
 from mimic42.core.memory import MemoryServiceLike, RuntimeMemoryService
 from mimic42.core.model_catalog import DEFAULT_LLM_MODEL
+from mimic42.core.off_limits import OffLimitsBotError, is_off_limits_entity, off_limits_bot
 from mimic42.core.send_window import SendWindow, SendWindowTracker
 from mimic42.core.telegram_attrs import read_optional_attr
 from mimic42.core.warmup import (
@@ -66,14 +69,42 @@ FIRST_COMMENT_FLOOD_WAIT_LIMIT = 10
 # соединение, которое уже никто не закроет. Менеджер закрывает агентов разом,
 # так что это ожидание укладывается в 10 секунд, которые Docker даёт на остановку.
 CLOSE_GRACE_SECONDS = 5.0
+# Потолок одного шага остановки. Шаги упираются во внешние соединения (база,
+# HTTP, Telegram), а после смены сети такое соединение молчит до 15 минут:
+# остановка не должна ждать его, иначе агент висит в «Остановке», а Telegram-сессия
+# остаётся подключённой. Шаг, не уложившийся в срок, добивается в фоне.
+STOP_STEP_TIMEOUT_SECONDS = 5.0
+# Сколько новый запуск ждёт недоотключившийся Telegram-клиент того же агента. Два
+# одновременных соединения одной сессии Telegram считает ошибкой (AUTH_KEY_DUPLICATED)
+# и отзывает ключ — «с того же или другого IP», так что перекрытия допускать нельзя.
+TELEGRAM_TEARDOWN_WAIT_SECONDS = 30.0
+
+# Не уложившиеся в срок отключения от Telegram, по агентам: рантайм после перезагрузки
+# конфигурации — новый объект, и «не подключаться, пока старый не отключился» должно
+# знать не оно, а процесс.
+_PENDING_TELEGRAM_TEARDOWNS: dict[UUID, asyncio.Future[Any]] = {}
 
 
 class OpenerTargetMismatch(RuntimeError):
     """@username партнёра теперь принадлежит другому аккаунту: зачин туда не уходит."""
 
 
+class TelegramTeardownPendingError(RuntimeError):
+    """Прошлое соединение этой сессии с Telegram ещё закрывается: подключаться рано."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "Предыдущее соединение с Telegram ещё закрывается. Два соединения одной "
+            "сессии Telegram отзывает, поэтому запуск отложен. Повторите через минуту."
+        )
+
+
 class TelegramAuthorizationRequired(RuntimeError):
     """Raised when a Telethon user session is connected but not authorized."""
+
+
+class ChatListUnavailableError(RuntimeError):
+    """Список чатов недоступен: агент не запущен, а клиент Telegram не подключён."""
 
 
 class FirstCommentImageUnavailable(RuntimeError):
@@ -133,6 +164,8 @@ class AgentRuntimeConfig(BaseModel):
     # None — allowlist не задан: доступны все инструменты. Иначе — только
     # перечисленные имена.
     enabled_tools: frozenset[str] | None = Field(default=None)
+    # ID чатов, отключённых в настройках; пусто — доступны все.
+    disabled_chats: frozenset[int] = Field(default=frozenset())
     system_prompt: str = Field(min_length=1)
     soul_prompt: str = Field(default="", max_length=20_000)
     name: str = Field(default="AI", min_length=1, max_length=120)
@@ -293,6 +326,8 @@ class MimicAgentRuntime:
         media_uploader: MediaUploader | None = None,
         send_window: SendWindowTracker | None = None,
         media_refs: MediaRefCache | None = None,
+        chat_access: ChatAccess | None = None,
+        chat_directory: ChatDirectory | None = None,
     ) -> None:
         self.config = config
         self._telegram_client = telegram_client
@@ -304,6 +339,9 @@ class MimicAgentRuntime:
         # Общий с тулзами кеш media_id → сообщение/архив: без него
         # протухшую file_reference нечем обновить (issue #98).
         self._media_refs = media_refs or MediaRefCache()
+        # Правило доступа к чатам общее с инструментами; None — отключённых нет.
+        self._chat_access = chat_access
+        self._chat_directory = chat_directory
         self._state = AgentRuntimeState.STOPPED
         self._lifecycle_lock = asyncio.Lock()
         self._trigger_lock = asyncio.Lock()
@@ -329,6 +367,8 @@ class MimicAgentRuntime:
         self._warmup_gate: WarmupGate | None = None
         if hasattr(telegram_client, "peer_flood_handler"):
             cast(Any, telegram_client).peer_flood_handler = self._on_peer_flood
+        if hasattr(telegram_client, "spam_limit_suspect_handler"):
+            cast(Any, telegram_client).spam_limit_suspect_handler = self._on_spam_limit_suspect
         # Кто этот аккаунт в Telegram: по ним прогрев находит собеседников и узнаёт
         # в личке другого мимика.
         self.telegram_user_id: int | None = None
@@ -546,6 +586,25 @@ class MimicAgentRuntime:
         except Exception:
             logger.warning("Failed to report PeerFloodError", exc_info=True)
 
+    @property
+    def busy(self) -> bool:
+        """Идёт ход агента или проверка: ``_trigger_lock`` занят."""
+        return self._trigger_lock.locked()
+
+    async def _on_spam_limit_suspect(self) -> None:
+        """Telegram отказал в отправке в группы и каналы: похоже на спам-блок, проверит @SpamBot.
+
+        Сама проверка не здесь: ошибка приходит изнутри хода или инструмента, где уже
+        занят ``_trigger_lock``, а проверка берёт его же.
+        """
+        report = getattr(self._warmup_gate, "report_spam_limit_suspect", None)
+        if not callable(report):
+            return
+        try:
+            await report(self.config.agent_id)
+        except Exception:
+            logger.warning("Failed to report a spam limit suspicion", exc_info=True)
+
     async def _remember_spambot_id(self) -> None:
         get_input_entity = getattr(self._telegram_client, "get_input_entity", None)
         if not callable(get_input_entity):
@@ -558,6 +617,8 @@ class MimicAgentRuntime:
         user_id = getattr(entity, "user_id", None)
         if isinstance(user_id, int):
             self._spambot_user_id = user_id
+            # Инструменты по этому id отказывают в любой записи ссылки на бота.
+            cast(Any, self._telegram_client).spambot_user_id = user_id
 
     async def check_spambot(self) -> bool | None:
         """Спросить @SpamBot, снято ли ограничение: True — свободен, False — ограничен.
@@ -689,14 +750,30 @@ class MimicAgentRuntime:
             state=self.state,
         )
 
+    async def list_chats(self) -> list[ChatItem]:
+        """Диалоги аккаунта для настроек; только у запущенного агента."""
+        if self._state is not AgentRuntimeState.RUNNING or self._chat_directory is None:
+            raise ChatListUnavailableError("Агент не запущен: запустите его, чтобы увидеть чаты.")
+        return await self._chat_directory.list_chats()
+
     async def start(self) -> None:
         async with self._lifecycle_lock:
             if self._state is AgentRuntimeState.RUNNING:
                 logger.debug(f"Agent {self.config.agent_id} already running")
                 return
 
-            logger.info(f"Starting agent {self.config.agent_id}")
+            # Ожидание закрытия прошлого соединения уже запуск: перезагрузка конфигурации,
+            # заставшая его, считает агента активным и сама запустит замену, а не
+            # оставит остановленным при «запущен» в базе.
+            previous_state = self._state
             self._state = AgentRuntimeState.STARTING
+            try:
+                await _await_telegram_teardown(self.config.agent_id)
+            except BaseException:
+                self._state = previous_state
+                raise
+
+            logger.info(f"Starting agent {self.config.agent_id}")
             try:
                 logger.debug("Connecting to Telegram...")
                 await self._telegram_client.connect()
@@ -707,6 +784,9 @@ class MimicAgentRuntime:
                 logger.debug("Authorized. Storing Telegram username...")
                 await self._remember_identity()
                 await self._store_telegram_username()
+                # До обработчика сообщений: ответы @SpamBot, дошедшие после рестарта,
+                # не должны начинать ход агента (он иначе нажимает кнопки апелляции).
+                await self._remember_spambot_id()
                 logger.debug("Authorized. Registering message handler...")
                 self._register_message_handler()
                 logger.info("Message handler registered")
@@ -761,34 +841,73 @@ class MimicAgentRuntime:
             self._state = AgentRuntimeState.STOPPING
             try:
                 if self._scheduler_task is not None:
-                    self._scheduler_task.cancel()
-                    try:
-                        await self._scheduler_task
-                    except asyncio.CancelledError:
-                        pass
+                    scheduler_task = self._scheduler_task
+                    scheduler_task.cancel()
+                    # Планировщик ходит в базу: мёртвое соединение держит его
+                    # закрытие сессии под щитом SQLAlchemy, и отмена не помогает.
+                    await self._within_stop_step(scheduler_task, "планировщик таймеров")
                     self._scheduler_task = None
 
-                await self._album_grouper.close()
-                await self._deferred_inbox.close()
+                await self._within_stop_step(self._album_grouper.close(), "буфер альбомов")
+                await self._within_stop_step(self._deferred_inbox.close(), "отложенные входящие")
 
                 if self._http_client is not None:
                     try:
-                        await self._http_client.aclose()
+                        await self._within_stop_step(self._http_client.aclose(), "HTTP-клиент")
                     finally:
                         self._http_client = None
             finally:
                 # The Telegram client must be disconnected even if a previous
                 # step failed — otherwise the userbot keeps answering messages
                 # for a runtime nobody can reach anymore.
-                await self._telegram_client.disconnect()
-                self._state = AgentRuntimeState.STOPPED
+                try:
+                    unfinished = await self._within_stop_step(
+                        self._telegram_client.disconnect(), "отключение от Telegram"
+                    )
+                    if unfinished is not None:
+                        _hold_telegram_teardown(self.config.agent_id, unfinished)
+                finally:
+                    self._state = AgentRuntimeState.STOPPED
 
-            await self._record_event(
-                event_type="agent.stopped",
-                status="succeeded",
-                started_at=datetime.now(UTC),
-                completed_at=datetime.now(UTC),
+            await self._within_stop_step(
+                self._record_event(
+                    event_type="agent.stopped",
+                    status="succeeded",
+                    started_at=datetime.now(UTC),
+                    completed_at=datetime.now(UTC),
+                ),
+                "запись события остановки",
             )
+
+    async def _within_stop_step(
+        self, step: Awaitable[Any], name: str
+    ) -> asyncio.Future[Any] | None:
+        """Дождаться шага остановки не дольше STOP_STEP_TIMEOUT_SECONDS.
+
+        Исключение шага пробрасывается как раньше. Не уложившийся шаг не отменяется:
+        отмена на мёртвом сокете не прерывает закрытие соединения, а недоделанный
+        disconnect хуже затянувшегося (``asyncio.wait`` по таймауту ничего не отменяет).
+        Он дорабатывает в фоне, его итог только логируется, а остановка идёт дальше.
+        Возвращается сам недоделанный шаг — вызывающий решает, нужно ли его дожидаться;
+        ``None`` — шаг завершён.
+        """
+        task = asyncio.ensure_future(step)
+        done, _ = await asyncio.wait({task}, timeout=STOP_STEP_TIMEOUT_SECONDS)
+        if task in done:
+            # Отменённый шаг (планировщик отменяют намеренно) — не ошибка.
+            if not task.cancelled():
+                task.result()
+            return None
+        logger.warning(
+            "Остановка агента %s: шаг «%s» не завершился за %.0f с, продолжаю без него",
+            self.config.agent_id,
+            name,
+            STOP_STEP_TIMEOUT_SECONDS,
+        )
+        task.add_done_callback(
+            lambda finished: _log_late_stop_failure(finished, self.config.agent_id, name)
+        )
+        return task
 
     async def close(self) -> None:
         """Stop for good and release what only a restart would need.
@@ -1307,6 +1426,8 @@ class MimicAgentRuntime:
             return
         if not _is_broadcast_post(event):
             return
+        if not await self._chat_allowed(event):
+            return
 
         message_id = _extract_incoming_message_id(event)
         if message_id is None:
@@ -1511,6 +1632,54 @@ class MimicAgentRuntime:
             await self._dispatch_incoming(events)
         except Exception:
             logger.exception("Failed to process grouped album")
+
+    async def _chat_allowed(self, event: TelegramEventLike) -> bool:
+        """Доступен ли агенту чат события: отключённые в настройках не получают ходов."""
+        access = self._chat_access
+        chat_id = getattr(event, "chat_id", None)
+        if access is None or not isinstance(chat_id, int) or chat_id not in access.disabled:
+            return True
+        hint: bool | None = None
+        get_chat = getattr(event, "get_chat", None)
+        if callable(get_chat):
+            try:
+                hint = link_hint(await get_chat())
+            except Exception:
+                logger.warning("Не удалось получить чат для проверки доступа", exc_info=True)
+        return await access.allows(chat_id, has_link=hint)
+
+    async def _ensure_peer_allowed(self, peer: str) -> int | None:
+        """Проверка чата по строке peer (таймеры): ID чата с пометкой, на который уйдёт ход.
+
+        Peer сначала разрешается в InputPeer. Документация Telethon: положительное
+        число ищется среди пользователей, групп и каналов, а ``get_peer_id`` оставляет
+        число как есть, так что «2222222222» не совпало бы с отключённым
+        «-1002222222222»; имя берётся из кеша и могло уже перейти к другому владельцу.
+        Проверенный ID и должен уйти в ход, а не исходная строка.
+
+        Служебный бот (@SpamBot) отказывает независимо от настроек чатов. Не удалось
+        разрешить peer — безопасность не подтвердить, и ошибка идёт вызывающему: таймер
+        получит ``failed``, а не сработает вслепую. ``None`` — проверять нечем и нечего.
+        """
+        blocked = off_limits_bot(peer)
+        if blocked is not None:
+            raise OffLimitsBotError(blocked)
+        access = self._chat_access
+        # Правила чатов нет и номер @SpamBot неизвестен: сверять не с чем, peer остаётся как есть.
+        if access is None and self._spambot_user_id is None:
+            return None
+        client = self._telegram_client
+        get_input_entity = getattr(client, "get_input_entity", None)
+        get_peer_id = getattr(client, "get_peer_id", None)
+        if not callable(get_input_entity) or not callable(get_peer_id):
+            raise ChatDisabledError()
+        input_peer = await get_input_entity(_peer_for_send(peer))
+        if is_off_limits_entity(input_peer, self._spambot_user_id):
+            raise OffLimitsBotError("SpamBot")
+        chat_id = await get_peer_id(input_peer)
+        if access is not None and not await access.allows(chat_id):
+            raise ChatDisabledError(chat_id)
+        return chat_id
 
     async def _is_chat_muted(self, event: TelegramEventLike, peer: str) -> bool:
         """Приглушён ли чат у самого агента (уведомления), а не запрет писать в него."""
@@ -1882,6 +2051,10 @@ class MimicAgentRuntime:
         if warmup_verdict is False:
             logger.info("Прогрев: диалог с мимиком %s окончен, входящее без ответа", peer)
             return
+        # Диалог с другим мимиком — служебный, он не подчиняется списку чатов.
+        if warmup_verdict is None and not await self._chat_allowed(event):
+            logger.info("Чат %s отключён в настройках агента, входящее без ответа", peer)
+            return
         gate = self._warmup_gate
         sender_id = getattr(event, "sender_id", None)
         if warmup_verdict is True and gate is not None and isinstance(sender_id, int):
@@ -2133,7 +2306,10 @@ class MimicAgentRuntime:
 
     async def _run_scheduler_loop(self) -> None:
         """Background loop to check and trigger pending agent timers."""
-        while self._state is AgentRuntimeState.RUNNING:
+        # Остановка не ждёт зависший шаг и идёт дальше: после быстрого перезапуска
+        # старый цикл, дожив до следующей итерации, не должен стать вторым планировщиком.
+        me = asyncio.current_task()
+        while self._state is AgentRuntimeState.RUNNING and self._scheduler_task is me:
             try:
                 await self._check_and_trigger_timers()
             except asyncio.CancelledError:
@@ -2176,10 +2352,13 @@ class MimicAgentRuntime:
 
             for timer in due_timers:
                 try:
+                    checked_id = await self._ensure_peer_allowed(timer.peer)
                     trigger_text = f"[Отложенное событие] Сработал таймер: {timer.description}"
+                    # Ход идёт в проверенный чат, а не в исходное имя: пока модель
+                    # думает, имя может стать чужим. По ID ту же переписку найдёт и память.
                     await self.trigger_message(
                         AgentTrigger(
-                            peer=timer.peer,
+                            peer=timer.peer if checked_id is None else str(checked_id),
                             text=trigger_text,
                         )
                     )
@@ -2216,6 +2395,46 @@ class MimicAgentRuntime:
                         .values(status=timer.status)
                     )
                     await update_session.commit()
+
+
+def _hold_telegram_teardown(agent_id: UUID, teardown: asyncio.Future[Any]) -> None:
+    """Запомнить недоотключившийся клиент агента: запуск подождёт, пока он закроется."""
+    _PENDING_TELEGRAM_TEARDOWNS[agent_id] = teardown
+
+    def release(finished: asyncio.Future[Any]) -> None:
+        if _PENDING_TELEGRAM_TEARDOWNS.get(agent_id) is finished:
+            del _PENDING_TELEGRAM_TEARDOWNS[agent_id]
+
+    teardown.add_done_callback(release)
+
+
+async def _await_telegram_teardown(agent_id: UUID) -> None:
+    """Не подключаться, пока прошлое соединение этой сессии не закрыто.
+
+    Ждёт не дольше TELEGRAM_TEARDOWN_WAIT_SECONDS; не закрылось — запуск
+    отклоняется (``TelegramTeardownPendingError``), а не получает второе соединение.
+    Таймаут ``asyncio.wait`` отключение не отменяет: оно продолжает закрываться.
+    """
+    pending = _PENDING_TELEGRAM_TEARDOWNS.get(agent_id)
+    if pending is None or pending.done():
+        return
+    logger.info("Агент %s: жду, пока закроется прошлое соединение с Telegram", agent_id)
+    await asyncio.wait({pending}, timeout=TELEGRAM_TEARDOWN_WAIT_SECONDS)
+    if not pending.done():
+        raise TelegramTeardownPendingError()
+
+
+def _log_late_stop_failure(task: asyncio.Future[Any], agent_id: UUID, name: str) -> None:
+    """Итог шага остановки, не уложившегося в срок: только в лог, остановка уже ушла дальше."""
+    if task.cancelled():
+        return
+    error = task.exception()
+    if error is None:
+        logger.info("Остановка агента %s: шаг «%s» всё же завершился", agent_id, name)
+    else:
+        logger.warning(
+            "Остановка агента %s: шаг «%s» завершился ошибкой: %r", agent_id, name, error
+        )
 
 
 def _delay_until(window: SendWindow, now: datetime) -> float:

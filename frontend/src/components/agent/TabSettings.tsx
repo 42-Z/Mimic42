@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { useAgentDetails, useUpdateAgentSettings } from '@/hooks/useAgent';
 import { useSyncedDraft } from '@/hooks/useSyncedDraft';
 import { useModelReasoning } from '@/hooks/useModelReasoning';
@@ -10,20 +11,19 @@ import { Input, Textarea, Label } from '@/components/ui/input';
 import { Skeleton, Badge } from '@/components/ui/card';
 import { PresetPicker } from '@/components/agent/PresetPicker';
 import { ToolsSettings } from '@/components/agent/ToolsSettings';
+import { ChatsSettings } from '@/components/agent/ChatsSettings';
 import {
   EMPTY_FIRST_COMMENT,
   FirstCommentSettingsSection,
   readFirstComment,
   type FirstCommentDraft,
 } from '@/components/agent/FirstCommentSettings';
-import {
-  WarmupRestrictionNotice,
-  WarmupSettingsSection,
-  readWarmup,
-} from '@/components/agent/WarmupSettings';
+import { WarmupSettingsSection, readWarmup } from '@/components/agent/WarmupSettings';
 import { DEFAULT_MODEL, optionsIncluding } from '@/lib/models';
 import { agentsApi } from '@/lib/api';
+import { queryKeys } from '@/lib/queryClient';
 import { pickReasoningValue, reasoningLabel, reasoningOptionValues } from '@/lib/reasoning';
+import { readDisabledChats, mergeDisabledChats } from '@/lib/chats/agentChats';
 import { readEnabledTools, mergeEnabledTools } from '@/lib/tools/agentTools';
 import { agentSettingsSchema, type AgentSettingsValues, type WarmupValues } from '@/lib/validators';
 import type { ApiError } from '@/types';
@@ -38,6 +38,7 @@ type TextField = Exclude<keyof AgentSettingsValues, 'first_comment' | 'warmup'>;
 
 export function TabSettings({ agentId }: { agentId: string }) {
   const { toast } = useToast();
+  const queryClient = useQueryClient();
   const { data: details, isLoading } = useAgentDetails(agentId);
   const update = useUpdateAgentSettings(agentId);
   const { data: reasoningByModel } = useModelReasoning();
@@ -47,6 +48,7 @@ export function TabSettings({ agentId }: { agentId: string }) {
     first_comment: EMPTY_FIRST_COMMENT,
     warmup: { enabled: false },
     enabled_tools: null,
+    disabled_chats: [],
   });
   const [formErrors, setFormErrors] = useState<Partial<Record<keyof AgentSettingsValues, string>>>({});
   const { dirty, setDirty } = useSyncedDraft(details, agentId, (fresh) => {
@@ -59,6 +61,7 @@ export function TabSettings({ agentId }: { agentId: string }) {
       first_comment: readFirstComment(fresh.settings),
       warmup: readWarmup(fresh.settings),
       enabled_tools: readEnabledTools(fresh.settings),
+      disabled_chats: readDisabledChats(fresh.settings),
     });
   });
 
@@ -104,7 +107,10 @@ export function TabSettings({ agentId }: { agentId: string }) {
           enabled: result.data.warmup?.enabled ?? false,
         },
       };
-      const submissionSettings = mergeEnabledTools(mergedSettings, result.data.enabled_tools);
+      const submissionSettings = mergeDisabledChats(
+        mergeEnabledTools(mergedSettings, result.data.enabled_tools),
+        result.data.disabled_chats,
+      );
       const submissionData = {
         name: result.data.name,
         soul_prompt: result.data.soul_prompt,
@@ -115,7 +121,12 @@ export function TabSettings({ agentId }: { agentId: string }) {
       // которое придёт следом, должно её подхватить, а не быть отброшено как «чужое».
       setDirty(false);
       // The runtime is built once: new settings need a rebuild.
-      await agentsApi.reload(agentId);
+      try {
+        await agentsApi.reload(agentId);
+      } finally {
+        // Список чатов читается из клиента рантайма: после пересборки он новый.
+        void queryClient.invalidateQueries({ queryKey: queryKeys.agents.chats(agentId) });
+      }
       toast('Настройки сохранены', 'success');
     } catch (e: unknown) {
       toast((e as ApiError).message ?? 'Ошибка сохранения', 'error');
@@ -215,6 +226,15 @@ export function TabSettings({ agentId }: { agentId: string }) {
         }}
       />
 
+      <ChatsSettings
+        agentId={agentId}
+        value={values.disabled_chats ?? []}
+        onChange={(disabledChats) => {
+          setValues((v) => ({ ...v, disabled_chats: disabledChats }));
+          setDirty(true);
+        }}
+      />
+
       <FirstCommentSettingsSection
         agentId={agentId}
         value={values.first_comment}
@@ -224,8 +244,6 @@ export function TabSettings({ agentId }: { agentId: string }) {
         }}
         error={formErrors.first_comment}
       />
-
-      <WarmupRestrictionNotice agentId={agentId} />
 
       <WarmupSettingsSection
         value={values.warmup}

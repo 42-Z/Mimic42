@@ -9,6 +9,7 @@ from mimic42.core.agent_runtime import (
     AgentRuntimeConfig,
     AgentRuntimeState,
     MimicAgentRuntime,
+    TelegramTeardownPendingError,
 )
 from mimic42.core.manager import AgentManager
 
@@ -133,6 +134,97 @@ async def test_reload_reaching_starting_runtime_keeps_agent_running() -> None:
 
     rebuilt = manager._agents[agent_id]
     assert rebuilt.status.state is AgentRuntimeState.RUNNING
+
+
+class _StuckDisconnectClient(FakeTelegramClient):
+    """Отключение зависло на мёртвом сокете, пока тест его не отпустит."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.release = asyncio.Event()
+
+    async def disconnect(self) -> None:
+        self.disconnect_calls += 1
+        await self.release.wait()
+        self.connected = False
+
+
+def _slow_disconnect_manager(
+    configs: dict[UUID, AgentRuntimeConfig],
+    saved: list[tuple[UUID, AgentRuntimeState]],
+    stuck: _StuckDisconnectClient,
+) -> AgentManager:
+    clients: list[FakeTelegramClient] = [stuck]
+
+    def factory(runtime_config: AgentRuntimeConfig) -> MimicAgentRuntime:
+        # Первый рантайм держит зависшее отключение, замена получает обычный клиент.
+        client = clients.pop(0) if clients else FakeTelegramClient()
+        return MimicAgentRuntime(
+            config=runtime_config, telegram_client=client, langchain_agent=FakeLangChainAgent()
+        )
+
+    return AgentManager(
+        runtime_factory=factory,
+        config_loader=ConfigStore(configs),
+        status_sink=lambda agent_id, state: saved.append((agent_id, state)),
+    )
+
+
+@pytest.mark.asyncio
+async def test_reload_during_a_slow_disconnect_stops_the_agent_instead_of_breaking_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Замена не может подключиться, пока закрывается старое соединение: агент остановлен, а не
+    «в ошибке», и в базе записано именно это."""
+    monkeypatch.setattr("mimic42.core.agent_runtime.STOP_STEP_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr("mimic42.core.agent_runtime.TELEGRAM_TEARDOWN_WAIT_SECONDS", 0.05)
+    agent_id = uuid4()
+    configs = {agent_id: _build_config(agent_id)}
+    saved: list[tuple[UUID, AgentRuntimeState]] = []
+    stuck = _StuckDisconnectClient()
+    manager = _slow_disconnect_manager(configs, saved, stuck)
+    await manager.create_agent(configs[agent_id], start=True)
+    saved.clear()
+
+    try:
+        with pytest.raises(TelegramTeardownPendingError):
+            await manager.reload_agent(agent_id)
+
+        assert saved == [(agent_id, AgentRuntimeState.STOPPED)]
+    finally:
+        stuck.release.set()
+        await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_start_waiting_for_a_closing_connection_is_seen_by_reload_as_active(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ожидающий запуск виден как STARTING: reload не считает агента остановленным."""
+    monkeypatch.setattr("mimic42.core.agent_runtime.STOP_STEP_TIMEOUT_SECONDS", 0.05)
+    agent_id = uuid4()
+    configs = {agent_id: _build_config(agent_id)}
+    saved: list[tuple[UUID, AgentRuntimeState]] = []
+    stuck = _StuckDisconnectClient()
+    manager = _slow_disconnect_manager(configs, saved, stuck)
+    runtime = await manager.create_agent(configs[agent_id], start=True)
+    await runtime.stop()
+
+    starting = asyncio.create_task(runtime.start())
+    for _ in range(1000):
+        if runtime.status.state is AgentRuntimeState.STARTING:
+            break
+        await asyncio.sleep(0)
+    else:
+        starting.cancel()
+        pytest.fail("запуск не стал виден как STARTING, пока ждёт закрытия соединения")
+
+    reloading = asyncio.create_task(manager.reload_agent(agent_id))
+    await asyncio.sleep(0.05)
+    stuck.release.set()
+    await asyncio.gather(starting, reloading)
+
+    assert manager._agents[agent_id].status.state is AgentRuntimeState.RUNNING
 
 
 @pytest.mark.asyncio

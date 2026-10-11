@@ -120,6 +120,7 @@ function formatValidationError(detail: unknown): string {
 // ── Typed API helpers ─────────────────────────────────────────────────────────
 
 import type {
+  AgentChat,
   AgentRecord,
   AgentStatus,
   OnboardingTelegramInput,
@@ -184,6 +185,10 @@ export const agentsApi = {
   /** POST /api/v1/agents/:id/warmup/recovery — включить восстановление (409, если не ограничен) */
   startWarmupRecovery: (id: string) =>
     apiClient.post<WarmupState>(`/agents/${id}/warmup/recovery`).then((r) => r.data),
+
+  /** GET /api/v1/agents/:id/chats — диалоги аккаунта (409, пока агент не запущен) */
+  listChats: (id: string) =>
+    apiClient.get<AgentChat[]>(`/agents/${id}/chats`).then((r) => r.data),
 
   /** GET /api/v1/agents/:id/conversation — cursor page, newest first */
   getConversation: (id: string, limit = 50, before?: string | null, beforeId?: string | null) =>

@@ -23,6 +23,8 @@ from mimic42.integrations.telegram_tools import (
 )
 from mimic42.testing.telegram import FakeTelegramClient
 
+FAKE_CHAT_ID = 4242
+
 
 class FakeTelethonClient(FakeTelegramClient):
     """Расширяет общую подделку набором Telethon-запросов, которые нужны
@@ -31,6 +33,7 @@ class FakeTelethonClient(FakeTelegramClient):
     def __init__(self) -> None:
         super().__init__()
         self.calls: list[tuple[str, dict[str, Any]]] = []
+        self._chat_ids: dict[str, int] = {}
 
     async def __call__(self, request: object) -> Any:
         self.requests.append(request)
@@ -225,6 +228,13 @@ class FakeTelethonClient(FakeTelegramClient):
 
     async def get_entity(self, peer: Any) -> Any:
         self.calls.append(("get_entity", {"peer": peer}))
+        entity = self._entity_for(peer)
+        # По имени запроса подделка узнаёт чат: разные имена — разные чаты, а «@имя» и
+        # «имя» — один и тот же.
+        entity.fake_peer = peer
+        return entity
+
+    def _entity_for(self, peer: Any) -> Any:
         if peer == "username":
             user = MagicMock(spec=types.User)
             user.id = 123
@@ -263,13 +273,36 @@ class FakeTelethonClient(FakeTelegramClient):
 
     async def get_input_entity(self, peer: Any) -> Any:
         self.calls.append(("get_input_entity", {"peer": peer}))
-        return MagicMock(spec=types.InputPeerUser)
+        entity = MagicMock(spec=types.InputPeerUser)
+        entity.fake_peer = peer
+        return entity
+
+    async def get_peer_id(self, peer: Any, add_mark: bool = True) -> int:
+        """ID чата: число остаётся собой, имя получает свой номер, а «@имя» — тот же, что «имя»."""
+        if isinstance(peer, int):
+            return peer
+        named = getattr(peer, "fake_peer", peer)
+        if isinstance(named, int):
+            return named
+        key = str(named).strip().lstrip("@").lower()
+        return self._chat_ids.setdefault(key, FAKE_CHAT_ID + len(self._chat_ids))
 
     async def get_messages(self, entity: Any, **kwargs: Any) -> Any:
         self.calls.append(("get_messages", {"entity": entity, "kwargs": kwargs}))
         ids = kwargs.get("ids")
+        if isinstance(ids, list):
+            # Как у Telethon: список ID даёт список, а сообщения, которых нет, — None.
+            found = [await self._message(entity, message_id) for message_id in ids]
+            return [
+                None if message_id == 999 else msg
+                for message_id, msg in zip(ids, found, strict=True)
+            ]
+        return await self._message(entity, ids)
+
+    async def _message(self, entity: Any, ids: Any) -> Any:
         msg = MagicMock(spec=types.Message)
         msg.id = ids if isinstance(ids, int) else 777
+        msg.chat_id = await self.get_peer_id(entity)
         msg.text = "Mock message text"
         msg.media = None
         msg.reply_markup = None
@@ -1656,7 +1689,8 @@ async def test_send_file() -> None:
     result = await toolbox.send_file("username", media_id, caption="Hello")
     assert result["success"] is True
     assert result["message_id"] == 999
-    assert len(client.calls) == 2  # get_input_entity, send_file
+    # Адресат разрешается один раз: охраной отправки, и им же уходит файл.
+    assert [name for name, _ in client.calls] == ["get_input_entity", "send_file"]
 
 
 @pytest.mark.asyncio
@@ -2529,13 +2563,73 @@ async def test_join_channel_discussion() -> None:
 
     result = await toolbox.join_channel_discussion("group")
     assert result["success"] is True
-    assert result["linked_chat_id"] == 789
+    # Номер группы отдаётся с пометкой типа: голый «789» Telethon ищет и среди пользователей.
+    assert result["linked_chat_id"] == -1000000000789
     assert result["title"] == "Discussion Group"
     assert result["username"] == "discussion_group"
     assert result["is_group"] is True
 
     join_reqs = [r for r in client.requests if isinstance(r, functions.channels.JoinChannelRequest)]
     assert len(join_reqs) == 1
+
+
+class ForeignMessagesClient(FakeTelethonClient):
+    """Номера сообщений личных чатов общие на аккаунт: часть принадлежит другому чату."""
+
+    def __init__(self, foreign: set[int]) -> None:
+        super().__init__()
+        self.foreign = foreign
+
+    async def get_messages(self, entity: Any, **kwargs: Any) -> Any:
+        found = await super().get_messages(entity, **kwargs)
+        for message in found if isinstance(found, list) else [found]:
+            if message is not None and message.id in self.foreign:
+                message.chat_id = 999_999
+        return found
+
+
+@pytest.mark.asyncio
+async def test_delete_refuses_ids_that_belong_to_another_chat() -> None:
+    """Документация Telethon: delete_messages не проверяет, что номера из этого чата."""
+    client = ForeignMessagesClient(foreign={456})
+    toolbox = TelegramToolbox(client)
+
+    result = await toolbox.delete_messages("friend", [123, 456])
+
+    assert result["success"] is False
+    assert result["error_code"] == "MessagesNotInChatError"
+    assert "456" in result["error"]
+    assert [c for c in client.calls if c[0] == "delete_messages"] == []
+
+
+@pytest.mark.asyncio
+async def test_delete_refuses_ids_that_do_not_exist() -> None:
+    client = FakeTelethonClient()
+    toolbox = TelegramToolbox(client)
+
+    # Подделка отвечает None на 999: такого сообщения нет ни в одном чате.
+    result = await toolbox.delete_messages("friend", [123, 999])
+
+    assert result["error_code"] == "MessagesNotInChatError"
+    assert [c for c in client.calls if c[0] == "delete_messages"] == []
+
+
+@pytest.mark.asyncio
+async def test_delete_in_a_channel_needs_no_lookup() -> None:
+    """У канала нумерация своя, и канал указан в самом запросе удаления."""
+
+    class ChannelClient(FakeTelethonClient):
+        async def get_input_entity(self, peer: Any) -> Any:
+            return types.InputPeerChannel(channel_id=456, access_hash=1)
+
+    client = ChannelClient()
+    toolbox = TelegramToolbox(client)
+
+    result = await toolbox.delete_messages("group", [123])
+
+    assert result["success"] is True
+    assert [c for c in client.calls if c[0] == "get_messages"] == []
+    assert len([c for c in client.calls if c[0] == "delete_messages"]) == 1
 
 
 class FakeTelethonClientNoLinkedChat(FakeTelethonClient):
@@ -2566,7 +2660,10 @@ async def test_join_channel_discussion_no_linked_chat() -> None:
     toolbox = TelegramToolbox(client)
 
     result = await toolbox.join_channel_discussion("group")
-    assert result == {"error": "This channel has no linked discussion group"}
+    assert result["success"] is False
+    assert result["error"] == "This channel has no linked discussion group"
+    assert result["error_code"] == "NoDiscussionGroup"
+    assert "комментариев" in result["hint"]
 
 
 @pytest.mark.asyncio

@@ -46,6 +46,13 @@ ATTEMPT_MATCH_WINDOW: Final = timedelta(minutes=10)
 # Как часто спрашивать @SpamBot, снято ли ограничение.
 SPAMBOT_CHECK_INTERVAL: Final = timedelta(hours=6)
 SPAMBOT_REPLY_WAIT_SECONDS: Final = 6.0
+# Подозрение на спам-блок (USER_BANNED_IN_CHANNEL) проверяется сразу, но не чаще раза в
+# десять минут и не больше трёх раз подряд, если бот отвечает непонятно.
+SUSPECT_CHECK_COOLDOWN: Final = timedelta(minutes=10)
+SUSPECT_MAX_UNCLEAR_CHECKS: Final = 3
+# Отказ, случившийся до запуска процесса, тоже повод спросить @SpamBot: подозрение
+# в памяти пропадает при каждом рестарте, а ограничение держится дни.
+SUSPECT_HISTORY_LOOKBACK: Final = timedelta(days=3)
 EVENT_OPENER_SENT: Final = "warmup.opener_sent"
 EVENT_OPENER_FAILED: Final = "warmup.opener_failed"
 EVENT_RESTRICTED: Final = "warmup.restricted"

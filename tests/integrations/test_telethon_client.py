@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from typing import Any
 from uuid import uuid4
 
 import pytest
@@ -77,6 +78,37 @@ async def test_peer_flood_on_any_request_is_reported_and_still_raised(
         await client(object())
 
     assert reported == ["flood"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error_class", [errors.UserBannedInChannelError, errors.UserRestrictedError]
+)
+async def test_group_refusals_are_reported_as_a_suspicion_and_still_raised(
+    monkeypatch: pytest.MonkeyPatch, error_class: Any
+) -> None:
+    client = build_telegram_client(_config(_valid_session_string()))
+    assert isinstance(client, MimicTelegramClient)
+    reported: list[str] = []
+
+    async def suspect() -> None:
+        reported.append("suspect")
+
+    async def flood() -> None:
+        reported.append("flood")
+
+    async def refused(self: object, request: object, **_kwargs: object) -> object:
+        raise error_class(request=request)
+
+    client.spam_limit_suspect_handler = suspect
+    client.peer_flood_handler = flood
+    monkeypatch.setattr(TelegramClient, "__call__", refused)
+
+    with pytest.raises(error_class):
+        await client(object())
+
+    # Подозрение — не метка ограничения: PeerFlood-путь не задет.
+    assert reported == ["suspect"]
 
 
 @pytest.mark.asyncio

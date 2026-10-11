@@ -281,6 +281,56 @@ async def test_spambot_reply_does_not_start_an_agent_turn(
     assert len(agent.inputs) == 1
 
 
+@pytest.mark.asyncio
+async def test_spambot_reply_after_a_restart_does_not_start_a_turn() -> None:
+    """Id бота известен со старта, без проверки в этом процессе: агент не лезет в апелляцию."""
+    spambot_id = 178220800
+    telegram = FakeTelegramClient()
+    telegram.account.username = "mimic_a"
+
+    async def get_input_entity(_peer: object) -> object:
+        return type("InputPeerUser", (), {"user_id": spambot_id})()
+
+    cast(Any, telegram).get_input_entity = get_input_entity
+    agent = FakeLangChainAgent(response="ответ")
+    runtime = MimicAgentRuntime(
+        config=make_config(),
+        telegram_client=telegram,
+        langchain_agent=agent,
+        memory_service=FakeRuntimeMemoryService(),
+    )
+    await runtime.start()
+    assert cast(Any, telegram).spambot_user_id == spambot_id
+
+    await telegram.account.deliver(
+        chat_id=spambot_id, text="Please verify you are a human.", sender_id=spambot_id
+    )
+    assert agent.inputs == []
+
+    await telegram.account.deliver(chat_id=555, text="привет", sender_id=555)
+    assert len(agent.inputs) == 1
+
+
+@pytest.mark.asyncio
+async def test_unresolvable_spambot_does_not_block_the_start() -> None:
+    telegram = FakeTelegramClient()
+
+    async def failing(_peer: object) -> object:
+        raise ValueError("Cannot find any entity")
+
+    cast(Any, telegram).get_input_entity = failing
+    runtime = MimicAgentRuntime(
+        config=make_config(),
+        telegram_client=telegram,
+        langchain_agent=FakeLangChainAgent(),
+        memory_service=FakeRuntimeMemoryService(),
+    )
+
+    await runtime.start()
+
+    assert runtime.state.value == "running"
+
+
 class _Entity:
     """Разрешённый Telethon-ом получатель: InputPeerUser с user_id."""
 
@@ -412,6 +462,64 @@ async def test_peer_flood_from_any_send_is_reported_to_the_warmup_gate() -> None
     await handler()
 
     assert gate.floods == [runtime.config.agent_id]
+
+
+class SuspectGate(StubGate):
+    def __init__(self) -> None:
+        super().__init__(None)
+        self.suspects: list[UUID] = []
+
+    async def report_spam_limit_suspect(self, agent_id: UUID) -> None:
+        self.suspects.append(agent_id)
+
+
+@pytest.mark.asyncio
+async def test_group_refusal_is_passed_to_the_gate_as_a_suspicion_not_as_a_flood() -> None:
+    telegram = FakeTelegramClient()
+    suspect_aware = cast(Any, telegram)
+    suspect_aware.spam_limit_suspect_handler = None
+    runtime = MimicAgentRuntime(
+        config=make_config(),
+        telegram_client=telegram,
+        langchain_agent=FakeLangChainAgent(),
+        memory_service=FakeRuntimeMemoryService(),
+    )
+    gate = SuspectGate()
+    runtime.set_warmup_gate(gate)
+
+    handler = suspect_aware.spam_limit_suspect_handler
+    assert handler is not None
+    await handler()
+
+    assert gate.suspects == [runtime.config.agent_id]
+    assert gate.floods == []
+
+
+@pytest.mark.asyncio
+async def test_a_gate_without_the_suspicion_report_does_not_break_the_runtime() -> None:
+    telegram = FakeTelegramClient()
+    suspect_aware = cast(Any, telegram)
+    suspect_aware.spam_limit_suspect_handler = None
+    runtime = MimicAgentRuntime(
+        config=make_config(),
+        telegram_client=telegram,
+        langchain_agent=FakeLangChainAgent(),
+        memory_service=FakeRuntimeMemoryService(),
+    )
+    runtime.set_warmup_gate(StubGate(None))
+
+    handler = suspect_aware.spam_limit_suspect_handler
+    assert handler is not None
+    await handler()
+
+
+@pytest.mark.asyncio
+async def test_runtime_is_busy_while_the_trigger_lock_is_held() -> None:
+    runtime, _, _ = make_runtime()
+
+    assert runtime.busy is False
+    async with runtime._trigger_lock:  # noqa: SLF001
+        assert runtime.busy is True
 
 
 @pytest.mark.asyncio

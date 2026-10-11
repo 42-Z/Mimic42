@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import pytest
+from telethon import types, utils
 
 from mimic42.core.onboarding import TelegramPasswordRequiredError
 from mimic42.testing.telegram import (
+    FakeDialog,
     FakeTelegramAccount,
     FakeTelegramAuthClientFactory,
     FakeTelegramClient,
@@ -85,6 +87,49 @@ async def test_incoming_message_reaches_the_registered_handler() -> None:
     await account.deliver(chat_id=42, text="как дела")
 
     assert seen == ["как дела"]
+
+
+async def test_fake_client_lists_dialogs_by_folder() -> None:
+    client = FakeTelegramClient()
+    client.account.dialogs = [
+        FakeDialog(id=42, title="Анна", kind="private"),
+        FakeDialog(id=-1001000000001, title="Новости", kind="channel", archived=True),
+    ]
+
+    main = [d async for d in client.iter_dialogs(folder=0)]
+    archive = [d async for d in client.iter_dialogs(folder=1)]
+
+    assert [d.id for d in main] == [42]
+    assert [d.id for d in archive] == [-1001000000001]
+    assert main[0].entity.first_name == "Анна"
+    assert archive[0].entity.broadcast is True
+
+
+async def test_fake_client_without_a_filter_lists_the_archive_too() -> None:
+    client = FakeTelegramClient()
+    client.account.dialogs = [
+        FakeDialog(id=42, title="Анна", kind="private"),
+        FakeDialog(id=-1001000000001, title="Новости", kind="channel", archived=True),
+    ]
+
+    everything = [d async for d in client.iter_dialogs()]
+    archive = [d async for d in client.iter_dialogs(archived=True)]
+    main = [d async for d in client.iter_dialogs(archived=False)]
+
+    assert [d.id for d in everything] == [42, -1001000000001]
+    assert [d.id for d in archive] == [-1001000000001]
+    assert [d.id for d in main] == [42]
+
+
+def test_small_group_keeps_its_type_and_id() -> None:
+    small = FakeDialog(id=-42, title="Друзья", kind="group")
+    supergroup = FakeDialog(id=-1001000000002, title="Чат", kind="group")
+
+    assert isinstance(small.entity, types.Chat)
+    assert utils.get_peer_id(small.entity) == -42
+    assert isinstance(supergroup.entity, types.Channel)
+    assert supergroup.entity.megagroup is True
+    assert utils.get_peer_id(supergroup.entity) == -1001000000002
 
 
 async def _remember(seen: list[str], event: object) -> None:

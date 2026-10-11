@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from fastapi import FastAPI, HTTPException, status
@@ -30,7 +30,7 @@ from mimic42.testing.env import load_test_env
 from mimic42.testing.llm import Reply, ScriptedAgentFactory
 from mimic42.testing.memory import FakeLongTermMemory
 from mimic42.testing.slots import SLOTS, assert_test_project
-from mimic42.testing.telegram import FakeTelegramAuthClientFactory, FakeTelegramClient
+from mimic42.testing.telegram import FakeDialog, FakeTelegramAuthClientFactory, FakeTelegramClient
 
 # Точка входа для `uvicorn mimic42.testing.server:app`: файлы грузятся здесь,
 # чтобы сервер поднимался без предварительного `source .env.test`.
@@ -48,6 +48,18 @@ class OwnerRequest(BaseModel):
 class DeliverRequest(BaseModel):
     chat_id: int
     text: str
+
+
+class DialogSpec(BaseModel):
+    id: int
+    title: str
+    kind: Literal["channel", "group", "private"]
+    username: str | None = None
+    archived: bool = False
+
+
+class DialogsRequest(BaseModel):
+    dialogs: list[DialogSpec]
 
 
 class OnboardingScriptRequest(BaseModel):
@@ -193,6 +205,14 @@ def _mount_test_routes(application: FastAPI, settings: Settings) -> None:
     @application.post("/__test__/telegram/{agent_id}/deliver")
     async def deliver(agent_id: UUID, request: DeliverRequest) -> dict[str, str]:
         await registry.account_for(agent_id).deliver(chat_id=request.chat_id, text=request.text)
+        return {"status": "ok"}
+
+    @application.post("/__test__/telegram/{agent_id}/dialogs")
+    async def seed_dialogs(agent_id: UUID, request: DialogsRequest) -> dict[str, str]:
+        """Задаёт диалоги аккаунта агента: их увидит настройка «Чаты и каналы»."""
+        registry.account_for(agent_id).dialogs = [
+            FakeDialog(**dialog.model_dump()) for dialog in request.dialogs
+        ]
         return {"status": "ok"}
 
     @application.get("/__test__/telegram/{agent_id}/sent")

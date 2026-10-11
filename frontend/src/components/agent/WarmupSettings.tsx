@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { AlertTriangle } from 'lucide-react';
 
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Card, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
@@ -85,28 +86,25 @@ export function WarmupRestrictionNotice({ agentId }: { agentId: string }) {
     });
 
   return (
-    <Card variant="bordered" padding="md" className="space-y-3 border-amber-900 bg-amber-950/30">
-      <div className="flex items-start gap-3">
-        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-400" aria-hidden="true" />
-        <div className="space-y-1">
-          <CardTitle className="text-sm">Аккаунт ограничен Telegram</CardTitle>
-          <p className="font-mono text-xs text-muted-foreground max-w-prose">
-            С {since} Telegram не даёт этому аккаунту писать первым незнакомым людям. Отвечать он
-            может. Обычно ограничение снимается само через несколько дней, и ускорить это
-            нельзя.
-          </p>
-        </div>
-      </div>
+    <Alert variant="warning" className="gap-y-1 px-4 py-3">
+      <AlertTriangle aria-hidden="true" />
+      <AlertTitle>Аккаунт в спам-блоке Telegram</AlertTitle>
+      <AlertDescription>
+        С {since} Telegram не даёт этому аккаунту писать первым незнакомым людям и отправлять
+        сообщения в группы и каналы, в том числе комментарии под постами. Тем, кто написал сам,
+        он отвечать может. Обычно ограничение снимается само через несколько дней, и ускорить
+        это нельзя.
+      </AlertDescription>
 
       {state.recovery ? (
-        <p className="font-mono text-xs text-foreground max-w-prose">
+        <p className="col-start-2 mt-2 text-sm text-foreground">
           Режим восстановления включён: другие агенты чаще пишут этому, а он отвечает. Раз в
           несколько часов мы спрашиваем @SpamBot, снято ли ограничение, и тогда возвращаем
           обычный прогрев. Поможет ли это снять ограничение быстрее, неизвестно. Работает, даже
           если переключатель прогрева выключен.
         </p>
       ) : (
-        <div className="flex flex-wrap gap-2">
+        <div className="col-start-2 mt-2 flex flex-wrap gap-2">
           <Button type="button" size="sm" onClick={startRecovery} isLoading={recovery.isPending}>
             Восстановить перепиской
           </Button>
@@ -121,6 +119,6 @@ export function WarmupRestrictionNotice({ agentId }: { agentId: string }) {
           )}
         </div>
       )}
-    </Card>
+    </Alert>
   );
 }
