@@ -4,7 +4,7 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { PresetPickerDialog, type AppliedPromptPreset } from '@/components/agent/PresetPicker';
 import { TOOL_INFO } from '@/lib/tools/toolInfo';
-import type { PromptPresetRow } from '@/types';
+import type { PromptPresetRow, PresetFavoriteRow } from '@/types';
 
 const PRESETS: PromptPresetRow[] = [
   {
@@ -65,6 +65,60 @@ const PRESETS: PromptPresetRow[] = [
   },
 ];
 
+const FAVORITE: PresetFavoriteRow = {
+  id: 'fav-1',
+  preset_id: '99999999-9999-9999-9999-999999999999',
+  frozen_title: null,
+  frozen_summary: null,
+  frozen_body: null,
+  frozen_settings: null,
+  frozen_at: null,
+  created_at: '2026-10-11T00:00:00Z',
+  updated_at: '2026-10-11T00:00:00Z',
+};
+
+const FROZEN: PresetFavoriteRow = {
+  id: 'fav-2',
+  preset_id: null,
+  frozen_title: 'Замороженный',
+  frozen_summary: 'копия автора',
+  frozen_body: 'ТЕЛО СНИМКА',
+  frozen_settings: null,
+  frozen_at: '2026-10-11T01:00:00Z',
+  created_at: '2026-10-11T00:00:00Z',
+  updated_at: '2026-10-11T00:00:00Z',
+};
+
+const MY_PRESET: PromptPresetRow = {
+  id: '88888888-8888-8888-8888-888888888888',
+  slug: 'u_88888888',
+  title: 'Свой пресет',
+  summary: 'мой характер',
+  body: 'ТЕЛО СВОЕГО',
+  settings: null,
+  sort_order: 0,
+  is_active: true,
+  owner_id: 'user-1',
+  published_at: null,
+  created_at: '2026-10-11T00:00:00Z',
+  updated_at: '2026-10-11T00:00:00Z',
+};
+
+const OTHER_PUBLISHED: PromptPresetRow = {
+  id: '99999999-9999-9999-9999-999999999999',
+  slug: 'u_99999999',
+  title: 'Чужой витринный',
+  summary: 'сохранённый чужой',
+  body: 'ЖИВОЙ ТЕКСТ',
+  settings: null,
+  sort_order: 0,
+  is_active: true,
+  owner_id: 'other-user',
+  published_at: '2026-10-11T00:00:00Z',
+  created_at: '2026-10-11T00:00:00Z',
+  updated_at: '2026-10-11T00:00:00Z',
+};
+
 function renderDialog(overrides: Partial<ComponentProps<typeof PresetPickerDialog>> = {}) {
   const onApply = mock((_preset: AppliedPromptPreset) => {});
   const onClose = mock(() => {});
@@ -73,6 +127,8 @@ function renderDialog(overrides: Partial<ComponentProps<typeof PresetPickerDialo
       isOpen
       onClose={onClose}
       presets={PRESETS}
+      favorites={[]}
+      userId="user-1"
       isLoading={false}
       isError={false}
       currentValue=""
@@ -82,6 +138,7 @@ function renderDialog(overrides: Partial<ComponentProps<typeof PresetPickerDialo
   );
   return { onApply, onClose };
 }
+
 
 describe('PresetPickerDialog', () => {
   test('показывает названия, описания и тело первого пресета', () => {
@@ -183,5 +240,43 @@ describe('PresetPickerDialog', () => {
   test('пустой справочник говорит об этом прямо', () => {
     renderDialog({ presets: [] });
     expect(screen.getByText('Пресетов пока нет')).toBeTruthy();
+  });
+
+  test('секции: официальные, свои и избранное', () => {
+    renderDialog({
+      presets: [...PRESETS, MY_PRESET],
+      favorites: [FAVORITE, FROZEN],
+    });
+    expect(screen.getByText('Официальные')).toBeTruthy();
+    expect(screen.getByText('Мои')).toBeTruthy();
+    expect(screen.getByText('Избранное')).toBeTruthy();
+  });
+
+  test('живое избранное показывает текущую версию пресета', async () => {
+    const user = userEvent.setup();
+    renderDialog({ presets: [...PRESETS, OTHER_PUBLISHED], favorites: [FAVORITE] });
+
+    await user.click(screen.getByRole('option', { name: /Чужой витринный/ }));
+    expect(screen.getByTestId('preset-body').textContent).toBe('ЖИВОЙ ТЕКСТ');
+  });
+
+  test('замороженное избранное показывает снимок, даже если строка удалена', async () => {
+    const user = userEvent.setup();
+    renderDialog({ favorites: [FROZEN] });
+
+    await user.click(screen.getByRole('option', { name: /Замороженный/ }));
+    expect(screen.getByTestId('preset-body').textContent).toBe('ТЕЛО СНИМКА');
+  });
+
+  test('чужой витринный пресет без избранного в меню не показывается', () => {
+    renderDialog({ presets: [...PRESETS, OTHER_PUBLISHED] });
+    expect(screen.queryByText('Чужой витринный')).toBeNull();
+  });
+
+  test('пустые секции не рендерятся', () => {
+    renderDialog({ presets: [...PRESETS], favorites: [] });
+    expect(screen.getByText('Официальные')).toBeTruthy();
+    expect(screen.queryByText('Мои')).toBeNull();
+    expect(screen.queryByText('Избранное')).toBeNull();
   });
 });
