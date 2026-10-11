@@ -218,11 +218,12 @@ async def test_publish_makes_preset_visible_and_editable(test_dsn: str) -> None:
                 "select body from public.prompt_presets where id = $1", preset_id
             )
             assert body == "старый текст"
-            count = await connection.fetchval(
-                "select count(*) from public.prompt_presets where published_at is not null"
+            official_published = await connection.fetchval(
+                "select count(*) from public.prompt_presets "
+                "where owner_id is null and published_at is not null"
             )
-            # Виден ровно один выложенный пресет — только что наш.
-            assert count == 1
+            # Официальные строки выложенными считаться не должны.
+            assert official_published == 0
         async with connection.transaction():
             await _act_as_user(connection, _persona("empty"))
             await connection.execute(
