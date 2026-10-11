@@ -230,9 +230,9 @@ export function PresetPickerDialog({
               entries.length === 0 ? null : (
                 <div key={section} data-testid={`picker-section-${section}`}>
                   <p className="px-3 pb-1 pt-2 font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
+                    {/* eslint-disable-next-line security/detect-object-injection -- section is a typed union, not user input */}
                     {SECTION_LABELS[section]}
-                  </p>
-                  {entries.map((entry) => (
+                  </p>                  {entries.map((entry) => (
                     <button
                       key={entry.key}
                       type="button"

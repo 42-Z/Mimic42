@@ -7,7 +7,7 @@ from collections.abc import Callable
 
 import httpx
 import pytest
-from playwright.sync_api import Page, expect
+from playwright.sync_api import Locator, Page, expect
 
 from tests.e2e.helpers import create_test_agent
 
@@ -18,7 +18,7 @@ SUMMARY = "говорит как с туса 2007"
 PROMPT = "Ты ламповый олд интернета и помнишь, как звучали модемы."
 
 
-def _card(page: Page, text: str):
+def _card(page: Page, text: str) -> Locator:
     return page.get_by_test_id(re.compile(r"preset-card-")).filter(has_text=text)
 
 

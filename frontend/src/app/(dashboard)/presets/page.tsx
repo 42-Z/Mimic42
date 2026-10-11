@@ -6,7 +6,6 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/card';
 import { PresetEditorDialog } from '@/components/presets/PresetEditorDialog';
-import { queryKeys } from '@/lib/queryClient';
 import { getSupabaseClient } from '@/lib/supabase/client';
 import { readEnabledTools } from '@/lib/tools/agentTools';
 import { TOOL_INFO } from '@/lib/tools/toolInfo';

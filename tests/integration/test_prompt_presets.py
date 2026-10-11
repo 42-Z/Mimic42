@@ -456,13 +456,14 @@ async def test_delete_freezes_favorites(test_dsn: str) -> None:
             )
         async with connection.transaction():
             await _act_as_user(connection, author)
-            await connection.execute(
-                "delete from public.prompt_presets where id = $1", preset_id
-            )
+            await connection.execute("delete from public.prompt_presets where id = $1", preset_id)
         # Строка пресета удалена, избранное осталось замороженной копией.
-        assert await connection.fetchval(
-            "select count(*) from public.prompt_presets where id = $1", preset_id
-        ) == 0
+        assert (
+            await connection.fetchval(
+                "select count(*) from public.prompt_presets where id = $1", preset_id
+            )
+            == 0
+        )
         async with connection.transaction():
             await _act_as_user(connection, reader)
             row = await connection.fetchrow(
@@ -501,9 +502,12 @@ async def test_republish_keeps_old_copy_frozen(test_dsn: str) -> None:
             await _act_as_user(connection, reader)
             # Старая копия остаётся замороженной, повторное сохранение даёт
             # вторую запись — уникальность (owner_id, preset_id) не мешает.
-            assert await connection.fetchval(
-                "select count(*) from public.preset_favorites where frozen_at is not null"
-            ) == 1
+            assert (
+                await connection.fetchval(
+                    "select count(*) from public.preset_favorites where frozen_at is not null"
+                )
+                == 1
+            )
             await connection.execute(
                 "insert into public.preset_favorites (preset_id) values ($1)", preset_id
             )
@@ -520,7 +524,7 @@ async def test_preset_authors_view(test_dsn: str) -> None:
         original_name = await connection.fetchval(
             "select display_name from public.profiles where id = $1", author
         )
-        draft_id = await _publish_preset(connection, author, title='Черновик автора')
+        draft_id = await _publish_preset(connection, author, title="Черновик автора")
         # Пока снимаем публикацию, автор не должен попасть в вид.
         async with connection.transaction():
             await _act_as_user(connection, author)
