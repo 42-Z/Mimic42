@@ -59,6 +59,9 @@ RLS-политики для `authenticated`:
 Триггеры на `prompt_presets` (все `security definer` с фиксированным
 `search_path`, чтобы работать поверх RLS):
 
+Все ограждения активны только когда `auth.uid() is not null` — сервисная
+запись и миграции проходят беспрепятственно:
+
 - before insert: `owner_id = auth.uid()` обязателен (официальную строку без
   владельца создать нельзя), `published_at = null`, `is_active = true`,
   `slug = 'u_' || new.id`, `owner_id` пустой запрещён.
