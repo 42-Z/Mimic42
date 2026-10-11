@@ -78,6 +78,7 @@ export function PresetEditorDialog({
       onClose={onClose}
       title={initial ? 'Правка пресета' : 'Новый пресет'}
       size="lg"
+      className="max-h-[85vh] overflow-y-auto"
     >
       <form
         className="space-y-4"
