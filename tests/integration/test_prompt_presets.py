@@ -18,7 +18,7 @@ async def test_presets_are_seeded(test_dsn: str) -> None:
     try:
         rows = await connection.fetch(
             "select slug, title, summary, body, sort_order "
-            "from public.prompt_presets where is_active order by sort_order"
+            "from public.prompt_presets where is_active and owner_id is null order by sort_order"
         )
     finally:
         await connection.close()
@@ -38,7 +38,12 @@ async def test_authenticated_reads_but_cannot_write(test_dsn: str) -> None:
         async with connection.transaction():
             await connection.execute("set local role authenticated")
 
-            assert await connection.fetchval("select count(*) from public.prompt_presets") == 4
+            assert (
+                await connection.fetchval(
+                    "select count(*) from public.prompt_presets where owner_id is null"
+                )
+                == 4
+            )
 
             # asyncpg по умолчанию отдаёт jsonb строкой — разбираем её сами.
             rage = json.loads(
@@ -117,6 +122,7 @@ DENIED = (asyncpg.RaiseError, asyncpg.InsufficientPrivilegeError)
 async def _cleanup_personas(connection: asyncpg.Connection, *user_ids: UUID) -> None:
     """Убрать пресеты персон: персоны общие, мусор в них копиться не должен."""
     for user_id in user_ids:
+        await connection.execute("delete from public.preset_favorites where owner_id = $1", user_id)
         await connection.execute("delete from public.prompt_presets where owner_id = $1", user_id)
 
 
@@ -262,4 +268,140 @@ async def test_owner_cannot_reassign_owner_or_slug(test_dsn: str) -> None:
                 )
     finally:
         await _cleanup_personas(connection, _persona("empty"))
+        await connection.close()
+
+
+async def _publish_preset(
+    connection: asyncpg.Connection,
+    owner_id: UUID,
+    title: str = "Избранный",
+    body: str = "текст чужого пресета",
+) -> UUID:
+    """Черновик + публикация от лица владельца; возвращает id пресета."""
+    async with connection.transaction():
+        await _act_as_user(connection, owner_id)
+        preset_id = await connection.fetchval(
+            "insert into public.prompt_presets (title, summary, body) "
+            "values ($1, 'характер для витрины', $2) returning id",
+            title,
+            body,
+        )
+        await connection.execute(
+            "update public.prompt_presets set published_at = now() where id = $1",
+            preset_id,
+        )
+    return preset_id
+
+
+async def test_user_can_favorite_published_foreign_preset(test_dsn: str) -> None:
+    connection = await asyncpg.connect(plain_dsn(test_dsn))
+    try:
+        author = _persona("empty")
+        reader = _persona("full")
+        outsider = _persona("flow")
+        preset_id = await _publish_preset(connection, author)
+
+        async with connection.transaction():
+            await _act_as_user(connection, reader)
+            favorite_id = await connection.fetchval(
+                "insert into public.preset_favorites (preset_id) values ($1) returning id",
+                preset_id,
+            )
+            row = await connection.fetchrow(
+                "select owner_id, preset_id, frozen_at from public.preset_favorites where id = $1",
+                favorite_id,
+            )
+            assert row["owner_id"] == reader
+            assert row["preset_id"] == preset_id
+            assert row["frozen_at"] is None
+            # Своё избранное видно, чужое — нет.
+            assert await connection.fetchval("select count(*) from public.preset_favorites") == 1
+        async with connection.transaction():
+            await _act_as_user(connection, outsider)
+            assert await connection.fetchval("select count(*) from public.preset_favorites") == 0
+    finally:
+        await _cleanup_personas(connection, author, reader, outsider)
+        await connection.close()
+
+
+async def test_favorite_is_forbidden_for_official_own_and_unpublished(test_dsn: str) -> None:
+    connection = await asyncpg.connect(plain_dsn(test_dsn))
+    try:
+        author = _persona("empty")
+        reader = _persona("full")
+        official_id = await connection.fetchval(
+            "select id from public.prompt_presets where slug = 'rage_comments'"
+        )
+        own_preset_id = await _publish_preset(connection, reader, title="Своя витрина")
+
+        # Каждый отказ — в своей транзакции: abort прибивает транзакцию.
+        async with connection.transaction():
+            await _act_as_user(connection, reader)
+            # Официальный пресет и свой выложенный избирать нельзя.
+            with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                await connection.execute(
+                    "insert into public.preset_favorites (preset_id) values ($1)", official_id
+                )
+        async with connection.transaction():
+            await _act_as_user(connection, reader)
+            with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                await connection.execute(
+                    "insert into public.preset_favorites (preset_id) values ($1)", own_preset_id
+                )
+        # Чужой черновик: RLS не даёт его ни увидеть, ни избрать.
+        async with connection.transaction():
+            await _act_as_user(connection, author)
+            draft_id = await connection.fetchval(
+                "insert into public.prompt_presets (title, summary, body) "
+                "values ('Тайный', 'черновик', 'текст') returning id"
+            )
+        async with connection.transaction():
+            await _act_as_user(connection, reader)
+            with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                await connection.execute(
+                    "insert into public.preset_favorites (preset_id) values ($1)", draft_id
+                )
+    finally:
+        await _cleanup_personas(connection, author, reader)
+        await connection.close()
+
+
+async def test_favorite_is_unique_per_preset(test_dsn: str) -> None:
+    connection = await asyncpg.connect(plain_dsn(test_dsn))
+    try:
+        author = _persona("empty")
+        reader = _persona("full")
+        preset_id = await _publish_preset(connection, author)
+        async with connection.transaction():
+            await _act_as_user(connection, reader)
+            await connection.execute(
+                "insert into public.preset_favorites (preset_id) values ($1)", preset_id
+            )
+            with pytest.raises(asyncpg.UniqueViolationError):
+                await connection.execute(
+                    "insert into public.preset_favorites (preset_id) values ($1)", preset_id
+                )
+    finally:
+        await _cleanup_personas(connection, author, reader)
+        await connection.close()
+
+
+async def test_user_can_remove_own_favorite(test_dsn: str) -> None:
+    connection = await asyncpg.connect(plain_dsn(test_dsn))
+    try:
+        author = _persona("empty")
+        reader = _persona("full")
+        preset_id = await _publish_preset(connection, author)
+        async with connection.transaction():
+            await _act_as_user(connection, reader)
+            favorite_id = await connection.fetchval(
+                "insert into public.preset_favorites (preset_id) values ($1) returning id",
+                preset_id,
+            )
+            await connection.execute(
+                "delete from public.preset_favorites where id = $1", favorite_id
+            )
+            assert await connection.fetchval("select count(*) from public.preset_favorites") == 0
+    finally:
+        await _cleanup_personas(connection, author, reader)
         await connection.close()
