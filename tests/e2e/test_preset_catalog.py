@@ -40,7 +40,9 @@ class TestPresetCatalog:
         # после него автор перелогинивается и по redirect попадает на /presets.
         author.goto("/presets")
         if "/login" in author.url:
-            login_via_form(author, users["full"])
+            # Здесь уже /login?redirect=/presets: идём по текущему адресу,
+            # иначе чистый /login теряет redirect.
+            login_via_form(author, users["full"], path=author.url)
             expect(author).to_have_url(re.compile(r"/presets"))
         author.get_by_test_id("open-preset-editor").click()
         editor = author.get_by_role("dialog")

@@ -110,8 +110,8 @@ def current_draft_id(api: httpx.Client, owner_id: str) -> str:
     return str(draft_id)
 
 
-def login_via_form(page: Page, user: E2EUser) -> None:
-    page.goto("/login")
+def login_via_form(page: Page, user: E2EUser, path: str = "/login") -> None:
+    page.goto(path)
     page.get_by_label("Email").fill(user.email)
     page.get_by_label("Пароль", exact=True).fill(user.password)
     page.get_by_role("button", name="Войти").click()
