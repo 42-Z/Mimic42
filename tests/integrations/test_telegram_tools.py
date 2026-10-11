@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from langchain_core.messages import ToolMessage
-from telethon import functions, types
+from telethon import errors, functions, types
 
 from mimic42.core.agent_runtime import TelegramClientLike, _extract_incoming_text
 from mimic42.core.media_download import MediaRef, MediaRefCache
@@ -75,6 +75,19 @@ class FakeTelethonClient(FakeTelegramClient):
             res = MagicMock(spec=types.Updates)
             res.updates = []
             res.chats = [request.channel]
+            res.users = []
+            return res
+        elif isinstance(request, functions.messages.GetDiscussionMessageRequest):
+            group = MagicMock(spec=types.Channel)
+            group.id = 789
+            group.title = "Discussion Group"
+            group.username = "discussion_group"
+            group.megagroup = True
+            group.access_hash = 321
+
+            res = MagicMock(spec=types.messages.DiscussionMessage)
+            res.chats = [group]
+            res.messages = []
             res.users = []
             return res
         elif isinstance(request, functions.channels.GetParticipantRequest):
@@ -2664,6 +2677,54 @@ async def test_join_channel_discussion_no_linked_chat() -> None:
     assert result["error"] == "This channel has no linked discussion group"
     assert result["error_code"] == "NoDiscussionGroup"
     assert "комментариев" in result["hint"]
+
+
+class PrivateLinkedGroupClient(FakeTelethonClient):
+    """Привязанная группа приватная и аккаунта там нет: get_entity по голому
+    ID поднимает CHANNEL_PRIVATE, а в chats полного канала её тоже нет."""
+
+    async def get_entity(self, peer: Any) -> Any:
+        if peer == 789:
+            raise errors.ChannelPrivateError(request=None)
+        return await super().get_entity(peer)
+
+    async def __call__(self, request: object) -> Any:
+        if isinstance(request, functions.messages.GetDiscussionMessageRequest):
+            self.requests.append(request)
+            group = MagicMock(spec=types.Channel)
+            group.id = 789
+            group.title = "Discussion Group"
+            group.username = None
+            group.megagroup = True
+            group.access_hash = 321
+
+            res = MagicMock(spec=types.messages.DiscussionMessage)
+            res.chats = [group]
+            res.messages = []
+            res.users = []
+            return res
+        return await super().__call__(request)
+
+
+@pytest.mark.asyncio
+async def test_join_channel_discussion_private_linked_group() -> None:
+    """Аккаунт не участник приватной группы обсуждения: вступаем через
+    GetDiscussionMessageRequest, а не через get_entity по голому ID."""
+    client = PrivateLinkedGroupClient()
+    toolbox = TelegramToolbox(client)
+
+    result = await toolbox.join_channel_discussion("group")
+
+    assert result["success"] is True
+    assert result["linked_chat_id"] == -1000000000789
+    assert result["already_joined"] is False
+    discussion_reqs = [
+        r for r in client.requests if isinstance(r, functions.messages.GetDiscussionMessageRequest)
+    ]
+    assert len(discussion_reqs) == 1
+    join_reqs = [r for r in client.requests if isinstance(r, functions.channels.JoinChannelRequest)]
+    assert len(join_reqs) == 1
+    assert getattr(join_reqs[0].channel, "id", None) == 789
 
 
 @pytest.mark.asyncio

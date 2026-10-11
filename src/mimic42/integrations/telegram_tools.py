@@ -2565,6 +2565,54 @@ class TelegramToolbox:
             return None
         return overview
 
+    async def _linked_chat_entity(self, full_info: Any, channel: Any, linked_chat_id: int) -> Any:
+        """Сущность привязанной группы обсуждения, годная для JoinChannelRequest.
+
+        Приватную группу, где аккаунта нет, нельзя резолвить по голому ID:
+        GetChannelsRequest отвечает CHANNEL_PRIVATE, и остались бы только
+        инвайт-ссылки. Официальный клиент и Telethon (внутри comment_to)
+        берут группу из ответа messages.GetDiscussionMessageRequest — там она
+        приходит с access_hash. Сначала смотрим в chats полного описания
+        канала, иначе — по свежему посту канала.
+        """
+        in_full = next(
+            (
+                chat
+                for chat in getattr(full_info, "chats", None) or []
+                if getattr(chat, "id", None) == linked_chat_id
+            ),
+            None,
+        )
+        if in_full is not None:
+            return in_full
+
+        latest_post = None
+        async for message in self._client.iter_messages(channel, limit=1):
+            latest_post = message
+            break
+        if latest_post is not None:
+            try:
+                discussion = await self._client(
+                    functions.messages.GetDiscussionMessageRequest(
+                        peer=channel, msg_id=latest_post.id
+                    )
+                )
+            except Exception:
+                # Нет постов с обсуждением — остаётся старый путь по голому ID.
+                return await self._client.get_entity(linked_chat_id)
+            in_discussion = next(
+                (
+                    chat
+                    for chat in getattr(discussion, "chats", None) or []
+                    if getattr(chat, "id", None) == linked_chat_id
+                ),
+                None,
+            )
+            if in_discussion is not None:
+                return in_discussion
+
+        return await self._client.get_entity(linked_chat_id)
+
     async def join_channel_discussion(self, peer: str) -> dict[str, Any]:
         """Join the linked discussion group of a broadcast channel."""
         try:
@@ -2586,7 +2634,7 @@ class TelegramToolbox:
                     "error_code": "NoDiscussionGroup",
                     "hint": "У канала нет обсуждения: комментариев под постами там нет.",
                 }
-            linked_chat = await self._client.get_entity(linked_chat_id)
+            linked_chat = await self._linked_chat_entity(full_info, entity, linked_chat_id)
             # Голый ID неоднозначен (у пользователей, групп и каналов номера пересекаются),
             # поэтому модели отдаётся ID с пометкой типа: по нему найдётся именно эта группа.
             group_id = utils.get_peer_id(types.PeerChannel(linked_chat_id))
