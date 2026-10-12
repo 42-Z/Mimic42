@@ -127,7 +127,6 @@ class FakeTelethonClient(FakeTelegramClient):
             doc.access_hash = 444
             doc.file_reference = b"\x09"
             doc.dc_id = 1
-            doc.mime_type = "image/webp"
             sticker_attr = MagicMock(spec=types.DocumentAttributeSticker)
             sticker_attr.alt = "🔥"
             sticker_attr.stickerset = MagicMock(spec=types.InputStickerSetEmpty)
@@ -763,7 +762,7 @@ class AnimatedStickerSetClient(FakeTelethonClient):
 
 
 @pytest.mark.asyncio
-async def test_view_image_archives_animated_set_sticker_under_its_telegram_mime() -> None:
+async def test_view_image_labels_animated_set_sticker_from_its_bytes() -> None:
     from uuid import uuid4
 
     uploader = FakeMediaUploader()
@@ -776,6 +775,48 @@ async def test_view_image_archives_animated_set_sticker_under_its_telegram_mime(
     assert result[0]["mime_type"] == "application/x-tgsticker"
     assert uploader.uploads[0][2] == "application/x-tgsticker"
     assert result[1]["success"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("stored_mime", "archived", "label", "model_item"),
+    [
+        pytest.param(
+            "image/webp",
+            b"\x1f\x8b\x08\x00tgs",
+            "application/x-tgsticker",
+            "text",
+            id="tgs-stored-as-webp",
+        ),
+        pytest.param(
+            "application/x-tgsticker",
+            b"RIFF\x24\x00\x00\x00WEBPVP8 ",
+            "image/webp",
+            "image_url",
+            id="webp-stored-as-tgs",
+        ),
+    ],
+)
+async def test_view_image_takes_sticker_mime_from_archived_bytes(
+    stored_mime: str, archived: bytes, label: str, model_item: str
+) -> None:
+    from uuid import uuid4
+
+    agent_id = uuid4()
+    uploader = FakeMediaUploader()
+    path = f"{agent_id}/u1/sticker.bin"
+    uploader.files[path] = archived
+    cache = MediaRefCache()
+    media_id = "sticker:123:456:0102:2:🙂:pepe"
+    cache.remember(media_id, MediaRef(storage_path=path, mime_type=stored_mime))
+    toolbox = TelegramToolbox(
+        FakeTelethonClient(), agent_id=agent_id, media_uploader=uploader, media_refs=cache
+    )
+
+    result = await toolbox.view_image(media_id)
+
+    assert [item["type"] for item in result] == ["media_ref", model_item]
+    assert result[0]["mime_type"] == label
 
 
 @pytest.mark.asyncio
@@ -1179,6 +1220,26 @@ async def test_send_media_uploads_archived_bytes_after_reference_expires(
             isinstance(attr, types.DocumentAttributeSticker)
             for attr in sends[1]["kwargs"]["attributes"]
         )
+
+
+async def test_send_sticker_from_archive_takes_mime_from_its_bytes() -> None:
+    cache = MediaRefCache()
+    media_id = "sticker:123:456:0102:2:🙂:pepe"
+    path = "saved/sticker.webp"
+    cache.remember(
+        media_id,
+        MediaRef(peer="chat", message_id=55, storage_path=path, mime_type="image/webp"),
+    )
+    uploader = FakeMediaUploader()
+    uploader.files[path] = b"\x1f\x8b\x08\x00tgs"
+    client = ExpiringSendClient()
+    toolbox = TelegramToolbox(client, media_refs=cache, media_uploader=uploader)
+
+    result = await toolbox.send_sticker("chat", media_id)
+
+    assert result == {"success": True, "message_id": 999}
+    sends = [call for name, call in client.calls if name == "send_file"]
+    assert sends[1]["kwargs"]["mime_type"] == "application/x-tgsticker"
 
 
 async def test_archived_document_keeps_original_filename_and_mime_type() -> None:
