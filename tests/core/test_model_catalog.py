@@ -41,7 +41,15 @@ def test_unknown_slug_passes_through() -> None:
 
 
 def test_ignored_providers_come_from_the_catalog() -> None:
-    assert ignored_providers("z-ai/glm-5.3-flash") == ["morph"]
+    assert ignored_providers("z-ai/glm-5.3-flash") == [
+        "morph",
+        "open-inference",
+        "siliconflow",
+        "venice",
+        "deepinfra",
+        "inceptron",
+        "sail-research/us",
+    ]
     assert ignored_providers("nvidia/nemotron-3.5-lightning") == ["deepinfra"]
     assert ignored_providers("deepseek/deepseek-v4-flash-0731") == []
     assert ignored_providers("google/gemini-3.1-flash-lite") == []

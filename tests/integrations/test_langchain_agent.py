@@ -14,6 +14,7 @@ from pydantic import SecretStr
 
 import mimic42.integrations.langchain_agent as langchain_agent_module
 from mimic42.core.agent_runtime import AgentRuntimeConfig
+from mimic42.core.model_catalog import ignored_providers
 from mimic42.integrations import tracing
 from mimic42.integrations.activity_middleware import ActivityMiddleware
 from mimic42.integrations.langchain_agent import (
@@ -97,7 +98,7 @@ def test_ignored_providers_are_excluded_from_routing(recorded: list[dict[str, An
             "timeout": REQUEST_TIMEOUT_MS,
             "reasoning": {"effort": "high"},
             "model_kwargs": {},
-            "openrouter_provider": {"ignore": ["morph"]},
+            "openrouter_provider": {"ignore": ignored_providers("z-ai/glm-5.3-flash")},
         }
     ]
 
@@ -111,7 +112,7 @@ def test_ignored_providers_apply_without_reasoning(recorded: list[dict[str, Any]
             "api_key": None,
             "timeout": REQUEST_TIMEOUT_MS,
             "model_kwargs": {},
-            "openrouter_provider": {"ignore": ["morph"]},
+            "openrouter_provider": {"ignore": ignored_providers("z-ai/glm-5.3-flash")},
         }
     ]
 
