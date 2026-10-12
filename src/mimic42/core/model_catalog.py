@@ -26,20 +26,9 @@ MODEL_CATALOG: dict[str, ModelSpec] = {
             # Morph returns no reasoning although it is mandatory for GLM 5.3,
             # and its answers ignore the conversation: 4 wrong out of 9 against
             # 0 out of 38 on the providers that do reason (2026-09-21).
-            # The providers below do not see an image attached to a tool result:
-            # they answer as if nothing arrived or cannot read it (open-inference,
-            # siliconflow, venice), reject the list content with a 4xx (deepinfra)
-            # or take no images at all (inceptron) (2026-10-12). Only the us
-            # endpoint of sail-research is excluded: sail-research/fp4 accepts images.
-            ignored_providers=(
-                "morph",
-                "open-inference",
-                "siliconflow",
-                "venice",
-                "deepinfra",
-                "inceptron",
-                "sail-research/us",
-            ),
+            # Inceptron takes no images at all (2026-10-12). DeepInfra was rate-limited
+            # at every check, so it stays out until it takes an image in a user message.
+            ignored_providers=("morph", "deepinfra", "inceptron"),
         ),
         ModelSpec(slug="deepseek/deepseek-v4-flash-0731", name="DeepSeek V4 Flash 0731"),
         ModelSpec(
