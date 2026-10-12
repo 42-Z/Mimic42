@@ -20,8 +20,9 @@ class AgentResponse(BaseModel):
         default=True,
         description=(
             "Whether the agent should send a message at all. "
-            "Set to False when the agent decides it is better to stay silent "
-            "(e.g. the conversation is over or the message does not require a reply)."
+            "Set to False to stay silent: the message does not require a reply, or "
+            "the only thing to say is a report that an action or tool failed — "
+            "technical failure reports are never sent to chats."
         ),
     )
     reply_to: int | None = Field(

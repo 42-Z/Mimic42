@@ -272,6 +272,8 @@ export type Database = {
           soul_prompt: string
           status: Database["public"]["Enums"]["agent_runtime_status"]
           updated_at: string
+          warmup_recovery: boolean
+          warmup_restricted_at: string | null
         }
         Insert: {
           context_reset_at?: string | null
@@ -286,6 +288,8 @@ export type Database = {
           soul_prompt?: string
           status?: Database["public"]["Enums"]["agent_runtime_status"]
           updated_at?: string
+          warmup_recovery?: boolean
+          warmup_restricted_at?: string | null
         }
         Update: {
           context_reset_at?: string | null
@@ -300,6 +304,8 @@ export type Database = {
           soul_prompt?: string
           status?: Database["public"]["Enums"]["agent_runtime_status"]
           updated_at?: string
+          warmup_recovery?: boolean
+          warmup_restricted_at?: string | null
         }
         Relationships: [
           {
@@ -352,6 +358,60 @@ export type Database = {
           },
         ]
       }
+      preset_favorites: {
+        Row: {
+          created_at: string
+          frozen_at: string | null
+          frozen_body: string | null
+          frozen_settings: Json | null
+          frozen_summary: string | null
+          frozen_title: string | null
+          id: string
+          owner_id: string
+          preset_id: string | null
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          frozen_at?: string | null
+          frozen_body?: string | null
+          frozen_settings?: Json | null
+          frozen_summary?: string | null
+          frozen_title?: string | null
+          id?: string
+          owner_id: string
+          preset_id?: string | null
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          frozen_at?: string | null
+          frozen_body?: string | null
+          frozen_settings?: Json | null
+          frozen_summary?: string | null
+          frozen_title?: string | null
+          id?: string
+          owner_id?: string
+          preset_id?: string | null
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "preset_favorites_owner_id_fkey"
+            columns: ["owner_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "preset_favorites_preset_id_fkey"
+            columns: ["preset_id"]
+            isOneToOne: false
+            referencedRelation: "prompt_presets"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       profiles: {
         Row: {
           created_at: string
@@ -382,6 +442,8 @@ export type Database = {
           created_at: string
           id: string
           is_active: boolean
+          owner_id: string | null
+          published_at: string | null
           settings: Json | null
           slug: string
           sort_order: number
@@ -394,6 +456,8 @@ export type Database = {
           created_at?: string
           id?: string
           is_active?: boolean
+          owner_id?: string | null
+          published_at?: string | null
           settings?: Json | null
           slug: string
           sort_order?: number
@@ -406,6 +470,8 @@ export type Database = {
           created_at?: string
           id?: string
           is_active?: boolean
+          owner_id?: string | null
+          published_at?: string | null
           settings?: Json | null
           slug?: string
           sort_order?: number
@@ -413,7 +479,15 @@ export type Database = {
           title?: string
           updated_at?: string
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "prompt_presets_owner_id_fkey"
+            columns: ["owner_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       telegram_sessions: {
         Row: {
@@ -473,7 +547,21 @@ export type Database = {
       }
     }
     Views: {
-      [_ in never]: never
+      preset_authors: {
+        Row: {
+          display_name: string | null
+          id: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "prompt_presets_owner_id_fkey"
+            columns: ["id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
     }
     Functions: {
       [_ in never]: never

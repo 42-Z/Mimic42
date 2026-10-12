@@ -451,6 +451,22 @@ export interface PromptPresetRow {
   settings: Record<string, unknown> | null;
   sort_order: number;
   is_active: boolean;
+  owner_id: string | null;
+  published_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+// Строка избранного: пока preset_id задан — живая ссылка на витринный пресет,
+// после снятия/удаления — замороженная копия (preset_id null).
+export interface PresetFavoriteRow {
+  id: string;
+  preset_id: string | null;
+  frozen_title: string | null;
+  frozen_summary: string | null;
+  frozen_body: string | null;
+  frozen_settings: Record<string, unknown> | null;
+  frozen_at: string | null;
   created_at: string;
   updated_at: string;
 }
