@@ -21,6 +21,7 @@ from mimic42.integrations.activity_middleware import ActivityMiddleware
 from mimic42.integrations.agent_response_schema import AgentResponse
 from mimic42.integrations.token_usage_middleware import TokenUsageMiddleware
 from mimic42.integrations.tool_access_middleware import ToolAccessMiddleware
+from mimic42.integrations.tool_image_middleware import ToolImageMiddleware
 from mimic42.integrations.tracing import tracing_enabled
 
 logger = logging.getLogger("mimic42.tracing")
@@ -133,6 +134,8 @@ def build_langchain_agent(
                 recorder=TokenUsageRecorder(session_factory),
             )
         )
+    # Innermost: it rewrites the request the model receives, after the other layers.
+    middleware.append(ToolImageMiddleware())
 
     return LangChainGraphAgent(
         create_agent(
