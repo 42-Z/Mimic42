@@ -399,6 +399,21 @@ def _safe_failure(exc: Exception, message: str) -> dict[str, Any]:
     return failure
 
 
+NOT_A_PICTURE_TEXT = "Картинку показать нельзя: содержимое этого файла не видно. Не описывай его."
+
+
+def _picture_mime(data: bytes) -> str | None:
+    """MIME картинки по сигнатуре файла. Модель принимает только JPEG, PNG и WebP:
+    заявленный тип ссылки может быть устаревшим или подставленным по умолчанию."""
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
 def parse_media_id(media_id: str) -> tuple[str, int, int, bytes, int]:
     """Parse media ID in format type:id:access_hash:file_reference_hex:dc_id."""
     parts = media_id.split(":")
@@ -1486,12 +1501,25 @@ class TelegramToolbox:
                         "media_id": media_id,
                     }
                 )
-            items.append(
-                {
-                    "type": "image_url",
-                    "image_url": {"url": f"data:{mime_type};base64,{base64_str}"},
-                }
-            )
+            # Фото Telegram всегда JPEG, сигнатуру у них не проверяем.
+            picture_mime = "image/jpeg" if media_type == "photo" else _picture_mime(data)
+            if picture_mime is None:
+                items.append(
+                    {
+                        "type": "text",
+                        "text": NOT_A_PICTURE_TEXT,
+                        "success": False,
+                        "error": NOT_A_PICTURE_TEXT,
+                        "error_code": "UnsupportedImageFormatError",
+                    }
+                )
+            else:
+                items.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{picture_mime};base64,{base64_str}"},
+                    }
+                )
             return items
         except MediaUnavailableError as e:
             return [{"type": "text", "text": str(e), **_tool_failure(e)}]
@@ -1792,6 +1820,7 @@ class TelegramToolbox:
                     f"sticker:{doc.id}:{doc.access_hash}:{ref_hex}:{doc.dc_id}:"
                     f"{emoji}:{set_short_name}"
                 )
+                self._media_refs.remember(media_id, MediaRef(mime_type=doc.mime_type))
                 stickers.append(
                     {
                         "media_id": media_id,

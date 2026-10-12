@@ -127,6 +127,7 @@ class FakeTelethonClient(FakeTelegramClient):
             doc.access_hash = 444
             doc.file_reference = b"\x09"
             doc.dc_id = 1
+            doc.mime_type = "image/webp"
             sticker_attr = MagicMock(spec=types.DocumentAttributeSticker)
             sticker_attr.alt = "🔥"
             sticker_attr.stickerset = MagicMock(spec=types.InputStickerSetEmpty)
@@ -733,6 +734,86 @@ async def test_view_image_tool_keeps_archive_out_of_model_content() -> None:
         ]
     }
     assert "base64" not in str(message.artifact)
+
+
+class AnimatedStickerSetClient(FakeTelethonClient):
+    """Набор с анимированным стикером: Telegram отдаёт его как TGS."""
+
+    async def __call__(self, request: object) -> Any:
+        if not isinstance(request, functions.messages.GetStickerSetRequest):
+            return await super().__call__(request)
+        document = types.Document(
+            id=555,
+            access_hash=666,
+            file_reference=b"\x0a",
+            date=datetime.now(),
+            mime_type="application/x-tgsticker",
+            size=1,
+            dc_id=1,
+            attributes=[
+                types.DocumentAttributeSticker(alt="🔥", stickerset=types.InputStickerSetEmpty())
+            ],
+        )
+        result = MagicMock(spec=types.messages.StickerSet)
+        result.documents = [document]
+        return result
+
+    async def download_media(self, message: Any, file: Any = None, **kwargs: Any) -> Any:
+        return b"\x1f\x8b\x08\x00tgs" if file is bytes else "fake_path"
+
+
+@pytest.mark.asyncio
+async def test_view_image_archives_animated_set_sticker_under_its_telegram_mime() -> None:
+    from uuid import uuid4
+
+    uploader = FakeMediaUploader()
+    toolbox = TelegramToolbox(AnimatedStickerSetClient(), agent_id=uuid4(), media_uploader=uploader)
+    [sticker] = await toolbox.get_stickers_in_set("pepe")
+
+    result = await toolbox.view_image(sticker["media_id"])
+
+    assert [item["type"] for item in result] == ["media_ref", "text"]
+    assert result[0]["mime_type"] == "application/x-tgsticker"
+    assert uploader.uploads[0][2] == "application/x-tgsticker"
+    assert result[1]["success"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "content",
+    [
+        pytest.param(b"\x1f\x8b\x08\x00tgs", id="animated-tgs"),
+        pytest.param(b"\x1a\x45\xdf\xa3webm", id="video-webm"),
+        pytest.param(b"%PDF-1.7\n", id="pdf"),
+        pytest.param(b"GIF89a", id="gif"),
+    ],
+)
+async def test_view_image_never_sends_non_picture_bytes_to_model(
+    monkeypatch: pytest.MonkeyPatch, content: bytes
+) -> None:
+    client = FakeTelethonClient()
+    monkeypatch.setattr(client, "download_media", AsyncMock(return_value=content))
+
+    result = await TelegramToolbox(client).view_image("sticker:123:456:0102:2:🙂:pepe")
+
+    assert [item["type"] for item in result] == ["text"]
+    assert result[0]["success"] is False
+    assert result[0]["error_code"] == "UnsupportedImageFormatError"
+
+
+@pytest.mark.asyncio
+async def test_view_image_sends_static_sticker_to_model_as_webp(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = FakeTelethonClient()
+    monkeypatch.setattr(
+        client, "download_media", AsyncMock(return_value=b"RIFF\x24\x00\x00\x00WEBPVP8 ")
+    )
+
+    result = await TelegramToolbox(client).view_image("sticker:123:456:0102:2:🙂:pepe")
+
+    assert [item["type"] for item in result] == ["image_url"]
+    assert result[0]["image_url"]["url"].startswith("data:image/webp;base64,")
 
 
 class ExpiringMediaClient(FakeTelethonClient):
