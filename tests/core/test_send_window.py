@@ -347,3 +347,22 @@ async def test_closed_window_is_rechecked_sooner_than_an_open_one() -> None:
     window = await tracker.check("-100777")
     assert client.entity_calls == 1
     assert window.is_open(clock.now())
+
+
+async def test_peer_keys_are_normalized_across_spellings() -> None:
+    """Инструмент и ответ хода называют один чат по-разному — слот общий (issue #108)."""
+    clock = FakeClock()
+    client = FakeClient(entity=channel(slowmode_enabled=True), slowmode_seconds=30)
+    tracker = tracker_for(client, clock)
+    await tracker.check("-100777")
+    tracker.note_sent("  -100777 ")
+
+    window = await tracker.check("chat#-100777")
+    assert window.is_open(clock.now()) is False
+    assert window.retry_after(clock.now()) == 30
+
+
+def test_send_locks_are_shared_per_peer() -> None:
+    tracker = tracker_for(FakeClient(entity=channel()), FakeClock())
+    assert tracker.send_lock("-100777") is tracker.send_lock("  -100777 ")
+    assert tracker.send_lock("-100777") is not tracker.send_lock("-100778")

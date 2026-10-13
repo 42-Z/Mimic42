@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from io import BytesIO
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
@@ -3160,3 +3161,37 @@ async def test_tools_filtered_by_empty_allowlist() -> None:
     )
 
     assert tools == []
+
+
+@pytest.mark.asyncio
+async def test_parallel_sends_serialize_under_slowmode() -> None:
+    """Параллельные send_* одного хода: первый забирает слот, остальные — SendWindowClosed.
+
+    ToolNode выполняет вызовы инструментов конкурентно: без замка на время
+    проверка → отправка → учёт все видят открытое окно, а Telegram отвечает
+    SlowModeWaitError всем, кроме первого (issue #108).
+    """
+    from mimic42.core.send_window import SendWindow, SendWindowTracker
+
+    class SlowClient(FakeTelethonClient):
+        async def send_message(self, entity: Any, message: str, **kwargs: Any) -> Any:
+            await asyncio.sleep(0.02)
+            return await super().send_message(entity, message, **kwargs)
+
+    client = SlowClient()
+    tracker = SendWindowTracker(cast(Any, object()))
+    tracker._base["-100777"] = (
+        SendWindow(slowmode_seconds=30),
+        datetime.now(UTC) + timedelta(seconds=300),
+    )
+    toolbox = TelegramToolbox(cast(Any, client), send_window=cast(Any, tracker))
+
+    results = await asyncio.gather(
+        *(toolbox.send_text_message("-100777", f"сообщение {i}") for i in range(5))
+    )
+
+    succeeded = [result for result in results if result.get("success") is True]
+    closed = [result for result in results if result.get("error_code") == "SendWindowClosed"]
+    assert len(succeeded) == 1
+    assert len(closed) == 4
+    assert [name for name, _ in client.calls if name == "send_message"] == ["send_message"]

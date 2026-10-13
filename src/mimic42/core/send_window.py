@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -173,6 +174,20 @@ def _peer_argument(peer: str) -> str | int:
     return stripped
 
 
+def _normalize_key(peer: str) -> str:
+    """Каноничный ключ пира для всех хранилищ трекера.
+
+    Рантайм зовёт окно по ID из события («-100777»), а модель в инструментах —
+    как ей вздумается (« -100777 », «id#после #», юзернейм). Без нормализации
+    это разные записи: слот, потраченный инструментом, не виден ответу хода —
+    и обе отправки проходят проверку, а Telegram отвечает SlowModeWaitError.
+    """
+    key = peer.split("#", 1)[-1].strip()
+    if key.lstrip("-").isdigit():
+        return str(int(key))
+    return key
+
+
 class SendWindowTracker:
     """Состояние окна отправки по чатам одного агента.
 
@@ -200,56 +215,75 @@ class SendWindowTracker:
         self._blocked_until: dict[str, datetime] = {}
         self._forced_closed_until: dict[str, datetime] = {}
         self._announced: dict[str, str] = {}
+        # Параллельные вызовы инструментов одного хода (ToolNode выполняет их
+        # конкурентно) обязаны проходить проверку и учёт слота как одна
+        # операция: иначе все видят открытое окно, а Telegram отвечает
+        # SlowModeWaitError всем, кроме первого (issue #108).
+        self._send_locks: dict[str, asyncio.Lock] = {}
+
+    def send_lock(self, peer: str) -> asyncio.Lock:
+        """Замок отправок в один чат: держать на время проверка → отправка → учёт."""
+        key = _normalize_key(peer)
+        lock = self._send_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._send_locks[key] = lock
+        return lock
 
     async def check(self, peer: str, chat: Any = None) -> SendWindow:
+        key = _normalize_key(peer)
         now = self._now()
 
-        forced = self._forced_closed_until.get(peer)
+        forced = self._forced_closed_until.get(key)
         if forced is not None:
             if forced > now:
                 return _FOREVER_CLOSED
-            self._forced_closed_until.pop(peer, None)
+            self._forced_closed_until.pop(key, None)
 
-        base = await self._base_window(peer, chat, now)
+        base = await self._base_window(key, chat, now)
         if base.reason == "restricted":
             return base
 
-        blocked = self._blocked_until.get(peer)
+        blocked = self._blocked_until.get(key)
         if blocked is not None:
             if blocked > now:
                 return SendWindow(
                     reason="slowmode", open_at=blocked, slowmode_seconds=base.slowmode_seconds
                 )
-            self._blocked_until.pop(peer, None)
+            self._blocked_until.pop(key, None)
         # Окно открыто, но длину слота агенту знать полезно: он платит ею за ответ.
         return SendWindow(slowmode_seconds=base.slowmode_seconds)
 
     def note_sent(self, peer: str) -> None:
-        cached = self._base.get(peer)
+        key = _normalize_key(peer)
+        cached = self._base.get(key)
         seconds = cached[0].slowmode_seconds if cached is not None else None
         if seconds:
-            self._blocked_until[peer] = self._now() + timedelta(seconds=seconds)
+            self._blocked_until[key] = self._now() + timedelta(seconds=seconds)
 
     def note_error(self, peer: str, exc: BaseException) -> None:
+        key = _normalize_key(peer)
         name = type(exc).__name__
         if name in _FLOOD_ERRORS:
             seconds = getattr(exc, "seconds", None)
             if isinstance(seconds, int):
-                self._blocked_until[peer] = self._now() + timedelta(seconds=seconds)
+                self._blocked_until[key] = self._now() + timedelta(seconds=seconds)
         elif name in _FORBIDDEN_ERRORS:
-            self._forced_closed_until[peer] = self._now() + self._ttl
-            self._blocked_until.pop(peer, None)
+            self._forced_closed_until[key] = self._now() + self._ttl
+            self._blocked_until.pop(key, None)
 
     def announce(self, peer: str, reason: str) -> bool:
         """True, если про это состояние чата ещё не сообщали агенту."""
-        if self._announced.get(peer) == reason:
+        key = _normalize_key(peer)
+        if self._announced.get(key) == reason:
             return False
-        self._announced[peer] = reason
+        self._announced[key] = reason
         return True
 
     def forget(self, peer: str) -> None:
+        key = _normalize_key(peer)
         for store in (self._base, self._blocked_until, self._forced_closed_until, self._announced):
-            store.pop(peer, None)
+            store.pop(key, None)
 
     async def _base_window(self, peer: str, chat: Any, now: datetime) -> SendWindow:
         cached = self._base.get(peer)
