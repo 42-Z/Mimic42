@@ -1739,11 +1739,28 @@ class MimicAgentRuntime:
                     self._chat_mute_cache[peer] = (is_muted, now_ts + 60.0)
 
                     if is_muted:
-                        logger.info("Chat %s is muted, skipping", peer)
+                        logger.info("Chat %s is muted", peer)
                         return True
         except Exception:
             logger.exception("Failed to check mute status for peer %s", peer)
 
+        return False
+
+    async def _is_addressed_to_agent(self, events: list[TelegramEventLike]) -> bool:
+        """Упомянули агента или ответили ему в одном из входящих: идёт и из приглушённого чата."""
+        for event in events:
+            message = getattr(event, "message", None)
+            if getattr(message, "mentioned", False) is True:
+                return True
+            if getattr(message, "reply_to", None) is None:
+                continue
+            try:
+                reply = await event.get_reply_message()
+            except Exception:
+                logger.warning("Failed to load replied message for addressing check", exc_info=True)
+                continue
+            if getattr(reply, "out", False):
+                return True
         return False
 
     async def _format_incoming(self, events: list[TelegramEventLike]) -> IncomingBlock | None:
@@ -2039,7 +2056,7 @@ class MimicAgentRuntime:
         except Exception as e:
             await self._record_incoming_failure(str(getattr(event, "chat_id", "") or ""), e)
             return
-        if await self._is_chat_muted(event, peer):
+        if await self._is_chat_muted(event, peer) and not await self._is_addressed_to_agent(events):
             return
         if (
             self._spambot_user_id is not None

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
+from types import SimpleNamespace
 from typing import Any, cast
 from uuid import UUID, uuid4
 
@@ -936,6 +937,92 @@ async def test_runtime_triggers_unmuted_chats(monkeypatch: pytest.MonkeyPatch) -
 
     assert len(runtime._langchain_agent.inputs) == 1  # type: ignore
     assert telegram.sent_messages == [("12345", "should reply")]
+
+
+class GroupMessageEvent(FakeIncomingEvent):
+    """Групповое сообщение: упоминание агента и автор сообщения, на которое ответили."""
+
+    def __init__(
+        self, telegram: FakeTelegramClient, *, mentioned: bool, reply_target: str | None
+    ) -> None:
+        super().__init__(
+            IncomingMessage(
+                chat_id=12345,
+                message_id=777,
+                text="привет",
+                sender_id=999,
+                order=1,
+                reply_to_msg_id=None if reply_target is None else 5,
+            ),
+            client=telegram,
+        )
+        self._reply_out = reply_target == "agent"
+        self.message.mentioned = mentioned  # type: ignore
+
+    async def get_reply_message(self) -> object | None:
+        if self.message.reply_to is None:
+            return None
+        return SimpleNamespace(out=self._reply_out, raw_text="original", text="original")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mentioned", "reply_target", "answered"),
+    [
+        pytest.param(False, None, False, id="plain-message"),
+        pytest.param(False, "other", False, id="reply-to-other-user"),
+        pytest.param(True, None, True, id="mention"),
+        pytest.param(False, "agent", True, id="reply-to-agent"),
+    ],
+)
+async def test_muted_chat_answers_only_messages_addressed_to_agent(
+    monkeypatch: pytest.MonkeyPatch,
+    mentioned: bool,
+    reply_target: str | None,
+    answered: bool,
+) -> None:
+    from unittest.mock import MagicMock
+
+    from telethon.tl import functions
+
+    telegram = FakeTelegramClient()
+
+    async def mock_get_input_entity(peer: Any) -> Any:
+        return MagicMock()
+
+    async def mock_call(self: Any, request: Any) -> Any:
+        if isinstance(request, functions.account.GetNotifySettingsRequest):
+            res = MagicMock()
+            res.silent = True
+            res.mute_until = None
+            return res
+        return True
+
+    telegram.get_input_entity = mock_get_input_entity  # type: ignore
+    monkeypatch.setattr(FakeTelegramClient, "__call__", mock_call, raising=False)
+
+    runtime = MimicAgentRuntime(
+        config=make_config(),
+        telegram_client=telegram,
+        langchain_agent=FakeLangChainAgent(response="agent answer"),
+    )
+
+    await runtime.start()
+
+    async def mock_peer(ev: Any) -> str:
+        return "12345"
+
+    monkeypatch.setattr("mimic42.core.agent_runtime._extract_incoming_peer", mock_peer)
+    monkeypatch.setattr("mimic42.core.agent_runtime._extract_incoming_message_id", lambda ev: 777)
+
+    await telegram.emit_message(
+        GroupMessageEvent(telegram, mentioned=mentioned, reply_target=reply_target)
+    )
+
+    await runtime.stop()
+
+    assert len(runtime._langchain_agent.inputs) == (1 if answered else 0)  # type: ignore
+    assert telegram.sent_messages == ([("12345", "agent answer")] if answered else [])
 
 
 @pytest.mark.asyncio

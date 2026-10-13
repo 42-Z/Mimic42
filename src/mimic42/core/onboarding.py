@@ -20,6 +20,13 @@ from mimic42.core.telegram_attrs import read_attr, read_optional_attr
 logger = logging.getLogger("mimic42.onboarding")
 
 
+def mask_phone_number(phone: str) -> str:
+    """Номер без середины: логи не должны содержать личные данные целиком."""
+    if len(phone) <= 6:
+        return "*" * len(phone)
+    return f"{phone[:4]}{'*' * (len(phone) - 6)}{phone[-2:]}"
+
+
 def load_default_system_prompt() -> str:
     # Файл лежит в пакете (src/mimic42), поэтому одинаково резолвится из
     # editable-инсталла в dev и из wheel в образе (site-packages).
@@ -237,12 +244,31 @@ class AgentOnboardingService:
             api_id=credentials.api_id,
             api_hash=credentials.api_hash,
         )
-        await client.connect()
         try:
-            sent_code = await client.send_code_request(phone_number)
-            session_string = client.save_session()
+            try:
+                await client.connect()
+                sent_code = await client.send_code_request(phone_number)
+                session_string = client.save_session()
+            except Exception:
+                # Полный traceback с типом ошибки: у FloodWaitError в нём видны
+                # секунды ожидания, у остальных — причина отказа Telegram.
+                logger.warning(
+                    "Запрос кода Telegram не удался: onboarding=%s phone=%s api_id=%s",
+                    onboarding_id,
+                    mask_phone_number(phone_number),
+                    credentials.api_id,
+                    exc_info=True,
+                )
+                raise
         finally:
             await client.disconnect()
+
+        logger.info(
+            "Код Telegram отправлен: onboarding=%s phone=%s api_id=%s",
+            onboarding_id,
+            mask_phone_number(phone_number),
+            credentials.api_id,
+        )
 
         phone_code_hash = read_attr(sent_code, "phone_code_hash")
         session = OnboardingSession(
@@ -342,9 +368,9 @@ class AgentOnboardingService:
             api_hash=self._cipher.decrypt(session.api_hash_secret),
             session_string=_decrypt_optional(self._cipher, session.session_secret),
         )
-        await client.connect()
         try:
             try:
+                await client.connect()
                 if verification.password:
                     await client.sign_in(
                         password=verification.password,
@@ -358,11 +384,29 @@ class AgentOnboardingService:
                         ),
                     )
             except TelegramPasswordRequiredError:
+                logger.info(
+                    "Требуется пароль 2FA: onboarding=%s phone=%s",
+                    onboarding_id,
+                    mask_phone_number(session.phone_number),
+                )
                 session.authorization_status = TelegramLoginStatus.PASSWORD_REQUIRED
                 session.session_secret = self._cipher.encrypt(client.save_session())
                 await self._repository.save(session)
                 return _public_status(session)
+            except Exception:
+                logger.warning(
+                    "Подтверждение кода Telegram не удалось: onboarding=%s phone=%s",
+                    onboarding_id,
+                    mask_phone_number(session.phone_number),
+                    exc_info=True,
+                )
+                raise
 
+            logger.info(
+                "Вход по коду Telegram выполнен: onboarding=%s phone=%s",
+                onboarding_id,
+                mask_phone_number(session.phone_number),
+            )
             session.authorization_status = TelegramLoginStatus.AUTHORIZED
             session.session_secret = self._cipher.encrypt(client.save_session())
             # @username аккаунта ради дэшборда: фиксируется сразу после входа,

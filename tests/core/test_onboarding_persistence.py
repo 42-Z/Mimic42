@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import logging
 from uuid import UUID, uuid4
 
 import pytest
+from telethon.errors import FloodWaitError
 
 from mimic42.core.agent_runtime import AgentRuntimeState
 from mimic42.core.agent_store import InMemoryAgentStore
@@ -290,3 +292,125 @@ async def test_request_code_for_foreign_onboarding_is_rejected() -> None:
 
     with pytest.raises(OnboardingOwnershipError):
         await service.request_telegram_code(credentials, onboarding_id=onboarding_id)
+
+
+class FloodedAuthClient(FakeTelegramAuthClient):
+    """Подделка, у которой запрос кода упирается во флуд-лимит Telegram."""
+
+    def __init__(self, account: FakeTelegramAccount, seconds: int) -> None:
+        super().__init__(account)
+        self._seconds = seconds
+
+    async def send_code_request(self, phone: str) -> object:
+        raise FloodWaitError(request=None, capture=self._seconds)
+
+
+class FloodedAuthFactory:
+    def __init__(self, seconds: int) -> None:
+        self._seconds = seconds
+
+    def build(
+        self,
+        *,
+        api_id: int,
+        api_hash: str,
+        session_string: str | None = None,
+    ) -> TelegramAuthClient:
+        return FloodedAuthClient(FakeTelegramAccount(), self._seconds)
+
+
+async def _logged(
+    caplog: pytest.LogCaptureFixture,
+    level: int,
+    service: AgentOnboardingService,
+    owner_id: UUID,
+    phone_number: str,
+) -> str:
+    """Запрашивает код под caplog и возвращает весь собранный лог-текст."""
+    with caplog.at_level(level, logger="mimic42.onboarding"):
+        await service.request_telegram_code(
+            TelegramCredentials(
+                owner_id=owner_id,
+                api_id=12345,
+                api_hash="hash",
+                phone_number=phone_number,
+            )
+        )
+    return caplog.text
+
+
+@pytest.mark.asyncio
+async def test_failed_code_request_is_logged_with_flood_details(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Флуд-отказ должен попадать в лог с секундами, но без сырого номера."""
+    service = AgentOnboardingService(telegram_factory=FloodedAuthFactory(37))
+
+    with caplog.at_level(logging.WARNING, logger="mimic42.onboarding"):
+        with pytest.raises(FloodWaitError):
+            await service.request_telegram_code(
+                TelegramCredentials(
+                    owner_id=uuid4(),
+                    api_id=12345,
+                    api_hash="hash",
+                    phone_number="+79991234567",
+                )
+            )
+
+    text = caplog.text
+    assert "Запрос кода Telegram не удался" in text
+    assert "FloodWaitError" in text
+    assert "37 seconds" in text
+    assert "api_id=12345" in text
+    assert "+79991234567" not in text
+    assert "+799******67" in text
+
+
+@pytest.mark.asyncio
+async def test_successful_code_request_is_logged(caplog: pytest.LogCaptureFixture) -> None:
+    service = AgentOnboardingService(
+        repository=InMemoryOnboardingRepository(),
+        telegram_factory=_fake_telegram_factory(),
+    )
+    owner_id = uuid4()
+
+    text = await _logged(caplog, logging.INFO, service, owner_id, "+79991234567")
+
+    assert "Код Telegram отправлен" in text
+    assert "api_id=12345" in text
+    assert "+79991234567" not in text
+    assert "+799******67" in text
+
+
+@pytest.mark.asyncio
+async def test_failed_sign_in_is_logged_with_masked_phone(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    account = FakeTelegramAccount()
+    account.script_code("11111")
+    repository = InMemoryOnboardingRepository()
+    service = AgentOnboardingService(
+        repository=repository,
+        telegram_factory=FakeTelegramAuthClientFactory(account),
+    )
+    owner_id = uuid4()
+    started = await service.request_telegram_code(
+        TelegramCredentials(
+            owner_id=owner_id,
+            api_id=12345,
+            api_hash="hash",
+            phone_number="+79991234567",
+        )
+    )
+
+    with caplog.at_level(logging.WARNING, logger="mimic42.onboarding"):
+        with pytest.raises(ValueError):
+            await service.verify_telegram_code(
+                started.onboarding_id,
+                TelegramCodeVerification(code="22222"),
+            )
+
+    text = caplog.text
+    assert "Подтверждение кода Telegram не удалось" in text
+    assert "+79991234567" not in text
+    assert "+799******67" in text

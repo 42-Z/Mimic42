@@ -399,6 +399,28 @@ def _safe_failure(exc: Exception, message: str) -> dict[str, Any]:
     return failure
 
 
+NOT_A_PICTURE_TEXT = "Картинку показать нельзя: содержимое этого файла не видно. Не описывай его."
+
+
+PICTURE_MIME_TYPES = frozenset({"image/jpeg", "image/png", "image/webp"})
+
+
+def _mime_by_signature(data: bytes) -> str | None:
+    """MIME по сигнатуре файла: картинки, анимированный стикер (TGS — gzip) и WebM.
+    Заявленный тип ссылки может быть устаревшим или подставленным по умолчанию."""
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    if data.startswith(b"\x1f\x8b"):
+        return "application/x-tgsticker"
+    if data.startswith(b"\x1a\x45\xdf\xa3"):
+        return "video/webm"
+    return None
+
+
 def parse_media_id(media_id: str) -> tuple[str, int, int, bytes, int]:
     """Parse media ID in format type:id:access_hash:file_reference_hex:dc_id."""
     parts = media_id.split(":")
@@ -668,6 +690,8 @@ class TelegramToolbox:
                 upload_options = options.copy()
                 if ref and ref.mime_type:
                     upload_options["mime_type"] = ref.mime_type
+                if media_type == "sticker" and (archived_mime := _mime_by_signature(archived)):
+                    upload_options["mime_type"] = archived_mime
                 if ref and ref.attributes:
                     upload_options["attributes"] = list(ref.attributes)
                 if media_type == "doc":
@@ -1446,6 +1470,9 @@ class TelegramToolbox:
                     }
                 ]
 
+            if media_type == "sticker":
+                # Ссылка может помнить старую догадку image/webp: для стикера важнее сам файл.
+                mime_type = _mime_by_signature(data) or mime_type
             base64_str = base64.b64encode(data).decode("utf-8")
 
             if (
@@ -1486,12 +1513,25 @@ class TelegramToolbox:
                         "media_id": media_id,
                     }
                 )
-            items.append(
-                {
-                    "type": "image_url",
-                    "image_url": {"url": f"data:{mime_type};base64,{base64_str}"},
-                }
-            )
+            # Фото Telegram всегда JPEG, сигнатуру у них не проверяем.
+            picture_mime = "image/jpeg" if media_type == "photo" else _mime_by_signature(data)
+            if picture_mime not in PICTURE_MIME_TYPES:
+                items.append(
+                    {
+                        "type": "text",
+                        "text": NOT_A_PICTURE_TEXT,
+                        "success": False,
+                        "error": NOT_A_PICTURE_TEXT,
+                        "error_code": "UnsupportedImageFormatError",
+                    }
+                )
+            else:
+                items.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{picture_mime};base64,{base64_str}"},
+                    }
+                )
             return items
         except MediaUnavailableError as e:
             return [{"type": "text", "text": str(e), **_tool_failure(e)}]

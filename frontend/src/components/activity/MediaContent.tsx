@@ -3,10 +3,39 @@
 import { useCallback, useEffect, useState } from 'react';
 import { File, ImageOff, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useMediaUrl } from '@/hooks/useMediaUrl';
+import { Badge } from '@/components/ui/badge';
 import { Modal } from '@/components/ui/modal';
+import { cn } from '@/lib/utils';
 import type { MediaItem } from '@/types';
 
-const IMAGE_KINDS = new Set(['photo', 'sticker']);
+function mediaMime(item: MediaItem): string {
+  return item.mime_type.split(';')[0]?.trim().toLowerCase() ?? '';
+}
+
+function isImageMedia(item: MediaItem): boolean {
+  return item.kind === 'photo' || (item.kind === 'sticker' && mediaMime(item) === 'image/webp');
+}
+
+function isVideoSticker(item: MediaItem): boolean {
+  return item.kind === 'sticker' && mediaMime(item) === 'video/webm';
+}
+
+function MediaFallback({
+  item,
+  reason,
+  error = false,
+}: {
+  item: MediaItem;
+  reason: string;
+  error?: boolean;
+}) {
+  return (
+    <Badge variant={error ? 'destructive' : 'outline'}>
+      <ImageOff aria-hidden="true" />
+      <span className="min-w-0 break-all">{item.name} ({reason})</span>
+    </Badge>
+  );
+}
 
 function MediaView({
   agentId,
@@ -17,29 +46,34 @@ function MediaView({
   item: MediaItem;
   compact?: boolean;
 }) {
-  const { url, status } = useMediaUrl(agentId, item.storage_path);
+  // TGS и испорченные записи браузер не покажет: вместо бессмысленной загрузки
+  // ради битой иконки — чип с именем. Хук всё равно вызывается безусловно,
+  // поэтому путь для них глушится через null.
+  const unsupportedSticker = item.kind === 'sticker' && !isImageMedia(item) && !isVideoSticker(item);
+  const { url, status } = useMediaUrl(agentId, unsupportedSticker ? null : item.storage_path);
+  const [failedUrl, setFailedUrl] = useState<string | null>(null);
 
   if (!item.storage_path) {
+    return <MediaFallback item={item} reason="файл не сохранён" />;
+  }
+  if (unsupportedSticker) {
     return (
-      <span className="inline-flex items-center gap-1.5 font-mono text-[10px] text-muted-foreground border border-border rounded-sm px-2 py-1">
-        <ImageOff className="h-3 w-3" />
-        {item.name} (файл не сохранён)
-      </span>
+      <MediaFallback
+        item={item}
+        reason={
+          mediaMime(item) === 'application/x-tgsticker' ? 'анимированный стикер' : 'предпросмотр недоступен'
+        }
+      />
     );
   }
-  if (status === 'error') {
-    return (
-      <span className="inline-flex items-center gap-1.5 font-mono text-[10px] text-crimson-400 border border-crimson-900 rounded-sm px-2 py-1">
-        <ImageOff className="h-3 w-3" />
-        {item.name} (недоступно)
-      </span>
-    );
+  if (status === 'error' || (url !== null && failedUrl === url)) {
+    return <MediaFallback item={item} reason="недоступно" error />;
   }
   if (!url) {
     return <span className="font-mono text-[10px] text-muted-foreground">Загрузка медиа…</span>;
   }
 
-  if (IMAGE_KINDS.has(item.kind)) {
+  if (isImageMedia(item)) {
     return (
       // eslint-disable-next-line @next/next/no-img-element
       <img
@@ -47,11 +81,26 @@ function MediaView({
         alt={item.name}
         loading="lazy"
         decoding="async"
-        className={
-          compact
-            ? 'h-16 w-16 flex-none rounded-sm border border-border object-cover'
-            : 'max-h-40 max-w-56 rounded-sm border border-border object-cover'
-        }
+        onError={() => setFailedUrl(url)}
+        className={cn(
+          'rounded-sm border border-border',
+          compact ? 'size-16 flex-none' : 'max-h-40 max-w-56',
+          item.kind === 'sticker' ? 'object-contain' : 'object-cover',
+        )}
+      />
+    );
+  }
+  if (isVideoSticker(item)) {
+    return (
+      <video
+        src={url}
+        aria-label={`Стикер ${item.name}`}
+        controls
+        loop
+        muted
+        playsInline
+        onError={() => setFailedUrl(url)}
+        className="max-h-40 max-w-56 rounded-sm border border-border object-contain"
       />
     );
   }
@@ -74,11 +123,23 @@ function MediaView({
 }
 
 function LightboxImage({ agentId, item }: { agentId: string; item: MediaItem }) {
-  const { url } = useMediaUrl(agentId, item.storage_path);
+  const { url, status } = useMediaUrl(agentId, item.storage_path);
+  const [failedUrl, setFailedUrl] = useState<string | null>(null);
+  if (!item.storage_path) {
+    return <MediaFallback item={item} reason="файл не сохранён" />;
+  }
+  if (status === 'error' || (url !== null && failedUrl === url)) {
+    return <MediaFallback item={item} reason="недоступно" error />;
+  }
   if (!url) return null;
   return (
     // eslint-disable-next-line @next/next/no-img-element
-    <img src={url} alt={item.name} className="max-h-[70vh] w-auto mx-auto" />
+    <img
+      src={url}
+      alt={item.name}
+      onError={() => setFailedUrl(url)}
+      className="max-h-[70vh] w-auto mx-auto"
+    />
   );
 }
 
@@ -87,7 +148,7 @@ export function MediaContent({ agentId, items }: { agentId: string; items: Media
   // меняются, и поиск по идентичности ломает навигацию лайтбокса.
   const [previewIndex, setPreviewIndex] = useState<number | null>(null);
 
-  const images = items?.filter((item) => IMAGE_KINDS.has(item.kind)) ?? [];
+  const images = items?.filter(isImageMedia) ?? [];
   const preview = previewIndex !== null ? (images[previewIndex] ?? null) : null;
 
   // Стрелки листают галерею; порядок — как в ряду превью.
@@ -113,7 +174,7 @@ export function MediaContent({ agentId, items }: { agentId: string; items: Media
 
   if (!items?.length) return null;
 
-  const others = items.filter((item) => !IMAGE_KINDS.has(item.kind));
+  const others = items.filter((item) => !isImageMedia(item));
   const gallery = images.length > 1;
 
   return (

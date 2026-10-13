@@ -26,7 +26,9 @@ MODEL_CATALOG: dict[str, ModelSpec] = {
             # Morph returns no reasoning although it is mandatory for GLM 5.3,
             # and its answers ignore the conversation: 4 wrong out of 9 against
             # 0 out of 38 on the providers that do reason (2026-09-21).
-            ignored_providers=("morph",),
+            # Inceptron takes no images at all (2026-10-12). DeepInfra was rate-limited
+            # at every check, so it stays out until it takes an image in a user message.
+            ignored_providers=("morph", "deepinfra", "inceptron"),
         ),
         ModelSpec(slug="deepseek/deepseek-v4-flash-0731", name="DeepSeek V4 Flash 0731"),
         ModelSpec(

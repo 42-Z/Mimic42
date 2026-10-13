@@ -768,6 +768,8 @@ def create_app(
             "png": "image/png",
             "webp": "image/webp",
             "gif": "image/gif",
+            "webm": "video/webm",
+            "tgs": "application/x-tgsticker",
             "ogg": "audio/ogg",
             "mp4": "video/mp4",
             "pdf": "application/pdf",

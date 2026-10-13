@@ -14,6 +14,7 @@ from pydantic import SecretStr
 
 import mimic42.integrations.langchain_agent as langchain_agent_module
 from mimic42.core.agent_runtime import AgentRuntimeConfig
+from mimic42.core.model_catalog import ignored_providers
 from mimic42.integrations import tracing
 from mimic42.integrations.activity_middleware import ActivityMiddleware
 from mimic42.integrations.langchain_agent import (
@@ -25,6 +26,7 @@ from mimic42.integrations.langchain_agent import (
 )
 from mimic42.integrations.token_usage_middleware import TokenUsageMiddleware
 from mimic42.integrations.tool_access_middleware import ToolAccessMiddleware
+from mimic42.integrations.tool_image_middleware import ToolImageMiddleware
 
 
 def _config(llm_model: str, reasoning_effort: str = "high") -> AgentRuntimeConfig:
@@ -97,7 +99,7 @@ def test_ignored_providers_are_excluded_from_routing(recorded: list[dict[str, An
             "timeout": REQUEST_TIMEOUT_MS,
             "reasoning": {"effort": "high"},
             "model_kwargs": {},
-            "openrouter_provider": {"ignore": ["morph"]},
+            "openrouter_provider": {"ignore": ignored_providers("z-ai/glm-5.3-flash")},
         }
     ]
 
@@ -111,7 +113,7 @@ def test_ignored_providers_apply_without_reasoning(recorded: list[dict[str, Any]
             "api_key": None,
             "timeout": REQUEST_TIMEOUT_MS,
             "model_kwargs": {},
-            "openrouter_provider": {"ignore": ["morph"]},
+            "openrouter_provider": {"ignore": ignored_providers("z-ai/glm-5.3-flash")},
         }
     ]
 
@@ -167,6 +169,22 @@ def test_build_langchain_agent_registers_token_usage_middleware(
     assert any(isinstance(m, TokenUsageMiddleware) for m in middleware)
 
 
+def test_build_langchain_agent_moves_tool_pictures_into_user_messages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_create_agent(**kwargs: Any) -> str:
+        captured.update(kwargs)
+        return "graph"
+
+    monkeypatch.setattr(langchain_agent_module, "create_agent", fake_create_agent)
+
+    build_langchain_agent(_config("mistral-small"))
+
+    assert isinstance(captured["middleware"][-1], ToolImageMiddleware)
+
+
 def test_build_langchain_agent_limits_model_calls_without_session_factory(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -180,8 +198,7 @@ def test_build_langchain_agent_limits_model_calls_without_session_factory(
 
     build_langchain_agent(_config("mistral-small"))
 
-    [limit] = captured["middleware"]
-    assert isinstance(limit, ModelCallLimitMiddleware)
+    [limit] = [m for m in captured["middleware"] if isinstance(m, ModelCallLimitMiddleware)]
     assert limit.run_limit == MODEL_CALLS_PER_TURN
     # "end" would let the runtime send LangChain's limit notice to the chat.
     assert limit.exit_behavior == "error"

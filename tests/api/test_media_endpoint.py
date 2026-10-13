@@ -114,6 +114,51 @@ async def test_media_serves_partial_content_for_range() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("extension", "mime_type"),
+    [
+        ("webp", "image/webp"),
+        ("webm", "video/webm"),
+        ("WEBM", "video/webm"),
+        ("tgs", "application/x-tgsticker"),
+        ("bin", "application/octet-stream"),
+    ],
+)
+@pytest.mark.parametrize("range_header", [None, "bytes=1-3"])
+async def test_media_content_type_for_full_and_partial_response(
+    extension: str,
+    mime_type: str,
+    range_header: str | None,
+) -> None:
+    """Стикеры приходят с реальным mime: webm/tgs не должны отдаваться как octet-stream."""
+    owner_id = uuid4()
+    agent_id = uuid4()
+    path = f"{agent_id}/{uuid4()}/sticker.{extension}"
+    data = b"0123456789"
+    app = create_app(
+        agent_store=_store_with_agent(owner_id, agent_id),
+        auth_verifier=FakeAuthVerifier(owner_id),
+        media_uploader=FakeMediaStorage({path: data}),
+    )
+    headers = dict(AUTH_HEADERS)
+    if range_header is not None:
+        headers["Range"] = range_header
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        response = await client.get(f"/api/v1/agents/{agent_id}/media/{path}", headers=headers)
+
+    assert response.status_code == (206 if range_header is not None else 200)
+    assert response.headers["content-type"] == mime_type
+    assert response.headers["accept-ranges"] == "bytes"
+    assert response.headers["cache-control"] == "private, max-age=300"
+    assert response.content == (b"123" if range_header is not None else data)
+    if range_header is not None:
+        assert response.headers["content-range"] == "bytes 1-3/10"
+
+
+@pytest.mark.asyncio
 async def test_media_rejects_path_of_other_agent() -> None:
     owner_id = uuid4()
     agent_id = uuid4()
