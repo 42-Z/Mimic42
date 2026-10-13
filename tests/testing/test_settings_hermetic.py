@@ -48,6 +48,29 @@ def test_test_contour_settings_carry_no_external_service_keys(
     assert settings.braintrust_api_key is None, f"{label}: Braintrust подхватил боевой ключ"
 
 
+def test_test_settings_do_not_restore_foreign_running_agents(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Дефолт тестового контура: чужих RUNNING-агентов тесты не поднимают.
+
+    Restore в app.py перечитывает всех RUNNING из общей Dev-базы, а подмена
+    клиента отдаёт get_me без @username: без запрета тесты перезаписывали бы
+    username и статус чужого агента при каждом старте приложения."""
+    captured: list[Settings | None] = []
+    monkeypatch.setattr("mimic42.testing.server.assert_test_project", lambda *args: None)
+
+    def spy_create_app(*, settings: Settings | None = None, **_: Any) -> FastAPI:
+        captured.append(settings)
+        return FastAPI()
+
+    monkeypatch.setattr("mimic42.testing.server.create_app", spy_create_app)
+
+    build_test_app()
+
+    assert captured[0] is not None
+    assert captured[0].restore_running_agents is False
+
+
 def test_build_test_app_strips_external_keys_from_any_settings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

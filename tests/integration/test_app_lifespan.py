@@ -52,7 +52,8 @@ async def test_running_agent_is_restored_after_restart(
     )
     await store.update_status(agent_id, AgentRuntimeState.RUNNING)
 
-    app = build_test_app()
+    settings = Settings(restore_running_agents=True)
+    app = build_test_app(settings=settings)
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://testserver"
     ) as client:
