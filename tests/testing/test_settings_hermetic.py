@@ -56,19 +56,9 @@ def test_test_settings_do_not_restore_foreign_running_agents(
     Restore в app.py перечитывает всех RUNNING из общей Dev-базы, а подмена
     клиента отдаёт get_me без @username: без запрета тесты перезаписывали бы
     username и статус чужого агента при каждом старте приложения."""
-    captured: list[Settings | None] = []
-    monkeypatch.setattr("mimic42.testing.server.assert_test_project", lambda *args: None)
+    _leaky_env(monkeypatch)
 
-    def spy_create_app(*, settings: Settings | None = None, **_: Any) -> FastAPI:
-        captured.append(settings)
-        return FastAPI()
-
-    monkeypatch.setattr("mimic42.testing.server.create_app", spy_create_app)
-
-    build_test_app()
-
-    assert captured[0] is not None
-    assert captured[0].restore_running_agents is False
+    assert _test_settings().restore_running_agents is False
 
 
 def test_build_test_app_strips_external_keys_from_any_settings(
