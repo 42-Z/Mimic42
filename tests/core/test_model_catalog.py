@@ -22,10 +22,15 @@ def test_default_model_is_in_catalog() -> None:
 
 
 def test_free_chain_is_free_then_paid() -> None:
-    assert resolve_model_chain("inclusionai/ling-3.0-flash-vl") == [
-        "inclusionai/ling-3.0-flash-vl:free",
-        "inclusionai/ling-3.0-flash-vl",
+    assert resolve_model_chain("nvidia/nemotron-3.5-lightning") == [
+        "nvidia/nemotron-3.5-lightning:free",
+        "nvidia/nemotron-3.5-lightning",
     ]
+
+
+def test_retired_free_variant_resolves_to_a_single_slug() -> None:
+    """Ling без бесплатного варианта: мёртвое звено за собой не тащит."""
+    assert resolve_model_chain("inclusionai/ling-3.0-flash-vl") == ["inclusionai/ling-3.0-flash-vl"]
 
 
 def test_models_without_free_variant_resolve_to_single_slug() -> None:
@@ -33,7 +38,6 @@ def test_models_without_free_variant_resolve_to_single_slug() -> None:
     assert resolve_model_chain("deepseek/deepseek-v4-flash-0731") == [
         "deepseek/deepseek-v4-flash-0731"
     ]
-    assert resolve_model_chain("nvidia/nemotron-3.5-lightning") == ["nvidia/nemotron-3.5-lightning"]
 
 
 def test_unknown_slug_passes_through() -> None:

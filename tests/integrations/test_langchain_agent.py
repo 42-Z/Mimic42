@@ -24,6 +24,7 @@ from mimic42.integrations.langchain_agent import (
     build_chat_model,
     build_langchain_agent,
 )
+from mimic42.integrations.model_retry_middleware import ModelRetryMiddleware
 from mimic42.integrations.token_usage_middleware import TokenUsageMiddleware
 from mimic42.integrations.tool_access_middleware import ToolAccessMiddleware
 from mimic42.integrations.tool_image_middleware import ToolImageMiddleware
@@ -60,17 +61,18 @@ def recorded(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
 
 
 def test_model_with_free_variant_builds_fallback_chain(recorded: list[dict[str, Any]]) -> None:
-    build_chat_model(_config("inclusionai/ling-3.0-flash-vl"))
+    build_chat_model(_config("nvidia/nemotron-3.5-lightning"))
 
     assert recorded == [
         {
-            "model": "inclusionai/ling-3.0-flash-vl:free",
+            "model": "nvidia/nemotron-3.5-lightning:free",
             "api_key": None,
             "timeout": REQUEST_TIMEOUT_MS,
             "reasoning": {"effort": "high"},
             "model_kwargs": {
-                "models": ["inclusionai/ling-3.0-flash-vl:free", "inclusionai/ling-3.0-flash-vl"]
+                "models": ["nvidia/nemotron-3.5-lightning:free", "nvidia/nemotron-3.5-lightning"]
             },
+            "openrouter_provider": {"ignore": ignored_providers("nvidia/nemotron-3.5-lightning")},
         }
     ]
 
@@ -167,6 +169,37 @@ def test_build_langchain_agent_registers_token_usage_middleware(
 
     middleware = captured["middleware"]
     assert any(isinstance(m, TokenUsageMiddleware) for m in middleware)
+
+
+def test_build_langchain_agent_retries_model_failures_after_recording(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Повторы после уровней записи и до переписи картинок.
+
+    Временные 429/5xx не попадают в ленту и учёт: ActivityMiddleware видит только
+    итог, а каждый повторный запрос идёт уже переписанным ToolImageMiddleware."""
+    captured: dict[str, Any] = {}
+
+    def fake_create_agent(**kwargs: Any) -> str:
+        captured.update(kwargs)
+        return "graph"
+
+    monkeypatch.setattr(langchain_agent_module, "create_agent", fake_create_agent)
+
+    build_langchain_agent(
+        _config("mistral-small"),
+        session_factory=object(),  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
+    )
+
+    middleware = captured["middleware"]
+    retry_index = next(i for i, m in enumerate(middleware) if isinstance(m, ModelRetryMiddleware))
+    usage_index = next(
+        index for index, m in enumerate(middleware) if isinstance(m, TokenUsageMiddleware)
+    )
+    image_index = len(middleware) - 1
+
+    assert usage_index < retry_index < image_index
+    assert isinstance(middleware[image_index], ToolImageMiddleware)
 
 
 def test_build_langchain_agent_moves_tool_pictures_into_user_messages(
