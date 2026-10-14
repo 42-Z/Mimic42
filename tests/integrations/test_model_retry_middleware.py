@@ -65,6 +65,34 @@ async def test_retry_after_header_wins_over_the_backoff() -> None:
     assert waited == [3.0]
 
 
+async def test_hint_up_to_the_ceiling_is_waited_in_full() -> None:
+    sleep, waited = clock_waited()
+    middleware = ModelRetryMiddleware(sleep=sleep)
+    calls: list[Any] = []
+
+    result = await middleware.awrap_model_call(
+        "запрос", build_handler([ProviderFailure(429, "30"), "ответ"], calls)
+    )
+
+    assert result == "ответ"
+    assert waited == [30.0]
+
+
+async def test_hint_longer_than_the_ceiling_gives_up_without_waiting() -> None:
+    """Долгая подсказка — прочный лимит: ход падает сразу вместо раннего повтора."""
+    sleep, waited = clock_waited()
+    middleware = ModelRetryMiddleware(sleep=sleep)
+    calls: list[Any] = []
+
+    with pytest.raises(ProviderFailure):
+        await middleware.awrap_model_call(
+            "запрос", build_handler([ProviderFailure(429, "45"), "ответ"], calls)
+        )
+
+    assert calls == ["запрос"]
+    assert waited == []
+
+
 async def test_exhausted_retries_raise_the_last_failure() -> None:
     sleep, waited = clock_waited()
     middleware = ModelRetryMiddleware(sleep=sleep, max_retries=2)

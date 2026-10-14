@@ -898,13 +898,18 @@ class TelegramToolbox:
             if self._send_window is None or comment_to_msg_id is not None:
                 yield slot
                 return
+            # Окно стоит настоящий чат: один адресат под именем и под числом —
+            # разные написания, и без свода замок и слот разместились бы вдвое:
+            # обе отправки прошли проверку, а Telegram ответил SlowModeWaitError
+            # второй (issue #108).
+            window_key = str(chat_id)
             send_lock = getattr(self._send_window, "send_lock", None)
             if callable(send_lock):
-                async with send_lock(peer):
-                    async with self._checked_send(peer, slot) as locked:
+                async with send_lock(window_key):
+                    async with self._checked_send(window_key, slot) as locked:
                         yield locked
             else:
-                async with self._checked_send(peer, slot) as locked:
+                async with self._checked_send(window_key, slot) as locked:
                     yield locked
         except _HARD_REFUSALS as exc:
             self._refusals[refusal_key] = (

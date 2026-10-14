@@ -3195,3 +3195,38 @@ async def test_parallel_sends_serialize_under_slowmode() -> None:
     assert len(succeeded) == 1
     assert len(closed) == 4
     assert [name for name, _ in client.calls if name == "send_message"] == ["send_message"]
+
+
+@pytest.mark.asyncio
+async def test_parallel_sends_through_aliases_share_the_slot() -> None:
+    """Один чат под числом и под именем — один слот (issue #108).
+
+    Замок и учёт окна сворачиваются на разрешённый ID чата: иначе имя и число
+    дают две записи, обе отправки проходят проверку, и Telegram отвечает
+    SlowModeWaitError второй."""
+    from mimic42.core.send_window import SendWindow, SendWindowTracker
+
+    class SlowClient(FakeTelethonClient):
+        async def send_message(self, entity: Any, message: str, **kwargs: Any) -> Any:
+            await asyncio.sleep(0.02)
+            return await super().send_message(entity, message, **kwargs)
+
+    client = SlowClient()
+    client._chat_ids["testgroup"] = -100777
+    tracker = SendWindowTracker(cast(Any, object()))
+    tracker._base["-100777"] = (
+        SendWindow(slowmode_seconds=30),
+        datetime.now(UTC) + timedelta(seconds=300),
+    )
+    toolbox = TelegramToolbox(cast(Any, client), send_window=cast(Any, tracker))
+
+    results = await asyncio.gather(
+        toolbox.send_text_message("-100777", "числом"),
+        toolbox.send_text_message("@testgroup", "именем"),
+    )
+
+    succeeded = [result for result in results if result.get("success") is True]
+    closed = [result for result in results if result.get("error_code") == "SendWindowClosed"]
+    assert len(succeeded) == 1
+    assert len(closed) == 1
+    assert [name for name, _ in client.calls if name == "send_message"] == ["send_message"]
