@@ -48,6 +48,19 @@ def test_test_contour_settings_carry_no_external_service_keys(
     assert settings.braintrust_api_key is None, f"{label}: Braintrust подхватил боевой ключ"
 
 
+def test_test_settings_do_not_restore_foreign_running_agents(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Дефолт тестового контура: чужих RUNNING-агентов тесты не поднимают.
+
+    Restore в app.py перечитывает всех RUNNING из общей Dev-базы, а подмена
+    клиента отдаёт get_me без @username: без запрета тесты перезаписывали бы
+    username и статус чужого агента при каждом старте приложения."""
+    _leaky_env(monkeypatch)
+
+    assert _test_settings().restore_running_agents is False
+
+
 def test_build_test_app_strips_external_keys_from_any_settings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

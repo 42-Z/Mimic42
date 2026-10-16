@@ -64,6 +64,11 @@ DEFER_MARGIN_SECONDS = 0.25
 # отправки). Так же ждёт медленный режим обсуждения, если посты идут подряд.
 # Короткое ожидание — всё ещё «сразу»; дольше комментарий уже не первый.
 FIRST_COMMENT_FLOOD_WAIT_LIMIT = 10
+# Ответ хода при SlowMode/Flood честно ждёт точный остаток из .seconds и
+# повторяет отправку один раз, вместо записи message.send_failed (issue #108).
+# Дольше минуты ход не держит: такой флуд — уже не гонка окна, а ограничение
+# аккаунта, и о нём надо сообщить, а не молча висеть под замком хода.
+SEND_FLOOD_RETRY_LIMIT_SECONDS = 60
 # Столько close() ждёт ходы по альбомам и отложенным сообщениям, а оставшиеся
 # отменяет: следом закрываются клиент модели и пул базы, и ход-сирота открыл бы
 # соединение, которое уже никто не закроет. Менеджер закрывает агентов разом,
@@ -1057,6 +1062,78 @@ class MimicAgentRuntime:
 
         return sent_message
 
+    async def _send_turn_reply(
+        self,
+        peer_for_send: Any,
+        peer_key: str,
+        text: str,
+        reply_to: int | None,
+    ) -> Any:
+        """Ответ хода под замком отправок чата с честным повтором при флуде.
+
+        Замок тот же, что у инструментов: параллельные вызовы send_* одного хода
+        уже разошлись по нему, и ответ встаёт в очередь, а не в гонку (issue #108).
+        Учёт слота (note_sent/note_error) — внутри замка, рядом с отправкой.
+        """
+        tracker = self._send_window
+        send_lock = getattr(tracker, "send_lock", None) if tracker is not None else None
+        if not callable(send_lock):
+            return await self._send_turn_reply_locked(peer_for_send, peer_key, text, reply_to)
+        async with send_lock(peer_key):
+            return await self._send_turn_reply_locked(peer_for_send, peer_key, text, reply_to)
+
+    async def _send_turn_reply_locked(
+        self,
+        peer_for_send: Any,
+        peer_key: str,
+        text: str,
+        reply_to: int | None,
+    ) -> Any:
+        """Отправка ответа и учёт: вызывать под замком отправок чата."""
+        tracker = self._send_window
+        try:
+            sent = await self._humanized_send(peer_for_send, text, reply_to=reply_to)
+        except (
+            errors.SlowModeWaitError,
+            errors.FloodWaitError,
+            errors.FloodPremiumWaitError,
+        ) as e:
+            seconds = getattr(e, "seconds", None)
+            if (
+                not isinstance(seconds, int)
+                or seconds < 1
+                or seconds > SEND_FLOOD_RETRY_LIMIT_SECONDS
+            ):
+                if tracker is not None:
+                    tracker.note_error(peer_key, e)
+                raise
+            # Окно говорило «открыто», а Telegram — точный остаток: ждём его и
+            # повторяем один раз, как первый комментарий. Вторая неудача идёт
+            # обычным путём с записью message.send_failed.
+            logger.info(
+                "Медленный режим/флуд в чате %s: ждём %s с перед повтором (%s)",
+                peer_key,
+                seconds,
+                type(e).__name__,
+            )
+            await asyncio.sleep(seconds + DEFER_MARGIN_SECONDS)
+            try:
+                sent = await self._humanized_send(peer_for_send, text, reply_to=reply_to)
+            except Exception as retry_exc:
+                if tracker is not None:
+                    tracker.note_error(peer_key, retry_exc)
+                raise
+            if tracker is not None:
+                tracker.note_sent(peer_key)
+            return sent
+        except Exception as e:
+            if tracker is not None:
+                tracker.note_error(peer_key, e)
+            raise
+        if tracker is not None:
+            tracker.note_sent(peer_key)
+        return sent
+
     async def trigger_message(self, trigger: AgentTrigger) -> AgentTriggerResult:
         logger.debug(
             "trigger_message called: peer=%s, text=%s",
@@ -1280,17 +1357,14 @@ class MimicAgentRuntime:
         if send_any:
             logger.info(f"Sending response to {peer_id_for_send}: {response_text[:100]}")
             try:
-                sent_message = await self._humanized_send(
+                sent_message = await self._send_turn_reply(
                     peer_id_for_send,
+                    trigger.peer,
                     response_text,
-                    reply_to=reply_to,
+                    reply_to,
                 )
                 logger.info(f"Message sent successfully to {peer_id_for_send}")
-                if self._send_window is not None:
-                    self._send_window.note_sent(trigger.peer)
             except Exception as e:
-                if self._send_window is not None:
-                    self._send_window.note_error(trigger.peer, e)
                 # The turn must not crash on a delivery failure, but the
                 # silence must be visible in the dashboard, not only in logs.
                 logger.exception("Failed to send Telegram message to %s", peer_id_for_send)

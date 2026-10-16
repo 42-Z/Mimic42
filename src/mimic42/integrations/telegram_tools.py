@@ -877,6 +877,12 @@ class TelegramToolbox:
 
         Окно — источник дешёвой правды, ошибка Telegram — источник точной:
         обе ветки кормят трекер, иначе он разойдётся с реальностью.
+
+        Проверка, отправка и учёт идут под замком трекера на этот чат: вызовы
+        инструментов одного хода ToolNode выполняет конкурентно, и без замка
+        все они видят открытое окно, а Telegram отвечает SlowModeWaitError
+        всем, кроме первого (issue #108). Второй и следующие честно получают
+        SendWindowClosed с остатком, а не ошибку сети.
         """
         # Отключённый чат отказывает раньше окна: проверка окна читает чат из Telegram
         # и в отказе подсказывает, как обойти закрытое окно.
@@ -892,24 +898,42 @@ class TelegramToolbox:
             if self._send_window is None or comment_to_msg_id is not None:
                 yield slot
                 return
-            now = datetime.now(UTC)
-            window = await self._send_window.check(peer)
-            if not window.is_open(now):
-                raise SendWindowClosed(window.reason, window.retry_after(now))
-            try:
-                yield slot
-            except Exception as exc:
-                self._send_window.note_error(peer, exc)
-                raise
+            # Окно стоит настоящий чат: один адресат под именем и под числом —
+            # разные написания, и без свода замок и слот разместились бы вдвое:
+            # обе отправки прошли проверку, а Telegram ответил SlowModeWaitError
+            # второй (issue #108).
+            window_key = str(chat_id)
+            send_lock = getattr(self._send_window, "send_lock", None)
+            if callable(send_lock):
+                async with send_lock(window_key):
+                    async with self._checked_send(window_key, slot) as locked:
+                        yield locked
             else:
-                if slot.spent:
-                    self._send_window.note_sent(peer)
+                async with self._checked_send(window_key, slot) as locked:
+                    yield locked
         except _HARD_REFUSALS as exc:
             self._refusals[refusal_key] = (
                 time.monotonic() + _REFUSAL_TTL_SECONDS,
                 type(exc).__name__,
             )
             raise
+
+    @asynccontextmanager
+    async def _checked_send(self, peer: str, slot: _SendSlot) -> AsyncIterator[_SendSlot]:
+        """Проверка окна, отправка вызывающим кодом и учёт: вызывать под замком чата."""
+        assert self._send_window is not None
+        now = datetime.now(UTC)
+        window = await self._send_window.check(peer)
+        if not window.is_open(now):
+            raise SendWindowClosed(window.reason, window.retry_after(now))
+        try:
+            yield slot
+        except Exception as exc:
+            self._send_window.note_error(peer, exc)
+            raise
+        else:
+            if slot.spent:
+                self._send_window.note_sent(peer)
 
     def _raise_if_recently_refused(self, key: str) -> None:
         """Та же отправка после жёсткого отказа Telegram не уходит в сеть повторно."""

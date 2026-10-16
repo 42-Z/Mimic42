@@ -1584,6 +1584,50 @@ async def test_send_failure_is_reported_to_the_window() -> None:
     assert window.sent_notes == []
 
 
+async def test_slow_mode_error_waits_and_retries_the_reply(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Гонка окна (issue #108): точный остаток из SlowModeWaitError ждём, а не падаем."""
+    from mimic42.core.send_window import SendWindow
+
+    class OnceSlowClient(FakeTelegramClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.send_calls = 0
+
+        async def send_message(self, entity: str | int, message: str, **kwargs: Any) -> object:
+            self.send_calls += 1
+            if self.send_calls == 1:
+                raise errors.SlowModeWaitError(request=None, capture=7)
+            return await super().send_message(entity, message, **kwargs)
+
+    window = _ScriptedSendWindow(SendWindow(slowmode_seconds=30))
+    client = OnceSlowClient()
+    runtime = MimicAgentRuntime(
+        config=make_config(),
+        telegram_client=cast(Any, client),
+        langchain_agent=cast(Any, FakeLangChainAgent("ответ")),
+        send_window=cast(Any, window),
+    )
+
+    async def direct_send(peer: Any, text: str, reply_to: int | None = None) -> Any:
+        return await client.send_message(peer, text, reply_to=reply_to)
+
+    monkeypatch.setattr(runtime, "_humanized_send", direct_send)
+    slept: list[float] = []
+
+    async def fake_sleep(delay: float) -> None:
+        slept.append(delay)
+
+    monkeypatch.setattr("mimic42.core.agent_runtime.asyncio.sleep", fake_sleep)
+    await runtime.trigger_message(AgentTrigger(peer="123", text="привет"))
+
+    assert len(client.account.sent) == 1
+    assert window.sent_notes == ["123"]
+    assert window.errors == []
+    assert 7.25 in slept
+
+
 class _RecordingSession:
     """Сессия БД без базы: фиксирует запросы и терпит служебные вызовы рантайма."""
 

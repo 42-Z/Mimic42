@@ -19,6 +19,7 @@ from mimic42.core.model_catalog import ignored_providers, resolve_model_chain
 from mimic42.core.token_usage import TokenUsageRecorder
 from mimic42.integrations.activity_middleware import ActivityMiddleware
 from mimic42.integrations.agent_response_schema import AgentResponse
+from mimic42.integrations.model_retry_middleware import ModelRetryMiddleware
 from mimic42.integrations.token_usage_middleware import TokenUsageMiddleware
 from mimic42.integrations.tool_access_middleware import ToolAccessMiddleware
 from mimic42.integrations.tool_image_middleware import ToolImageMiddleware
@@ -118,6 +119,8 @@ def build_langchain_agent(
 
     # "error", not "end": on "end" the runtime would find no structured response
     # and send LangChain's limit notice to the chat as the reply.
+    # Повторы стоят после уровней записи — временные 429/5xx не попадают в ленту
+    # и учёт, итог пишется один раз.
     middleware: list[Any] = [
         ModelCallLimitMiddleware(run_limit=MODEL_CALLS_PER_TURN, exit_behavior="error")
     ]
@@ -134,7 +137,9 @@ def build_langchain_agent(
                 recorder=TokenUsageRecorder(session_factory),
             )
         )
-    # Innermost: it rewrites the request the model receives, after the other layers.
+    # Innermost: it rewrites the request the model receives, after the other layers
+    # — including the retries, so every повтор стартует уже с переписанным запросом.
+    middleware.append(ModelRetryMiddleware())
     middleware.append(ToolImageMiddleware())
 
     return LangChainGraphAgent(

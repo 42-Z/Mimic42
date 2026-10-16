@@ -34,11 +34,15 @@ MODEL_CATALOG: dict[str, ModelSpec] = {
         ModelSpec(
             slug="inclusionai/ling-3.0-flash-vl",
             name="Ling 3.0 Flash VL",
-            free_slug="inclusionai/ling-3.0-flash-vl:free",
+            # OpenRouter снял бесплатный вариант Ling: запрос к :free отвечает 404
+            # («unavailable for free»), весь трафик уходит на платный пул и рвётся
+            # по 429 (2026-10-14). Бесплатной моделью для real_tg теперь Nemotron.
         ),
         ModelSpec(
             slug="nvidia/nemotron-3.5-lightning",
             name="Nemotron 3.5 Lightning",
+            # Живой :free вариант с tools и reasoning на миллион токенов контекста.
+            free_slug="nvidia/nemotron-3.5-lightning:free",
             # DeepInfra does not support a required tool choice, which the
             # agent's structured response relies on (2026-09-21).
             ignored_providers=("deepinfra",),
