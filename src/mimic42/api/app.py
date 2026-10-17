@@ -477,7 +477,33 @@ def create_app(
     async def list_agents(current_user: CurrentUserDep) -> list[AgentRecord]:
         store = _get_agent_store(app)
         if store is not None:
-            return await store.list_agents(owner_id=current_user.user_id)
+            records = await store.list_agents(owner_id=current_user.user_id)
+            # The database keeps the last-known state; the UI must report the
+            # current process state when a runtime was not restored here.
+            runtime_states = {
+                agent.agent_id: agent.state
+                for agent in await _get_agent_manager(app).list_agents(
+                    owner_id=current_user.user_id
+                )
+            }
+            unloaded_active_states = {
+                AgentRuntimeState.STARTING,
+                AgentRuntimeState.RUNNING,
+                AgentRuntimeState.STOPPING,
+            }
+            return [
+                record.model_copy(
+                    update={
+                        "state": runtime_states.get(
+                            record.agent_id,
+                            AgentRuntimeState.STOPPED
+                            if record.state in unloaded_active_states
+                            else record.state,
+                        )
+                    }
+                )
+                for record in records
+            ]
         statuses = await _get_agent_manager(app).list_agents(owner_id=current_user.user_id)
         return [
             AgentRecord(
