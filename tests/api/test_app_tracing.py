@@ -30,7 +30,8 @@ def test_api_tests_neutralize_braintrust_key_from_developer_env(
     # Positive control: без env-переопределения Settings прочитал бы ключ из .env.
     with monkeypatch.context() as without_env_override:
         without_env_override.delenv("BRAINTRUST_API_KEY")
-        assert Settings(_env_file=env_file).braintrust_api_key == "leak"
+        unprotected_settings = Settings(_env_file=env_file)  # ty: ignore[unknown-argument]
+        assert unprotected_settings.braintrust_api_key == "leak"
 
     # Фикстура no_real_tracing выставляет пустой ключ поверх .env.
     assert os.environ.get("BRAINTRUST_API_KEY") == ""
