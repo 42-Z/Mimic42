@@ -13,7 +13,9 @@ from mimic42.integrations import tracing
 from tests.api.fakes import FakeAgentManager
 
 
-def test_api_tests_neutralize_braintrust_key_from_developer_env(tmp_path: Path) -> None:
+def test_api_tests_neutralize_braintrust_key_from_developer_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """API-тесты герметичны: ключ Braintrust из .env разработчика не доходит до Settings.
 
     Без этого create_app через lifespan звал бы настоящий setup_tracing: логин
@@ -25,8 +27,13 @@ def test_api_tests_neutralize_braintrust_key_from_developer_env(tmp_path: Path) 
     env_file = tmp_path / ".env"
     env_file.write_text("BRAINTRUST_API_KEY=leak\n")
 
-    # Фикстура no_real_tracing выставляет пустой ключ поверх .env: без неё
-    # dotenv-утечка ниже проходила бы в Settings.
+    # Positive control: без env-переопределения Settings прочитал бы ключ из .env.
+    with monkeypatch.context() as without_env_override:
+        without_env_override.delenv("BRAINTRUST_API_KEY")
+        unprotected_settings = Settings(_env_file=env_file)  # ty: ignore[unknown-argument]
+        assert unprotected_settings.braintrust_api_key == "leak"
+
+    # Фикстура no_real_tracing выставляет пустой ключ поверх .env.
     assert os.environ.get("BRAINTRUST_API_KEY") == ""
 
     settings = Settings(_env_file=env_file)  # ty: ignore[unknown-argument]
