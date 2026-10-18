@@ -89,7 +89,11 @@ class AdminUserModel(Base):
 
 class PlatformTelegramSettingsModel(Base):
     __tablename__ = "platform_telegram_settings"
-    __table_args__ = (CheckConstraint("id = 1"),)
+    __table_args__ = (
+        CheckConstraint("id = 1"),
+        CheckConstraint("api_id > 0"),
+        CheckConstraint("btrim(api_hash_ciphertext) <> ''"),
+    )
 
     id: Mapped[int] = mapped_column(SmallInteger, primary_key=True, default=1)
     api_id: Mapped[int] = mapped_column(Integer)
@@ -101,7 +105,6 @@ class PlatformTelegramSettingsModel(Base):
 class AdminAuditLogModel(Base):
     __tablename__ = "admin_audit_log"
     __table_args__ = (
-        Index("admin_audit_log_actor_created_idx", "actor_user_id", "created_at"),
         CheckConstraint(
             "action in ('preset.created', 'preset.updated', "
             "'preset.visibility_changed', 'telegram.settings_updated')"
@@ -112,6 +115,13 @@ class AdminAuditLogModel(Base):
             "(object_type = 'preset' and object_id is not null) or "
             "(object_type = 'telegram_settings' and object_id is null)"
         ),
+        CheckConstraint(
+            "(action in ('preset.created', 'preset.updated', 'preset.visibility_changed') "
+            "and object_type = 'preset' and object_id is not null) or "
+            "(action = 'telegram.settings_updated' and "
+            "object_type = 'telegram_settings' and object_id is null)",
+            name="admin_audit_action_object_consistency",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -121,6 +131,13 @@ class AdminAuditLogModel(Base):
     object_id: Mapped[UUID | None] = mapped_column()
     metadata_: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+Index(
+    "admin_audit_log_actor_created_idx",
+    AdminAuditLogModel.actor_user_id,
+    AdminAuditLogModel.created_at.desc(),
+)
 
 
 class PromptPresetModel(Base):

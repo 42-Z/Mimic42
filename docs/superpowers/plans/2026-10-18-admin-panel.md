@@ -20,7 +20,7 @@
 - Команды Python выполняются из корня через `uv run`; команды Bun — из `frontend/`. В каждом этапе сначала новая точечная проверка, затем реализация и та же проверка. Полный набор — только перед PR после подтверждения пользователем локальной работы.
 - Для каждой указанной точечной команды ожидаемый результат до изменения — отказ нового сценария по проверяемому поведению, после — PASS с exit code 0. Сбой подключения, ошибка фикстуры или пропуск сценария не считаются подтверждением ни отказа, ни исправления.
 - После каждого завершённого этапа отмечать его пункты и делать отдельный Conventional Commit с указанной темой. Не включать чужие изменения через `git add .`.
-- Миграции создаёт `supabase migration new`; не выдумывать timestamp и не менять SQL уже применённой миграции. Пути, уже созданные CLI: `supabase/migrations/20261018095739_admin_platform.sql` и `supabase/migrations/20261018101931_restrict_admin_service_role_grants.sql`. Единственный будущий путь на момент подготовки плана — миграция `_preset_moderation.sql`; её timestamp записать после создания CLI.
+- Миграции создаёт `supabase migration new`; не выдумывать timestamp и не менять SQL уже применённой миграции. Пути, уже созданные CLI: `supabase/migrations/20261018095739_admin_platform.sql`, `supabase/migrations/20261018101931_restrict_admin_service_role_grants.sql` и `supabase/migrations/20261018132159_admin_audit_action_object_consistency.sql`. Единственная будущая миграция на момент этой отметки — `_preset_moderation.sql`; её timestamp записать после создания CLI.
 
 ## Карта файлов и ответственности
 
@@ -178,7 +178,7 @@ Request-модели находятся в `api/admin.py`, `extra="forbid"`:
 
 ## Этап 1. Закрытая схема и безопасная DB-обвязка
 
-**Files:** `supabase/migrations/20261018095739_admin_platform.sql`, `supabase/migrations/20261018101931_restrict_admin_service_role_grants.sql`; `src/mimic42/integrations/database_models.py`; новые `tests/integration/conftest.py`, `tests/integration/test_admin_schema.py`.
+**Files:** `supabase/migrations/20261018095739_admin_platform.sql`, `supabase/migrations/20261018101931_restrict_admin_service_role_grants.sql`, `supabase/migrations/20261018132159_admin_audit_action_object_consistency.sql`; `src/mimic42/integrations/database_models.py`; новые `tests/integration/conftest.py`, `tests/integration/test_admin_schema.py`.
 
 - [x] **1.1. Добавить проверку схемы до её появления.** В `test_admin_schema.py` проверить `to_regclass`, RLS и отсутствие любых привилегий для `anon`/`authenticated`, а также точный allowlist table privileges `service_role` для каждой из трёх таблиц. Для SQL-отказов использовать отдельные savepoint/сессии, а не несколько запросов в уже прерванной транзакции.
 
@@ -204,11 +204,36 @@ async def test_admin_tables_are_closed(test_dsn: str, table_name: str) -> None:
         )
         assert row is not None and row["relation"] is not None
         assert row["rls_enabled"] is True
-        for role in ("anon", "authenticated"):
-            for privilege in ("SELECT", "INSERT", "UPDATE", "DELETE"):
+        version = int(await connection.fetchval("select current_setting('server_version_num')"))
+        privileges = ("SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER")
+        if version >= 170000:
+            privileges += ("MAINTAIN",)
+        for role in ("public", "anon", "authenticated"):
+            for privilege in privileges:
                 assert not await connection.fetchval(
                     "select has_table_privilege($1, $2, $3)", role, table, privilege
                 )
+        columns = await connection.fetch(
+            "select column_name from information_schema.columns "
+            "where table_schema = 'public' and table_name = $1",
+            table_name,
+        )
+        for role in ("public", "anon", "authenticated"):
+            for column in columns:
+                for privilege in ("SELECT", "INSERT", "UPDATE", "REFERENCES"):
+                    assert not await connection.fetchval(
+                        "select has_column_privilege($1, $2, $3, $4)",
+                        role, table, column["column_name"], privilege,
+                    )
+        allowed = {
+            "admin_users": {"SELECT", "INSERT", "UPDATE", "DELETE"},
+            "platform_telegram_settings": {"SELECT", "INSERT", "UPDATE"},
+            "admin_audit_log": {"SELECT", "INSERT"},
+        }[table_name]
+        for privilege in privileges:
+            assert await connection.fetchval(
+                "select has_table_privilege('service_role', $1, $2)", table, privilege
+            ) is (privilege in allowed)
     finally:
         await connection.close()
 ```
@@ -257,13 +282,13 @@ alter table public.platform_telegram_settings enable row level security;
 alter table public.admin_audit_log enable row level security;
 
 revoke all on public.admin_users, public.platform_telegram_settings,
-    public.admin_audit_log from public, anon, authenticated, service_role;
+    public.admin_audit_log from public, anon, authenticated;
 grant select, insert, update, delete on public.admin_users to service_role;
 grant select, insert, update on public.platform_telegram_settings to service_role;
 grant select, insert on public.admin_audit_log to service_role;
 ```
 
-UUID автора аудита намеренно сохраняется без FK: удаление профиля не стирает и не переписывает историю. Клиентские политики для этих таблиц отсутствуют. Сохранённая общая пара не создаётся миграцией, поэтому старый код продолжает работать с env. Supabase может выдавать новые public-таблицы с уже существующими default grants для `service_role`, поэтому их надо отозвать перед точечными grant. Первая миграция этого этапа уже применена в Dev до обнаружения default ACL; её не переписывать. Следующая миграция `20261018101931_restrict_admin_service_role_grants.sql` повторно отзывает права только у `service_role` и задаёт точный allowlist.
+UUID автора аудита намеренно сохраняется без FK: удаление профиля не стирает и не переписывает историю. Клиентские политики для этих таблиц отсутствуют. Сохранённая общая пара не создаётся миграцией, поэтому старый код продолжает работать с env. Supabase может выдавать новые public-таблицы с уже существующими default grants для `service_role`, поэтому их надо отозвать перед точечными grant. Первая миграция этого этапа уже применена в Dev до обнаружения default ACL; её не переписывать. Миграция `20261018101931_restrict_admin_service_role_grants.sql` повторно отзывает права только у `service_role` и задаёт точный allowlist. Ревью также выявило, что базовая проверка identity не связывает action с object_type; миграция `20261018132159_admin_audit_action_object_consistency.sql` закрепляет обе пары действий и объектов отдельным named CHECK constraint, не изменяя применённую миграцию.
 
 - [x] **1.4. Добавить ORM-модели** с теми же колонками и типами; `PromptPresetModel` отображает существующую таблицу, включая `settings`, `owner_id`, `published_at`, `is_active`, `sort_order`. Не вызывать `Base.metadata.create_all()` вместо Supabase-миграций.
 - [x] **1.5. Добавить именованную фикстуру для транзакционных тестов** в новом `tests/integration/conftest.py`:
@@ -292,7 +317,7 @@ async def admin_db_factory(db_engine, test_slot) -> AsyncIterator[async_sessionm
 
 Она занимает существующий тестовый слот, но ничего не очищает и не меняет глобальную fixture `db_session_factory`. Все операции на её соединении последовательны. Тесты общей настройки, официальных пресетов и глобальных агрегатов используют именно её: внутренние commits репозитория завершают savepoint, а внешний rollback возвращает данные. Отдельная проверка фиксирует запись через session commit и убеждается со второго соединения, что row остался невидим, пока outer transaction не завершена. Персоны берутся из `test_slot`, не из `SLOTS[0]`; новые `auth.users` не создаются.
 
-- [x] **1.6. Проверить адрес связанного Dev-проекта** в `supabase/.temp/project-ref`: только `ipqylrdmmjitemjrygej`. После первого dry-run подтвердить только `admin_platform`, применить его и прогнать schema test. При выявлении default grants не редактировать уже применённую миграцию: создать `restrict_admin_service_role_grants`, затем отдельный dry-run/push. После этого `migration list --linked` должен показывать обе миграции, schema test и `supabase db advisors --type security --level warn` должны проходить. Если связанный advisors mode падает на временной роли, повторить с `--db-url`, предварительно пропустив соединение через `assert_test_project`; не открывать production URL. Не использовать reset или repair.
+- [x] **1.6. Проверить адрес связанного Dev-проекта** в `supabase/.temp/project-ref`: только `ipqylrdmmjitemjrygej`. Первый dry-run/push добавил `admin_platform`; затем без переписывания применённых файлов созданы ограничение service_role grants и action/object consistency. После применения `migration list --linked` показывает все три. Schema tests и `supabase db advisors --type security --level warn` прошли. Связанный advisors mode сначала упал при входе временной роли CLI; повтор через `--db-url` после проверки `assert_test_project` обошёл именно этот путь подключения и завершился `No issues found`. Не использовать reset или repair.
 - [x] **1.7. Коммит:** `feat(admin): add protected platform settings and audit schema`.
 
 ## Этап 2. Проверка роли и подключение подсистемы
@@ -954,11 +979,11 @@ bun run typecheck
 bun test
 ```
 
-- [ ] Проверить `supabase migration list --linked`: все три миграции функции (две admin schema/ACL и одна moderation) уже в Dev, иначе `migrations-drift` в CI упадёт. При обнаружении чужих миграций не использовать repair/include-all без выяснения причины.
+- [ ] Проверить `supabase migration list --linked`: все четыре миграции функции (три admin schema/ACL и одна moderation) уже в Dev, иначе `migrations-drift` в CI упадёт. При обнаружении чужих миграций не использовать repair/include-all без выяснения причины.
 - [ ] Проверить весь итоговый diff и соответствие спецификации без запуска тестов во время самого code review. Проверки уже выполнены предыдущим шагом. Не включать в diff `.env`, browser storage state, реальные credentials и артефакты с персональными данными.
 - [ ] После исправления всех локально обнаруживаемых проблем один раз push, затем PR с `Closes #127`. Проверить `gh pr checks`; следить за существующими `backend`, `frontend`, `backend-db`, `e2e`, `migrations-drift`. Не запускать конкурирующие внешние проверки и не обходить concurrency/тестовые слоты. После создания PR перевести item проекта в «На ревью», не закрывать issue вручную раньше слияния.
 - [ ] Перед слиянием учесть фактическую автоматизацию: `.github/workflows/deploy.yml` на push в main собирает образы и разворачивает их на VPS, но **не применяет SQL-миграции**. Изменение прав каталога и новые таблицы должны попасть в production до использования нового приложения.
-- [ ] Только при отдельном разрешении на выпуск проверить production target, вывести dry-run ровно трёх новых миграций, применить их через Supabase CLI к production, затем дать состояться деплою. Не перелинковывать локальный Dev-проект на production ради удобства. При отсутствии разрешения явно передать этот обязательный шаг владельцу и не заявлять, что выпуск завершён.
+- [ ] Только при отдельном разрешении на выпуск проверить production target, вывести dry-run ровно четырёх новых миграций, применить их через Supabase CLI к production, затем дать состояться деплою. Не перелинковывать локальный Dev-проект на production ради удобства. При отсутствии разрешения явно передать этот обязательный шаг владельцу и не заявлять, что выпуск завершён.
 - [ ] После выпуска проверить отсутствие миграционного хвоста, вход обычного пользователя, отказ `/admin` без роли, доступ назначенного администратора и отсутствие secrets в ответах. Роль в production назначается вручную по подтверждённому аккаунту, не переносится из Dev. Общую пару production не менять ради проверки.
 
 ## Матрица покрытия спецификации

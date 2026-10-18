@@ -10,19 +10,28 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from mimic42.integrations.database_models import AdminAuditLogModel
-from mimic42.testing.slots import plain_dsn
+from mimic42.testing.slots import Slot, plain_dsn
 
 ADMIN_TABLES = (
     "admin_users",
     "platform_telegram_settings",
     "admin_audit_log",
 )
-CLIENT_ROLES = ("anon", "authenticated")
-TABLE_PRIVILEGES = ("SELECT", "INSERT", "UPDATE", "DELETE")
+CLIENT_ROLES = ("public", "anon", "authenticated")
+TABLE_PRIVILEGES = (
+    "SELECT",
+    "INSERT",
+    "UPDATE",
+    "DELETE",
+    "TRUNCATE",
+    "REFERENCES",
+    "TRIGGER",
+)
+COLUMN_PRIVILEGES = ("SELECT", "INSERT", "UPDATE", "REFERENCES")
 SERVICE_ROLE_ALLOWED = {
-    "admin_users": TABLE_PRIVILEGES,
-    "platform_telegram_settings": ("SELECT", "INSERT", "UPDATE"),
-    "admin_audit_log": ("SELECT", "INSERT"),
+    "admin_users": {"SELECT", "INSERT", "UPDATE", "DELETE"},
+    "platform_telegram_settings": {"SELECT", "INSERT", "UPDATE"},
+    "admin_audit_log": {"SELECT", "INSERT"},
 }
 
 
@@ -43,8 +52,12 @@ async def test_admin_tables_have_rls_and_no_client_grants(
         assert row["relation"] is not None
         assert row["rls_enabled"] is True
 
+        server_version = int(
+            await connection.fetchval("select current_setting('server_version_num')")
+        )
+        privileges = TABLE_PRIVILEGES + (("MAINTAIN",) if server_version >= 170000 else ())
         for role in CLIENT_ROLES:
-            for privilege in TABLE_PRIVILEGES:
+            for privilege in privileges:
                 granted = await connection.fetchval(
                     "select has_table_privilege($1, $2, $3)",
                     role,
@@ -53,7 +66,26 @@ async def test_admin_tables_have_rls_and_no_client_grants(
                 )
                 assert granted is False, f"{role} unexpectedly has {privilege} on {relation}"
 
-        for privilege in TABLE_PRIVILEGES:
+        columns = await connection.fetch(
+            "select column_name from information_schema.columns "
+            "where table_schema = 'public' and table_name = $1",
+            table_name,
+        )
+        for role in CLIENT_ROLES:
+            for column in columns:
+                for privilege in COLUMN_PRIVILEGES:
+                    granted = await connection.fetchval(
+                        "select has_column_privilege($1, $2, $3, $4)",
+                        role,
+                        relation,
+                        column["column_name"],
+                        privilege,
+                    )
+                    assert granted is False, (
+                        f"{role} unexpectedly has {privilege} on {relation}.{column['column_name']}"
+                    )
+
+        for privilege in privileges:
             granted = await connection.fetchval(
                 "select has_table_privilege('service_role', $1, $2)",
                 relation,
@@ -90,3 +122,22 @@ async def test_admin_db_factory_commit_stays_inside_outer_transaction(
         )
 
     assert row is None
+
+
+async def test_admin_audit_requires_matching_action_and_object(
+    test_dsn: str,
+    test_slot: Slot,
+) -> None:
+    connection = await asyncpg.connect(plain_dsn(test_dsn))
+    try:
+        async with connection.transaction():
+            with pytest.raises(asyncpg.CheckViolationError):
+                async with connection.transaction():
+                    await connection.execute(
+                        "insert into public.admin_audit_log "
+                        "(actor_user_id, action, object_type, object_id) "
+                        "values ($1, 'preset.created', 'telegram_settings', null)",
+                        uuid4(),
+                    )
+    finally:
+        await connection.close()
