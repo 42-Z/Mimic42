@@ -330,7 +330,7 @@ async def admin_db_factory(db_engine, test_slot) -> AsyncIterator[async_sessionm
 
 **Files:** новые `src/mimic42/core/admin.py`, `src/mimic42/api/admin.py`, `src/mimic42/integrations/database_admin.py`, `tests/api/admin_fakes.py`, `tests/api/test_admin_access.py`; изменить `src/mimic42/api/app.py`, `tests/api/test_app_factories.py`.
 
-- [ ] **2.1. Закрепить DTO выше и протокол ниже в `core/admin.py`.** Мутации принимают `actor_user_id` только от серверной зависимости; request-модели API переводятся в эти типы после валидации. `AdminUnavailableError` и `AdminNotFoundError` — отдельные подклассы `Exception` без данных запроса в сообщении.
+- [x] **2.1. Закрепить DTO выше и протокол ниже в `core/admin.py`.** Мутации принимают `actor_user_id` только от серверной зависимости; request-модели API переводятся в эти типы после валидации. `AdminUnavailableError` и `AdminNotFoundError` — отдельные подклассы `Exception` без данных запроса в сообщении.
 
 ```python
 from typing import Any, Literal, Protocol, TypedDict
@@ -409,12 +409,11 @@ class AdminRepository(Protocol):
 
 `read_telegram_settings` — исключительно внутренний server-only метод для поставщика; HTTP GET использует `read_telegram_settings_status`, который не выбирает ciphertext. У сохранённой строки `source="database"`; поставщик дополняет статус режимами env/unconfigured при отсутствии строки. Фасад статистики делегирует реализацию `DatabaseAdminStatistics`, не копирует SQL в router.
 
-- [ ] **2.2. Написать проверки зависимости на тестовом маршруте**: без токена `401`; с обычным пользователем `403`; со снятой ролью следующий запрос `403`; при ошибке хранилища `503`. На этом этапе реальные предметные маршруты ещё не добавлены, поэтому тест регистрирует свой probe только в экземпляре приложения теста. Подделка `FakeAdminRepository` содержит `admin_ids: set[UUID]` и управляемый флаг `unavailable`; никакой реальной базы. Дополнительно проверить `/me` для обоих значений роли. В каждом API-этапе 4–7 эту матрицу повторить уже для его настоящих маршрутов.
+- [x] **2.2. Написать проверки зависимости на тестовом маршруте**: без токена `401`; с обычным пользователем `403`; со снятой ролью следующий запрос `403`; при ошибке хранилища `503`. На этом этапе реальные предметные маршруты ещё не добавлены, поэтому тест регистрирует свой probe только в экземпляре приложения теста. Подделка `FakeAdminRepository` содержит `admin_ids: set[UUID]` и управляемый флаг `unavailable`; никакой реальной базы. Дополнительно проверить `/me` для обоих значений роли и FastAPI dependency override. В каждом API-этапе 4–7 эту матрицу повторить уже для его настоящих маршрутов.
 
 ```python
+from typing import Annotated, TYPE_CHECKING, cast
 from uuid import uuid4
-
-from typing import Annotated
 
 from fastapi import Depends, Request
 from httpx import ASGITransport, AsyncClient
@@ -425,6 +424,9 @@ from mimic42.config import Settings
 from tests.api.admin_fakes import FakeAdminRepository
 from tests.api.auth_helpers import AUTH_HEADERS, FakeAuthVerifier
 
+if TYPE_CHECKING:
+    from mimic42.core.admin import AdminRepository
+
 
 async def test_admin_role_is_rechecked_for_each_request():
     user_id = uuid4()
@@ -434,7 +436,7 @@ async def test_admin_role_is_rechecked_for_each_request():
             database_connection_string=None, mem0_api_key=None, braintrust_api_key=None,
         ),
         auth_verifier=FakeAuthVerifier(user_id),
-        admin_repository=repository,
+        admin_repository=cast("AdminRepository", repository),
     )
 
     @app.get("/__test__/admin-access", dependencies=[Depends(require_admin)])
@@ -449,8 +451,8 @@ async def test_admin_role_is_rechecked_for_each_request():
     assert second.status_code == 403
 ```
 
-- [ ] **2.3. Выполнить** `uv run pytest tests/api/test_admin_access.py -W error -q`; ожидается FAIL до появления нового аргумента/router.
-- [ ] **2.4. Реализовать проверку** `select exists(...)` по PK роли без кеша и зависимость `require_admin`. `/me` использует только `require_user` и возвращает `AdminIdentity`; запрещено превращать ошибку базы в `is_admin=true` или выдавать наружу SQL/DSN. Административный router получает общую зависимость `Depends(require_admin)`; изменение текущей проверки JWT не требуется.
+- [x] **2.3. Выполнить** `uv run pytest tests/api/test_admin_access.py -W error -q`. Команда была запущена до и после реализации. **Отклонение от TDD-плана:** начальный отказ произошёл из-за отсутствующих новых модулей/аргумента приложения, поэтому поведенческий red для этих утверждений не подтверждён; после реализации итоговый запуск целевой матрицы прошёл.
+- [x] **2.4. Реализовать проверку** `select exists(...)` по PK роли без кеша и зависимость `require_admin`. `/me` использует только `require_user` и возвращает `AdminIdentity`; запрещено превращать ошибку базы в `is_admin=true` или выдавать наружу SQL/DSN. Административный router получает общую зависимость `Depends(require_admin)`; изменение текущей проверки JWT не требуется.
 
 ```python
 async def require_admin(
@@ -471,7 +473,7 @@ async def require_admin(
 
 `Request`, `HTTPException`, `CurrentUser`, `require_user` импортируются из существующих FastAPI/auth; `AdminUnavailableError` — новая предметная ошибка в `core/admin.py`. Не возвращать `str(exc)` пользователю.
 
-- [ ] **2.5. Обновить сборку приложения.** Добавить keyword-only `admin_repository: AdminRepository | None = None`. Разделить причину открытия engine и причину сборки агентских сервисов:
+- [x] **2.5. Обновить сборку приложения.** Добавить keyword-only `admin_repository: AdminRepository | None = None`. Разделить причину открытия engine и причину сборки агентских сервисов:
 
 ```python
 build_agent_services = bool(app_settings.database_connection_string) and (
@@ -485,8 +487,8 @@ build_database = build_agent_services or build_admin_repository
 
 Engine/session factory создаются один раз при `build_database`; существующая сборка store/onboarding/manager, восстановление рантаймов и запуск warmup остаются под прежним `build_agent_services`, а не под новым расширенным условием. Иначе создание только админского репозитория неожиданно восстановит чужих агентов в тесте с инъецированными сервисами. Инъецированные объекты не заменяются; приложению принадлежит закрытие созданного здесь engine, а существующее завершение менеджера сохраняется. Без базы обычные fake-сценарии и `/health` работают, админка отвечает `503`.
 
-- [ ] **2.6. Добавить проверки lifespan:** все три сервиса инъецированы — engine не создаётся; инъецированы store/onboarding, но не admin repository — собирается только admin repository, без восстановления агентов или warmup; один созданный engine закрывается ровно один раз. Повторить `uv run pytest tests/api/test_admin_access.py tests/api/test_app_factories.py tests/api/test_auth_api.py -W error -q`.
-- [ ] **2.7. Коммит:** `feat(admin): enforce database-backed administrator access`.
+- [x] **2.6. Добавить проверки lifespan:** все три сервиса инъецированы — engine не создаётся; инъецированы store/onboarding, но не admin repository — собирается только admin repository, без восстановления агентов или warmup; один созданный engine закрывается ровно один раз. Повторить `uv run pytest tests/api/test_admin_access.py tests/api/test_app_factories.py tests/api/test_auth_api.py -W error -q` — после review fixes 24 passed.
+- [x] **2.7. Коммит:** `feat(admin): enforce database-backed administrator access`.
 
 ## Этап 3. Модерация на уровне базы
 
