@@ -676,10 +676,16 @@ async def set_preset_visibility(self, preset_id: UUID, is_active: bool, *, actor
 
 **Files:** новый `src/mimic42/core/telegram_app_settings.py`; `src/mimic42/api/admin.py`, `src/mimic42/api/app.py`, `src/mimic42/integrations/database_admin.py`; новые `tests/core/test_telegram_app_settings.py`, `tests/api/test_admin_telegram.py`, `tests/integration/test_admin_telegram.py`; дополнить `tests/api/test_onboarding_api.py`.
 
-- [ ] **5.1. Написать проверки поставщика:** нет строки → env; строка есть → сохранённая пара; ошибка чтения/расшифровки → отказ без fallback; полная явно переданная пара не нуждается в чтении defaults; частичное переопределение сохраняет существующий контракт `_resolve_telegram_app`; после записи следующий вход получает новую пару без рестарта.
-- [ ] **5.2. Написать проверки API:** GET никогда не возвращает plaintext/ciphertext; без `SECRET_KEY` PUT даёт `503` и ничего не пишет; неверный `api_id` при валидном HASH даёт `422` без HASH в ответе; неверный JSON и лишние поля тоже не отражают body. Проверить `repr` DTO и captured logs.
-- [ ] **5.3. Написать DB-проверки на `admin_db_factory`:** HASH расшифровывается исходным тестовым ключом, строка id=1 единственна, пара и аудит атомарны. До теста не удалять реальную глобальную строку; её обновление существует только во внешней транзакции с rollback. Выполнить `uv run pytest tests/core/test_telegram_app_settings.py tests/api/test_admin_telegram.py tests/integration/test_admin_telegram.py -W error -q`.
-- [ ] **5.4. Реализовать server-only значение пары** как dataclass/Pydantic-модель с `api_hash: SecretStr`, не используемую в HTTP-ответе. Класс `TelegramAppSettings` получает keyword-only `settings: Settings`, `repository: AdminRepository | None`, `cipher: FernetSecretCipher | None`. Его методы: `resolve(api_id: int | None, api_hash: str | None) -> tuple[int, str]`, `status() -> PublicTelegramSettings`, `save(*, api_id: int, api_hash: SecretStr, actor_user_id: UUID) -> PublicTelegramSettings`, все async. При отсутствии DB-конфигурации сохраняется env-only режим, а не попытка соединения. При настроенной базе ошибка её чтения не считается отсутствием строки.
+- [x] **5.1. Написать проверки поставщика:** нет строки → env; строка есть → сохранённая пара; ошибка чтения/расшифровки → отказ без fallback; полная явно переданная пара не нуждается в чтении defaults; частичное переопределение сохраняет существующий контракт `_resolve_telegram_app`; после записи следующий вход получает новую пару без рестарта.
+- [x] **5.2. Написать проверки API:** GET никогда не возвращает plaintext/ciphertext; без `SECRET_KEY` PUT даёт `503` и ничего не пишет; неверный `api_id` при валидном HASH даёт `422` без HASH в ответе; неверный JSON и лишние поля тоже не отражают body. Проверить `repr` DTO и captured logs.
+- [x] **5.3. Написать DB-проверки на `admin_db_factory`:** HASH расшифровывается исходным тестовым ключом, upsert проверяет вставку и замену, строка id=1 единственна, пара и аудит атомарны. До теста не удалять реальную глобальную строку; её обновление существует только во внешней транзакции с rollback. Команды разделены: настройки проекта по умолчанию исключают `db`-тесты.
+
+```bash
+uv run pytest tests/core/test_telegram_app_settings.py tests/api/test_admin_telegram.py -m "not db" -W error -q
+uv run pytest tests/integration/test_admin_telegram.py -m db -W error -q
+```
+
+- [x] **5.4. Реализовать server-only значение пары** как dataclass с `api_hash: SecretStr`, не используемую в HTTP-ответе. Класс `TelegramAppSettings` получает keyword-only `settings: Settings`, `repository: AdminRepository | None`, `cipher: FernetSecretCipher | None`. Его методы: `resolve(api_id: int | None, api_hash: str | None) -> tuple[int, str]`, `status() -> PublicTelegramSettings`, `save(*, api_id: int, api_hash: SecretStr, actor_user_id: UUID) -> PublicTelegramSettings`, все async. При отсутствии repository сохраняется env-only режим, а не попытка соединения. При настроенной базе ошибка её чтения не считается отсутствием строки.
 
 ```python
 async def resolve(self, api_id: int | None, api_hash: str | None) -> tuple[int, str]:
@@ -695,8 +701,8 @@ async def resolve(self, api_id: int | None, api_hash: str | None) -> tuple[int, 
 
 `_read_defaults()` возвращает внутренний `TelegramAppDefaults(api_id: int | None, api_hash: SecretStr | None)`; при строке из базы расшифровывает её, иначе берёт env. `TelegramAppUnavailableError` определён в том же модуле. Не обновлять объекты `Settings` или глобальную пару в памяти.
 
-- [ ] **5.5. Реализовать PUT** через PostgreSQL upsert по singleton PK `id=1` в одной транзакции с `telegram.settings_updated`; хранить только ciphertext. `updated_at` выставлять явно в `ON CONFLICT DO UPDATE`, `updated_by` — UUID зависимости. Метаданные аудита: только `{"credentials_replaced": true}`. GET строить отдельным SELECT публичных колонок плюс признак наличия HASH, без расшифровки для отображения формы.
-- [ ] **5.6. Ограничить очистку ошибок административным router.** Для него использовать `APIRoute.get_route_handler()` и перехват `RequestValidationError`; не копировать пример документации, который логирует тело:
+- [x] **5.5. Реализовать PUT** через PostgreSQL upsert по singleton PK `id=1` в одной транзакции с `telegram.settings_updated`; хранить только ciphertext. `updated_at` выставлять явно в `ON CONFLICT DO UPDATE`, `updated_by` — UUID зависимости. Метаданные аудита: только `{"credentials_replaced": true}`. GET строить отдельным SELECT публичных колонок плюс признак наличия HASH, без расшифровки для отображения формы.
+- [x] **5.6. Ограничить очистку ошибок административным router.** Для него использовать `APIRoute.get_route_handler()` и перехват `RequestValidationError`; не копировать пример документации, который логирует тело:
 
 ```python
 class AdminRoute(APIRoute):
@@ -712,6 +718,8 @@ class AdminRoute(APIRoute):
                     content={"detail": "Проверьте поля запроса"},
                     headers={"Cache-Control": "no-store"},
                 )
+            except StarletteHTTPException as exc:
+                response = await http_exception_handler(request, exc)
             response.headers["Cache-Control"] = "no-store"
             return response
 
@@ -720,9 +728,14 @@ class AdminRoute(APIRoute):
 
 Использовать `APIRouter(route_class=AdminRoute, ...)`; дополнительно отдавать `Cache-Control: no-store` у `/me`. Не менять формат `422` остальных API. Ни captured exception body, ни `SecretStr.get_secret_value()` не уходят в лог.
 
-- [ ] **5.7. Заменить оба вызова `_resolve_telegram_app`** в `request_telegram_code` и прямом `create_agent` на `await` поставщика; добавить в `create_app` keyword-only `telegram_app_settings: TelegramAppSettings | None = None` для unit-тестов. В `core/onboarding.py`, `telegram_sessions`, перепривязке и загрузчике рантайма не менять сохранённые credentials. Отдельно проверить, что уже созданная onboarding-сессия подтверждает код со старой парой после административного PUT.
-- [ ] **5.8. Повторить точечные проверки** этапа плюс `tests/api/test_onboarding_api.py`, `tests/api/test_agents_api.py`; сравнить через fake factory полученные пары до/после смены, без реального подключения к Telegram.
-- [ ] **5.9. Коммит:** `feat(admin): update encrypted Telegram defaults without restarting agents`.
+- [x] **5.7. Заменить оба вызова `_resolve_telegram_app`** в `request_telegram_code` и прямом `create_agent` на async-поставщика; добавить в `create_app` keyword-only `telegram_app_settings: TelegramAppSettings | None = None` для unit-тестов. В `core/onboarding.py`, `telegram_sessions`, перепривязке и загрузчике рантайма сохранённые credentials не меняются. Проверено: начатая onboarding-сессия подтверждает код со старой парой, а новое создание использует обновлённую.
+- [x] **5.8. Повторить точечные проверки** этапа плюс `tests/api/test_onboarding_api.py`, `tests/api/test_agents_api.py`; сравнить через fake factory полученные пары до/после смены, без реального подключения к Telegram. Результат: unit/API — 77 passed; integration DB вместе с тестами preset repository — 7 passed; Ruff, форматирование и ty прошли.
+
+```bash
+uv run pytest tests/core/test_telegram_app_settings.py tests/api/test_admin_telegram.py tests/api/test_admin_access.py tests/api/test_admin_presets.py tests/api/test_onboarding_api.py tests/api/test_agents_api.py -W error -q
+uv run pytest tests/integration/test_admin_telegram.py tests/integration/test_admin_presets.py -m db -W error -q
+```
+- [x] **5.9. Коммит:** `feat(admin): update encrypted Telegram defaults without restarting agents`.
 
 ## Этап 6. Пользователи и эффективные состояния
 

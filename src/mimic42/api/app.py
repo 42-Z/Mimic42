@@ -70,6 +70,10 @@ from mimic42.core.onboarding import (
     TelegramPasswordRequiredError,
     TelegramRebindUnavailableError,
 )
+from mimic42.core.telegram_app_settings import (
+    TelegramAppSettings,
+    TelegramAppUnavailableError,
+)
 from mimic42.core.warmup import WarmupState
 from mimic42.core.warmup_service import pair_policy_for
 from mimic42.integrations import openrouter_catalog
@@ -228,23 +232,38 @@ async def _read_limited(file: UploadFile, limit: int) -> bytes | None:
     return b"".join(chunks)
 
 
-def _resolve_telegram_app(
-    settings: Settings,
+def _get_telegram_app_settings(app: FastAPI) -> TelegramAppSettings:
+    provider: TelegramAppSettings | None = getattr(app.state, "telegram_app_settings", None)
+    if provider is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Настройки Telegram-приложения временно недоступны.",
+        )
+    return provider
+
+
+async def _resolve_telegram_app(
+    provider: TelegramAppSettings,
     api_id: int | None,
     api_hash: str | None,
 ) -> tuple[int, str]:
-    """Fall back to the deployment-wide Telegram application when none is supplied."""
-    resolved_id = api_id if api_id is not None else settings.telegram_api_id
-    resolved_hash = api_hash if api_hash is not None else settings.telegram_api_hash
-    if resolved_id is None or resolved_hash is None:
+    try:
+        return await provider.resolve(api_id, api_hash)
+    except TelegramAppUnavailableError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=(
-                "Telegram-приложение не настроено на сервере. "
-                "Задайте TELEGRAM_API_ID и TELEGRAM_API_HASH в окружении."
-            ),
-        )
-    return resolved_id, resolved_hash
+            detail=str(exc),
+        ) from None
+
+
+def _telegram_settings_cipher(settings: Settings) -> FernetSecretCipher | None:
+    if settings.secret_key is None:
+        return None
+    try:
+        return FernetSecretCipher(settings.secret_key)
+    except (TypeError, ValueError):
+        logger.error("Invalid SECRET_KEY; Telegram application settings are unavailable")
+        return None
 
 
 def _telegram_login_http_error(exc: Exception) -> HTTPException | None:
@@ -318,6 +337,7 @@ def create_app(
     admin_repository: AdminRepository | None = None,
     auth_verifier: AuthVerifier | None = None,
     settings: Settings | None = None,
+    telegram_app_settings: TelegramAppSettings | None = None,
     telegram_factory: TelegramAuthClientFactory | None = None,
     telegram_client_factory: TelegramClientFactory | None = None,
     langchain_agent_factory: LangChainAgentFactory | None = None,
@@ -326,6 +346,11 @@ def create_app(
 ) -> FastAPI:
     app_settings = settings or Settings()
     app_telegram_factory = telegram_factory or TelethonAuthClientFactory()
+    app_telegram_app_settings = telegram_app_settings or TelegramAppSettings(
+        settings=app_settings,
+        repository=admin_repository,
+        cipher=_telegram_settings_cipher(app_settings),
+    )
     # Resolution order: explicit argument → uploader of an injected manager →
     # storage built from settings. A broken Storage configuration must degrade
     # to "media unavailable", not crash application startup.
@@ -417,6 +442,13 @@ def create_app(
                 assert session_factory is not None
                 app.state.admin_repository = DatabaseAdminRepository(session_factory)
 
+            if telegram_app_settings is None:
+                app.state.telegram_app_settings = TelegramAppSettings(
+                    settings=app_settings,
+                    repository=getattr(app.state, "admin_repository", None),
+                    cipher=_telegram_settings_cipher(app_settings),
+                )
+
             setup_tracing(app_settings)
             # Restore running agents from database after restart
             logger.info(
@@ -484,6 +516,7 @@ def create_app(
     app.state.onboarding_service = app_onboarding_service
     app.state.agent_store = agent_store
     app.state.admin_repository = admin_repository
+    app.state.telegram_app_settings = app_telegram_app_settings
     app.state.media_uploader = app_media_storage
     app.state.long_term_memory = None
     app.state.auth_verifier = auth_verifier or (
@@ -499,7 +532,12 @@ def create_app(
         return {"status": "ok", "service": "mimic42-api"}
 
     @app.get("/api/v1/me", response_model=AdminIdentity)
-    async def get_me(current_user: CurrentUserDep, request: Request) -> AdminIdentity:
+    async def get_me(
+        current_user: CurrentUserDep,
+        request: Request,
+        response: Response,
+    ) -> AdminIdentity:
+        response.headers["Cache-Control"] = "no-store"
         return await get_admin_identity(request, current_user)
 
     @app.get("/api/v1/agents", response_model=list[AgentRecord])
@@ -553,7 +591,11 @@ def create_app(
         payload: TelegramLoginRequest,
         current_user: CurrentUserDep,
     ) -> OnboardingPublicStatus:
-        api_id, api_hash = _resolve_telegram_app(app_settings, payload.api_id, payload.api_hash)
+        api_id, api_hash = await _resolve_telegram_app(
+            _get_telegram_app_settings(app),
+            payload.api_id,
+            payload.api_hash,
+        )
         credentials = TelegramCredentials(
             owner_id=current_user.user_id,
             api_id=api_id,
@@ -860,8 +902,10 @@ def create_app(
         payload: CreateAgentRequest,
         current_user: CurrentUserDep,
     ) -> AgentStatus:
-        api_id, api_hash = _resolve_telegram_app(
-            app_settings, payload.telegram_api_id, payload.telegram_api_hash
+        api_id, api_hash = await _resolve_telegram_app(
+            _get_telegram_app_settings(app),
+            payload.telegram_api_id,
+            payload.telegram_api_hash,
         )
         try:
             manager_for_request = _get_agent_manager(app)

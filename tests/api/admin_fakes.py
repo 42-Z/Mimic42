@@ -4,6 +4,8 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import UUID
 
+from pydantic import SecretStr
+
 from mimic42.core.admin import (
     AdminNotFoundError,
     AdminPage,
@@ -11,6 +13,8 @@ from mimic42.core.admin import (
     AdminPresetSummary,
     PresetCreateValues,
     PresetPatchValues,
+    PublicTelegramSettings,
+    StoredTelegramSettings,
 )
 
 
@@ -23,12 +27,17 @@ class FakeAdminRepository:
         admin_ids: set[UUID] | None = None,
         unavailable: bool = False,
         presets: list[AdminPresetDetail] | None = None,
+        telegram_settings: StoredTelegramSettings | None = None,
     ) -> None:
         self.admin_ids = set(admin_ids or ())
         self.unavailable = unavailable
         self.calls: list[UUID] = []
         self.presets = {preset.id: preset for preset in presets or []}
         self.preset_calls: list[tuple[str, dict[str, Any]]] = []
+        self.telegram_settings = telegram_settings
+        self.telegram_settings_error: Exception | None = None
+        self.telegram_write_count = 0
+        self.telegram_calls: list[tuple[str, dict[str, Any]]] = []
 
     async def is_admin(self, user_id: UUID) -> bool:
         self.calls.append(user_id)
@@ -146,3 +155,57 @@ class FakeAdminRepository:
         )
         self.presets[preset_id] = updated
         return updated
+
+    async def read_telegram_settings(self) -> StoredTelegramSettings | None:
+        self.telegram_calls.append(("read", {}))
+        if self.telegram_settings_error is not None:
+            raise self.telegram_settings_error
+        return self.telegram_settings
+
+    async def read_telegram_settings_status(self) -> PublicTelegramSettings | None:
+        self.telegram_calls.append(("status", {}))
+        if self.telegram_settings_error is not None:
+            raise self.telegram_settings_error
+        if self.telegram_settings is None:
+            return None
+        return PublicTelegramSettings(
+            api_id=self.telegram_settings.api_id,
+            has_api_hash=True,
+            source="database",
+            updated_at=self.telegram_settings.updated_at,
+            updated_by=self.telegram_settings.updated_by,
+        )
+
+    async def save_telegram_settings(
+        self,
+        *,
+        api_id: int,
+        api_hash_ciphertext: str,
+        actor_user_id: UUID,
+    ) -> PublicTelegramSettings:
+        self.telegram_calls.append(
+            (
+                "save",
+                {
+                    "api_id": api_id,
+                    "api_hash_ciphertext": api_hash_ciphertext,
+                    "actor_user_id": actor_user_id,
+                },
+            )
+        )
+        if self.telegram_settings_error is not None:
+            raise self.telegram_settings_error
+        self.telegram_write_count += 1
+        self.telegram_settings = StoredTelegramSettings(
+            api_id=api_id,
+            api_hash_ciphertext=SecretStr(api_hash_ciphertext),
+            updated_at=datetime.now(UTC),
+            updated_by=actor_user_id,
+        )
+        return PublicTelegramSettings(
+            api_id=api_id,
+            has_api_hash=True,
+            source="database",
+            updated_at=self.telegram_settings.updated_at,
+            updated_by=actor_user_id,
+        )

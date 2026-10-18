@@ -1,14 +1,20 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
+from typing import cast
 from uuid import UUID, uuid4
 
 import pytest
+from cryptography.fernet import Fernet
 from httpx import ASGITransport, AsyncClient
+from pydantic import SecretStr
 
 from mimic42.api.app import _telegram_login_http_error, create_app
 from mimic42.config import Settings
+from mimic42.core.admin import AdminRepository, StoredTelegramSettings
 from mimic42.core.agent_runtime import AgentRuntimeState
 from mimic42.core.agent_store import AgentRecord, InMemoryAgentStore
+from mimic42.core.crypto import FernetSecretCipher
 from mimic42.core.onboarding import (
     AgentOnboardingService,
     InMemoryOnboardingRepository,
@@ -17,8 +23,11 @@ from mimic42.core.onboarding import (
     TelegramLoginStatus,
     TelegramPasswordRequiredError,
 )
+from mimic42.core.telegram_app_settings import TelegramAppSettings
 from mimic42.testing.telegram import FakeTelegramAccount, FakeTelegramAuthClientFactory
+from tests.api.admin_fakes import FakeAdminRepository
 from tests.api.auth_helpers import AUTH_HEADERS, FakeAuthVerifier
+from tests.api.fakes import FakeAgentManager
 
 
 def test_telegram_login_value_error_does_not_expose_internal_message() -> None:
@@ -116,6 +125,94 @@ async def test_onboarding_uses_deployment_telegram_app_when_none_supplied() -> N
     assert response.status_code == 201
     assert response.json()["authorization_status"] == "code_requested"
     assert factory.built_with == (777, "deployment-hash")
+
+
+@pytest.mark.asyncio
+async def test_onboarding_keeps_old_credentials_while_new_agent_uses_updated_defaults() -> None:
+    owner_id = uuid4()
+    key = Fernet.generate_key().decode()
+    cipher = FernetSecretCipher(key)
+    old_pair = (111, "old-api-hash")
+    new_pair = (222, "new-api-hash")
+    repository = FakeAdminRepository(
+        telegram_settings=StoredTelegramSettings(
+            api_id=old_pair[0],
+            api_hash_ciphertext=SecretStr(cipher.encrypt(old_pair[1])),
+            updated_at=datetime.now(UTC),
+            updated_by=owner_id,
+        )
+    )
+    settings = Settings(
+        database_connection_string=None,
+        mem0_api_key=None,
+        braintrust_api_key=None,
+        supabase_url=None,
+        supabase_service_key=None,
+        secret_key=key,
+        telegram_api_id=None,
+        telegram_api_hash=None,
+    )
+    provider = TelegramAppSettings(
+        settings=settings,
+        repository=cast(AdminRepository, repository),
+        cipher=cipher,
+    )
+    account = FakeTelegramAccount()
+    telegram_factory = FakeTelegramAuthClientFactory(account)
+    onboarding_service = AgentOnboardingService(
+        repository=InMemoryOnboardingRepository(),
+        telegram_factory=telegram_factory,
+    )
+    manager = FakeAgentManager()
+    app = create_app(
+        manager=manager,
+        onboarding_service=onboarding_service,
+        admin_repository=cast(AdminRepository, repository),
+        auth_verifier=FakeAuthVerifier(owner_id),
+        settings=settings,
+        telegram_app_settings=provider,
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        start_response = await client.post(
+            "/api/v1/onboarding/telegram",
+            headers=AUTH_HEADERS,
+            json={"phone_number": "+79990000000"},
+        )
+        onboarding_id = UUID(start_response.json()["onboarding_id"])
+        assert telegram_factory.built_with == old_pair
+
+        repository.telegram_settings = StoredTelegramSettings(
+            api_id=new_pair[0],
+            api_hash_ciphertext=SecretStr(cipher.encrypt(new_pair[1])),
+            updated_at=datetime.now(UTC),
+            updated_by=owner_id,
+        )
+        agent_id = uuid4()
+        create_response = await client.post(
+            "/api/v1/agents",
+            headers=AUTH_HEADERS,
+            json={
+                "agent_id": str(agent_id),
+                "telegram_session_string": "new-agent-session",
+                "soul_prompt": "Short replies.",
+            },
+        )
+        verify_response = await client.post(
+            f"/api/v1/onboarding/{onboarding_id}/telegram/code",
+            headers=AUTH_HEADERS,
+            json={"code": "12345"},
+        )
+
+    assert start_response.status_code == 201
+    assert create_response.status_code == 201
+    assert manager.created[agent_id].config.telegram_api_id == new_pair[0]
+    assert manager.created[agent_id].config.telegram_api_hash == new_pair[1]
+    assert verify_response.status_code == 200
+    assert telegram_factory.built_with == old_pair
 
 
 @pytest.mark.asyncio

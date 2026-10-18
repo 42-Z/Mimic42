@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import case, exists, func, or_, select
+from sqlalchemy.dialects.postgresql import insert as postgres_insert
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -16,10 +18,13 @@ from mimic42.core.admin import (
     AdminUnavailableError,
     PresetCreateValues,
     PresetPatchValues,
+    PublicTelegramSettings,
+    StoredTelegramSettings,
 )
 from mimic42.integrations.database_models import (
     AdminAuditLogModel,
     AdminUserModel,
+    PlatformTelegramSettingsModel,
     ProfileModel,
     PromptPresetModel,
 )
@@ -36,6 +41,103 @@ class DatabaseAdminRepository:
                 return bool(await session.scalar(statement))
         except SQLAlchemyError:
             raise AdminUnavailableError("Administrative storage is unavailable") from None
+
+    async def read_telegram_settings(self) -> StoredTelegramSettings | None:
+        try:
+            async with self._session_factory() as session:
+                row = (
+                    await session.execute(
+                        select(
+                            PlatformTelegramSettingsModel.api_id,
+                            PlatformTelegramSettingsModel.api_hash_ciphertext,
+                            PlatformTelegramSettingsModel.updated_at,
+                            PlatformTelegramSettingsModel.updated_by,
+                        ).where(PlatformTelegramSettingsModel.id == 1)
+                    )
+                ).one_or_none()
+        except SQLAlchemyError:
+            raise AdminUnavailableError("Administrative storage is unavailable") from None
+        if row is None:
+            return None
+        return StoredTelegramSettings(
+            api_id=row.api_id,
+            api_hash_ciphertext=row.api_hash_ciphertext,
+            updated_at=row.updated_at,
+            updated_by=row.updated_by,
+        )
+
+    async def read_telegram_settings_status(self) -> PublicTelegramSettings | None:
+        try:
+            async with self._session_factory() as session:
+                row = (
+                    await session.execute(
+                        select(
+                            PlatformTelegramSettingsModel.api_id,
+                            PlatformTelegramSettingsModel.updated_at,
+                            PlatformTelegramSettingsModel.updated_by,
+                        ).where(PlatformTelegramSettingsModel.id == 1)
+                    )
+                ).one_or_none()
+        except SQLAlchemyError:
+            raise AdminUnavailableError("Administrative storage is unavailable") from None
+        if row is None:
+            return None
+        return PublicTelegramSettings(
+            api_id=row.api_id,
+            has_api_hash=True,
+            source="database",
+            updated_at=row.updated_at,
+            updated_by=row.updated_by,
+        )
+
+    async def save_telegram_settings(
+        self,
+        *,
+        api_id: int,
+        api_hash_ciphertext: str,
+        actor_user_id: UUID,
+    ) -> PublicTelegramSettings:
+        updated_at = datetime.now(UTC)
+        statement = postgres_insert(PlatformTelegramSettingsModel).values(
+            id=1,
+            api_id=api_id,
+            api_hash_ciphertext=api_hash_ciphertext,
+            updated_by=actor_user_id,
+            updated_at=updated_at,
+        )
+        statement = statement.on_conflict_do_update(
+            index_elements=[PlatformTelegramSettingsModel.id],
+            set_={
+                "api_id": statement.excluded.api_id,
+                "api_hash_ciphertext": statement.excluded.api_hash_ciphertext,
+                "updated_by": statement.excluded.updated_by,
+                "updated_at": statement.excluded.updated_at,
+            },
+        ).returning(
+            PlatformTelegramSettingsModel.api_id,
+            PlatformTelegramSettingsModel.updated_at,
+            PlatformTelegramSettingsModel.updated_by,
+        )
+        try:
+            async with self._session_factory() as session, session.begin():
+                row = (await session.execute(statement)).one()
+                await self._append_audit(
+                    session,
+                    actor_user_id=actor_user_id,
+                    action="telegram.settings_updated",
+                    object_id=None,
+                    metadata={"credentials_replaced": True},
+                )
+                result = PublicTelegramSettings(
+                    api_id=row.api_id,
+                    has_api_hash=True,
+                    source="database",
+                    updated_at=row.updated_at,
+                    updated_by=row.updated_by,
+                )
+        except SQLAlchemyError:
+            raise AdminUnavailableError("Administrative storage is unavailable") from None
+        return result
 
     async def list_presets(
         self,
@@ -252,14 +354,14 @@ class DatabaseAdminRepository:
         *,
         actor_user_id: UUID,
         action: str,
-        object_id: UUID,
+        object_id: UUID | None,
         metadata: dict[str, Any],
     ) -> None:
         session.add(
             AdminAuditLogModel(
                 actor_user_id=actor_user_id,
                 action=action,
-                object_type="preset",
+                object_type="telegram_settings" if object_id is None else "preset",
                 object_id=object_id,
                 metadata_=metadata,
             )

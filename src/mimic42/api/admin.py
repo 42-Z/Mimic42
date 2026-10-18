@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Callable, Coroutine
 from typing import Annotated, Any, cast
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi.exception_handlers import http_exception_handler
+from fastapi.exceptions import RequestValidationError
+from fastapi.routing import APIRoute
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.responses import JSONResponse
 
 from mimic42.api.auth import CurrentUser, require_user
 from mimic42.core.admin import (
@@ -23,7 +28,9 @@ from mimic42.core.admin import (
     AdminUnavailableError,
     PresetCreateValues,
     PresetPatchValues,
+    PublicTelegramSettings,
 )
+from mimic42.core.telegram_app_settings import TelegramAppSettings
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +96,41 @@ class PresetVisibilityRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     is_active: bool = Field(strict=True)
+
+
+class TelegramSettingsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    api_id: int = Field(strict=True, gt=0, le=POSTGRES_INTEGER_MAX)
+    api_hash: SecretStr = Field(min_length=1, max_length=256)
+
+    @field_validator("api_hash")
+    @classmethod
+    def reject_blank_api_hash(cls, value: SecretStr) -> SecretStr:
+        if not value.get_secret_value().strip():
+            raise ValueError("HASH не может состоять только из пробелов")
+        return value
+
+
+class AdminRoute(APIRoute):
+    def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
+        handler = super().get_route_handler()
+
+        async def safe_handler(request: Request) -> Response:
+            try:
+                response = await handler(request)
+            except RequestValidationError:
+                return JSONResponse(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    content={"detail": "Проверьте поля запроса"},
+                    headers={"Cache-Control": "no-store"},
+                )
+            except StarletteHTTPException as exc:
+                response = await http_exception_handler(request, exc)
+            response.headers["Cache-Control"] = "no-store"
+            return response
+
+        return safe_handler
 
 
 def _admin_unavailable() -> HTTPException:
@@ -161,6 +203,7 @@ async def get_admin_identity(request: Request, current_user: CurrentUser) -> Adm
 router = APIRouter(
     prefix="/api/v1/admin",
     dependencies=[Depends(require_admin)],
+    route_class=AdminRoute,
 )
 
 
@@ -236,6 +279,37 @@ async def update_preset(
         repository.update_official_preset(
             preset_id,
             patch_values,
+            actor_user_id=current_user.user_id,
+        )
+    )
+
+
+def _get_telegram_app_settings(request: Request) -> TelegramAppSettings:
+    provider: TelegramAppSettings | None = getattr(
+        request.app.state,
+        "telegram_app_settings",
+        None,
+    )
+    if provider is None:
+        raise _admin_unavailable()
+    return provider
+
+
+@router.get("/telegram-settings", response_model=PublicTelegramSettings)
+async def get_telegram_settings(request: Request) -> PublicTelegramSettings:
+    return await _admin_result(_get_telegram_app_settings(request).status())
+
+
+@router.put("/telegram-settings", response_model=PublicTelegramSettings)
+async def update_telegram_settings(
+    request: Request,
+    values: TelegramSettingsRequest,
+    current_user: Annotated[CurrentUser, Depends(require_admin)],
+) -> PublicTelegramSettings:
+    return await _admin_result(
+        _get_telegram_app_settings(request).save(
+            api_id=values.api_id,
+            api_hash=values.api_hash,
             actor_user_id=current_user.user_id,
         )
     )
