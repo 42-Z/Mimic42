@@ -180,7 +180,7 @@ Request-модели находятся в `api/admin.py`, `extra="forbid"`:
 
 **Files:** `supabase/migrations/20261018095739_admin_platform.sql`, `supabase/migrations/20261018101931_restrict_admin_service_role_grants.sql`, `supabase/migrations/20261018132159_admin_audit_action_object_consistency.sql`; `src/mimic42/integrations/database_models.py`; новые `tests/integration/conftest.py`, `tests/integration/test_admin_schema.py`.
 
-- [x] **1.1. Добавить проверку схемы до её появления.** В `test_admin_schema.py` проверить `to_regclass`, RLS и отсутствие любых привилегий для `anon`/`authenticated`, а также точный allowlist table privileges `service_role` для каждой из трёх таблиц. Для SQL-отказов использовать отдельные savepoint/сессии, а не несколько запросов в уже прерванной транзакции.
+- [x] **1.1. Добавить проверку схемы до её появления.** В `test_admin_schema.py` проверить `to_regclass`, RLS и отсутствие любых table/column privileges для `PUBLIC`, `anon` и `authenticated`, а также точный allowlist table/column privileges `service_role` для каждой из трёх таблиц. Для SQL-отказов использовать отдельные savepoint/сессии, а не несколько запросов в уже прерванной транзакции.
 
 ```python
 import asyncpg
@@ -234,6 +234,12 @@ async def test_admin_tables_are_closed(test_dsn: str, table_name: str) -> None:
             assert await connection.fetchval(
                 "select has_table_privilege('service_role', $1, $2)", table, privilege
             ) is (privilege in allowed)
+        for column in columns:
+            for privilege in ("SELECT", "INSERT", "UPDATE", "REFERENCES"):
+                assert await connection.fetchval(
+                    "select has_column_privilege('service_role', $1, $2, $3)",
+                    table, column["column_name"], privilege,
+                ) is (privilege in allowed)
     finally:
         await connection.close()
 ```

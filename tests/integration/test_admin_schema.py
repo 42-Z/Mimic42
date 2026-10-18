@@ -94,6 +94,18 @@ async def test_admin_tables_have_rls_and_no_client_grants(
             assert granted is (privilege in SERVICE_ROLE_ALLOWED[table_name]), (
                 f"service_role has an unexpected {privilege} grant on {relation}"
             )
+        for column in columns:
+            for privilege in COLUMN_PRIVILEGES:
+                granted = await connection.fetchval(
+                    "select has_column_privilege('service_role', $1, $2, $3)",
+                    relation,
+                    column["column_name"],
+                    privilege,
+                )
+                assert granted is (privilege in SERVICE_ROLE_ALLOWED[table_name]), (
+                    "service_role has an unexpected column grant on "
+                    f"{relation}.{column['column_name']} for {privilege}"
+                )
     finally:
         await connection.close()
 
