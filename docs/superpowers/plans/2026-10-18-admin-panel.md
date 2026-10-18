@@ -614,6 +614,8 @@ create index concurrently if not exists agent_events_admin_activity_date_idx
 
 В Dev индексы уже существуют после предыдущей редакции stage-3 миграции; отдельные файлы фиксируют migration history и пропускают перестройку через `IF NOT EXISTS`.
 
+Если `CREATE INDEX CONCURRENTLY` завершится ошибкой, не повторять миграцию вслепую: PostgreSQL может оставить невалидный объект с тем же именем, который `IF NOT EXISTS` пропустит. Сначала проверь `pg_index.indisvalid` для точного индекса и таблицы; исправлять/удалять только подтверждённый невалидный объект этой миграции, затем перепроверить Dev и историю.
+
 - [x] **3.4. Проверить Dev-адрес, dry-run и применить** stage-3 migration, lock-policy migration и обе concurrent index migrations. Dry-run каждого файла показывал ровно ожидаемые миграции; Dev пропустил существующие индексы; history list содержит семь feature-миграций в сумме (3 admin schema/ACL, 2 moderation, 2 indexes). Целевая команда `uv run pytest tests/integration/test_preset_moderation.py tests/integration/test_prompt_presets.py -m db -W error -q` — 21 passed; security advisor сообщил `No issues found`. Старые четыре официальных пресета остаются клиенту read-only.
 - [x] **3.5. Коммит:** `feat(presets): enforce administrative hiding and favorite snapshots`.
 
