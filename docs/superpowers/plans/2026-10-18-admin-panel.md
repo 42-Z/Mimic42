@@ -20,7 +20,7 @@
 - Команды Python выполняются из корня через `uv run`; команды Bun — из `frontend/`. В каждом этапе сначала новая точечная проверка, затем реализация и та же проверка. Полный набор — только перед PR после подтверждения пользователем локальной работы.
 - Для каждой указанной точечной команды ожидаемый результат до изменения — отказ нового сценария по проверяемому поведению, после — PASS с exit code 0. Сбой подключения, ошибка фикстуры или пропуск сценария не считаются подтверждением ни отказа, ни исправления.
 - После каждого завершённого этапа отмечать его пункты и делать отдельный Conventional Commit с указанной темой. Не включать чужие изменения через `git add .`.
-- Миграции создаёт `supabase migration new`; не выдумывать timestamp и не менять SQL уже применённой миграции. Пути, уже созданные CLI: `supabase/migrations/20261018095739_admin_platform.sql`, `supabase/migrations/20261018101931_restrict_admin_service_role_grants.sql` и `supabase/migrations/20261018132159_admin_audit_action_object_consistency.sql`. Единственная будущая миграция на момент этой отметки — `_preset_moderation.sql`; её timestamp записать после создания CLI.
+- Миграции создаёт `supabase migration new`; не выдумывать timestamp и не менять SQL уже применённой миграции. Уже созданные CLI пути: `supabase/migrations/20261018095739_admin_platform.sql`, `supabase/migrations/20261018101931_restrict_admin_service_role_grants.sql`, `supabase/migrations/20261018132159_admin_audit_action_object_consistency.sql`, `supabase/migrations/20261018145306_preset_moderation.sql` и корректирующая `supabase/migrations/20261018163931_preset_lock_policy.sql`. Не переписывать применённые файлы.
 
 ## Карта файлов и ответственности
 
@@ -492,11 +492,11 @@ Engine/session factory создаются один раз при `build_database
 
 ## Этап 3. Модерация на уровне базы
 
-**Files:** миграция `_preset_moderation.sql`; новый `tests/integration/test_preset_moderation.py`. Старые миграции не редактировать.
+**Files:** `supabase/migrations/20261018145306_preset_moderation.sql`, `supabase/migrations/20261018163931_preset_lock_policy.sql`; новый `tests/integration/test_preset_moderation.py`. Старые уже применённые миграции не редактировать.
 
-- [ ] **3.1. Написать DB-сценарии** на `admin_db_factory` и персонах текущего `test_slot`: видимый опубликованный пресет, скрытый опубликованный, приватный, официальный. Создание тестовых пользовательских строк сервером задаёт `slug='u_' || uuid`; изменение роли/JWT-клеймов для RLS выполняется в отдельной сессии с rollback.
-- [ ] **3.2. Проверить:** чужой скрытый недоступен; автор видит его; автор не меняет `is_active`; повторная публикация не открывает каталог; добавление скрытого в избранное запрещено; скрытие замораживает старое избранное без потери `frozen_*`; unhide не оживляет снимок; автор скрытого не попадает в `preset_authors`, если других активных публикаций нет. В двухсоединительном сценарии конкурентного добавления избранного и скрытия не должна остаться живая ссылка на скрытый пресет. Выполнить `uv run pytest tests/integration/test_preset_moderation.py -m db -W error -q` и увидеть провал именно новых ограничений.
-- [ ] **3.3. Создать** `supabase migration new preset_moderation` и записать:
+- [x] **3.1. Написать DB-сценарии** с персоны текущего `test_slot`, с rollback тестовых данных: видимый опубликованный пресет, скрытый опубликованный, приватный, официальный. Все UUID тестовых пресетов генерируются отдельно; существующие записи персон не удаляются.
+- [x] **3.2. Проверить:** чужой скрытый недоступен; автор видит его; автор не меняет `is_active`; повторная публикация не открывает каталог; добавление скрытого в избранное запрещено; скрытие замораживает старое избранное без потери `frozen_*`; unhide не оживляет снимок; автор скрытого не попадает в `preset_authors`, если других активных публикаций нет. В двухсоединительном сценарии конкурентного добавления избранного и скрытия не остаётся живая ссылка на скрытый пресет. Выполнить `uv run pytest tests/integration/test_preset_moderation.py tests/integration/test_prompt_presets.py -m db -W error -q`.
+- [x] **3.3. Создать** `supabase migration new preset_moderation` и записать первоначальную модерацию (уже применённую миграцию не переписывать):
 
 ```sql
 drop policy "Authenticated users can read catalog presets" on public.prompt_presets;
@@ -565,10 +565,30 @@ create index agent_events_admin_activity_date_idx
     where event_type like 'tool.%' or status = 'failed';
 ```
 
-Представление авторов сознательно оставляет прежнюю узкую серверную проекцию только `id/display_name`; `security_invoker=true` здесь лишит магазин имён из-за RLS профилей. Не добавлять email. Ограждающие trigger/column grants уже не разрешают автору менять `is_active`, их не ослаблять. Существующую функцию `set_favorite_owner` изменить на `SECURITY INVOKER`: она не должна добавлять новый путь с повышенными правами. Пользователь уже имеет SELECT и ограниченный UPDATE grant на `prompt_presets`, необходимый для row lock; RLS видит только активный каталог. Блокировка `FOR SHARE` в trigger добавления избранного сериализуется с `FOR UPDATE` модерации: если вставка первой захватила строку, последующее скрытие заморозит её; если первым было скрытие, вставка после ожидания не найдёт активную строку.
+Представление авторов сознательно оставляет прежнюю узкую серверную проекцию только `id/display_name`; `security_invoker=true` здесь лишит магазин имён из-за RLS профилей. Не добавлять email. Column grant автора на `is_active` не ослаблять. Первая миграция этапа уже применилась в Dev до обнаружения RLS-блокировки row lock; её не редактировать. Документация PostgreSQL подтверждает, что `SELECT ... FOR SHARE` также проходит UPDATE `USING`-политику. Вторая миграция `20261018163931_preset_lock_policy.sql` изменяет только RLS-предикаты:
 
-- [ ] **3.4. Проверить Dev-адрес, dry-run и применить только эту миграцию** командами этапа 1. Повторить `uv run pytest tests/integration/test_preset_moderation.py tests/integration/test_prompt_presets.py -m db -W error -q`. Старые четыре официальных пресета остаются клиенту read-only.
-- [ ] **3.5. Коммит:** `feat(presets): enforce administrative hiding and favorite snapshots`.
+```sql
+drop policy "Authenticated users can update own presets" on public.prompt_presets;
+create policy "Authenticated users can update own and lock published presets"
+    on public.prompt_presets
+    for update
+    to authenticated
+    using (
+        owner_id = (select auth.uid())
+        or (
+            owner_id is not null
+            and is_active
+            and published_at is not null
+            and owner_id <> (select auth.uid())
+        )
+    )
+    with check (owner_id = (select auth.uid()));
+```
+
+Ограниченные column grants остаются прежними, `is_active` клиенту не выдан. `USING` разрешает RLS видеть активную чужую публикацию для получения row lock; `WITH CHECK` допускает сохранить изменение только владельцем. Интеграционный тест подтверждает, что чужой текст не меняется. Это сохраняет исходный invoker-trigger без публичных SECURITY DEFINER helpers и без новых GRANT-ов клиенту. `FOR SHARE` и UPDATE сериализуются: favorite, начавшийся первым, замораживается последующим hide; если первым завершилось скрытие, favorite не найдёт активную строку.
+
+- [x] **3.4. Проверить Dev-адрес, dry-run и применить** stage-3 migration и отдельную RLS lock-policy migration. Dry-run каждой показал ровно один ожидаемый файл; history list содержит пять новых миграций в общей сложности (3 admin + 2 moderation). `uv run pytest tests/integration/test_preset_moderation.py tests/integration/test_prompt_presets.py -m db -W error -q` — 21 passed; security advisor с проверенным Dev DSN сообщил `No issues found`. Старые четыре официальных пресета остаются клиенту read-only.
+- [x] **3.5. Коммит:** `feat(presets): enforce administrative hiding and favorite snapshots`.
 
 ## Этап 4. Административные операции пресетов и аудит
 
@@ -991,11 +1011,11 @@ bun run typecheck
 bun test
 ```
 
-- [ ] Проверить `supabase migration list --linked`: все четыре миграции функции (три admin schema/ACL и одна moderation) уже в Dev, иначе `migrations-drift` в CI упадёт. При обнаружении чужих миграций не использовать repair/include-all без выяснения причины.
+- [ ] Проверить `supabase migration list --linked`: все пять миграций функции (три admin schema/ACL и две moderation) уже в Dev, иначе `migrations-drift` в CI упадёт. При обнаружении чужих миграций не использовать repair/include-all без выяснения причины.
 - [ ] Проверить весь итоговый diff и соответствие спецификации без запуска тестов во время самого code review. Проверки уже выполнены предыдущим шагом. Не включать в diff `.env`, browser storage state, реальные credentials и артефакты с персональными данными.
 - [ ] После исправления всех локально обнаруживаемых проблем один раз push, затем PR с `Closes #127`. Проверить `gh pr checks`; следить за существующими `backend`, `frontend`, `backend-db`, `e2e`, `migrations-drift`. Не запускать конкурирующие внешние проверки и не обходить concurrency/тестовые слоты. После создания PR перевести item проекта в «На ревью», не закрывать issue вручную раньше слияния.
 - [ ] Перед слиянием учесть фактическую автоматизацию: `.github/workflows/deploy.yml` на push в main собирает образы и разворачивает их на VPS, но **не применяет SQL-миграции**. Изменение прав каталога и новые таблицы должны попасть в production до использования нового приложения.
-- [ ] Только при отдельном разрешении на выпуск проверить production target, вывести dry-run ровно четырёх новых миграций, применить их через Supabase CLI к production, затем дать состояться деплою. Не перелинковывать локальный Dev-проект на production ради удобства. При отсутствии разрешения явно передать этот обязательный шаг владельцу и не заявлять, что выпуск завершён.
+- [ ] Только при отдельном разрешении на выпуск проверить production target, вывести dry-run ровно пяти новых миграций, применить их через Supabase CLI к production, затем дать состояться деплою. Не перелинковывать локальный Dev-проект на production ради удобства. При отсутствии разрешения явно передать этот обязательный шаг владельцу и не заявлять, что выпуск завершён.
 - [ ] После выпуска проверить отсутствие миграционного хвоста, вход обычного пользователя, отказ `/admin` без роли, доступ назначенного администратора и отсутствие secrets в ответах. Роль в production назначается вручную по подтверждённому аккаунту, не переносится из Dev. Общую пару production не менять ради проверки.
 
 ## Матрица покрытия спецификации
