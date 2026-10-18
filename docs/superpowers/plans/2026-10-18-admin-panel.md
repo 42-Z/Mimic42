@@ -12,7 +12,7 @@
 
 ## Порядок и ограничения
 
-- Работа только в уже созданной `feat/admin-panel`, в текущей папке. Новый worktree пользователь отклонил. Сейчас согласованы спецификация и подготовка плана, а не начало его выполнения.
+- Работа только в уже созданной `feat/admin-panel`, в текущей папке. Новый worktree пользователь отклонил. Пользователь явно поручил выполнить этот план.
 - Это одна административная подсистема с общими доступом, аудитом и навигацией. Выполнять этапы последовательно: база → права → модерация → административные операции → UI → локальная проверка. Независимые UI-задачи можно делегировать после закрепления API-контрактов.
 - Не менять LangChain, Telethon-рантайм, Mem0, модель по умолчанию, существующие пользовательские полномочия и глобальную визуальную систему.
 - Не запускать живые `real_tg`/`real_llm` для этой задачи. Проверка смены defaults использует поддельный Telegram-клиент.
@@ -20,7 +20,7 @@
 - Команды Python выполняются из корня через `uv run`; команды Bun — из `frontend/`. В каждом этапе сначала новая точечная проверка, затем реализация и та же проверка. Полный набор — только перед PR после подтверждения пользователем локальной работы.
 - Для каждой указанной точечной команды ожидаемый результат до изменения — отказ нового сценария по проверяемому поведению, после — PASS с exit code 0. Сбой подключения, ошибка фикстуры или пропуск сценария не считаются подтверждением ни отказа, ни исправления.
 - После каждого завершённого этапа отмечать его пункты и делать отдельный Conventional Commit с указанной темой. Не включать чужие изменения через `git add .`.
-- Будущие миграции создаёт `supabase migration new`; не выдумывать timestamp. В плане они однозначно обозначены суффиксами `_admin_platform.sql` и `_preset_moderation.sql`; точные пути, напечатанные CLI, записать здесь при создании. Это единственные пути, имена которых определятся во время выполнения.
+- Миграции создаёт `supabase migration new`; не выдумывать timestamp и не менять SQL уже применённой миграции. Пути, уже созданные CLI: `supabase/migrations/20261018095739_admin_platform.sql` и `supabase/migrations/20261018101931_restrict_admin_service_role_grants.sql`. Единственный будущий путь на момент подготовки плана — миграция `_preset_moderation.sql`; её timestamp записать после создания CLI.
 
 ## Карта файлов и ответственности
 
@@ -178,37 +178,43 @@ Request-модели находятся в `api/admin.py`, `extra="forbid"`:
 
 ## Этап 1. Закрытая схема и безопасная DB-обвязка
 
-**Files:** миграция `_admin_platform.sql`; `src/mimic42/integrations/database_models.py`; новые `tests/integration/conftest.py`, `tests/integration/test_admin_schema.py`.
+**Files:** `supabase/migrations/20261018095739_admin_platform.sql`, `supabase/migrations/20261018101931_restrict_admin_service_role_grants.sql`; `src/mimic42/integrations/database_models.py`; новые `tests/integration/conftest.py`, `tests/integration/test_admin_schema.py`.
 
-- [ ] **1.1. Добавить проверку схемы до её появления.** В `test_admin_schema.py` проверить `to_regclass`, RLS и отсутствие клиентских DML-привилегий для каждой из трёх таблиц. Для SQL-отказов использовать отдельные savepoint/сессии, а не несколько запросов в уже прерванной транзакции.
+- [x] **1.1. Добавить проверку схемы до её появления.** В `test_admin_schema.py` проверить `to_regclass`, RLS и отсутствие любых привилегий для `anon`/`authenticated`, а также точный allowlist table privileges `service_role` для каждой из трёх таблиц. Для SQL-отказов использовать отдельные savepoint/сессии, а не несколько запросов в уже прерванной транзакции.
 
 ```python
+import asyncpg
 import pytest
-from sqlalchemy import text
+
+from mimic42.testing.slots import plain_dsn
 
 
 @pytest.mark.parametrize(
     "table_name",
     ["admin_users", "platform_telegram_settings", "admin_audit_log"],
 )
-async def test_admin_tables_are_closed(db_session_factory, table_name):
-    async with db_session_factory() as session:
+async def test_admin_tables_are_closed(test_dsn: str, table_name: str) -> None:
+    connection = await asyncpg.connect(plain_dsn(test_dsn))
+    try:
         table = f"public.{table_name}"
-        assert await session.scalar(text("select to_regclass(:table)"), {"table": table})
-        assert await session.scalar(
-            text("select relrowsecurity from pg_class where oid = to_regclass(:table)"),
-            {"table": table},
+        row = await connection.fetchrow(
+            "select to_regclass($1) as relation, "
+            "(select relrowsecurity from pg_class where oid = to_regclass($1)) as rls_enabled",
+            table,
         )
+        assert row is not None and row["relation"] is not None
+        assert row["rls_enabled"] is True
         for role in ("anon", "authenticated"):
-            for operation in ("SELECT", "INSERT", "UPDATE", "DELETE"):
-                assert not await session.scalar(
-                    text("select has_table_privilege(:role, :table, :operation)"),
-                    {"role": role, "table": table, "operation": operation},
+            for privilege in ("SELECT", "INSERT", "UPDATE", "DELETE"):
+                assert not await connection.fetchval(
+                    "select has_table_privilege($1, $2, $3)", role, table, privilege
                 )
+    finally:
+        await connection.close()
 ```
 
-- [ ] **1.2. Выполнить** `uv run pytest tests/integration/test_admin_schema.py -m db -W error -q`. До миграции ожидается FAIL на отсутствии таблиц, не на подключении к неправильной базе.
-- [ ] **1.3. Создать миграцию** командой `supabase migration new admin_platform`. Заполнить созданный CLI файл следующим SQL; не добавлять данные аккаунтов или значения credentials.
+- [x] **1.2. Выполнить** `uv run pytest tests/integration/test_admin_schema.py -m db -W error -q`. До миграции ожидается FAIL на отсутствии таблиц, не на подключении к неправильной базе.
+- [x] **1.3. Создать миграцию** командой `supabase migration new admin_platform`. Заполнить созданный CLI файл следующим SQL; не добавлять данные аккаунтов или значения credentials.
 
 ```sql
 create table public.admin_users (
@@ -251,16 +257,16 @@ alter table public.platform_telegram_settings enable row level security;
 alter table public.admin_audit_log enable row level security;
 
 revoke all on public.admin_users, public.platform_telegram_settings,
-    public.admin_audit_log from public, anon, authenticated;
+    public.admin_audit_log from public, anon, authenticated, service_role;
 grant select, insert, update, delete on public.admin_users to service_role;
 grant select, insert, update on public.platform_telegram_settings to service_role;
 grant select, insert on public.admin_audit_log to service_role;
 ```
 
-UUID автора аудита намеренно сохраняется без FK: удаление профиля не стирает и не переписывает историю. Клиентские политики для этих таблиц отсутствуют. Сохранённая общая пара не создаётся миграцией, поэтому старый код продолжает работать с env.
+UUID автора аудита намеренно сохраняется без FK: удаление профиля не стирает и не переписывает историю. Клиентские политики для этих таблиц отсутствуют. Сохранённая общая пара не создаётся миграцией, поэтому старый код продолжает работать с env. Supabase может выдавать новые public-таблицы с уже существующими default grants для `service_role`, поэтому их надо отозвать перед точечными grant. Первая миграция этого этапа уже применена в Dev до обнаружения default ACL; её не переписывать. Следующая миграция `20261018101931_restrict_admin_service_role_grants.sql` повторно отзывает права только у `service_role` и задаёт точный allowlist.
 
-- [ ] **1.4. Добавить ORM-модели** с теми же колонками и типами; `PromptPresetModel` отображает существующую таблицу, включая `settings`, `owner_id`, `published_at`, `is_active`, `sort_order`. Не вызывать `Base.metadata.create_all()` вместо Supabase-миграций.
-- [ ] **1.5. Добавить именованную фикстуру для транзакционных тестов** в новом `tests/integration/conftest.py`:
+- [x] **1.4. Добавить ORM-модели** с теми же колонками и типами; `PromptPresetModel` отображает существующую таблицу, включая `settings`, `owner_id`, `published_at`, `is_active`, `sort_order`. Не вызывать `Base.metadata.create_all()` вместо Supabase-миграций.
+- [x] **1.5. Добавить именованную фикстуру для транзакционных тестов** в новом `tests/integration/conftest.py`:
 
 ```python
 from collections.abc import AsyncIterator
@@ -284,10 +290,10 @@ async def admin_db_factory(db_engine, test_slot) -> AsyncIterator[async_sessionm
             await transaction.rollback()
 ```
 
-Она занимает существующий тестовый слот, но ничего не очищает и не меняет глобальную fixture `db_session_factory`. Все операции на её соединении последовательны. Тесты общей настройки, официальных пресетов и глобальных агрегатов используют именно её: внутренние commits репозитория завершают savepoint, а внешний rollback возвращает данные. Персоны берутся из `test_slot`, не из `SLOTS[0]`; новые `auth.users` не создаются.
+Она занимает существующий тестовый слот, но ничего не очищает и не меняет глобальную fixture `db_session_factory`. Все операции на её соединении последовательны. Тесты общей настройки, официальных пресетов и глобальных агрегатов используют именно её: внутренние commits репозитория завершают savepoint, а внешний rollback возвращает данные. Отдельная проверка фиксирует запись через session commit и убеждается со второго соединения, что row остался невидим, пока outer transaction не завершена. Персоны берутся из `test_slot`, не из `SLOTS[0]`; новые `auth.users` не создаются.
 
-- [ ] **1.6. Проверить адрес связанного Dev-проекта** в `supabase/.temp/project-ref`: только `ipqylrdmmjitemjrygej`. После `supabase db push --linked --dry-run` убедиться, что список содержит только ожидаемые неприменённые миграции этой ветки, затем выполнить `supabase db push --linked`, `supabase db advisors --linked --type security --level warn`, `supabase migration list --linked` и повторить команду 1.2. Не использовать reset или repair.
-- [ ] **1.7. Коммит:** `feat(admin): add protected platform settings and audit schema`.
+- [x] **1.6. Проверить адрес связанного Dev-проекта** в `supabase/.temp/project-ref`: только `ipqylrdmmjitemjrygej`. После первого dry-run подтвердить только `admin_platform`, применить его и прогнать schema test. При выявлении default grants не редактировать уже применённую миграцию: создать `restrict_admin_service_role_grants`, затем отдельный dry-run/push. После этого `migration list --linked` должен показывать обе миграции, schema test и `supabase db advisors --type security --level warn` должны проходить. Если связанный advisors mode падает на временной роли, повторить с `--db-url`, предварительно пропустив соединение через `assert_test_project`; не открывать production URL. Не использовать reset или repair.
+- [x] **1.7. Коммит:** `feat(admin): add protected platform settings and audit schema`.
 
 ## Этап 2. Проверка роли и подключение подсистемы
 
@@ -485,7 +491,7 @@ create trigger prompt_presets_freeze_on_hide
     execute function public.freeze_preset_favorites();
 
 create or replace function public.set_favorite_owner() returns trigger
-language plpgsql security definer set search_path = ''
+language plpgsql security invoker set search_path = ''
 as $$
 begin
     new.owner_id = auth.uid();
@@ -522,7 +528,7 @@ create index agent_events_admin_activity_date_idx
     where event_type like 'tool.%' or status = 'failed';
 ```
 
-Представление авторов сознательно оставляет прежнюю узкую серверную проекцию только `id/display_name`; `security_invoker=true` здесь лишит магазин имён из-за RLS профилей. Не добавлять email. Ограждающие trigger/column grants уже не разрешают автору менять `is_active`, их не ослаблять. Новый trigger использует существующую функцию заморозки и не создаёт новый публичный SECURITY DEFINER API. Блокировка `FOR SHARE` в существующем trigger добавления избранного сериализуется с `FOR UPDATE` модерации: иначе RLS-проверка могла бы увидеть старую активную версию, а вставка — завершиться уже после заморозки.
+Представление авторов сознательно оставляет прежнюю узкую серверную проекцию только `id/display_name`; `security_invoker=true` здесь лишит магазин имён из-за RLS профилей. Не добавлять email. Ограждающие trigger/column grants уже не разрешают автору менять `is_active`, их не ослаблять. Существующую функцию `set_favorite_owner` изменить на `SECURITY INVOKER`: она не должна добавлять новый путь с повышенными правами. Пользователь уже имеет SELECT и ограниченный UPDATE grant на `prompt_presets`, необходимый для row lock; RLS видит только активный каталог. Блокировка `FOR SHARE` в trigger добавления избранного сериализуется с `FOR UPDATE` модерации: если вставка первой захватила строку, последующее скрытие заморозит её; если первым было скрытие, вставка после ожидания не найдёт активную строку.
 
 - [ ] **3.4. Проверить Dev-адрес, dry-run и применить только эту миграцию** командами этапа 1. Повторить `uv run pytest tests/integration/test_preset_moderation.py tests/integration/test_prompt_presets.py -m db -W error -q`. Старые четыре официальных пресета остаются клиенту read-only.
 - [ ] **3.5. Коммит:** `feat(presets): enforce administrative hiding and favorite snapshots`.
@@ -630,19 +636,26 @@ class AdminRoute(APIRoute):
 
 **Files:** новый `src/mimic42/core/runtime_status.py`; `src/mimic42/api/app.py`, `src/mimic42/integrations/database_admin.py`, `src/mimic42/integrations/database_admin_statistics.py`; новые `tests/core/test_runtime_status.py`, `tests/api/test_admin_users.py`, `tests/integration/test_admin_users.py`.
 
-- [ ] **6.1. Сначала проверить извлекаемое правило:** сохранённые `starting/running/stopping` без runtime превращаются в `stopped`; `draft/error/stopped` сохраняются; существующий runtime имеет приоритет. Результат обычного `/agents` до/после извлечения не меняется.
+- [ ] **6.1. Сначала проверить извлекаемое правило:** сохранённые `starting/running/stopping` без runtime превращаются в `stopped`; `error/stopped` сохраняются; неизвестное для `AgentRuntimeState` значение `draft` также превращается в `stopped`, как в существующем `_agent_record`; существующий runtime имеет приоритет. Результат обычного `/agents` до/после извлечения не меняется.
 
 ```python
-def effective_runtime_state(saved: AgentRuntimeState, actual: AgentRuntimeState | None) -> AgentRuntimeState:
+def effective_runtime_state(
+    saved: AgentRuntimeState | str,
+    actual: AgentRuntimeState | None,
+) -> AgentRuntimeState:
     if actual is not None:
         return actual
-    if saved in {
+    try:
+        saved_state = AgentRuntimeState(saved)
+    except ValueError:
+        return AgentRuntimeState.STOPPED
+    if saved_state in {
         AgentRuntimeState.STARTING,
         AgentRuntimeState.RUNNING,
         AgentRuntimeState.STOPPING,
     }:
         return AgentRuntimeState.STOPPED
-    return saved
+    return saved_state
 ```
 
 - [ ] **6.2. Написать API/DB-проверки:** пустой профиль включён; поиск регистронезависим; `%` и `_` в q означают буквальные символы; страницы не теряют строки с одинаковой датой создания; неизвестный user_id — `404`; ответ не содержит `soul_prompt/settings/session`; модель берётся из `settings.llm_model` или реального `DEFAULT_LLM_MODEL`, а не из устаревшего `openrouter/free`.
@@ -656,7 +669,7 @@ with runtime as (
 ), effective_agents as (
     select a.id, a.owner_id, a.name, a.settings, a.created_at,
         coalesce(r.state, case
-            when a.status in ('starting', 'running', 'stopping') then 'stopped'
+            when a.status in ('draft', 'starting', 'running', 'stopping') then 'stopped'
             else a.status::text
         end) as state
     from public.agents a
@@ -699,7 +712,7 @@ def test_statistics_window_uses_calendar_days_in_utc():
 
 - [ ] **7.2. Написать DB-тест на базовый snapshot и дельту.** Общая Dev-база не пуста: получить статистику в одной `REPEATABLE READ` транзакции до создания собственных фикстур, затем после. Добавить два агента, 2 входящих, 1 agent_response, 1 tool_call-сообщение, успешный tool-event, неуспешный tool-event и отдельный model.failed; ожидаемая дельта — messages=3, actions=2, errors=2. Дневные числа в сумме равны totals; счётчик токенов 100/30 не удваивается от JOIN; переключение 7→30 не меняет токены.
 - [ ] **7.3. Выполнить** `uv run pytest tests/core/test_admin_statistics.py tests/api/test_admin_statistics.py tests/integration/test_admin_statistics.py -W error -q`.
-- [ ] **7.4. Реализовать независимые агрегаты:** профили count, эффективные состояния из CTE этапа 6, `coalesce(sum(input_tokens),0)` и output отдельно, дневные counts сообщений и событий. Одна AsyncSession не используется одновременно в `asyncio.gather`; несколько последовательных агрегатов в одной read-транзакции либо один SELECT из независимо агрегированных подзапросов.
+- [ ] **7.4. Реализовать независимые агрегаты:** профили count, эффективные состояния из CTE этапа 6, `coalesce(sum(input_tokens),0)` и output отдельно, дневные counts сообщений и событий. Одна AsyncSession не используется одновременно в `asyncio.gather`. Все SELECT одного ответа читаются в согласованном snapshot: предпочесть один SELECT из независимо агрегированных подзапросов; если запросы остаются последовательными, начать read-only транзакцию с `REPEATABLE READ` до первого SELECT.
 
 ```sql
 select (created_at at time zone 'UTC')::date as date, count(*) as messages
@@ -941,11 +954,11 @@ bun run typecheck
 bun test
 ```
 
-- [ ] Проверить `supabase migration list --linked`: обе новые миграции уже в Dev, иначе `migrations-drift` в CI упадёт. При обнаружении чужих миграций не использовать repair/include-all без выяснения причины.
+- [ ] Проверить `supabase migration list --linked`: все три миграции функции (две admin schema/ACL и одна moderation) уже в Dev, иначе `migrations-drift` в CI упадёт. При обнаружении чужих миграций не использовать repair/include-all без выяснения причины.
 - [ ] Проверить весь итоговый diff и соответствие спецификации без запуска тестов во время самого code review. Проверки уже выполнены предыдущим шагом. Не включать в diff `.env`, browser storage state, реальные credentials и артефакты с персональными данными.
 - [ ] После исправления всех локально обнаруживаемых проблем один раз push, затем PR с `Closes #127`. Проверить `gh pr checks`; следить за существующими `backend`, `frontend`, `backend-db`, `e2e`, `migrations-drift`. Не запускать конкурирующие внешние проверки и не обходить concurrency/тестовые слоты. После создания PR перевести item проекта в «На ревью», не закрывать issue вручную раньше слияния.
 - [ ] Перед слиянием учесть фактическую автоматизацию: `.github/workflows/deploy.yml` на push в main собирает образы и разворачивает их на VPS, но **не применяет SQL-миграции**. Изменение прав каталога и новые таблицы должны попасть в production до использования нового приложения.
-- [ ] Только при отдельном разрешении на выпуск проверить production target, вывести dry-run ровно двух миграций, применить их через Supabase CLI к production, затем дать состояться деплою. Не перелинковывать локальный Dev-проект на production ради удобства. При отсутствии разрешения явно передать этот обязательный шаг владельцу и не заявлять, что выпуск завершён.
+- [ ] Только при отдельном разрешении на выпуск проверить production target, вывести dry-run ровно трёх новых миграций, применить их через Supabase CLI к production, затем дать состояться деплою. Не перелинковывать локальный Dev-проект на production ради удобства. При отсутствии разрешения явно передать этот обязательный шаг владельцу и не заявлять, что выпуск завершён.
 - [ ] После выпуска проверить отсутствие миграционного хвоста, вход обычного пользователя, отказ `/admin` без роли, доступ назначенного администратора и отсутствие secrets в ответах. Роль в production назначается вручную по подтверждённому аккаунту, не переносится из Dev. Общую пару production не менять ради проверки.
 
 ## Матрица покрытия спецификации
