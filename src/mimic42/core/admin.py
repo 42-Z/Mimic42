@@ -114,6 +114,9 @@ class PresetPatchValues(TypedDict, total=False):
     sort_order: int
 
 
+AdminPresetKind = Literal["all", "official", "published"]
+
+
 class StoredTelegramSettings(BaseModel):
     api_id: int
     api_hash_ciphertext: SecretStr
@@ -146,7 +149,7 @@ class AdminRepository(Protocol):
         self,
         *,
         q: str,
-        kind: Literal["all", "official", "published"],
+        kind: AdminPresetKind,
         page: int,
         page_size: int,
     ) -> AdminPage[AdminPresetSummary]: ...

@@ -1,15 +1,81 @@
 from __future__ import annotations
 
 import logging
-from typing import Annotated
+from collections.abc import Awaitable
+from typing import Annotated, Any, cast
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from mimic42.api.auth import CurrentUser, require_user
-from mimic42.core.admin import AdminIdentity, AdminRepository, AdminUnavailableError
+from mimic42.core.admin import (
+    AdminIdentity,
+    AdminNotFoundError,
+    AdminPage,
+    AdminPresetDetail,
+    AdminPresetKind,
+    AdminPresetSummary,
+    AdminRepository,
+    AdminUnavailableError,
+    PresetCreateValues,
+    PresetPatchValues,
+)
 
 logger = logging.getLogger(__name__)
+
+
+class PresetCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(min_length=1, max_length=200)
+    summary: str = Field(min_length=1, max_length=1000)
+    body: str = Field(min_length=1, max_length=20_000)
+    settings: dict[str, Any] | None = None
+    sort_order: int = Field(default=0, strict=True)
+
+    @field_validator("title", "summary", "body")
+    @classmethod
+    def reject_blank_text(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Значение не может состоять только из пробелов")
+        return value
+
+
+class PresetPatchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    summary: str | None = Field(default=None, min_length=1, max_length=1000)
+    body: str | None = Field(default=None, min_length=1, max_length=20_000)
+    settings: dict[str, Any] | None = None
+    sort_order: int | None = Field(default=None, strict=True)
+
+    @field_validator("title", "summary", "body")
+    @classmethod
+    def reject_null_or_blank_text(cls, value: str | None) -> str:
+        if value is None or not value.strip():
+            raise ValueError("Поле должно содержать непустой текст")
+        return value
+
+    @field_validator("sort_order")
+    @classmethod
+    def reject_null_sort_order(cls, value: int | None) -> int:
+        if value is None:
+            raise ValueError("Поле не может быть null")
+        return value
+
+    @model_validator(mode="after")
+    def require_at_least_one_field(self) -> PresetPatchRequest:
+        if not self.model_fields_set:
+            raise ValueError("PATCH должен содержать хотя бы одно поле")
+        return self
+
+
+class PresetVisibilityRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    is_active: bool = Field(strict=True)
 
 
 def _admin_unavailable() -> HTTPException:
@@ -49,6 +115,29 @@ async def require_admin(
     return current_user
 
 
+def _get_admin_repository(request: Request) -> AdminRepository:
+    repository: AdminRepository | None = getattr(request.app.state, "admin_repository", None)
+    if repository is None:
+        raise _admin_unavailable()
+    return repository
+
+
+async def _admin_result[ResultT](operation: Awaitable[ResultT]) -> ResultT:
+    try:
+        return await operation
+    except AdminNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Пресет не найден",
+        ) from None
+    except AdminUnavailableError as exc:
+        logger.warning("Administrative operation unavailable (%s)", type(exc).__name__)
+        raise _admin_unavailable() from None
+    except Exception as exc:
+        logger.error("Unexpected administrative operation error (%s)", type(exc).__name__)
+        raise _admin_unavailable() from None
+
+
 async def get_admin_identity(request: Request, current_user: CurrentUser) -> AdminIdentity:
     return AdminIdentity(
         user_id=current_user.user_id,
@@ -60,3 +149,80 @@ router = APIRouter(
     prefix="/api/v1/admin",
     dependencies=[Depends(require_admin)],
 )
+
+
+@router.get("/presets", response_model=AdminPage[AdminPresetSummary])
+async def list_presets(
+    request: Request,
+    q: Annotated[str, Query(max_length=200)] = "",
+    kind: AdminPresetKind = "all",
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100)] = 25,
+) -> AdminPage[AdminPresetSummary]:
+    repository = _get_admin_repository(request)
+    return await _admin_result(
+        repository.list_presets(
+            q=q.strip(),
+            kind=kind,
+            page=page,
+            page_size=page_size,
+        )
+    )
+
+
+@router.get("/presets/{preset_id}", response_model=AdminPresetDetail)
+async def get_preset(request: Request, preset_id: UUID) -> AdminPresetDetail:
+    repository = _get_admin_repository(request)
+    return await _admin_result(repository.get_preset(preset_id))
+
+
+@router.post(
+    "/presets",
+    response_model=AdminPresetDetail,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_preset(
+    request: Request,
+    values: PresetCreateRequest,
+    current_user: Annotated[CurrentUser, Depends(require_admin)],
+) -> AdminPresetDetail:
+    repository = _get_admin_repository(request)
+    create_values = cast(PresetCreateValues, values.model_dump())
+    return await _admin_result(
+        repository.create_official_preset(create_values, actor_user_id=current_user.user_id)
+    )
+
+
+@router.patch("/presets/{preset_id}/visibility", response_model=AdminPresetDetail)
+async def set_preset_visibility(
+    request: Request,
+    preset_id: UUID,
+    values: PresetVisibilityRequest,
+    current_user: Annotated[CurrentUser, Depends(require_admin)],
+) -> AdminPresetDetail:
+    repository = _get_admin_repository(request)
+    return await _admin_result(
+        repository.set_preset_visibility(
+            preset_id,
+            values.is_active,
+            actor_user_id=current_user.user_id,
+        )
+    )
+
+
+@router.patch("/presets/{preset_id}", response_model=AdminPresetDetail)
+async def update_preset(
+    request: Request,
+    preset_id: UUID,
+    values: PresetPatchRequest,
+    current_user: Annotated[CurrentUser, Depends(require_admin)],
+) -> AdminPresetDetail:
+    repository = _get_admin_repository(request)
+    patch_values = cast(PresetPatchValues, values.model_dump(exclude_unset=True))
+    return await _admin_result(
+        repository.update_official_preset(
+            preset_id,
+            patch_values,
+            actor_user_id=current_user.user_id,
+        )
+    )
