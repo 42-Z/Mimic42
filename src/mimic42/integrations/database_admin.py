@@ -184,11 +184,12 @@ class DatabaseAdminRepository:
                 if preset is None:
                     raise AdminNotFoundError
 
+                patch = dict(values)
                 changed_fields = sorted(
-                    key for key, value in values.items() if getattr(preset, key) != value
+                    key for key, value in patch.items() if getattr(preset, key) != value
                 )
                 for field in changed_fields:
-                    setattr(preset, field, values[field])
+                    setattr(preset, field, patch[field])
                 if changed_fields:
                     await session.flush()
                     await self._append_audit(

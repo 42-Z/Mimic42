@@ -72,7 +72,7 @@
 
 ## Общий контракт API
 
-В `core/admin.py` закрепить DTO; типы времени сериализуются ISO 8601, UUID — строками. Списки используют `page >= 1`, `1 <= page_size <= 100`, по умолчанию 25; поиск `q` обрезается по краям и ограничен 200 символами.
+В `core/admin.py` закрепить DTO; типы времени сериализуются ISO 8601, UUID — строками. Списки используют `1 <= page <= 1_000_000`, `1 <= page_size <= 100`, по умолчанию 25; поиск `q` обрезается по краям и ограничен 200 символами. Ограничение page не даёт сконструировать гигантский OFFSET и превратить некорректный ввод в backend `503`.
 
 ```python
 from datetime import date, datetime
@@ -169,8 +169,8 @@ Request-модели находятся в `api/admin.py`, `extra="forbid"`:
 
 | Запрос | Поля |
 | --- | --- |
-| `POST /admin/presets` | `title` 1–200, `summary` 1–1000, `body` 1–20000, `settings` object/null, `sort_order` integer по умолчанию 0; текстовые обязательные поля не могут состоять из пробелов. |
-| `PATCH /admin/presets/{id}` | Непустое подмножество тех же полей. `null` разрешён только для `settings`; `owner_id`, `slug`, `published_at`, `is_active` запрещены. |
+| `POST /admin/presets` | `title` 1–200, `summary` 1–1000, `body` 1–20000, `settings` object/null, `sort_order` PostgreSQL `integer` (-2147483648..2147483647), по умолчанию 0; текстовые обязательные поля не могут состоять из пробелов. |
+| `PATCH /admin/presets/{id}` | Непустое подмножество тех же полей; sort_order в диапазоне PostgreSQL `integer`. `null` разрешён только для `settings`; `owner_id`, `slug`, `published_at`, `is_active` запрещены. |
 | `PATCH /admin/presets/{id}/visibility` | Только `is_active: bool`. |
 | `PUT /admin/telegram-settings` | `api_id: int`, строго положительный и не выше PostgreSQL integer; `api_hash: SecretStr`, непустой после strip, не длиннее 256. |
 
@@ -623,10 +623,16 @@ create index concurrently if not exists agent_events_admin_activity_date_idx
 
 **Files:** `src/mimic42/core/admin.py`, `src/mimic42/api/admin.py`, `src/mimic42/integrations/database_admin.py`; новые `tests/api/test_admin_presets.py`, `tests/integration/test_admin_presets.py`.
 
-- [ ] **4.1. Написать проверки API:** `GET` списка не содержит тела промптов; detail возвращает тело только официального/опубликованного; приватный по UUID даёт `404`; изменение чужого пользовательского тела запрещено; неизвестное поле запроса и пустой PATCH дают `422`; пределы текстов и пагинации соблюдены.
-- [ ] **4.2. Написать DB-проверки:** создание официального генерирует уникальный `official_<uuidhex>`; sort-order PATCH сохраняет остальные поля; visibility затрагивает только указанный UUID; изменение официального и аудит фиксируются вместе. В тесте сбоя аудита временно через monkeypatch заставить приватный `_append_audit` репозитория выбросить `AdminUnavailableError`, после операции убедиться, что строка и избранное не изменились. Функция `_append_audit(session, actor_user_id, action, object_id, metadata)` ничего сама не коммитит.
-- [ ] **4.3. Выполнить** `uv run pytest tests/api/test_admin_presets.py tests/integration/test_admin_presets.py -W error -q`.
-- [ ] **4.4. Реализовать репозиторий.** На чтении и на мутации использовать SQL-предикат `owner_id is null or published_at is not null`. На update предварительно заблокировать допустимую строку через `SELECT ... FOR UPDATE`; при отсутствии — `AdminNotFoundError`. Для редактирования официальных дополнительно `owner_id is null`. Это сериализует изменение с авторским снятием публикации, не открывая приватные строки.
+- [x] **4.1. Написать проверки API:** `GET` списка не содержит тела промптов; detail возвращает тело только официального/опубликованного; приватный по UUID даёт `404`; изменение чужого пользовательского тела запрещено; неизвестное поле запроса, пустой PATCH, sort_order вне PostgreSQL integer, page вне 1..1_000_000 и ошибочные размеры страниц дают `422`; пределы текстов соблюдены.
+- [x] **4.2. Написать DB-проверки:** создание официального генерирует уникальный `official_<uuidhex>`; sort-order PATCH сохраняет остальные поля; visibility затрагивает только указанный UUID; изменение официального и аудит фиксируются вместе. В тесте сбоя аудита временно через monkeypatch заставить приватный `_append_audit` репозитория выбросить `AdminUnavailableError`, после операции убедиться, что строка и избранное не изменились. Функция `_append_audit(session, actor_user_id, action, object_id, metadata)` ничего сама не коммитит.
+- [x] **4.3. Выполнить две отдельные команды**, потому что `pyproject.toml` по умолчанию исключает `db`-тесты:
+
+```bash
+uv run pytest tests/api/test_admin_presets.py -m "not db" -W error -q
+uv run pytest tests/integration/test_admin_presets.py -m db -W error -q
+```
+Итоговый результат: API — 19 passed, integration/DB — 5 passed. Ранний combined run без `-m db` выполнил только API-слой и deselected integration-тесты; он не считается проверкой DB.
+- [x] **4.4. Реализовать репозиторий.** На чтении и на мутации использовать SQL-предикат `owner_id is null or published_at is not null`. На update предварительно заблокировать допустимую строку через `SELECT ... FOR UPDATE`; при отсутствии — `AdminNotFoundError`. Для редактирования официальных дополнительно `owner_id is null`. Это сериализует изменение с авторским снятием публикации, не открывая приватные строки.
 
 ```python
 async def set_preset_visibility(self, preset_id: UUID, is_active: bool, *, actor_user_id: UUID):
@@ -662,9 +668,9 @@ async def set_preset_visibility(self, preset_id: UUID, is_active: bool, *, actor
 
 `select/or_`, модель и предметная ошибка определены выше; `_preset_detail` формирует только `AdminPresetDetail`, а не сериализует ORM целиком. Для owner_name сделать отдельный ограниченный join/projection. Повторное выставление той же видимости — безопасный no-op без новой записи аудита. `preset.created/updated` записывают UUID и имена изменённых полей, но не их текстовые значения. SQLAlchemy-ошибки переводятся в безопасную `AdminUnavailableError` после rollback.
 
-- [ ] **4.5. Подключить маршруты из контракта.** `POST` возвращает `201` и detail, PATCH — detail. `settings` передаётся JSON-объектом/null без потери неизвестных сохранённых ключей. Все mutations получают автора из `require_admin`, а не из body. Роль продолжает проверяться при каждом запросе.
-- [ ] **4.6. Повторить команду 4.3**, добавить двухсоединительный сценарий «автор снял публикацию до блокировки административной операции → `404`». Для этого и конкурентного сценария этапа 3 использовать два настоящих соединения от `db_engine`, не два session поверх одного `admin_db_factory`: подготовить и закоммитить только собственные новые UUID пресета/избранного внутри арендованного `test_slot`, затем в `finally` удалить только захваченные UUID и завершить обе транзакции. Общую Telegram-настройку и существующие официальные строки эти сценарии не меняют.
-- [ ] **4.7. Коммит:** `feat(admin): manage official presets and moderate published presets`.
+- [x] **4.5. Подключить маршруты из контракта.** `POST` возвращает `201` и detail, PATCH — detail. `settings` передаётся JSON-объектом/null без потери неизвестных сохранённых ключей. Все mutations получают автора из `require_admin`, а не из body. Роль продолжает проверяться при каждом запросе.
+- [x] **4.6. Повторить API/DB-команды 4.3**, добавить двухсоединительный сценарий «автор снял публикацию до блокировки административной операции → `404`». Для race tests используются два соединения от `db_engine`; commits ограничены собственными UUID внутри тестового слота, cleanup удаляет конкретные audit/favorite/preset IDs и закрывает соединения даже при частичном старте. Общая Telegram-настройка и существующие официальные строки не меняются.
+- [x] **4.7. Коммит:** `feat(admin): manage official presets and moderate published presets`.
 
 ## Этап 5. Telegram defaults: шифрование, безопасный API и новые подключения
 

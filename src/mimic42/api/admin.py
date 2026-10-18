@@ -10,6 +10,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from mimic42.api.auth import CurrentUser, require_user
 from mimic42.core.admin import (
+    MAX_ADMIN_PAGE,
+    POSTGRES_INTEGER_MAX,
+    POSTGRES_INTEGER_MIN,
     AdminIdentity,
     AdminNotFoundError,
     AdminPage,
@@ -32,7 +35,12 @@ class PresetCreateRequest(BaseModel):
     summary: str = Field(min_length=1, max_length=1000)
     body: str = Field(min_length=1, max_length=20_000)
     settings: dict[str, Any] | None = None
-    sort_order: int = Field(default=0, strict=True)
+    sort_order: int = Field(
+        default=0,
+        strict=True,
+        ge=POSTGRES_INTEGER_MIN,
+        le=POSTGRES_INTEGER_MAX,
+    )
 
     @field_validator("title", "summary", "body")
     @classmethod
@@ -49,7 +57,12 @@ class PresetPatchRequest(BaseModel):
     summary: str | None = Field(default=None, min_length=1, max_length=1000)
     body: str | None = Field(default=None, min_length=1, max_length=20_000)
     settings: dict[str, Any] | None = None
-    sort_order: int | None = Field(default=None, strict=True)
+    sort_order: int | None = Field(
+        default=None,
+        strict=True,
+        ge=POSTGRES_INTEGER_MIN,
+        le=POSTGRES_INTEGER_MAX,
+    )
 
     @field_validator("title", "summary", "body")
     @classmethod
@@ -156,7 +169,7 @@ async def list_presets(
     request: Request,
     q: Annotated[str, Query(max_length=200)] = "",
     kind: AdminPresetKind = "all",
-    page: Annotated[int, Query(ge=1)] = 1,
+    page: Annotated[int, Query(ge=1, le=MAX_ADMIN_PAGE)] = 1,
     page_size: Annotated[int, Query(ge=1, le=100)] = 25,
 ) -> AdminPage[AdminPresetSummary]:
     repository = _get_admin_repository(request)

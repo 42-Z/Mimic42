@@ -8,9 +8,13 @@ from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import select, text
-from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, async_sessionmaker
 
-from mimic42.core.admin import AdminNotFoundError, AdminUnavailableError
+from mimic42.core.admin import (
+    AdminNotFoundError,
+    AdminUnavailableError,
+    PresetCreateValues,
+)
 from mimic42.integrations.database_admin import DatabaseAdminRepository
 from mimic42.integrations.database_models import AdminAuditLogModel, PromptPresetModel
 from mimic42.testing.slots import Slot
@@ -50,7 +54,7 @@ async def test_official_creation_and_sort_order_patch_are_audited_atomically(
 ) -> None:
     repository = DatabaseAdminRepository(admin_db_factory)
     actor_id = test_slot.persona("empty").user_id
-    values = {
+    values: PresetCreateValues = {
         "title": "Official title",
         "summary": "Official summary",
         "body": "Official prompt body",
@@ -304,11 +308,15 @@ async def test_admin_visibility_lock_rechecks_custom_publication_after_waiting(
     actor_id = test_slot.persona("full").user_id
     preset_id = uuid4()
     slug = f"u_{preset_id}"
-    author_connection = await db_engine.connect()
-    admin_connection = await db_engine.connect()
+    author_connection: AsyncConnection | None = None
+    admin_connection: AsyncConnection | None = None
     author_transaction = None
+    admin_transaction = None
     admin_task: asyncio.Task[Any] | None = None
     try:
+        author_connection = await db_engine.connect()
+        admin_connection = await db_engine.connect()
+        assert author_connection is not None and admin_connection is not None
         async with author_connection.begin():
             await author_connection.execute(
                 text(
@@ -319,15 +327,19 @@ async def test_admin_visibility_lock_rechecks_custom_publication_after_waiting(
                 {"id": preset_id, "slug": slug, "owner_id": owner_id},
             )
 
+        admin_transaction = await admin_connection.begin()
         admin_pid = await admin_connection.scalar(text("select pg_backend_pid()"))
-        await admin_connection.rollback()
         author_transaction = await author_connection.begin()
         await author_connection.execute(
             text("update public.prompt_presets set published_at = null where id = :id"),
             {"id": preset_id},
         )
         repository = DatabaseAdminRepository(
-            async_sessionmaker(admin_connection, expire_on_commit=False)
+            async_sessionmaker(
+                admin_connection,
+                expire_on_commit=False,
+                join_transaction_mode="create_savepoint",
+            )
         )
         admin_task = asyncio.create_task(
             repository.set_preset_visibility(preset_id, False, actor_user_id=actor_id)
@@ -340,7 +352,7 @@ async def test_admin_visibility_lock_rechecks_custom_publication_after_waiting(
                 await author_connection.scalar(
                     text(
                         "select exists (select 1 from pg_stat_activity "
-                        "where pid = :pid and state = 'active' and wait_event_type = 'Lock')"
+                        "where pid = :pid and wait_event_type = 'Lock')"
                     ),
                     {"pid": admin_pid},
                 )
@@ -348,7 +360,26 @@ async def test_admin_visibility_lock_rechecks_custom_publication_after_waiting(
             if waiting_for_author or admin_task.done():
                 break
             await asyncio.sleep(0.01)
-        assert waiting_for_author, "admin query did not wait for the author's row lock"
+        task_error: str | None = None
+        if admin_task.done():
+            try:
+                await admin_task
+            except Exception as exc:
+                task_error = f"{type(exc).__name__}: {exc}"
+        activity = (
+            await author_connection.execute(
+                text(
+                    "select pid, state, wait_event_type, wait_event, left(query, 160) "
+                    "from pg_stat_activity where pid = :pid"
+                ),
+                {"pid": admin_pid},
+            )
+        ).all()
+        assert waiting_for_author, (
+            "admin query did not wait for the author's row lock; "
+            f"task_done={admin_task.done()}, task_error={task_error}, "
+            f"admin_pid={admin_pid}, activity_query={activity}"
+        )
 
         await author_transaction.commit()
         author_transaction = None
@@ -356,7 +387,11 @@ async def test_admin_visibility_lock_rechecks_custom_publication_after_waiting(
             await asyncio.wait_for(admin_task, timeout=10)
         admin_task = None
 
-        async with async_sessionmaker(admin_connection, expire_on_commit=False)() as session:
+        async with async_sessionmaker(
+            admin_connection,
+            expire_on_commit=False,
+            join_transaction_mode="create_savepoint",
+        )() as session:
             row = await session.get(PromptPresetModel, preset_id)
             audit_count = await session.scalar(
                 select(AdminAuditLogModel.id).where(
@@ -374,13 +409,27 @@ async def test_admin_visibility_lock_rechecks_custom_publication_after_waiting(
             admin_task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await admin_task
-        with contextlib.suppress(Exception):
-            await admin_connection.rollback()
-        with contextlib.suppress(Exception):
-            async with author_connection.begin():
-                await author_connection.execute(
-                    text("delete from public.prompt_presets where id = :id"),
-                    {"id": preset_id},
-                )
-    await admin_connection.close()
-    await author_connection.close()
+        if admin_connection is not None:
+            with contextlib.suppress(Exception):
+                if admin_transaction is not None and admin_transaction.is_active:
+                    await admin_transaction.rollback()
+                else:
+                    await admin_connection.rollback()
+        if author_connection is not None:
+            with contextlib.suppress(Exception):
+                async with author_connection.begin():
+                    await author_connection.execute(
+                        text(
+                            "delete from public.admin_audit_log "
+                            "where object_type = 'preset' and object_id = :id"
+                        ),
+                        {"id": preset_id},
+                    )
+                    await author_connection.execute(
+                        text("delete from public.prompt_presets where id = :id"),
+                        {"id": preset_id},
+                    )
+        for connection in (admin_connection, author_connection):
+            if connection is not None:
+                with contextlib.suppress(Exception):
+                    await connection.close()

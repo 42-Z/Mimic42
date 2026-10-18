@@ -115,6 +115,9 @@ class PresetPatchValues(TypedDict, total=False):
 
 
 AdminPresetKind = Literal["all", "official", "published"]
+MAX_ADMIN_PAGE = 1_000_000
+POSTGRES_INTEGER_MIN = -(2**31)
+POSTGRES_INTEGER_MAX = 2**31 - 1
 
 
 class StoredTelegramSettings(BaseModel):

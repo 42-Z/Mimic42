@@ -285,6 +285,7 @@ async def test_preset_list_trims_search_and_validates_pagination_and_kind() -> N
         )
         invalid_queries = [
             await client.get("/api/v1/admin/presets?page=0", headers=AUTH_HEADERS),
+            await client.get("/api/v1/admin/presets?page=1000001", headers=AUTH_HEADERS),
             await client.get("/api/v1/admin/presets?page_size=0", headers=AUTH_HEADERS),
             await client.get("/api/v1/admin/presets?page_size=101", headers=AUTH_HEADERS),
             await client.get(
@@ -303,6 +304,39 @@ async def test_preset_list_trims_search_and_validates_pagination_and_kind() -> N
         "page_size": 100,
     }
     assert all(response.status_code == 422 for response in invalid_queries)
+
+
+@pytest.mark.asyncio
+async def test_sort_order_is_a_postgres_integer_for_create_and_patch() -> None:
+    admin_id = uuid4()
+    official = _preset()
+    repository = FakeAdminRepository(admin_ids={admin_id}, presets=[official])
+    app = _app(admin_id, repository)
+    create_payload = {"title": "Title", "summary": "Summary", "body": "Body"}
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        for invalid in (-2_147_483_649, 2_147_483_648, True):
+            created = await client.post(
+                "/api/v1/admin/presets",
+                json={**create_payload, "sort_order": invalid},
+                headers=AUTH_HEADERS,
+            )
+            patched = await client.patch(
+                f"/api/v1/admin/presets/{official.id}",
+                json={"sort_order": invalid},
+                headers=AUTH_HEADERS,
+            )
+            assert created.status_code == 422
+            assert patched.status_code == 422
+
+        for valid in (-2_147_483_648, 2_147_483_647):
+            created = await client.post(
+                "/api/v1/admin/presets",
+                json={**create_payload, "sort_order": valid},
+                headers=AUTH_HEADERS,
+            )
+            assert created.status_code == 201
+            assert created.json()["sort_order"] == valid
 
 
 @pytest.mark.asyncio
