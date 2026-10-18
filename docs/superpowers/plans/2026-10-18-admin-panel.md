@@ -1,0 +1,978 @@
+# Админ-панель — план реализации
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Добавить в текущий сайт закрытую админ-панель для просмотра пользователей, управления официальными и опубликованными пресетами, смены общей пары Telegram API ID/HASH и просмотра общей статистики.
+
+**Architecture:** FastAPI проверяет административное назначение в базе при каждом запросе; браузер не получает привилегированный Supabase-клиент. Изолированный административный router использует существующий пул SQLAlchemy, отдельный репозиторий и транзакционный журнал изменений. Next.js расширяет нынешнюю оболочку четырьмя подразделами; обычные права владельцев и сохранённые Telegram-сессии не меняются.
+
+**Tech Stack:** Python 3.13, FastAPI, Pydantic 2, SQLAlchemy 2 async, Supabase Postgres и CLI 2.100.1, Next.js 14.2, React 18, TypeScript, Tailwind 3.4, shadcn/ui Radix, TanStack Query 5, существующий Recharts 2, uv, Bun, pytest и Testing Library.
+
+**Spec:** `docs/superpowers/specs/2026-10-18-admin-panel-design.md`.
+
+## Порядок и ограничения
+
+- Работа только в уже созданной `feat/admin-panel`, в текущей папке. Новый worktree пользователь отклонил. Сейчас согласованы спецификация и подготовка плана, а не начало его выполнения.
+- Это одна административная подсистема с общими доступом, аудитом и навигацией. Выполнять этапы последовательно: база → права → модерация → административные операции → UI → локальная проверка. Независимые UI-задачи можно делегировать после закрепления API-контрактов.
+- Не менять LangChain, Telethon-рантайм, Mem0, модель по умолчанию, существующие пользовательские полномочия и глобальную визуальную систему.
+- Не запускать живые `real_tg`/`real_llm` для этой задачи. Проверка смены defaults использует поддельный Telegram-клиент.
+- Не применять миграции, не назначать администраторов и не менять настройки в production во время разработки. Обычные тесты не должны читать `.env` как неявный источник внешних сервисов.
+- Команды Python выполняются из корня через `uv run`; команды Bun — из `frontend/`. В каждом этапе сначала новая точечная проверка, затем реализация и та же проверка. Полный набор — только перед PR после подтверждения пользователем локальной работы.
+- Для каждой указанной точечной команды ожидаемый результат до изменения — отказ нового сценария по проверяемому поведению, после — PASS с exit code 0. Сбой подключения, ошибка фикстуры или пропуск сценария не считаются подтверждением ни отказа, ни исправления.
+- После каждого завершённого этапа отмечать его пункты и делать отдельный Conventional Commit с указанной темой. Не включать чужие изменения через `git add .`.
+- Будущие миграции создаёт `supabase migration new`; не выдумывать timestamp. В плане они однозначно обозначены суффиксами `_admin_platform.sql` и `_preset_moderation.sql`; точные пути, напечатанные CLI, записать здесь при создании. Это единственные пути, имена которых определятся во время выполнения.
+
+## Карта файлов и ответственности
+
+### Бэкенд
+
+| Файл | Изменение и ответственность |
+| --- | --- |
+| `src/mimic42/core/admin.py` | Новые публичные DTO, протокол `AdminRepository`, предметные ошибки и правила публичности пресетов. |
+| `src/mimic42/core/runtime_status.py` | Новая чистая функция согласования сохранённого и текущего состояния; извлечение существующего правила без изменения поведения. |
+| `src/mimic42/core/telegram_app_settings.py` | Новый поставщик эффективной общей пары; plaintext существует только на сервере и не входит в публичные DTO. |
+| `src/mimic42/integrations/database_models.py` | ORM-модели `AdminUserModel`, `AdminAuditLogModel`, `PlatformTelegramSettingsModel`, `PromptPresetModel`. |
+| `src/mimic42/integrations/database_admin.py` | Фасад `DatabaseAdminRepository`: роль, профили, пресеты, настройки, аудит; собственная AsyncSession на операцию. |
+| `src/mimic42/integrations/database_admin_statistics.py` | SQL-агрегаты статистики и таблица эффективных состояний для групповых запросов; без HTTP и сериализации секретов. |
+| `src/mimic42/api/admin.py` | Router, зависимости роли, request-модели, безопасные `422`, перевод предметных ошибок в HTTP. |
+| `src/mimic42/api/app.py` | Инъекция репозитория и поставщика настроек, сборка и закрытие одного engine, подключение router и двух точек разрешения defaults. |
+| `tests/integration/conftest.py` | Только именованная фикстура внешней транзакции для новых административных DB-тестов; без autouse. |
+| `tests/api/admin_fakes.py` | Подделка репозитория с управляемой ролью и журналом вызовов, без сети. |
+
+### Фронтенд
+
+| Файл | Изменение и ответственность |
+| --- | --- |
+| `frontend/src/types/admin.ts` | Типы административных ответов и запросов, соответствующие DTO Python. |
+| `frontend/src/lib/adminApi.ts` | Запросы через существующий `apiClient`, передача AbortSignal; никакого service key. |
+| `frontend/src/lib/queryClient.ts` | Ключи текущих полномочий и административных данных, привязанные к UUID вошедшего пользователя. |
+| `frontend/src/hooks/useAdminAccess.ts` | Текущий пользователь, `/me`, периодическая перепроверка и сброс административного кеша. |
+| `frontend/src/hooks/useAdmin.ts` | Query-хуки и прямые async-действия пресетов с локальным pending; административные write-запросы не сохраняются в mutation cache. |
+| `frontend/src/components/admin/AdminBoundary.tsx` | Не монтирует дочерние экраны до подтверждения роли; состояния загрузки, запрета и ошибки. |
+| `frontend/src/components/admin/AdminNavigation.tsx` | Четыре ссылки подразделов, существующие токены и lucide-иконки. |
+| `frontend/src/components/admin/AdminPagination.tsx` | Общая доступная постраничная навигация со сбросом страницы при смене поиска. |
+| `frontend/src/components/admin/AdminUsers.tsx` | Поиск и список профилей, раскрытие постраничного списка мимиков выбранного пользователя. |
+| `frontend/src/components/admin/AdminPresets.tsx` | Официальный редактор, порядок и видимость; read-only просмотр пользовательского пресета. |
+| `frontend/src/components/admin/AdminTelegramSettings.tsx` | Форма полной новой пары; HASH только в локальном состоянии компонента. |
+| `frontend/src/components/admin/AdminStatistics.tsx` | KPI, распределение состояний, графики активности, отдельные пожизненные токены. |
+| `frontend/src/app/(dashboard)/admin/layout.tsx` | Общая граница и административная навигация. |
+| `frontend/src/app/(dashboard)/admin/page.tsx` | Тонкий маршрут статистики. |
+| `frontend/src/app/(dashboard)/admin/users/page.tsx` | Тонкий маршрут пользователей. |
+| `frontend/src/app/(dashboard)/admin/presets/page.tsx` | Тонкий маршрут пресетов. |
+| `frontend/src/app/(dashboard)/admin/telegram/page.tsx` | Тонкий маршрут Telegram. |
+| `frontend/src/components/layout/Sidebar.tsx` | Условный пункт «Администрирование»; текущая навигация не переписывается. |
+| `frontend/src/middleware.ts` | Только исключение точного `/admin` и его дочерних путей из проверки наличия собственного агента. |
+| `frontend/src/hooks/usePromptPresets.ts` | Чтение скрытых собственных пресетов под RLS и ограниченный срок свежести. |
+| `frontend/src/hooks/usePresetFavorites.ts`, `frontend/src/hooks/usePresetAuthors.ts` | Обновление избранного и авторов после модерации из другой вкладки/сессии. |
+| `frontend/src/lib/presets/catalog.ts` | Признак скрытия и исключение неактивных строк из магазина. |
+| `frontend/src/app/(dashboard)/presets/page.tsx` | Отметка скрытия в «Моих», сохранение существующих действий автора. |
+| `frontend/src/components/agent/PresetPicker.tsx` | Сохраняет доступ автора к своему скрытому пресету; не показывает скрытые официальные. |
+
+Новые примитивы `field`, `empty`, `table`, `pagination`, `toggle-group` и их зависимости устанавливает только shadcn CLI из настроенного `@shadcn`. Существующие `Button`, `Card`, `Input`, `Badge`, `Modal`, `Toast` сохраняют свои локальные API. Не заменять их актуальными шаблонами через `--overwrite` и не обновлять Recharts ради графиков.
+
+## Общий контракт API
+
+В `core/admin.py` закрепить DTO; типы времени сериализуются ISO 8601, UUID — строками. Списки используют `page >= 1`, `1 <= page_size <= 100`, по умолчанию 25; поиск `q` обрезается по краям и ограничен 200 символами.
+
+```python
+from datetime import date, datetime
+from typing import Any, Literal
+from uuid import UUID
+
+from pydantic import BaseModel
+
+from mimic42.core.agent_runtime import AgentRuntimeState
+
+
+class AdminPage[T](BaseModel):
+    items: list[T]
+    total: int
+    page: int
+    page_size: int
+
+
+class AdminIdentity(BaseModel):
+    user_id: UUID
+    is_admin: bool
+
+
+class AdminUserSummary(BaseModel):
+    user_id: UUID
+    email: str | None
+    display_name: str | None
+    created_at: datetime
+    agents_total: int
+    states: dict[AgentRuntimeState, int]
+
+
+class AdminAgentSummary(BaseModel):
+    agent_id: UUID
+    name: str
+    llm_model: str
+    state: AgentRuntimeState
+
+
+class AdminUserDetail(BaseModel):
+    profile: AdminUserSummary
+    agents: AdminPage[AdminAgentSummary]
+
+
+class AdminPresetSummary(BaseModel):
+    id: UUID
+    owner_id: UUID | None
+    owner_name: str | None
+    title: str
+    summary: str
+    sort_order: int
+    is_active: bool
+    published_at: datetime | None
+    updated_at: datetime
+
+
+class AdminPresetDetail(AdminPresetSummary):
+    body: str
+    settings: dict[str, Any] | None
+
+
+class PublicTelegramSettings(BaseModel):
+    api_id: int | None
+    has_api_hash: bool
+    source: Literal["database", "environment", "unconfigured"]
+    updated_at: datetime | None
+    updated_by: UUID | None
+
+
+class ActivityCounts(BaseModel):
+    messages: int = 0
+    actions: int = 0
+    errors: int = 0
+
+
+class DailyActivity(ActivityCounts):
+    date: date
+
+
+class AdminStatistics(BaseModel):
+    users: int
+    agents: int
+    states: dict[AgentRuntimeState, int]
+    input_tokens: int
+    output_tokens: int
+    period_days: Literal[7, 30]
+    since: datetime
+    until: datetime
+    totals: ActivityCounts
+    daily: list[DailyActivity]
+```
+
+Request-модели находятся в `api/admin.py`, `extra="forbid"`:
+
+| Запрос | Поля |
+| --- | --- |
+| `POST /admin/presets` | `title` 1–200, `summary` 1–1000, `body` 1–20000, `settings` object/null, `sort_order` integer по умолчанию 0; текстовые обязательные поля не могут состоять из пробелов. |
+| `PATCH /admin/presets/{id}` | Непустое подмножество тех же полей. `null` разрешён только для `settings`; `owner_id`, `slug`, `published_at`, `is_active` запрещены. |
+| `PATCH /admin/presets/{id}/visibility` | Только `is_active: bool`. |
+| `PUT /admin/telegram-settings` | `api_id: int`, строго положительный и не выше PostgreSQL integer; `api_hash: SecretStr`, непустой после strip, не длиннее 256. |
+
+`GET /me` лежит вне административного router. Все остальные пути из таблицы имеют префикс `/api/v1/admin`. Списки пресетов дополнительно принимают `kind=all|official|published`, по умолчанию `all`. Список агентов пользователя использует те же `page/page_size` в `/users/{user_id}`. `GET /statistics` принимает только `days=7|30`.
+
+## Этап 1. Закрытая схема и безопасная DB-обвязка
+
+**Files:** миграция `_admin_platform.sql`; `src/mimic42/integrations/database_models.py`; новые `tests/integration/conftest.py`, `tests/integration/test_admin_schema.py`.
+
+- [ ] **1.1. Добавить проверку схемы до её появления.** В `test_admin_schema.py` проверить `to_regclass`, RLS и отсутствие клиентских DML-привилегий для каждой из трёх таблиц. Для SQL-отказов использовать отдельные savepoint/сессии, а не несколько запросов в уже прерванной транзакции.
+
+```python
+import pytest
+from sqlalchemy import text
+
+
+@pytest.mark.parametrize(
+    "table_name",
+    ["admin_users", "platform_telegram_settings", "admin_audit_log"],
+)
+async def test_admin_tables_are_closed(db_session_factory, table_name):
+    async with db_session_factory() as session:
+        table = f"public.{table_name}"
+        assert await session.scalar(text("select to_regclass(:table)"), {"table": table})
+        assert await session.scalar(
+            text("select relrowsecurity from pg_class where oid = to_regclass(:table)"),
+            {"table": table},
+        )
+        for role in ("anon", "authenticated"):
+            for operation in ("SELECT", "INSERT", "UPDATE", "DELETE"):
+                assert not await session.scalar(
+                    text("select has_table_privilege(:role, :table, :operation)"),
+                    {"role": role, "table": table, "operation": operation},
+                )
+```
+
+- [ ] **1.2. Выполнить** `uv run pytest tests/integration/test_admin_schema.py -m db -W error -q`. До миграции ожидается FAIL на отсутствии таблиц, не на подключении к неправильной базе.
+- [ ] **1.3. Создать миграцию** командой `supabase migration new admin_platform`. Заполнить созданный CLI файл следующим SQL; не добавлять данные аккаунтов или значения credentials.
+
+```sql
+create table public.admin_users (
+    user_id uuid primary key references public.profiles(id) on delete cascade,
+    created_at timestamptz not null default now()
+);
+
+create table public.platform_telegram_settings (
+    id smallint primary key default 1 check (id = 1),
+    api_id integer not null check (api_id > 0),
+    api_hash_ciphertext text not null check (btrim(api_hash_ciphertext) <> ''),
+    updated_by uuid references public.profiles(id) on delete set null,
+    updated_at timestamptz not null default now()
+);
+
+create table public.admin_audit_log (
+    id uuid primary key default gen_random_uuid(),
+    actor_user_id uuid not null,
+    action text not null check (action in (
+        'preset.created', 'preset.updated', 'preset.visibility_changed',
+        'telegram.settings_updated'
+    )),
+    object_type text not null check (object_type in ('preset', 'telegram_settings')),
+    object_id uuid,
+    metadata jsonb not null default '{}'::jsonb check (jsonb_typeof(metadata) = 'object'),
+    created_at timestamptz not null default now(),
+    constraint admin_audit_object_identity check (
+        (object_type = 'preset' and object_id is not null)
+        or (object_type = 'telegram_settings' and object_id is null)
+    )
+);
+
+create index platform_telegram_settings_updated_by_idx
+    on public.platform_telegram_settings(updated_by);
+create index admin_audit_log_actor_created_idx
+    on public.admin_audit_log(actor_user_id, created_at desc);
+
+alter table public.admin_users enable row level security;
+alter table public.platform_telegram_settings enable row level security;
+alter table public.admin_audit_log enable row level security;
+
+revoke all on public.admin_users, public.platform_telegram_settings,
+    public.admin_audit_log from public, anon, authenticated;
+grant select, insert, update, delete on public.admin_users to service_role;
+grant select, insert, update on public.platform_telegram_settings to service_role;
+grant select, insert on public.admin_audit_log to service_role;
+```
+
+UUID автора аудита намеренно сохраняется без FK: удаление профиля не стирает и не переписывает историю. Клиентские политики для этих таблиц отсутствуют. Сохранённая общая пара не создаётся миграцией, поэтому старый код продолжает работать с env.
+
+- [ ] **1.4. Добавить ORM-модели** с теми же колонками и типами; `PromptPresetModel` отображает существующую таблицу, включая `settings`, `owner_id`, `published_at`, `is_active`, `sort_order`. Не вызывать `Base.metadata.create_all()` вместо Supabase-миграций.
+- [ ] **1.5. Добавить именованную фикстуру для транзакционных тестов** в новом `tests/integration/conftest.py`:
+
+```python
+from collections.abc import AsyncIterator
+
+import pytest
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+
+@pytest.fixture
+async def admin_db_factory(db_engine, test_slot) -> AsyncIterator[async_sessionmaker[AsyncSession]]:
+    async with db_engine.connect() as connection:
+        connection = await connection.execution_options(isolation_level="REPEATABLE READ")
+        transaction = await connection.begin()
+        try:
+            yield async_sessionmaker(
+                bind=connection,
+                expire_on_commit=False,
+                join_transaction_mode="create_savepoint",
+            )
+        finally:
+            await transaction.rollback()
+```
+
+Она занимает существующий тестовый слот, но ничего не очищает и не меняет глобальную fixture `db_session_factory`. Все операции на её соединении последовательны. Тесты общей настройки, официальных пресетов и глобальных агрегатов используют именно её: внутренние commits репозитория завершают savepoint, а внешний rollback возвращает данные. Персоны берутся из `test_slot`, не из `SLOTS[0]`; новые `auth.users` не создаются.
+
+- [ ] **1.6. Проверить адрес связанного Dev-проекта** в `supabase/.temp/project-ref`: только `ipqylrdmmjitemjrygej`. После `supabase db push --linked --dry-run` убедиться, что список содержит только ожидаемые неприменённые миграции этой ветки, затем выполнить `supabase db push --linked`, `supabase db advisors --linked --type security --level warn`, `supabase migration list --linked` и повторить команду 1.2. Не использовать reset или repair.
+- [ ] **1.7. Коммит:** `feat(admin): add protected platform settings and audit schema`.
+
+## Этап 2. Проверка роли и подключение подсистемы
+
+**Files:** новые `src/mimic42/core/admin.py`, `src/mimic42/api/admin.py`, `src/mimic42/integrations/database_admin.py`, `tests/api/admin_fakes.py`, `tests/api/test_admin_access.py`; изменить `src/mimic42/api/app.py`, `tests/api/test_app_factories.py`.
+
+- [ ] **2.1. Закрепить DTO выше и протокол ниже в `core/admin.py`.** Мутации принимают `actor_user_id` только от серверной зависимости; request-модели API переводятся в эти типы после валидации. `AdminUnavailableError` и `AdminNotFoundError` — отдельные подклассы `Exception` без данных запроса в сообщении.
+
+```python
+from typing import Any, Literal, Protocol, TypedDict
+
+from pydantic import BaseModel, SecretStr
+
+
+class PresetCreateValues(TypedDict):
+    title: str
+    summary: str
+    body: str
+    settings: dict[str, Any] | None
+    sort_order: int
+
+
+class PresetPatchValues(TypedDict, total=False):
+    title: str
+    summary: str
+    body: str
+    settings: dict[str, Any] | None
+    sort_order: int
+
+
+class StoredTelegramSettings(BaseModel):
+    api_id: int
+    api_hash_ciphertext: SecretStr
+    updated_at: datetime
+    updated_by: UUID | None
+
+
+class AdminRepository(Protocol):
+    async def is_admin(self, user_id: UUID) -> bool: ...
+
+    async def list_users(
+        self, *, q: str, page: int, page_size: int,
+        runtime_states: dict[UUID, AgentRuntimeState],
+    ) -> AdminPage[AdminUserSummary]: ...
+
+    async def get_user(
+        self, user_id: UUID, *, page: int, page_size: int,
+        runtime_states: dict[UUID, AgentRuntimeState],
+    ) -> AdminUserDetail: ...
+
+    async def list_presets(
+        self, *, q: str, kind: Literal["all", "official", "published"],
+        page: int, page_size: int,
+    ) -> AdminPage[AdminPresetSummary]: ...
+
+    async def get_preset(self, preset_id: UUID) -> AdminPresetDetail: ...
+
+    async def create_official_preset(
+        self, values: PresetCreateValues, *, actor_user_id: UUID,
+    ) -> AdminPresetDetail: ...
+
+    async def update_official_preset(
+        self, preset_id: UUID, values: PresetPatchValues, *, actor_user_id: UUID,
+    ) -> AdminPresetDetail: ...
+
+    async def set_preset_visibility(
+        self, preset_id: UUID, is_active: bool, *, actor_user_id: UUID,
+    ) -> AdminPresetDetail: ...
+
+    async def read_telegram_settings(self) -> StoredTelegramSettings | None: ...
+
+    async def read_telegram_settings_status(self) -> PublicTelegramSettings | None: ...
+
+    async def save_telegram_settings(
+        self, *, api_id: int, api_hash_ciphertext: str, actor_user_id: UUID,
+    ) -> PublicTelegramSettings: ...
+
+    async def statistics(
+        self, *, days: Literal[7, 30], now: datetime,
+        runtime_states: dict[UUID, AgentRuntimeState],
+    ) -> AdminStatistics: ...
+```
+
+`read_telegram_settings` — исключительно внутренний server-only метод для поставщика; HTTP GET использует `read_telegram_settings_status`, который не выбирает ciphertext. У сохранённой строки `source="database"`; поставщик дополняет статус режимами env/unconfigured при отсутствии строки. Фасад статистики делегирует реализацию `DatabaseAdminStatistics`, не копирует SQL в router.
+
+- [ ] **2.2. Написать проверки зависимости на тестовом маршруте**: без токена `401`; с обычным пользователем `403`; со снятой ролью следующий запрос `403`; при ошибке хранилища `503`. На этом этапе реальные предметные маршруты ещё не добавлены, поэтому тест регистрирует свой probe только в экземпляре приложения теста. Подделка `FakeAdminRepository` содержит `admin_ids: set[UUID]` и управляемый флаг `unavailable`; никакой реальной базы. Дополнительно проверить `/me` для обоих значений роли. В каждом API-этапе 4–7 эту матрицу повторить уже для его настоящих маршрутов.
+
+```python
+from uuid import uuid4
+
+from fastapi import Depends
+from httpx import ASGITransport, AsyncClient
+
+from mimic42.api.admin import require_admin
+from mimic42.api.app import create_app
+from mimic42.config import Settings
+from tests.api.admin_fakes import FakeAdminRepository
+from tests.api.auth_helpers import AUTH_HEADERS, FakeAuthVerifier
+
+
+async def test_admin_role_is_rechecked_for_each_request():
+    user_id = uuid4()
+    repository = FakeAdminRepository(admin_ids={user_id})
+    app = create_app(
+        settings=Settings(
+            database_connection_string=None, mem0_api_key=None, braintrust_api_key=None,
+        ),
+        auth_verifier=FakeAuthVerifier(user_id),
+        admin_repository=repository,
+    )
+
+    @app.get("/__test__/admin-access", dependencies=[Depends(require_admin)])
+    async def admin_access_probe() -> dict[str, bool]:
+        return {"allowed": True}
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        first = await client.get("/__test__/admin-access", headers=AUTH_HEADERS)
+        repository.admin_ids.clear()
+        second = await client.get("/__test__/admin-access", headers=AUTH_HEADERS)
+    assert first.status_code == 200
+    assert second.status_code == 403
+```
+
+- [ ] **2.3. Выполнить** `uv run pytest tests/api/test_admin_access.py -W error -q`; ожидается FAIL до появления нового аргумента/router.
+- [ ] **2.4. Реализовать проверку** `select exists(...)` по PK роли без кеша и зависимость `require_admin`. `/me` использует только `require_user` и возвращает `AdminIdentity`; запрещено превращать ошибку базы в `is_admin=true` или выдавать наружу SQL/DSN. Административный router получает общую зависимость `Depends(require_admin)`; изменение текущей проверки JWT не требуется.
+
+```python
+async def require_admin(request: Request) -> CurrentUser:
+    current_user = await require_user(request)
+    repository = getattr(request.app.state, "admin_repository", None)
+    if repository is None:
+        raise HTTPException(503, "Администрирование временно недоступно")
+    try:
+        allowed = await repository.is_admin(current_user.user_id)
+    except AdminUnavailableError as exc:
+        raise HTTPException(503, "Администрирование временно недоступно") from exc
+    if not allowed:
+        raise HTTPException(403, "Доступ разрешён только администраторам")
+    return current_user
+```
+
+`Request`, `HTTPException`, `CurrentUser`, `require_user` импортируются из существующих FastAPI/auth; `AdminUnavailableError` — новая предметная ошибка в `core/admin.py`. Не возвращать `str(exc)` пользователю.
+
+- [ ] **2.5. Обновить сборку приложения.** Добавить keyword-only `admin_repository: AdminRepository | None = None`. Разделить причину открытия engine и причину сборки агентских сервисов:
+
+```python
+build_agent_services = bool(app_settings.database_connection_string) and (
+    onboarding_service is None or agent_store is None
+)
+build_admin_repository = bool(app_settings.database_connection_string) and (
+    admin_repository is None
+)
+build_database = build_agent_services or build_admin_repository
+```
+
+Engine/session factory создаются один раз при `build_database`; существующая сборка store/onboarding/manager, восстановление рантаймов и запуск warmup остаются под прежним `build_agent_services`, а не под новым расширенным условием. Иначе создание только админского репозитория неожиданно восстановит чужих агентов в тесте с инъецированными сервисами. Инъецированные объекты не заменяются; приложению принадлежит закрытие созданного здесь engine, а существующее завершение менеджера сохраняется. Без базы обычные fake-сценарии и `/health` работают, админка отвечает `503`.
+
+- [ ] **2.6. Добавить проверки lifespan:** все три сервиса инъецированы — engine не создаётся; инъецированы store/onboarding, но не admin repository — собирается только admin repository, без восстановления агентов или warmup; один созданный engine закрывается ровно один раз. Повторить `uv run pytest tests/api/test_admin_access.py tests/api/test_app_factories.py tests/api/test_auth_api.py -W error -q`.
+- [ ] **2.7. Коммит:** `feat(admin): enforce database-backed administrator access`.
+
+## Этап 3. Модерация на уровне базы
+
+**Files:** миграция `_preset_moderation.sql`; новый `tests/integration/test_preset_moderation.py`. Старые миграции не редактировать.
+
+- [ ] **3.1. Написать DB-сценарии** на `admin_db_factory` и персонах текущего `test_slot`: видимый опубликованный пресет, скрытый опубликованный, приватный, официальный. Создание тестовых пользовательских строк сервером задаёт `slug='u_' || uuid`; изменение роли/JWT-клеймов для RLS выполняется в отдельной сессии с rollback.
+- [ ] **3.2. Проверить:** чужой скрытый недоступен; автор видит его; автор не меняет `is_active`; повторная публикация не открывает каталог; добавление скрытого в избранное запрещено; скрытие замораживает старое избранное без потери `frozen_*`; unhide не оживляет снимок; автор скрытого не попадает в `preset_authors`, если других активных публикаций нет. В двухсоединительном сценарии конкурентного добавления избранного и скрытия не должна остаться живая ссылка на скрытый пресет. Выполнить `uv run pytest tests/integration/test_preset_moderation.py -m db -W error -q` и увидеть провал именно новых ограничений.
+- [ ] **3.3. Создать** `supabase migration new preset_moderation` и записать:
+
+```sql
+drop policy "Authenticated users can read catalog presets" on public.prompt_presets;
+create policy "Authenticated users can read catalog presets"
+    on public.prompt_presets for select to authenticated
+    using (
+        owner_id = (select auth.uid())
+        or (is_active and (owner_id is null or published_at is not null))
+    );
+
+drop policy "Users can favorite published presets of others" on public.preset_favorites;
+create policy "Users can favorite published presets of others"
+    on public.preset_favorites for insert to authenticated
+    with check (
+        owner_id = (select auth.uid())
+        and exists (
+            select 1 from public.prompt_presets pp
+            where pp.id = preset_id
+              and pp.is_active
+              and pp.published_at is not null
+              and pp.owner_id <> (select auth.uid())
+        )
+    );
+
+create trigger prompt_presets_freeze_on_hide
+    before update of is_active on public.prompt_presets
+    for each row
+    when (old.is_active and not new.is_active and old.owner_id is not null)
+    execute function public.freeze_preset_favorites();
+
+create or replace function public.set_favorite_owner() returns trigger
+language plpgsql security definer set search_path = ''
+as $$
+begin
+    new.owner_id = auth.uid();
+    perform 1
+    from public.prompt_presets pp
+    where pp.id = new.preset_id
+      and pp.is_active
+      and pp.published_at is not null
+      and pp.owner_id <> new.owner_id
+    for share;
+    if not found then
+        raise exception using
+            errcode = '42501',
+            message = 'Пресет недоступен для добавления в избранное';
+    end if;
+    return new;
+end;
+$$;
+
+create or replace view public.preset_authors as
+select distinct pp.owner_id as id, pr.display_name
+from public.prompt_presets pp
+join public.profiles pr on pr.id = pp.owner_id
+where pp.published_at is not null and pp.is_active;
+
+revoke all on public.preset_authors from public, anon;
+grant select on public.preset_authors to authenticated;
+
+create index agent_messages_admin_activity_date_idx
+    on public.agent_messages(created_at)
+    where direction in ('incoming', 'agent_response');
+create index agent_events_admin_activity_date_idx
+    on public.agent_events(created_at)
+    where event_type like 'tool.%' or status = 'failed';
+```
+
+Представление авторов сознательно оставляет прежнюю узкую серверную проекцию только `id/display_name`; `security_invoker=true` здесь лишит магазин имён из-за RLS профилей. Не добавлять email. Ограждающие trigger/column grants уже не разрешают автору менять `is_active`, их не ослаблять. Новый trigger использует существующую функцию заморозки и не создаёт новый публичный SECURITY DEFINER API. Блокировка `FOR SHARE` в существующем trigger добавления избранного сериализуется с `FOR UPDATE` модерации: иначе RLS-проверка могла бы увидеть старую активную версию, а вставка — завершиться уже после заморозки.
+
+- [ ] **3.4. Проверить Dev-адрес, dry-run и применить только эту миграцию** командами этапа 1. Повторить `uv run pytest tests/integration/test_preset_moderation.py tests/integration/test_prompt_presets.py -m db -W error -q`. Старые четыре официальных пресета остаются клиенту read-only.
+- [ ] **3.5. Коммит:** `feat(presets): enforce administrative hiding and favorite snapshots`.
+
+## Этап 4. Административные операции пресетов и аудит
+
+**Files:** `src/mimic42/core/admin.py`, `src/mimic42/api/admin.py`, `src/mimic42/integrations/database_admin.py`; новые `tests/api/test_admin_presets.py`, `tests/integration/test_admin_presets.py`.
+
+- [ ] **4.1. Написать проверки API:** `GET` списка не содержит тела промптов; detail возвращает тело только официального/опубликованного; приватный по UUID даёт `404`; изменение чужого пользовательского тела запрещено; неизвестное поле запроса и пустой PATCH дают `422`; пределы текстов и пагинации соблюдены.
+- [ ] **4.2. Написать DB-проверки:** создание официального генерирует уникальный `official_<uuidhex>`; sort-order PATCH сохраняет остальные поля; visibility затрагивает только указанный UUID; изменение официального и аудит фиксируются вместе. В тесте сбоя аудита временно через monkeypatch заставить приватный `_append_audit` репозитория выбросить `AdminUnavailableError`, после операции убедиться, что строка и избранное не изменились. Функция `_append_audit(session, actor_user_id, action, object_id, metadata)` ничего сама не коммитит.
+- [ ] **4.3. Выполнить** `uv run pytest tests/api/test_admin_presets.py tests/integration/test_admin_presets.py -W error -q`.
+- [ ] **4.4. Реализовать репозиторий.** На чтении и на мутации использовать SQL-предикат `owner_id is null or published_at is not null`. На update предварительно заблокировать допустимую строку через `SELECT ... FOR UPDATE`; при отсутствии — `AdminNotFoundError`. Для редактирования официальных дополнительно `owner_id is null`. Это сериализует изменение с авторским снятием публикации, не открывая приватные строки.
+
+```python
+async def set_preset_visibility(self, preset_id: UUID, is_active: bool, *, actor_user_id: UUID):
+    async with self._session_factory() as session, session.begin():
+        preset = await session.scalar(
+            select(PromptPresetModel)
+            .where(
+                PromptPresetModel.id == preset_id,
+                or_(
+                    PromptPresetModel.owner_id.is_(None),
+                    PromptPresetModel.published_at.is_not(None),
+                ),
+            )
+            .with_for_update()
+        )
+        if preset is None:
+            raise AdminNotFoundError
+        old_value = preset.is_active
+        if old_value != is_active:
+            preset.is_active = is_active
+            await session.flush()
+            await self._append_audit(
+                session,
+                actor_user_id=actor_user_id,
+                action="preset.visibility_changed",
+                object_id=preset_id,
+                metadata={"before": old_value, "after": is_active},
+            )
+        await session.refresh(preset)
+        result = self._preset_detail(preset)
+    return result
+```
+
+`select/or_`, модель и предметная ошибка определены выше; `_preset_detail` формирует только `AdminPresetDetail`, а не сериализует ORM целиком. Для owner_name сделать отдельный ограниченный join/projection. Повторное выставление той же видимости — безопасный no-op без новой записи аудита. `preset.created/updated` записывают UUID и имена изменённых полей, но не их текстовые значения. SQLAlchemy-ошибки переводятся в безопасную `AdminUnavailableError` после rollback.
+
+- [ ] **4.5. Подключить маршруты из контракта.** `POST` возвращает `201` и detail, PATCH — detail. `settings` передаётся JSON-объектом/null без потери неизвестных сохранённых ключей. Все mutations получают автора из `require_admin`, а не из body. Роль продолжает проверяться при каждом запросе.
+- [ ] **4.6. Повторить команду 4.3**, добавить двухсоединительный сценарий «автор снял публикацию до блокировки административной операции → `404`». Для этого и конкурентного сценария этапа 3 использовать два настоящих соединения от `db_engine`, не два session поверх одного `admin_db_factory`: подготовить и закоммитить только собственные новые UUID пресета/избранного внутри арендованного `test_slot`, затем в `finally` удалить только захваченные UUID и завершить обе транзакции. Общую Telegram-настройку и существующие официальные строки эти сценарии не меняют.
+- [ ] **4.7. Коммит:** `feat(admin): manage official presets and moderate published presets`.
+
+## Этап 5. Telegram defaults: шифрование, безопасный API и новые подключения
+
+**Files:** новый `src/mimic42/core/telegram_app_settings.py`; `src/mimic42/api/admin.py`, `src/mimic42/api/app.py`, `src/mimic42/integrations/database_admin.py`; новые `tests/core/test_telegram_app_settings.py`, `tests/api/test_admin_telegram.py`, `tests/integration/test_admin_telegram.py`; дополнить `tests/api/test_onboarding_api.py`.
+
+- [ ] **5.1. Написать проверки поставщика:** нет строки → env; строка есть → сохранённая пара; ошибка чтения/расшифровки → отказ без fallback; полная явно переданная пара не нуждается в чтении defaults; частичное переопределение сохраняет существующий контракт `_resolve_telegram_app`; после записи следующий вход получает новую пару без рестарта.
+- [ ] **5.2. Написать проверки API:** GET никогда не возвращает plaintext/ciphertext; без `SECRET_KEY` PUT даёт `503` и ничего не пишет; неверный `api_id` при валидном HASH даёт `422` без HASH в ответе; неверный JSON и лишние поля тоже не отражают body. Проверить `repr` DTO и captured logs.
+- [ ] **5.3. Написать DB-проверки на `admin_db_factory`:** HASH расшифровывается исходным тестовым ключом, строка id=1 единственна, пара и аудит атомарны. До теста не удалять реальную глобальную строку; её обновление существует только во внешней транзакции с rollback. Выполнить `uv run pytest tests/core/test_telegram_app_settings.py tests/api/test_admin_telegram.py tests/integration/test_admin_telegram.py -W error -q`.
+- [ ] **5.4. Реализовать server-only значение пары** как dataclass/Pydantic-модель с `api_hash: SecretStr`, не используемую в HTTP-ответе. Класс `TelegramAppSettings` получает keyword-only `settings: Settings`, `repository: AdminRepository | None`, `cipher: FernetSecretCipher | None`. Его методы: `resolve(api_id: int | None, api_hash: str | None) -> tuple[int, str]`, `status() -> PublicTelegramSettings`, `save(*, api_id: int, api_hash: SecretStr, actor_user_id: UUID) -> PublicTelegramSettings`, все async. При отсутствии DB-конфигурации сохраняется env-only режим, а не попытка соединения. При настроенной базе ошибка её чтения не считается отсутствием строки.
+
+```python
+async def resolve(self, api_id: int | None, api_hash: str | None) -> tuple[int, str]:
+    if api_id is not None and api_hash is not None:
+        return api_id, api_hash
+    defaults = await self._read_defaults()
+    resolved_id = api_id if api_id is not None else defaults.api_id
+    resolved_hash = SecretStr(api_hash) if api_hash is not None else defaults.api_hash
+    if resolved_id is None or resolved_hash is None:
+        raise TelegramAppUnavailableError("Telegram-приложение не настроено")
+    return resolved_id, resolved_hash.get_secret_value()
+```
+
+`_read_defaults()` возвращает внутренний `TelegramAppDefaults(api_id: int | None, api_hash: SecretStr | None)`; при строке из базы расшифровывает её, иначе берёт env. `TelegramAppUnavailableError` определён в том же модуле. Не обновлять объекты `Settings` или глобальную пару в памяти.
+
+- [ ] **5.5. Реализовать PUT** через PostgreSQL upsert по singleton PK `id=1` в одной транзакции с `telegram.settings_updated`; хранить только ciphertext. `updated_at` выставлять явно в `ON CONFLICT DO UPDATE`, `updated_by` — UUID зависимости. Метаданные аудита: только `{"credentials_replaced": true}`. GET строить отдельным SELECT публичных колонок плюс признак наличия HASH, без расшифровки для отображения формы.
+- [ ] **5.6. Ограничить очистку ошибок административным router.** Для него использовать `APIRoute.get_route_handler()` и перехват `RequestValidationError`; не копировать пример документации, который логирует тело:
+
+```python
+class AdminRoute(APIRoute):
+    def get_route_handler(self):
+        handler = super().get_route_handler()
+
+        async def safe_handler(request: Request) -> Response:
+            try:
+                response = await handler(request)
+            except RequestValidationError:
+                return JSONResponse(
+                    status_code=422,
+                    content={"detail": "Проверьте поля запроса"},
+                    headers={"Cache-Control": "no-store"},
+                )
+            response.headers["Cache-Control"] = "no-store"
+            return response
+
+        return safe_handler
+```
+
+Использовать `APIRouter(route_class=AdminRoute, ...)`; дополнительно отдавать `Cache-Control: no-store` у `/me`. Не менять формат `422` остальных API. Ни captured exception body, ни `SecretStr.get_secret_value()` не уходят в лог.
+
+- [ ] **5.7. Заменить оба вызова `_resolve_telegram_app`** в `request_telegram_code` и прямом `create_agent` на `await` поставщика; добавить в `create_app` keyword-only `telegram_app_settings: TelegramAppSettings | None = None` для unit-тестов. В `core/onboarding.py`, `telegram_sessions`, перепривязке и загрузчике рантайма не менять сохранённые credentials. Отдельно проверить, что уже созданная onboarding-сессия подтверждает код со старой парой после административного PUT.
+- [ ] **5.8. Повторить точечные проверки** этапа плюс `tests/api/test_onboarding_api.py`, `tests/api/test_agents_api.py`; сравнить через fake factory полученные пары до/после смены, без реального подключения к Telegram.
+- [ ] **5.9. Коммит:** `feat(admin): update encrypted Telegram defaults without restarting agents`.
+
+## Этап 6. Пользователи и эффективные состояния
+
+**Files:** новый `src/mimic42/core/runtime_status.py`; `src/mimic42/api/app.py`, `src/mimic42/integrations/database_admin.py`, `src/mimic42/integrations/database_admin_statistics.py`; новые `tests/core/test_runtime_status.py`, `tests/api/test_admin_users.py`, `tests/integration/test_admin_users.py`.
+
+- [ ] **6.1. Сначала проверить извлекаемое правило:** сохранённые `starting/running/stopping` без runtime превращаются в `stopped`; `draft/error/stopped` сохраняются; существующий runtime имеет приоритет. Результат обычного `/agents` до/после извлечения не меняется.
+
+```python
+def effective_runtime_state(saved: AgentRuntimeState, actual: AgentRuntimeState | None) -> AgentRuntimeState:
+    if actual is not None:
+        return actual
+    if saved in {
+        AgentRuntimeState.STARTING,
+        AgentRuntimeState.RUNNING,
+        AgentRuntimeState.STOPPING,
+    }:
+        return AgentRuntimeState.STOPPED
+    return saved
+```
+
+- [ ] **6.2. Написать API/DB-проверки:** пустой профиль включён; поиск регистронезависим; `%` и `_` в q означают буквальные символы; страницы не теряют строки с одинаковой датой создания; неизвестный user_id — `404`; ответ не содержит `soul_prompt/settings/session`; модель берётся из `settings.llm_model` или реального `DEFAULT_LLM_MODEL`, а не из устаревшего `openrouter/free`.
+- [ ] **6.3. Выполнить** `uv run pytest tests/core/test_runtime_status.py tests/api/test_admin_users.py tests/integration/test_admin_users.py -W error -q`.
+- [ ] **6.4. Реализовать групповое согласование состояний в SQL.** Router получает один snapshot `manager.list_agents()` и передаёт только UUID/state репозиторию. Не читать всех агентов/настройки в Python ради подсчётов. В `database_admin_statistics.py` выделить построение CTE эффективных агентов; параметры — два равных по длине массива UUID/state. Пустые массивы корректно дают пустую runtime-таблицу.
+
+```sql
+with runtime as (
+    select * from unnest(cast(:runtime_ids as uuid[]), cast(:runtime_states as text[]))
+        as r(agent_id, state)
+), effective_agents as (
+    select a.id, a.owner_id, a.name, a.settings, a.created_at,
+        coalesce(r.state, case
+            when a.status in ('starting', 'running', 'stopping') then 'stopped'
+            else a.status::text
+        end) as state
+    from public.agents a
+    left join runtime r on r.agent_id = a.id
+)
+select owner_id, state, count(*) as count
+from effective_agents
+group by owner_id, state;
+```
+
+Для списка сначала выбирать нужную страницу профилей и считать агентов только этих owner_ids, затем объединять агрегаты с профилями, включая нули. Профили сортировать `created_at desc, id desc`, агентов — так же. Не JOIN-ить сообщения/события к профилям. `.ilike(..., escape=...)` либо `icontains(q, autoescape=True)` должны экранировать wildcard; SQL-параметры не интерполируются.
+
+- [ ] **6.5. Подключить** `GET /users` и `GET /users/{user_id}` с явными DTO и общей проверкой роли. Не давать ссылки на чужой `/agent/{id}` как будто администратор может им управлять. Повторить команду 6.3 и `uv run pytest tests/api/test_agents_api.py -W error -q`.
+- [ ] **6.6. Коммит:** `feat(admin): list users with runtime-aware agent summaries`.
+
+## Этап 7. Серверные агрегаты статистики
+
+**Files:** `src/mimic42/core/admin.py`, `src/mimic42/integrations/database_admin_statistics.py`, `src/mimic42/integrations/database_admin.py`, `src/mimic42/api/admin.py`; новые `tests/core/test_admin_statistics.py`, `tests/api/test_admin_statistics.py`, `tests/integration/test_admin_statistics.py`.
+
+- [ ] **7.1. Проверить чистое вычисление UTC-окна** с инъекцией `now`, включая входной datetime с другим часовым поясом. Начало — полночь UTC 6/29 дней назад, верхняя граница — переданный `now`, полузакрытый диапазон `[since, until)`. DTO и UI называют текущий день неполным.
+
+```python
+from datetime import UTC, datetime, timedelta
+
+
+def statistics_window(days: int, now: datetime) -> tuple[datetime, datetime]:
+    if now.tzinfo is None:
+        raise ValueError("Статистике требуется время с часовым поясом")
+    utc_now = now.astimezone(UTC)
+    start = utc_now.replace(hour=0, minute=0, second=0, microsecond=0)
+    return start - timedelta(days=days - 1), utc_now
+
+
+def test_statistics_window_uses_calendar_days_in_utc():
+    now = datetime(2026, 10, 18, 12, 0, tzinfo=UTC)
+    start, end = statistics_window(7, now)
+    assert start == datetime(2026, 10, 12, tzinfo=UTC)
+    assert end == now
+```
+
+- [ ] **7.2. Написать DB-тест на базовый snapshot и дельту.** Общая Dev-база не пуста: получить статистику в одной `REPEATABLE READ` транзакции до создания собственных фикстур, затем после. Добавить два агента, 2 входящих, 1 agent_response, 1 tool_call-сообщение, успешный tool-event, неуспешный tool-event и отдельный model.failed; ожидаемая дельта — messages=3, actions=2, errors=2. Дневные числа в сумме равны totals; счётчик токенов 100/30 не удваивается от JOIN; переключение 7→30 не меняет токены.
+- [ ] **7.3. Выполнить** `uv run pytest tests/core/test_admin_statistics.py tests/api/test_admin_statistics.py tests/integration/test_admin_statistics.py -W error -q`.
+- [ ] **7.4. Реализовать независимые агрегаты:** профили count, эффективные состояния из CTE этапа 6, `coalesce(sum(input_tokens),0)` и output отдельно, дневные counts сообщений и событий. Одна AsyncSession не используется одновременно в `asyncio.gather`; несколько последовательных агрегатов в одной read-транзакции либо один SELECT из независимо агрегированных подзапросов.
+
+```sql
+select (created_at at time zone 'UTC')::date as date, count(*) as messages
+from public.agent_messages
+where created_at >= :since and created_at < :until
+  and direction in ('incoming', 'agent_response')
+group by 1 order by 1;
+
+select (created_at at time zone 'UTC')::date as date,
+    count(*) filter (where event_type like 'tool.%') as actions,
+    count(*) filter (where status = 'failed') as errors
+from public.agent_events
+where created_at >= :since and created_at < :until
+  and (event_type like 'tool.%' or status = 'failed')
+group by 1 order by 1;
+```
+
+Заполнить 7/30 календарных дней нулями в Python; totals вычислить суммой этих же рядов, исключив расхождение формул. Каст даты только в SELECT/GROUP BY, диапазон фильтруется непосредственно по indexed `created_at`. Ограничить выборку `until`, не включать будущие строки.
+
+- [ ] **7.5. Добавить API-маршрут**, `days` вне 7/30 даёт `422`, ошибка SQL не превращается в успешный ответ с нулями. Проверить удаление своего fixture-агента внутри откатываемой транзакции: счётчики уменьшаются согласно каскадам. На данных Dev посмотреть `EXPLAIN` временных агрегатов без `ANALYZE` и без выгрузки payload/content; убедиться, что предикаты соответствуют новым индексам.
+- [ ] **7.6. Повторить команду 7.3. Коммит:** `feat(admin): aggregate platform activity and lifetime token usage`.
+
+## Этап 8. Клиентский транспорт, роль и безопасный кеш
+
+**Files:** новые `frontend/src/types/admin.ts`, `frontend/src/lib/adminApi.ts`, `frontend/src/hooks/useAdminAccess.ts`, `frontend/src/hooks/useAdmin.ts`; изменить `frontend/src/lib/queryClient.ts`, `frontend/src/app/providers.tsx`; новые `frontend/src/__tests__/admin-access.test.tsx`, `frontend/src/__tests__/admin-api.test.ts`.
+
+- [ ] **8.1. Перенести DTO в TypeScript** без переименования полей; `AdminPage<T>` и `AdminStatistics` должны совпадать с Python. У `PublicTelegramSettings` нет `api_hash`/ciphertext. Клиентский `SaveTelegramSettings` существует только как аргумент прямого вызова формы.
+- [ ] **8.2. Написать проверки:** общий Axios прикладывает существующий JWT; read-запрос получает AbortSignal; административные query не запускаются до роли; `403` не повторяется retry; после отзыва роли/выхода старые users/preset detail исчезают. Ключи двух UUID не совпадают. Для HTTP подменять adapter существующего `apiClient`, а не создавать второй unauthenticated клиент.
+- [ ] **8.3. Выполнить** из `frontend/`: `bun test src/__tests__/admin-api.test.ts src/__tests__/admin-access.test.tsx`.
+- [ ] **8.4. Добавить транспорт и query-ключи.** Все read helpers принимают `signal?: AbortSignal`, передают `signal` в Axios и возвращают только `r.data`. Публичные методы: `me`, `users`, `user`, `presets`, `preset`, `createPreset`, `updatePreset`, `setPresetVisibility`, `telegramSettings`, `saveTelegramSettings`, `statistics`. GET-методы совпадают с контрактом. Административные writes — прямые async-вызовы с локальным pending, не `useMutation`: это не оставляет в mutation cache ни HASH, ни тела редактируемых пресетов после отзыва роли.
+
+```typescript
+const adminKeys = {
+  all: ['admin'] as const,
+  identity: (userId: string) => ['identity', userId] as const,
+  scope: (userId: string) => ['admin', userId] as const,
+  users: (userId: string, q: string, page: number) =>
+    ['admin', userId, 'users', { q, page }] as const,
+  user: (userId: string, targetId: string, page: number) =>
+    ['admin', userId, 'user', targetId, page] as const,
+  presets: (userId: string, q: string, kind: string, page: number) =>
+    ['admin', userId, 'presets', { q, kind, page }] as const,
+  preset: (userId: string, presetId: string) =>
+    ['admin', userId, 'preset', presetId] as const,
+  telegram: (userId: string) => ['admin', userId, 'telegram'] as const,
+  statistics: (userId: string, days: 7 | 30) =>
+    ['admin', userId, 'statistics', days] as const,
+};
+```
+
+Добавить как `queryKeys.admin`, не дублировать отдельный набор в компонентах. `useAdminAccess` узнаёт текущего пользователя через существующий Supabase auth, слушает `onAuthStateChange` и вызывает `/me` с `staleTime: 0`, `refetchInterval: 30_000`, refetch при focus/reconnect. Обычная ошибка роли не блокирует Sidebar собственных агентов; административная граница не показывает защищённое содержимое на ошибке перепроверки.
+
+- [ ] **8.5. При отзыве/выходе сначала закрыть UI и запретить новые запросы**, затем отменить и удалить административные queries. Отменённые read-запросы должны потреблять signal. Локальные формы и их черновики размонтируются вместе с закрытой границей. Поздние callbacks write-запросов не заполняют кеш и не выставляют identity, если текущий UUID/роль уже изменились; серверную операцию после её отправки отменённой не считать.
+
+```typescript
+async function clearAdminData(client: QueryClient): Promise<void> {
+  await client.cancelQueries({ queryKey: queryKeys.admin.all });
+  client.removeQueries({ queryKey: queryKeys.admin.all });
+}
+```
+
+При `403` любого административного запроса или мутации обновить identity до `is_admin:false` и выполнить тот же сброс. При выходе/смене UUID очищать и прежний identity; не очищать только `['admin', newUserId]`, оставляя данные старого. Helper использует существующий `QueryClient` и `queryKeys`, располагается в `hooks/useAdminAccess.ts` и переиспользуется hooks, не копируется по компонентам.
+
+- [ ] **8.6. Для read-запросов выставить `enabled` только при подтверждённой роли**, без retry на `401/403`, максимум один retry сетевой/`503` ошибки. Для async-действий проверять роль непосредственно перед вызовом, выключать UI-кнопки через локальный pending, не делать автоматических повторов и сбрасывать состояние при уходе с экрана. Пресетные действия инвалидируют `queryKeys.admin.scope(userId)` и `queryKeys.presets.all` только если не изменился вызывающий пользователь. Не кешировать HASH в query keys, mutation variables, local/sessionStorage, console или devtools.
+- [ ] **8.7. Повторить команду 8.3. Коммит:** `feat(admin): add identity-scoped client queries and access revocation`.
+
+## Этап 9. Оболочка, примитивы и вход без собственного мимика
+
+**Files:** новые `frontend/src/components/admin/AdminBoundary.tsx`, `frontend/src/components/admin/AdminNavigation.tsx`, `frontend/src/components/admin/AdminPagination.tsx`, `frontend/src/app/(dashboard)/admin/layout.tsx`; изменить `frontend/src/components/layout/Sidebar.tsx`, `frontend/src/middleware.ts`; новые `frontend/src/__tests__/admin-boundary.test.tsx`, `frontend/src/__tests__/admin-navigation.test.tsx`, `frontend/src/__tests__/admin-middleware.test.ts`. Содержательные page-маршруты создаются вместе со своими экранами в этапах 10–13, без промежуточных заглушек и импортов ещё не существующих компонентов.
+
+- [ ] **9.1. До UI-правок загрузить craft-floor по Impeccable** и существующий surface brief для `/admin`, если он есть. Сохранить краткий surface brief в служебной `.impeccable/` средствами skill: Operate, существующее оформление, четыре подраздела, без нового визуального мира. Не менять `DESIGN.md`, `PRODUCT.md` или добавлять декоративные Three.js-сцены ради админки.
+- [ ] **9.2. Просмотреть установленные компоненты**, затем из `frontend/` выполнить dry-run `bunx --bun shadcn@latest add @shadcn/field @shadcn/empty @shadcn/table @shadcn/pagination @shadcn/toggle-group --dry-run`. Прочитать список затрагиваемых файлов; установить только отсутствующие компоненты без `--overwrite`. Прочитать добавленные файлы и зависимости. Учитывать Tailwind 3.4: не вводить `@theme`, Tailwind 4 или Recharts 3; заменить несовместимые стили новых примитивов токенами нынешнего проекта, не менять API существующих примитивов.
+- [ ] **9.3. Написать проверки границы и middleware:** children не монтируются при loading/denied/error; admin без агентов открывает `/admin`; обычный пользователь без агентов получает административный отказ, а не бесконечный онбординг; `/administrator` не считается дочерним `/admin`; обычный `/dashboard` сохраняет прежний redirect.
+
+```typescript
+const isAdminPath = pathname === '/admin' || pathname.startsWith('/admin/');
+
+if (!isAdminPath && !pathname.startsWith('/onboarding') && !isPublicPath) {
+  const { data: agents, error: agentsError } = await supabase
+    .from('agents')
+    .select('id')
+    .eq('owner_id', user.id)
+    .limit(1);
+  if (!agentsError && (!agents || agents.length === 0)) {
+    return NextResponse.redirect(new URL('/onboarding', origin));
+  }
+}
+```
+
+Это исключение только из проверки наличия агента, не из аутентификации. Административная роль остаётся ответственностью API и `AdminBoundary`.
+
+- [ ] **9.4. Выполнить** `bun test src/__tests__/admin-boundary.test.tsx src/__tests__/admin-navigation.test.tsx src/__tests__/admin-middleware.test.ts`.
+- [ ] **9.5. Реализовать границу:** loading → `Skeleton`; ошибка → `Alert` с «Повторить»; denied → «Нет доступа» и ссылка к собственным агентам; allowed → дочерние страницы. AdminNavigation — ссылки на `/admin`, `/admin/users`, `/admin/presets`, `/admin/telegram` с `aria-current="page"`. Для `/admin` exact-match. Не заменять маршруты локальными вкладками, чтобы reload/deep link работали.
+- [ ] **9.6. Реализовать AdminPagination** поверх установленной Pagination: русские подписи и aria-label, текущая страница/total, недоступные переходы не кликаются и не фокусируются. Предыдущие результаты не остаются от другого поиска под новым заголовком. Sidebar показывает один пункт после успешного `/me`, не содержит дублирующую проверку JWT.
+- [ ] **9.7. Повторить команду 9.4. Коммит:** `feat(admin): add protected dashboard navigation and responsive shell`.
+
+## Этап 10. Экран пользователей
+
+**Files:** `frontend/src/components/admin/AdminUsers.tsx`, `frontend/src/app/(dashboard)/admin/users/page.tsx`; новый `frontend/src/__tests__/admin-users.test.tsx`.
+
+- [ ] **10.1. Написать компонентные проверки:** профиль без агента, пустое имя/email, поиск со сбросом страницы, ошибка с повтором, открытие деталей, отдельная пагинация агентов. Нет start/stop/delete-кнопок и ссылки, обещающей управление чужим агентом. Проверить отсутствие чужих настроек в props/DOM.
+- [ ] **10.2. Выполнить** `bun test src/__tests__/admin-users.test.tsx`.
+- [ ] **10.3. Реализовать список** через `useAdmin` и Table: пользователь, email, зарегистрирован, мимики и состояния; строки имеют явную кнопку «Мимики», не недоступный click по всему `<tr>`. На мобильном длинные email/UUID переносятся, второстепенные колонки скрываются либо таблица скроллится только в собственном контейнере. Поиск с Label/Field, ограничение длины 200 и debounce 300 мс; URL search params сохраняют q/page при reload.
+- [ ] **10.4. Детали пользователя показывать в существующем Modal** с корректным title: профиль, пагинированные name/model/state и `AgentStatusBadge`. Не вкладывать второй modal. Отображаемое имя отсутствующего профиля — «Без имени», email — «Не указан», а не выдуманные данные. Пустой результат — Empty, ошибка — Alert; при ошибке не рисовать нулевое количество как успешную загрузку.
+
+```tsx
+<TableCell>
+  <Button variant="ghost" size="sm" onClick={() => setSelectedUser(row.user_id)}>
+    <Bot data-icon="inline-start" />
+    Мимики ({row.agents_total})
+  </Button>
+</TableCell>
+```
+
+- [ ] **10.5. Повторить команду 10.2. Коммит:** `feat(admin): show searchable users and agent state details`.
+
+## Этап 11. Пресеты в админке и согласование пользовательского каталога
+
+**Files:** `frontend/src/components/admin/AdminPresets.tsx`, `frontend/src/app/(dashboard)/admin/presets/page.tsx`; изменить `frontend/src/hooks/usePromptPresets.ts`, `frontend/src/hooks/usePresetFavorites.ts`, `frontend/src/hooks/usePresetAuthors.ts`, `frontend/src/lib/presets/catalog.ts`, `frontend/src/app/(dashboard)/presets/page.tsx`, `frontend/src/components/agent/PresetPicker.tsx`; новые `frontend/src/__tests__/admin-presets.test.tsx`, дополнить `frontend/src/__tests__/preset-catalog-logic.test.ts`, `frontend/src/__tests__/preset-picker.test.tsx`, `frontend/src/__tests__/prompt-presets.test.ts`.
+
+- [ ] **11.1. Написать проверки:** официальный открывается в `PresetEditorDialog`; пользовательский — только в read-only просмотре; скрытие ожидает сервер, блокирует повтор и обновляет оба набора кешей; ошибка оставляет старый статус. Скрывшийся/снятый автором пресет даёт корректное «Пресет больше недоступен», без восстановления старого тела из административного detail cache.
+- [ ] **11.2. Проверить пользовательские сценарии:** автор видит скрытый в «Моих» с меткой; магазин его не показывает; автор может применить свой скрытый; неактивный официальный не появляется в picker; старое избранное отображает snapshot; правка автора не снимает скрытие. Выполнить `bun test src/__tests__/admin-presets.test.tsx src/__tests__/preset-catalog-logic.test.ts src/__tests__/preset-picker.test.tsx src/__tests__/prompt-presets.test.ts`.
+- [ ] **11.3. Исправить чтение каталога**: убрать `.eq('is_active', true)` из `fetchPromptPresets`, поскольку RLS теперь возвращает безопасный набор плюс скрытые собственные строки. В `CatalogEntry` добавить `isActive: boolean`; в store явно фильтровать активность, в mine — только владельца. Picker фильтрует активность только официальных; свои остаются применимыми.
+
+```typescript
+const store = presets.filter((preset) =>
+  preset.is_active && (
+    preset.owner_id === null ||
+    (preset.published_at !== null && preset.owner_id !== userId)
+  )
+);
+const mine = presets.filter((preset) =>
+  preset.owner_id !== null && preset.owner_id === userId
+);
+```
+
+Для каталога, избранного и авторов установить `staleTime: 30_000`, `refetchInterval: 60_000`, `refetchOnWindowFocus: 'always'`, `refetchOnReconnect: true`. После административной мутации инвалидировать весь `queryKeys.presets.all`, чтобы обновились три проекции. Существующие snapshot-правила применения не переписывать.
+
+- [ ] **11.4. Реализовать админский список** с q/kind/page, загружать body/settings только через detail. Создание и редактирование официального — существующий `PresetEditorDialog` с переданным `onSave`; стандартный `PresetDraft` не менять ради sort_order. Порядок изменять отдельным числовым полем строки и PATCH `{sort_order}`, без отправки полного текста. Не сохранять нечисловое/дробное значение; допустимы отрицательные целые как в текущем SQL integer, ограниченные его диапазоном.
+- [ ] **11.5. Видимость менять отдельным действием с иконкой и доступным названием** «Скрыть пресет»/«Вернуть в каталог». Подтверждение перед скрытием объясняет заморозку избранного; использовать существующий ConfirmDialog, не каскад вложенных модалок. Для опубликованного пользовательского нет редактирования/удаления. Read-only body выводить как plain text, не `dangerouslySetInnerHTML`.
+- [ ] **11.6. Повторить команду 11.2. Коммит:** `feat(admin): add preset moderation UI and refresh owner catalogs`.
+
+## Этап 12. Форма общей Telegram-пары
+
+**Files:** `frontend/src/components/admin/AdminTelegramSettings.tsx`, `frontend/src/app/(dashboard)/admin/telegram/page.tsx`; новый `frontend/src/__tests__/admin-telegram-settings.test.tsx`.
+
+- [ ] **12.1. Написать проверки формы:** API ID из GET; HASH пуст независимо от `has_api_hash`; ввод новой пары обязателен; повторное сохранение недоступно; успешная операция очищает HASH; ошибка сохраняет API ID, но очищает HASH; `403` закрывает экран. Тестовый HASH отсутствует в QueryClient.getQueryCache()/getMutationCache() после завершения запроса.
+- [ ] **12.2. Выполнить** `bun test src/__tests__/admin-telegram-settings.test.tsx`.
+- [ ] **12.3. Построить форму** на FieldGroup/Field/FieldLabel, существующих Input и Button. API ID — текстовый input с `inputMode="numeric"`, строгая проверка целого 1–2147483647, не `parseInt('1abc')`. HASH — `type="password"`, `autoComplete="new-password"`; сохранение отправляет полную пару прямым `adminApi.saveTelegramSettings`, не через `useMutation`. Во время сохранения показать состояние Button и выключить повтор.
+
+```tsx
+<Field>
+  <FieldLabel htmlFor="platform-api-hash">API HASH</FieldLabel>
+  <Input
+    id="platform-api-hash"
+    type="password"
+    autoComplete="new-password"
+    value={apiHash}
+    onChange={(event) => setApiHash(event.target.value)}
+    disabled={saving}
+  />
+  <FieldDescription>
+    Введи HASH новой пары. Сохранённое значение не показывается.
+  </FieldDescription>
+</Field>
+```
+
+- [ ] **12.4. В обработчике submit** скопировать пару только в аргумент ожидаемого HTTP-вызова, затем в `finally` выполнить `setApiHash('')`. Ошибка — только нормализованный безопасный message. После успеха обновить публичный query настроек и показать штатный Toast. Не подставлять в поле маску `********` как настоящее значение. Под формой постоянное пояснение: «Новая пара применяется к новым подключениям. Уже подключённые мимики продолжат работать со своей парой». Источник показывать как «Окружение сервера»/«Настройка платформы»/«Не настроено», без технических названий переменных.
+- [ ] **12.5. Повторить команду 12.2. Коммит:** `feat(admin): add write-only Telegram credentials form`.
+
+## Этап 13. Экран общей статистики
+
+**Files:** `frontend/src/components/admin/AdminStatistics.tsx`, `frontend/src/app/(dashboard)/admin/page.tsx`; новый `frontend/src/__tests__/admin-statistics.test.tsx`.
+
+- [ ] **13.1. Написать проверки:** переключение 7/30 меняет ключ и запрос; у токенов надпись «За всё время»; UTC указан; нули появляются только при успешных нулевых данных; ошибка не маскируется пустым графиком; незавершённый текущий день не называется полным. Выполнить `bun test src/__tests__/admin-statistics.test.tsx`.
+- [ ] **13.2. Построить интерфейс** на нынешних Card/Badge и уже установленном Recharts 2, ориентируясь на `components/agent/TabAnalytics.tsx`. Пользователи и распределение мимиков — текущие значения; сообщения/действия/ошибки — выбранный период; токены — отдельная подписанная группа. Суммарная статистика не перечисляет чужие сообщения и трейсы.
+- [ ] **13.3. Переключатель периода** — новый ToggleGroup с single-value; игнорировать пустое значение при повторном нажатии выбранного пункта:
+
+```tsx
+<ToggleGroup
+  type="single"
+  value={String(days)}
+  onValueChange={(value) => {
+    if (value === '7' || value === '30') setDays(Number(value) as 7 | 30);
+  }}
+  aria-label="Период статистики"
+>
+  <ToggleGroupItem value="7">7 дней</ToggleGroupItem>
+  <ToggleGroupItem value="30">30 дней</ToggleGroupItem>
+</ToggleGroup>
+```
+
+Легенда и доступная текстовая сводка позволяют понять график без различения цветов. ResponsiveContainer имеет явно заданную высоту родителя и `min-w-0`. Нет произвольных цветовых hex, новых шрифтов или анимации, задерживающей показ данных. Обновление раз в минуту в активной вкладке.
+
+- [ ] **13.4. Повторить команду 13.1. Коммит:** `feat(admin): show platform metrics and UTC activity charts`.
+
+## Этап 14. Сквозные сценарии и визуальная проверка
+
+**Files:** новый `tests/e2e/test_admin.py`; изменить `src/mimic42/testing/server.py`, `tests/e2e/conftest.py` только для ограниченной тестовой настройки роли; новый `tests/testing/test_admin_support.py`; служебные снимки `.impeccable/review/`.
+
+- [ ] **14.1. До браузерной автоматизации загрузить** `agent-browser`, а перед написанием Playwright-тестов — `playwright-best-practices-skill-main`. Использовать существующие pytest-фикстуры `servers/persona_page/auth_states/slot_info`, не добавлять второй самостоятельный frontend runner и не открывать пользовательский личный браузер.
+- [ ] **14.2. Добавить только в тестовый entrypoint** `PUT /__test__/admin-role` с body `{slot, owner_id, enabled}`. Убедиться, что owner_id входит в персоны указанного арендованного слота; иначе `400`. На входе `assert_test_project`; service доступен только в `mimic42.testing.server`, а не в production app. SQL меняет одну строку `admin_users` выбранной персоны. В fixture получить исходное назначение, установить роль на время сценария и в `finally` восстановить прежнее состояние. Это не новый production API назначения ролей.
+- [ ] **14.3. Проверить поддержку тестового маршрута unit-тестом** `uv run pytest tests/testing/test_admin_support.py -W error -q`: чужой UUID не меняется, неизвестный слот запрещён, production `create_app` маршрута не содержит. Не расширять очистку до удаления всех `admin_users` или глобальных settings.
+- [ ] **14.4. Написать сквозные проверки:** гостя ведёт на login; обычному пользователю запрещён `/admin`; назначенная персона без агента открывает `/admin`; создание собственного уникального официального fixture-пресета, изменение порядка, hide/unhide; после отзыва роли UI скрывает данные и API даёт `403`; обычные пресеты/онбординг по-прежнему работают. Созданный официальный пресет удалять только по захваченному UUID при teardown, не по всем `owner_id is null`.
+- [ ] **14.5. Общую Telegram-настройку в shared Dev браузером не сохранять.** Сквозную форму проверить route-mocking только PUT/GET этой настройки в браузере; шифрование, persistence и новый вход уже проверены реальным API в откатываемой DB-транзакции этапа 5. Смена глобальной настройки ради браузерного теста затронула бы другие процессы вне тестового слота. Не обходить общий ресурс.
+- [ ] **14.6. Выполнить только новый браузерный сценарий:** `uv run pytest tests/e2e/test_admin.py -m e2e -W error -q`. Перед запуском проверить порты и отсутствие конкурирующего `next dev`/`next build` на той же `.next`; использовать предусмотренные `E2E_API_PORT/E2E_APP_PORT`, не убивать чужие процессы. Эти команды выполнять только на этапе сознательной браузерной проверки, не после каждой правки.
+- [ ] **14.7. Снять и открыть desktop 1440 и mobile 390** для четырёх подразделов, загрузки/ошибки и длинных данных одним пакетом. Убедиться, что в кадре нет реальных секретов. Исправить найденное одним пакетом и подтвердить вторым, не запускать бесконечную самостоятельную полировку. После UI выполнить Impeccable detector один раз на изменённых UI-targets и обязательные finish-review/documentation handoffs по skill; существующую дизайн-систему не переписывать.
+- [ ] **14.8. Коммит:** `test(admin): cover access, moderation, and dashboard workflows`.
+
+## Этап 15. Документация эксплуатации и передача на локальную проверку
+
+**Files:** `README.md` — существующий раздел настройки/эксплуатации; этот план — фактические migration paths и отметки.
+
+- [ ] **15.1. Описать назначение/снятие роли в базе**, отдельно от миграций. Пример команды параметризован подтверждённым UUID аккаунта; не назначать себя или первую персону автоматически. Для проверки сначала SELECT UUID/email нужного профиля, затем одна запись в `admin_users`; для снятия — один UUID. Не публиковать email/UUID реального пользователя в документации.
+- [ ] **15.2. Описать приоритет credentials:** сохранённая пара → env при отсутствии строки; hash не читается через UI; нужна доступность `SECRET_KEY`; существующие сессии не мигрируют. Откат приложения не должен удалять таблицы или журнал; возврат credentials — явное административное сохранение прежней пары, если она есть у владельца, а не очистка всех настроек.
+- [ ] **15.3. Передать пользователю локальный адрес `/admin` и способ назначения его тестового аккаунта.** Запросить подтверждение работы приложения до PR. Пока его нет, не открывать PR, не пушить реализацию ради проверки CI и не ставить issue «Сделано».
+- [ ] **15.4. Коммит:** `docs(admin): document access grants and Telegram settings lifecycle`.
+
+## После подтверждения пользователем: проверки, PR и выпуск
+
+Это отдельный гейт, не часть текущего запроса написать план.
+
+- [ ] Выполнить предусмотренные проектом локальные проверки до push; команды не соединять в одну длинную shell-цепочку:
+
+```bash
+uv sync --locked --all-groups
+uv run ruff check .
+uv run ruff format --check .
+uv run ty check
+uv run pytest -m "not db and not e2e and not real_tg and not real_llm" -W error -q
+```
+
+Из `frontend/`:
+
+```bash
+bun install --frozen-lockfile
+bunx next lint
+bun run typecheck
+bun test
+```
+
+- [ ] Проверить `supabase migration list --linked`: обе новые миграции уже в Dev, иначе `migrations-drift` в CI упадёт. При обнаружении чужих миграций не использовать repair/include-all без выяснения причины.
+- [ ] Проверить весь итоговый diff и соответствие спецификации без запуска тестов во время самого code review. Проверки уже выполнены предыдущим шагом. Не включать в diff `.env`, browser storage state, реальные credentials и артефакты с персональными данными.
+- [ ] После исправления всех локально обнаруживаемых проблем один раз push, затем PR с `Closes #127`. Проверить `gh pr checks`; следить за существующими `backend`, `frontend`, `backend-db`, `e2e`, `migrations-drift`. Не запускать конкурирующие внешние проверки и не обходить concurrency/тестовые слоты. После создания PR перевести item проекта в «На ревью», не закрывать issue вручную раньше слияния.
+- [ ] Перед слиянием учесть фактическую автоматизацию: `.github/workflows/deploy.yml` на push в main собирает образы и разворачивает их на VPS, но **не применяет SQL-миграции**. Изменение прав каталога и новые таблицы должны попасть в production до использования нового приложения.
+- [ ] Только при отдельном разрешении на выпуск проверить production target, вывести dry-run ровно двух миграций, применить их через Supabase CLI к production, затем дать состояться деплою. Не перелинковывать локальный Dev-проект на production ради удобства. При отсутствии разрешения явно передать этот обязательный шаг владельцу и не заявлять, что выпуск завершён.
+- [ ] После выпуска проверить отсутствие миграционного хвоста, вход обычного пользователя, отказ `/admin` без роли, доступ назначенного администратора и отсутствие secrets в ответах. Роль в production назначается вручную по подтверждённому аккаунту, не переносится из Dev. Общую пару production не менять ради проверки.
+
+## Матрица покрытия спецификации
+
+| Требование | Этапы |
+| --- | --- |
+| Ручное назначение, отказ самоназначения, отзыв на следующем запросе | 1, 2, 8, 9, 14, 15 |
+| Пользователи без мимиков, поиск, пагинация, реальные состояния | 6, 10, 14 |
+| Официальные пресеты, скрытие опубликованных, приватность черновиков | 3, 4, 11, 14 |
+| Заморозка избранного, сохранение авторских прав и обновление кешей | 3, 4, 8, 11 |
+| Шифрование пары, write-only HASH, безопасные ошибки и аудит | 1, 4, 5, 12 |
+| Новые defaults без рестарта; старые сессии не меняются | 5, 14, 15 |
+| UTC-графики, пожизненные токены, отсутствие JOIN-дублирования | 7, 13 |
+| Адаптивный UI, загрузка/пустота/ошибка, работа без собственного агента | 9–14 |
+| Изоляция shared Dev, отсутствие изменений production при разработке | 1, 5, 14, гейт выпуска |
+| Подтверждение пользователем до PR, CI и отдельные production-миграции | 15, гейт выпуска |
+
+## Документация для выполнения
+
+Изучена при подготовке; при выполнении сверять используемые методы с текущими версиями, не переносить случайно примеры новых major-версий в существующий стек.
+
+- [FastAPI: APIRouter и общие зависимости](https://fastapi.tiangolo.com/tutorial/bigger-applications/).
+- [FastAPI: route_class и RequestValidationError](https://fastapi.tiangolo.com/how-to/custom-request-and-route/).
+- [SQLAlchemy 2: внешняя транзакция и create_savepoint](https://docs.sqlalchemy.org/en/20/orm/session_transaction.html#joining-a-session-into-an-external-transaction-such-as-for-test-suites).
+- [SQLAlchemy 2: AsyncSession, не разделяемая между конкурентными задачами](https://docs.sqlalchemy.org/en/20/orm/extensions/asyncio.html).
+- [Supabase: RLS и безопасность метаданных роли](https://supabase.com/docs/guides/database/postgres/row-level-security).
+- [Supabase: явные grants и Data API](https://supabase.com/docs/guides/api/securing-your-api).
+- [TanStack Query 5: staleTime, refetchInterval и gcTime](https://tanstack.com/query/latest/docs/framework/react/guides/important-defaults).
+- [shadcn Field](https://ui.shadcn.com/docs/components/radix/field), [Empty](https://ui.shadcn.com/docs/components/radix/empty), [Table](https://ui.shadcn.com/docs/components/radix/table), [Pagination](https://ui.shadcn.com/docs/components/radix/pagination), [ToggleGroup](https://ui.shadcn.com/docs/components/radix/toggle-group).
+- Локальные `supabase db push --help`, `supabase db advisors --help`, `supabase migration new --help`; версия CLI проверена: 2.100.1.
