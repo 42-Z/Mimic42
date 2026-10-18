@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from collections.abc import AsyncIterator
 from uuid import UUID, uuid4
@@ -405,6 +406,12 @@ async def test_concurrent_favorite_then_hide_leaves_no_live_hidden_reference(
     preset_id = uuid4()
     slug = f"u_{preset_id}"
     setup = await asyncpg.connect(plain_dsn(test_dsn))
+    favorite_connection: asyncpg.Connection | None = None
+    hide_connection: asyncpg.Connection | None = None
+    observer: asyncpg.Connection | None = None
+    favorite_transaction: asyncpg.Transaction | None = None
+    hide_task: asyncio.Task[str] | None = None
+    favorite_id: UUID | None = None
     try:
         await setup.execute(
             """
@@ -417,16 +424,10 @@ async def test_concurrent_favorite_then_hide_leaves_no_live_hidden_reference(
             slug,
             author,
         )
-    finally:
-        await setup.close()
-
-    favorite_connection = await asyncpg.connect(plain_dsn(test_dsn))
-    hide_connection = await asyncpg.connect(plain_dsn(test_dsn))
-    observer = await asyncpg.connect(plain_dsn(test_dsn))
-    favorite_transaction = favorite_connection.transaction()
-    hide_task: asyncio.Task[str] | None = None
-    favorite_id: UUID | None = None
-    try:
+        favorite_connection = await asyncpg.connect(plain_dsn(test_dsn))
+        hide_connection = await asyncpg.connect(plain_dsn(test_dsn))
+        observer = await asyncpg.connect(plain_dsn(test_dsn))
+        favorite_transaction = favorite_connection.transaction()
         await favorite_transaction.start()
         await _act_as_user(favorite_connection, reader)
         favorite_id = await favorite_connection.fetchval(
@@ -492,23 +493,24 @@ async def test_concurrent_favorite_then_hide_leaves_no_live_hidden_reference(
             is False
         )
     finally:
-        if favorite_connection.is_in_transaction():
-            await favorite_transaction.rollback()
+        if (
+            favorite_connection is not None
+            and favorite_transaction is not None
+            and favorite_connection.is_in_transaction()
+        ):
+            with contextlib.suppress(Exception):
+                await favorite_transaction.rollback()
         if hide_task is not None and not hide_task.done():
-            try:
+            with contextlib.suppress(Exception):
                 await hide_task
-            except Exception:
-                pass
-        await favorite_connection.close()
-        await hide_connection.close()
-        await observer.close()
-
-        cleanup = await asyncpg.connect(plain_dsn(test_dsn))
         try:
             if favorite_id is not None:
-                await cleanup.execute(
+                await setup.execute(
                     "delete from public.preset_favorites where id = $1", favorite_id
                 )
-            await cleanup.execute("delete from public.prompt_presets where id = $1", preset_id)
+            await setup.execute("delete from public.prompt_presets where id = $1", preset_id)
         finally:
-            await cleanup.close()
+            for connection in (observer, hide_connection, favorite_connection, setup):
+                if connection is not None:
+                    with contextlib.suppress(Exception):
+                        await connection.close()

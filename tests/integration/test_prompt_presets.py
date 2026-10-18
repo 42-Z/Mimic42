@@ -8,7 +8,7 @@ from uuid import UUID
 import asyncpg
 import pytest
 
-from mimic42.testing.slots import SLOTS, plain_dsn
+from mimic42.testing.slots import Slot, plain_dsn
 
 EXPECTED_SLUGS = {"rage_comments", "sasavot_fan", "magnum_normie", "battalion"}
 
@@ -100,9 +100,9 @@ async def test_rage_comments_defines_tool_allowlist(test_dsn: str) -> None:
     assert "set_privacy_settings" not in enabled
 
 
-def _persona(key: str) -> UUID:
-    """Готовый auth-аккаунт персоны слота: его auth.users и профиль уже в базе."""
-    return SLOTS[0].persona(key).user_id
+def _persona(test_slot: Slot, key: str) -> UUID:
+    """Готовый auth-аккаунт арендованной персоны: профиль уже в базе."""
+    return test_slot.persona(key).user_id
 
 
 async def _act_as_user(connection: asyncpg.Connection, user_id: UUID) -> None:
@@ -126,10 +126,10 @@ async def _cleanup_personas(connection: asyncpg.Connection, *user_ids: UUID) -> 
         await connection.execute("delete from public.prompt_presets where owner_id = $1", user_id)
 
 
-async def test_owner_creates_draft_and_reads_it(test_dsn: str) -> None:
+async def test_owner_creates_draft_and_reads_it(test_dsn: str, test_slot: Slot) -> None:
     connection = await asyncpg.connect(plain_dsn(test_dsn))
     try:
-        owner = _persona("empty")
+        owner = _persona(test_slot, "empty")
         async with connection.transaction():
             await _act_as_user(connection, owner)
             preset_id = await connection.fetchval(
@@ -151,11 +151,11 @@ async def test_owner_creates_draft_and_reads_it(test_dsn: str) -> None:
         await connection.close()
 
 
-async def test_official_rows_are_untouchable(test_dsn: str) -> None:
+async def test_official_rows_are_untouchable(test_dsn: str, test_slot: Slot) -> None:
     connection = await asyncpg.connect(plain_dsn(test_dsn))
     try:
         async with connection.transaction():
-            await _act_as_user(connection, _persona("empty"))
+            await _act_as_user(connection, _persona(test_slot, "empty"))
             # RLS не кидает ошибку, а тихо сужает выборку: официальная строка
             # не изменится и не удалится, сколько клиент ни старается.
             status = await connection.execute(
@@ -175,12 +175,12 @@ async def test_official_rows_are_untouchable(test_dsn: str) -> None:
         await connection.close()
 
 
-async def test_draft_is_hidden_from_others(test_dsn: str) -> None:
+async def test_draft_is_hidden_from_others(test_dsn: str, test_slot: Slot) -> None:
     connection = await asyncpg.connect(plain_dsn(test_dsn))
     try:
         draft_ids: list[UUID] = []
         async with connection.transaction():
-            await _act_as_user(connection, _persona("empty"))
+            await _act_as_user(connection, _persona(test_slot, "empty"))
             draft_ids.append(
                 await connection.fetchval(
                     "insert into public.prompt_presets (title, summary, body) "
@@ -188,22 +188,22 @@ async def test_draft_is_hidden_from_others(test_dsn: str) -> None:
                 )
             )
         async with connection.transaction():
-            await _act_as_user(connection, _persona("full"))
+            await _act_as_user(connection, _persona(test_slot, "full"))
             count = await connection.fetchval(
                 "select count(*) from public.prompt_presets where title = 'Секретный'"
             )
             assert count == 0
     finally:
-        await _cleanup_personas(connection, _persona("empty"))
+        await _cleanup_personas(connection, _persona(test_slot, "empty"))
         await connection.close()
 
 
-async def test_publish_makes_preset_visible_and_editable(test_dsn: str) -> None:
+async def test_publish_makes_preset_visible_and_editable(test_dsn: str, test_slot: Slot) -> None:
     connection = await asyncpg.connect(plain_dsn(test_dsn))
     try:
         preset_id: UUID | None = None
         async with connection.transaction():
-            await _act_as_user(connection, _persona("empty"))
+            await _act_as_user(connection, _persona(test_slot, "empty"))
             preset_id = await connection.fetchval(
                 "insert into public.prompt_presets (title, summary, body) "
                 "values ('Витринный', 'для всех', 'старый текст') returning id"
@@ -213,7 +213,7 @@ async def test_publish_makes_preset_visible_and_editable(test_dsn: str) -> None:
                 preset_id,
             )
         async with connection.transaction():
-            await _act_as_user(connection, _persona("full"))
+            await _act_as_user(connection, _persona(test_slot, "full"))
             body = await connection.fetchval(
                 "select body from public.prompt_presets where id = $1", preset_id
             )
@@ -225,34 +225,34 @@ async def test_publish_makes_preset_visible_and_editable(test_dsn: str) -> None:
             # Официальные строки выложенными считаться не должны.
             assert official_published == 0
         async with connection.transaction():
-            await _act_as_user(connection, _persona("empty"))
+            await _act_as_user(connection, _persona(test_slot, "empty"))
             await connection.execute(
                 "update public.prompt_presets set body = 'новый текст' where id = $1",
                 preset_id,
             )
         async with connection.transaction():
-            await _act_as_user(connection, _persona("full"))
+            await _act_as_user(connection, _persona(test_slot, "full"))
             body = await connection.fetchval(
                 "select body from public.prompt_presets where id = $1", preset_id
             )
             assert body == "новый текст"
     finally:
-        await _cleanup_personas(connection, _persona("empty"))
+        await _cleanup_personas(connection, _persona(test_slot, "empty"))
         await connection.close()
 
 
-async def test_owner_cannot_reassign_owner_or_slug(test_dsn: str) -> None:
+async def test_owner_cannot_reassign_owner_or_slug(test_dsn: str, test_slot: Slot) -> None:
     connection = await asyncpg.connect(plain_dsn(test_dsn))
     try:
         async with connection.transaction():
-            await _act_as_user(connection, _persona("empty"))
+            await _act_as_user(connection, _persona(test_slot, "empty"))
             preset_id = await connection.fetchval(
                 "insert into public.prompt_presets (title, summary, body) "
                 "values ('Переезд', 'трой', 'текст') returning id"
             )
         # Каждый отказ — в своей транзакции: после abort транзакция мертва.
         async with connection.transaction():
-            await _act_as_user(connection, _persona("empty"))
+            await _act_as_user(connection, _persona(test_slot, "empty"))
             # Смена owner_id нарушает with check политики (42501).
             with pytest.raises(DENIED):
                 await connection.execute(
@@ -260,7 +260,7 @@ async def test_owner_cannot_reassign_owner_or_slug(test_dsn: str) -> None:
                     preset_id,
                 )
         async with connection.transaction():
-            await _act_as_user(connection, _persona("empty"))
+            await _act_as_user(connection, _persona(test_slot, "empty"))
             # slug не в поколоночном гранте — отказ ещё на праве колонки.
             with pytest.raises(DENIED):
                 await connection.execute(
@@ -268,7 +268,7 @@ async def test_owner_cannot_reassign_owner_or_slug(test_dsn: str) -> None:
                     preset_id,
                 )
     finally:
-        await _cleanup_personas(connection, _persona("empty"))
+        await _cleanup_personas(connection, _persona(test_slot, "empty"))
         await connection.close()
 
 
@@ -294,12 +294,15 @@ async def _publish_preset(
     return preset_id
 
 
-async def test_user_can_favorite_published_foreign_preset(test_dsn: str) -> None:
+async def test_user_can_favorite_published_foreign_preset(
+    test_dsn: str,
+    test_slot: Slot,
+) -> None:
     connection = await asyncpg.connect(plain_dsn(test_dsn))
     try:
-        author = _persona("empty")
-        reader = _persona("full")
-        outsider = _persona("flow")
+        author = _persona(test_slot, "empty")
+        reader = _persona(test_slot, "full")
+        outsider = _persona(test_slot, "flow")
         preset_id = await _publish_preset(connection, author)
 
         async with connection.transaction():
@@ -325,11 +328,14 @@ async def test_user_can_favorite_published_foreign_preset(test_dsn: str) -> None
         await connection.close()
 
 
-async def test_favorite_is_forbidden_for_official_own_and_unpublished(test_dsn: str) -> None:
+async def test_favorite_is_forbidden_for_official_own_and_unpublished(
+    test_dsn: str,
+    test_slot: Slot,
+) -> None:
     connection = await asyncpg.connect(plain_dsn(test_dsn))
     try:
-        author = _persona("empty")
-        reader = _persona("full")
+        author = _persona(test_slot, "empty")
+        reader = _persona(test_slot, "full")
         official_id = await connection.fetchval(
             "select id from public.prompt_presets where slug = 'rage_comments'"
         )
@@ -367,11 +373,11 @@ async def test_favorite_is_forbidden_for_official_own_and_unpublished(test_dsn: 
         await connection.close()
 
 
-async def test_favorite_is_unique_per_preset(test_dsn: str) -> None:
+async def test_favorite_is_unique_per_preset(test_dsn: str, test_slot: Slot) -> None:
     connection = await asyncpg.connect(plain_dsn(test_dsn))
     try:
-        author = _persona("empty")
-        reader = _persona("full")
+        author = _persona(test_slot, "empty")
+        reader = _persona(test_slot, "full")
         preset_id = await _publish_preset(connection, author)
         async with connection.transaction():
             await _act_as_user(connection, reader)
@@ -387,11 +393,11 @@ async def test_favorite_is_unique_per_preset(test_dsn: str) -> None:
         await connection.close()
 
 
-async def test_user_can_remove_own_favorite(test_dsn: str) -> None:
+async def test_user_can_remove_own_favorite(test_dsn: str, test_slot: Slot) -> None:
     connection = await asyncpg.connect(plain_dsn(test_dsn))
     try:
-        author = _persona("empty")
-        reader = _persona("full")
+        author = _persona(test_slot, "empty")
+        reader = _persona(test_slot, "full")
         preset_id = await _publish_preset(connection, author)
         async with connection.transaction():
             await _act_as_user(connection, reader)
@@ -408,11 +414,11 @@ async def test_user_can_remove_own_favorite(test_dsn: str) -> None:
         await connection.close()
 
 
-async def test_unpublish_freezes_favorites(test_dsn: str) -> None:
+async def test_unpublish_freezes_favorites(test_dsn: str, test_slot: Slot) -> None:
     connection = await asyncpg.connect(plain_dsn(test_dsn))
     try:
-        author = _persona("empty")
-        reader = _persona("full")
+        author = _persona(test_slot, "empty")
+        reader = _persona(test_slot, "full")
         preset_id = await _publish_preset(
             connection, author, title="Заморозка", body="текст на витрине"
         )
@@ -442,11 +448,11 @@ async def test_unpublish_freezes_favorites(test_dsn: str) -> None:
         await connection.close()
 
 
-async def test_delete_freezes_favorites(test_dsn: str) -> None:
+async def test_delete_freezes_favorites(test_dsn: str, test_slot: Slot) -> None:
     connection = await asyncpg.connect(plain_dsn(test_dsn))
     try:
-        author = _persona("empty")
-        reader = _persona("full")
+        author = _persona(test_slot, "empty")
+        reader = _persona(test_slot, "full")
         preset_id = await _publish_preset(
             connection, author, title="Удаляемый", body="пропадёт с витрины"
         )
@@ -478,11 +484,11 @@ async def test_delete_freezes_favorites(test_dsn: str) -> None:
         await connection.close()
 
 
-async def test_republish_keeps_old_copy_frozen(test_dsn: str) -> None:
+async def test_republish_keeps_old_copy_frozen(test_dsn: str, test_slot: Slot) -> None:
     connection = await asyncpg.connect(plain_dsn(test_dsn))
     try:
-        author = _persona("empty")
-        reader = _persona("full")
+        author = _persona(test_slot, "empty")
+        reader = _persona(test_slot, "full")
         preset_id = await _publish_preset(connection, author, title="Возвращение")
         async with connection.transaction():
             await _act_as_user(connection, reader)
@@ -518,10 +524,10 @@ async def test_republish_keeps_old_copy_frozen(test_dsn: str) -> None:
         await connection.close()
 
 
-async def test_preset_authors_view(test_dsn: str) -> None:
+async def test_preset_authors_view(test_dsn: str, test_slot: Slot) -> None:
     connection = await asyncpg.connect(plain_dsn(test_dsn))
     try:
-        author = _persona("empty")
+        author = _persona(test_slot, "empty")
         original_name = await connection.fetchval(
             "select display_name from public.profiles where id = $1", author
         )

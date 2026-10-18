@@ -6,6 +6,22 @@ create policy "Authenticated users can read catalog presets"
         or (is_active and (owner_id is null or published_at is not null))
     );
 
+drop policy "Authenticated users can update own presets" on public.prompt_presets;
+create policy "Authenticated users can update own and lock published presets"
+    on public.prompt_presets
+    for update
+    to authenticated
+    using (
+        owner_id = (select auth.uid())
+        or (
+            owner_id is not null
+            and is_active
+            and published_at is not null
+            and owner_id <> (select auth.uid())
+        )
+    )
+    with check (owner_id = (select auth.uid()));
+
 drop policy "Users can favorite published presets of others" on public.preset_favorites;
 create policy "Users can favorite published presets of others"
     on public.preset_favorites for insert to authenticated
@@ -55,11 +71,3 @@ where pp.published_at is not null and pp.is_active;
 
 revoke all on public.preset_authors from public, anon;
 grant select on public.preset_authors to authenticated;
-
-create index agent_messages_admin_activity_date_idx
-    on public.agent_messages(created_at)
-    where direction in ('incoming', 'agent_response');
-
-create index agent_events_admin_activity_date_idx
-    on public.agent_events(created_at)
-    where event_type like 'tool.%' or status = 'failed';

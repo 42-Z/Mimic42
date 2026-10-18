@@ -1,4 +1,6 @@
-drop policy "Authenticated users can update own presets" on public.prompt_presets;
+drop policy if exists "Authenticated users can update own presets" on public.prompt_presets;
+drop policy if exists "Authenticated users can update own and lock published presets"
+    on public.prompt_presets;
 create policy "Authenticated users can update own and lock published presets"
     on public.prompt_presets
     for update
