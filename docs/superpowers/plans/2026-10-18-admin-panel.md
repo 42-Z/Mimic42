@@ -414,7 +414,9 @@ class AdminRepository(Protocol):
 ```python
 from uuid import uuid4
 
-from fastapi import Depends
+from typing import Annotated
+
+from fastapi import Depends, Request
 from httpx import ASGITransport, AsyncClient
 
 from mimic42.api.admin import require_admin
@@ -451,8 +453,10 @@ async def test_admin_role_is_rechecked_for_each_request():
 - [ ] **2.4. Реализовать проверку** `select exists(...)` по PK роли без кеша и зависимость `require_admin`. `/me` использует только `require_user` и возвращает `AdminIdentity`; запрещено превращать ошибку базы в `is_admin=true` или выдавать наружу SQL/DSN. Административный router получает общую зависимость `Depends(require_admin)`; изменение текущей проверки JWT не требуется.
 
 ```python
-async def require_admin(request: Request) -> CurrentUser:
-    current_user = await require_user(request)
+async def require_admin(
+    request: Request,
+    current_user: Annotated[CurrentUser, Depends(require_user)],
+) -> CurrentUser:
     repository = getattr(request.app.state, "admin_repository", None)
     if repository is None:
         raise HTTPException(503, "Администрирование временно недоступно")

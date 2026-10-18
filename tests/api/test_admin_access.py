@@ -10,6 +10,7 @@ from sqlalchemy.dialects import postgresql
 from sqlalchemy.exc import SQLAlchemyError
 
 from mimic42.api.app import create_app
+from mimic42.api.auth import CurrentUser, require_user
 from mimic42.config import Settings
 from tests.api.admin_fakes import FakeAdminRepository
 from tests.api.auth_helpers import AUTH_HEADERS, FakeAuthVerifier
@@ -90,7 +91,27 @@ async def test_admin_role_is_rechecked_for_each_request() -> None:
 
 
 @pytest.mark.asyncio
-async def test_repository_failure_fails_closed_without_exposing_error_details() -> None:
+async def test_admin_dependency_uses_fastapi_user_dependency_override() -> None:
+    user_id = uuid4()
+    repository = FakeAdminRepository(admin_ids={user_id})
+    app = _app_with_admin_probe(uuid4(), repository)
+
+    async def override_user() -> CurrentUser:
+        return CurrentUser(user_id=user_id)
+
+    app.dependency_overrides[require_user] = override_user
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/__test__/admin-access")
+
+    assert response.status_code == 200
+    assert repository.calls == [user_id]
+
+
+@pytest.mark.asyncio
+async def test_repository_failure_fails_closed_without_exposing_error_details(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     repository = FakeAdminRepository(unavailable=True)
     app = _app_with_admin_probe(uuid4(), repository)
 
@@ -100,6 +121,9 @@ async def test_repository_failure_fails_closed_without_exposing_error_details() 
     assert response.status_code == 503
     assert "postgresql://private-dsn" not in response.text
     assert "private_table" not in response.text
+    assert "RuntimeError" in caplog.text
+    assert "private-dsn" not in caplog.text
+    assert "private_table" not in caplog.text
 
 
 @pytest.mark.asyncio
