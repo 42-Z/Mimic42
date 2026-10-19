@@ -70,6 +70,7 @@ from mimic42.core.onboarding import (
     TelegramPasswordRequiredError,
     TelegramRebindUnavailableError,
 )
+from mimic42.core.runtime_status import effective_runtime_state
 from mimic42.core.telegram_app_settings import (
     TelegramAppSettings,
     TelegramAppUnavailableError,
@@ -553,19 +554,12 @@ def create_app(
                     owner_id=current_user.user_id
                 )
             }
-            unloaded_active_states = {
-                AgentRuntimeState.STARTING,
-                AgentRuntimeState.RUNNING,
-                AgentRuntimeState.STOPPING,
-            }
             return [
                 record.model_copy(
                     update={
-                        "state": runtime_states.get(
-                            record.agent_id,
-                            AgentRuntimeState.STOPPED
-                            if record.state in unloaded_active_states
-                            else record.state,
+                        "state": effective_runtime_state(
+                            record.state,
+                            runtime_states.get(record.agent_id),
                         )
                     }
                 )

@@ -11,11 +11,15 @@ from mimic42.core.admin import (
     AdminPage,
     AdminPresetDetail,
     AdminPresetSummary,
+    AdminUserDetail,
+    AdminUserNotFoundError,
+    AdminUserSummary,
     PresetCreateValues,
     PresetPatchValues,
     PublicTelegramSettings,
     StoredTelegramSettings,
 )
+from mimic42.core.agent_runtime import AgentRuntimeState
 
 
 class FakeAdminRepository:
@@ -28,6 +32,8 @@ class FakeAdminRepository:
         unavailable: bool = False,
         presets: list[AdminPresetDetail] | None = None,
         telegram_settings: StoredTelegramSettings | None = None,
+        users: list[AdminUserSummary] | None = None,
+        user_details: dict[UUID, AdminUserDetail] | None = None,
     ) -> None:
         self.admin_ids = set(admin_ids or ())
         self.unavailable = unavailable
@@ -38,6 +44,9 @@ class FakeAdminRepository:
         self.telegram_settings_error: Exception | None = None
         self.telegram_write_count = 0
         self.telegram_calls: list[tuple[str, dict[str, Any]]] = []
+        self.users = {user.user_id: user for user in users or []}
+        self.user_details = dict(user_details or {})
+        self.user_calls: list[tuple[str, dict[str, Any]]] = []
 
     async def is_admin(self, user_id: UUID) -> bool:
         self.calls.append(user_id)
@@ -209,3 +218,61 @@ class FakeAdminRepository:
             updated_at=self.telegram_settings.updated_at,
             updated_by=actor_user_id,
         )
+
+    async def list_users(
+        self,
+        *,
+        q: str,
+        page: int,
+        page_size: int,
+        runtime_states: dict[UUID, AgentRuntimeState],
+    ) -> AdminPage[AdminUserSummary]:
+        self.user_calls.append(
+            (
+                "list",
+                {
+                    "q": q,
+                    "page": page,
+                    "page_size": page_size,
+                    "runtime_states": dict(runtime_states),
+                },
+            )
+        )
+        needle = q.strip().casefold()
+        users = [
+            user
+            for user in self.users.values()
+            if not needle or needle in f"{user.email or ''} {user.display_name or ''}".casefold()
+        ]
+        users.sort(key=lambda user: (user.created_at, str(user.user_id)), reverse=True)
+        start = (page - 1) * page_size
+        return AdminPage(
+            items=users[start : start + page_size],
+            total=len(users),
+            page=page,
+            page_size=page_size,
+        )
+
+    async def get_user(
+        self,
+        user_id: UUID,
+        *,
+        page: int,
+        page_size: int,
+        runtime_states: dict[UUID, AgentRuntimeState],
+    ) -> AdminUserDetail:
+        self.user_calls.append(
+            (
+                "get",
+                {
+                    "user_id": user_id,
+                    "page": page,
+                    "page_size": page_size,
+                    "runtime_states": dict(runtime_states),
+                },
+            )
+        )
+        detail = self.user_details.get(user_id)
+        if detail is None:
+            raise AdminUserNotFoundError
+        return detail

@@ -10,16 +10,26 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mimic42.core.admin import (
+    AdminAgentSummary,
     AdminNotFoundError,
     AdminPage,
     AdminPresetDetail,
     AdminPresetKind,
     AdminPresetSummary,
     AdminUnavailableError,
+    AdminUserDetail,
+    AdminUserNotFoundError,
+    AdminUserSummary,
     PresetCreateValues,
     PresetPatchValues,
     PublicTelegramSettings,
     StoredTelegramSettings,
+)
+from mimic42.core.agent_runtime import AgentRuntimeState
+from mimic42.core.model_catalog import DEFAULT_LLM_MODEL
+from mimic42.integrations.database_admin_statistics import (
+    effective_agents_cte,
+    runtime_state_parameters,
 )
 from mimic42.integrations.database_models import (
     AdminAuditLogModel,
@@ -41,6 +51,170 @@ class DatabaseAdminRepository:
                 return bool(await session.scalar(statement))
         except SQLAlchemyError:
             raise AdminUnavailableError("Administrative storage is unavailable") from None
+
+    async def list_users(
+        self,
+        *,
+        q: str,
+        page: int,
+        page_size: int,
+        runtime_states: dict[UUID, AgentRuntimeState],
+    ) -> AdminPage[AdminUserSummary]:
+        search = q.strip()
+        conditions = []
+        if search:
+            conditions.append(
+                or_(
+                    ProfileModel.email.icontains(search, autoescape=True),
+                    ProfileModel.display_name.icontains(search, autoescape=True),
+                )
+            )
+
+        try:
+            async with self._session_factory() as session:
+                total = await session.scalar(
+                    select(func.count()).select_from(ProfileModel).where(*conditions)
+                )
+                profile_rows = (
+                    await session.execute(
+                        select(
+                            ProfileModel.id,
+                            ProfileModel.email,
+                            ProfileModel.display_name,
+                            ProfileModel.created_at,
+                        )
+                        .where(*conditions)
+                        .order_by(ProfileModel.created_at.desc(), ProfileModel.id.desc())
+                        .limit(page_size)
+                        .offset((page - 1) * page_size)
+                    )
+                ).all()
+
+                owner_ids = [row.id for row in profile_rows]
+                state_rows = []
+                if owner_ids:
+                    effective_agents = effective_agents_cte()
+                    state_rows = (
+                        await session.execute(
+                            select(
+                                effective_agents.c.owner_id,
+                                effective_agents.c.state,
+                                func.count().label("agents_count"),
+                            )
+                            .where(effective_agents.c.owner_id.in_(owner_ids))
+                            .group_by(effective_agents.c.owner_id, effective_agents.c.state),
+                            runtime_state_parameters(runtime_states),
+                        )
+                    ).all()
+        except SQLAlchemyError:
+            raise AdminUnavailableError("Administrative storage is unavailable") from None
+
+        states_by_owner: dict[UUID, dict[AgentRuntimeState, int]] = {}
+        for row in state_rows:
+            states_by_owner.setdefault(row.owner_id, {})[AgentRuntimeState(row.state)] = (
+                row.agents_count
+            )
+        items = []
+        for row in profile_rows:
+            states = states_by_owner.get(row.id, {})
+            items.append(
+                AdminUserSummary(
+                    user_id=row.id,
+                    email=row.email,
+                    display_name=row.display_name,
+                    created_at=row.created_at,
+                    agents_total=sum(states.values()),
+                    states=states,
+                )
+            )
+        return AdminPage(items=items, total=total or 0, page=page, page_size=page_size)
+
+    async def get_user(
+        self,
+        user_id: UUID,
+        *,
+        page: int,
+        page_size: int,
+        runtime_states: dict[UUID, AgentRuntimeState],
+    ) -> AdminUserDetail:
+        try:
+            async with self._session_factory() as session:
+                profile = (
+                    await session.execute(
+                        select(
+                            ProfileModel.id,
+                            ProfileModel.email,
+                            ProfileModel.display_name,
+                            ProfileModel.created_at,
+                        ).where(ProfileModel.id == user_id)
+                    )
+                ).one_or_none()
+                if profile is None:
+                    raise AdminUserNotFoundError
+
+                effective_agents = effective_agents_cte()
+                parameters = runtime_state_parameters(runtime_states)
+                state_rows = (
+                    await session.execute(
+                        select(
+                            effective_agents.c.state,
+                            func.count().label("agents_count"),
+                        )
+                        .where(effective_agents.c.owner_id == user_id)
+                        .group_by(effective_agents.c.state),
+                        parameters,
+                    )
+                ).all()
+                states = {AgentRuntimeState(row.state): row.agents_count for row in state_rows}
+                agents_total = sum(states.values())
+                model = func.coalesce(
+                    func.nullif(effective_agents.c.settings["model"].as_string(), ""),
+                    DEFAULT_LLM_MODEL,
+                ).label("llm_model")
+                agent_rows = (
+                    await session.execute(
+                        select(
+                            effective_agents.c.agent_id,
+                            effective_agents.c.name,
+                            model,
+                            effective_agents.c.state,
+                        )
+                        .where(effective_agents.c.owner_id == user_id)
+                        .order_by(
+                            effective_agents.c.created_at.desc(),
+                            effective_agents.c.agent_id.desc(),
+                        )
+                        .limit(page_size)
+                        .offset((page - 1) * page_size),
+                        parameters,
+                    )
+                ).all()
+        except SQLAlchemyError:
+            raise AdminUnavailableError("Administrative storage is unavailable") from None
+
+        profile_summary = AdminUserSummary(
+            user_id=profile.id,
+            email=profile.email,
+            display_name=profile.display_name,
+            created_at=profile.created_at,
+            agents_total=agents_total,
+            states=states,
+        )
+        agents = AdminPage(
+            items=[
+                AdminAgentSummary(
+                    agent_id=row.agent_id,
+                    name=row.name,
+                    llm_model=row.llm_model,
+                    state=AgentRuntimeState(row.state),
+                )
+                for row in agent_rows
+            ],
+            total=agents_total,
+            page=page,
+            page_size=page_size,
+        )
+        return AdminUserDetail(profile=profile_summary, agents=agents)
 
     async def read_telegram_settings(self) -> StoredTelegramSettings | None:
         try:

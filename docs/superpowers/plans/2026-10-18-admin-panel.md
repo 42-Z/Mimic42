@@ -741,7 +741,7 @@ uv run pytest tests/integration/test_admin_telegram.py tests/integration/test_ad
 
 **Files:** новый `src/mimic42/core/runtime_status.py`; `src/mimic42/api/app.py`, `src/mimic42/integrations/database_admin.py`, `src/mimic42/integrations/database_admin_statistics.py`; новые `tests/core/test_runtime_status.py`, `tests/api/test_admin_users.py`, `tests/integration/test_admin_users.py`.
 
-- [ ] **6.1. Сначала проверить извлекаемое правило:** сохранённые `starting/running/stopping` без runtime превращаются в `stopped`; `error/stopped` сохраняются; неизвестное для `AgentRuntimeState` значение `draft` также превращается в `stopped`, как в существующем `_agent_record`; существующий runtime имеет приоритет. Результат обычного `/agents` до/после извлечения не меняется.
+- [x] **6.1. Сначала проверить извлекаемое правило:** сохранённые `starting/running/stopping` без runtime превращаются в `stopped`; `error/stopped` сохраняются; неизвестное для `AgentRuntimeState` значение `draft` также превращается в `stopped`, как в существующем `_agent_record`; существующий runtime имеет приоритет. Результат обычного `/agents` до/после извлечения не меняется.
 
 ```python
 def effective_runtime_state(
@@ -763,9 +763,16 @@ def effective_runtime_state(
     return saved_state
 ```
 
-- [ ] **6.2. Написать API/DB-проверки:** пустой профиль включён; поиск регистронезависим; `%` и `_` в q означают буквальные символы; страницы не теряют строки с одинаковой датой создания; неизвестный user_id — `404`; ответ не содержит `soul_prompt/settings/session`; модель берётся из `settings.llm_model` или реального `DEFAULT_LLM_MODEL`, а не из устаревшего `openrouter/free`.
-- [ ] **6.3. Выполнить** `uv run pytest tests/core/test_runtime_status.py tests/api/test_admin_users.py tests/integration/test_admin_users.py -W error -q`.
-- [ ] **6.4. Реализовать групповое согласование состояний в SQL.** Router получает один snapshot `manager.list_agents()` и передаёт только UUID/state репозиторию. Не читать всех агентов/настройки в Python ради подсчётов. В `database_admin_statistics.py` выделить построение CTE эффективных агентов; параметры — два равных по длине массива UUID/state. Пустые массивы корректно дают пустую runtime-таблицу.
+- [x] **6.2. Написать API/DB-проверки:** пустой профиль включён; поиск регистронезависим; `%` и `_` в q означают буквальные символы; страницы не теряют строки с одинаковой датой создания; неизвестный user_id — `404`; ответ не содержит `soul_prompt/settings/session`; модель берётся из `settings.llm_model` или реального `DEFAULT_LLM_MODEL`, а не из устаревшего `openrouter/free`.
+- [x] **6.3. Выполнить точечные проверки** отдельными командами, поскольку `pyproject.toml` по умолчанию исключает `db`-тесты:
+
+```bash
+uv run pytest tests/core/test_runtime_status.py tests/api/test_admin_users.py tests/api/test_admin_access.py tests/api/test_admin_presets.py tests/api/test_admin_telegram.py tests/api/test_agents_api.py tests/api/test_onboarding_api.py -W error -q
+uv run pytest tests/integration/test_admin_users.py tests/integration/test_admin_presets.py tests/integration/test_admin_telegram.py -m db -W error -q
+```
+
+Результат: unit/API — 82 passed; integration DB — 8 passed.
+- [x] **6.4. Реализовать групповое согласование состояний в SQL.** Router получает один snapshot `manager.list_agents()` и передаёт только UUID/state репозиторию. Не читать всех агентов/настройки в Python ради подсчётов. В `database_admin_statistics.py` выделено построение CTE эффективных агентов; параметры — два равных по длине массива UUID/state. Пустые массивы корректно дают пустую runtime-таблицу.
 
 ```sql
 with runtime as (
@@ -787,8 +794,8 @@ group by owner_id, state;
 
 Для списка сначала выбирать нужную страницу профилей и считать агентов только этих owner_ids, затем объединять агрегаты с профилями, включая нули. Профили сортировать `created_at desc, id desc`, агентов — так же. Не JOIN-ить сообщения/события к профилям. `.ilike(..., escape=...)` либо `icontains(q, autoescape=True)` должны экранировать wildcard; SQL-параметры не интерполируются.
 
-- [ ] **6.5. Подключить** `GET /users` и `GET /users/{user_id}` с явными DTO и общей проверкой роли. Не давать ссылки на чужой `/agent/{id}` как будто администратор может им управлять. Повторить команду 6.3 и `uv run pytest tests/api/test_agents_api.py -W error -q`.
-- [ ] **6.6. Коммит:** `feat(admin): list users with runtime-aware agent summaries`.
+- [x] **6.5. Подключить** `GET /users` и `GET /users/{user_id}` с явными DTO и общей проверкой роли. Не давать ссылки на чужой `/agent/{id}` как будто администратор может им управлять. Обычный `/agents` использует то же чистое правило эффективного состояния.
+- [x] **6.6. Коммит:** `feat(admin): list users with runtime-aware agent summaries`.
 
 ## Этап 7. Серверные агрегаты статистики
 

@@ -26,10 +26,14 @@ from mimic42.core.admin import (
     AdminPresetSummary,
     AdminRepository,
     AdminUnavailableError,
+    AdminUserDetail,
+    AdminUserNotFoundError,
+    AdminUserSummary,
     PresetCreateValues,
     PresetPatchValues,
     PublicTelegramSettings,
 )
+from mimic42.core.agent_runtime import AgentRuntimeState
 from mimic42.core.telegram_app_settings import TelegramAppSettings
 
 logger = logging.getLogger(__name__)
@@ -180,6 +184,11 @@ def _get_admin_repository(request: Request) -> AdminRepository:
 async def _admin_result[ResultT](operation: Awaitable[ResultT]) -> ResultT:
     try:
         return await operation
+    except AdminUserNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Пользователь не найден",
+        ) from None
     except AdminNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -293,6 +302,56 @@ def _get_telegram_app_settings(request: Request) -> TelegramAppSettings:
     if provider is None:
         raise _admin_unavailable()
     return provider
+
+
+async def _runtime_state_snapshot(request: Request) -> dict[UUID, AgentRuntimeState]:
+    manager = getattr(request.app.state, "agent_manager", None)
+    if manager is None:
+        raise _admin_unavailable()
+    try:
+        statuses = await manager.list_agents()
+    except Exception as exc:
+        logger.warning("Administrator runtime snapshot unavailable (%s)", type(exc).__name__)
+        raise _admin_unavailable() from None
+    return {status.agent_id: status.state for status in statuses}
+
+
+@router.get("/users", response_model=AdminPage[AdminUserSummary])
+async def list_users(
+    request: Request,
+    q: Annotated[str, Query(max_length=200)] = "",
+    page: Annotated[int, Query(ge=1, le=MAX_ADMIN_PAGE)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100)] = 25,
+) -> AdminPage[AdminUserSummary]:
+    runtime_states = await _runtime_state_snapshot(request)
+    repository = _get_admin_repository(request)
+    return await _admin_result(
+        repository.list_users(
+            q=q.strip(),
+            page=page,
+            page_size=page_size,
+            runtime_states=runtime_states,
+        )
+    )
+
+
+@router.get("/users/{user_id}", response_model=AdminUserDetail)
+async def get_user(
+    request: Request,
+    user_id: UUID,
+    page: Annotated[int, Query(ge=1, le=MAX_ADMIN_PAGE)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100)] = 25,
+) -> AdminUserDetail:
+    runtime_states = await _runtime_state_snapshot(request)
+    repository = _get_admin_repository(request)
+    return await _admin_result(
+        repository.get_user(
+            user_id,
+            page=page,
+            page_size=page_size,
+            runtime_states=runtime_states,
+        )
+    )
 
 
 @router.get("/telegram-settings", response_model=PublicTelegramSettings)

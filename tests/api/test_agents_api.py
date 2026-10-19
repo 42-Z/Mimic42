@@ -9,6 +9,7 @@ from httpx import ASGITransport, AsyncClient
 from mimic42.api.app import create_app
 from mimic42.config import Settings
 from mimic42.core.agent_runtime import (
+    AgentRuntimeConfig,
     AgentRuntimeState,
 )
 from mimic42.core.agent_store import AgentRecord, InMemoryAgentStore
@@ -21,6 +22,62 @@ from mimic42.core.onboarding import (
 from mimic42.testing.telegram import FakeTelegramAccount, FakeTelegramAuthClientFactory
 from tests.api.auth_helpers import AUTH_HEADERS, FakeAuthVerifier
 from tests.api.fakes import FakeAgentManager
+
+
+@pytest.mark.asyncio
+async def test_agent_list_keeps_effective_state_rules_after_extraction() -> None:
+    owner_id = uuid4()
+    runtime_agent_id = uuid4()
+    stale_agent_id = uuid4()
+    error_agent_id = uuid4()
+    manager = FakeAgentManager()
+    await manager.create_agent(
+        AgentRuntimeConfig(
+            agent_id=runtime_agent_id,
+            owner_id=owner_id,
+            telegram_api_id=12345,
+            telegram_api_hash="test-hash",
+            system_prompt="Test system prompt",
+        )
+    )
+    manager.created[runtime_agent_id].state = AgentRuntimeState.ERROR
+    store = InMemoryAgentStore(
+        agents=[
+            AgentRecord(
+                agent_id=runtime_agent_id,
+                owner_id=owner_id,
+                name="Runtime override",
+                state=AgentRuntimeState.RUNNING,
+            ),
+            AgentRecord(
+                agent_id=stale_agent_id,
+                owner_id=owner_id,
+                name="Stale database state",
+                state=AgentRuntimeState.STARTING,
+            ),
+            AgentRecord(
+                agent_id=error_agent_id,
+                owner_id=owner_id,
+                name="Saved error",
+                state=AgentRuntimeState.ERROR,
+            ),
+        ]
+    )
+    app = create_app(
+        manager=manager,
+        agent_store=store,
+        auth_verifier=FakeAuthVerifier(owner_id),
+    )
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/api/v1/agents", headers=AUTH_HEADERS)
+
+    assert response.status_code == 200
+    assert {UUID(row["agent_id"]): row["state"] for row in response.json()} == {
+        runtime_agent_id: "error",
+        stale_agent_id: "stopped",
+        error_agent_id: "error",
+    }
 
 
 @pytest.mark.asyncio

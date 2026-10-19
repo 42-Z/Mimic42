@@ -17,6 +17,10 @@ class AdminNotFoundError(Exception):
     """An administrative operation could not find an accessible object."""
 
 
+class AdminUserNotFoundError(AdminNotFoundError):
+    """An administrative query could not find an accessible user."""
+
+
 class AdminPage[T](BaseModel):
     items: list[T]
     total: int
