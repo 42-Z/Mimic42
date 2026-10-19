@@ -190,7 +190,9 @@ export function useAdminActions() {
       }),
     saveTelegramSettings: (values: SaveTelegramSettings) =>
       execute(() => adminApi.saveTelegramSettings(values), async (ownerId) => {
-        await queryClient.invalidateQueries({ queryKey: queryKeys.admin.telegram(ownerId) });
+        void queryClient
+          .invalidateQueries({ queryKey: queryKeys.admin.telegram(ownerId) })
+          .catch(() => undefined);
       }),
   };
 }

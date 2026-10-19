@@ -978,9 +978,9 @@ const mine = presets.filter((preset) =>
 
 **Files:** `frontend/src/components/admin/AdminTelegramSettings.tsx`, `frontend/src/app/(dashboard)/admin/telegram/page.tsx`; новый `frontend/src/__tests__/admin-telegram-settings.test.tsx`.
 
-- [ ] **12.1. Написать проверки формы:** API ID из GET; HASH пуст независимо от `has_api_hash`; ввод новой пары обязателен; повторное сохранение недоступно; успешная операция очищает HASH; ошибка сохраняет API ID, но очищает HASH; `403` закрывает экран. Тестовый HASH отсутствует в QueryClient.getQueryCache()/getMutationCache() после завершения запроса.
-- [ ] **12.2. Выполнить** `bun test src/__tests__/admin-telegram-settings.test.tsx`.
-- [ ] **12.3. Построить форму** на FieldGroup/Field/FieldLabel, существующих Input и Button. API ID — текстовый input с `inputMode="numeric"`, строгая проверка целого 1–2147483647, не `parseInt('1abc')`. HASH — `type="password"`, `autoComplete="new-password"`; сохранение отправляет полную пару прямым `adminApi.saveTelegramSettings`, не через `useMutation`. Во время сохранения показать состояние Button и выключить повтор.
+- [x] **12.1. Написать проверки формы:** API ID из GET; HASH пуст независимо от `has_api_hash`; ввод новой пары обязателен; повторное сохранение недоступно; успешная операция очищает HASH; ошибка сохраняет API ID, но очищает HASH; `403` закрывает экран. HASH отсутствует в QueryClient и MutationCache после запроса.
+- [x] **12.2. Выполнить** `bun test src/__tests__/admin-telegram-settings.test.tsx`: 5 passed.
+- [x] **12.3. Построить форму** на FieldGroup/Field/FieldLabel, существующих Input и Button. API ID использует `inputMode="numeric"` и строгую проверку целого 1–2147483647. HASH — `type="password"`, `autoComplete="new-password"`; сохранение отправляет пару прямым `adminApi.saveTelegramSettings`, без `useMutation`. Во время сохранения Button отключает повтор.
 
 ```tsx
 <Field>
@@ -999,8 +999,8 @@ const mine = presets.filter((preset) =>
 </Field>
 ```
 
-- [ ] **12.4. В обработчике submit** скопировать пару только в аргумент ожидаемого HTTP-вызова, затем в `finally` выполнить `setApiHash('')`. Ошибка — только нормализованный безопасный message. После успеха обновить публичный query настроек и показать штатный Toast. Не подставлять в поле маску `********` как настоящее значение. Под формой постоянное пояснение: «Новая пара применяется к новым подключениям. Уже подключённые мимики продолжат работать со своей парой». Источник показывать как «Окружение сервера»/«Настройка платформы»/«Не настроено», без технических названий переменных.
-- [ ] **12.5. Повторить команду 12.2. Коммит:** `feat(admin): add write-only Telegram credentials form`.
+- [x] **12.4. В обработчике submit** HASH копируется только в аргумент прямого API-вызова и очищается в `finally`. Ошибка получает безопасный общий текст. После успеха запускается инвалидирование публичного query и показывается штатный Toast; повторный GET не задерживает очистку секретного поля. Сохранённая HASH не маскируется фиктивным значением. Под формой есть пояснение о применении пары только к новым подключениям; источник отображается как «Окружение сервера»/«Настройка платформы»/«Не настроено».
+- [x] **12.5. Повторить команду 12.2.** 5 passed, `bun run typecheck` прошёл, Impeccable detector вернул пустой список. Коммит: `feat(admin): add write-only Telegram credentials form`.
 
 ## Этап 13. Экран общей статистики
 
