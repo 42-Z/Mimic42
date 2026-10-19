@@ -1,5 +1,10 @@
 import { describe, expect, test } from 'bun:test';
-import { buildCatalogEntries, buildFavoriteEntries, filterCatalog } from '@/lib/presets/catalog';
+import {
+  buildCatalogEntries,
+  buildFavoriteEntries,
+  filterCatalog,
+  minePresetStatusLabel,
+} from '@/lib/presets/catalog';
 import type { PromptPresetRow, PresetFavoriteRow } from '@/types';
 
 const OFFICIAL: PromptPresetRow = {
@@ -15,6 +20,13 @@ const OFFICIAL: PromptPresetRow = {
   published_at: null,
   created_at: '2026-09-20T00:00:00Z',
   updated_at: '2026-09-20T00:00:00Z',
+};
+
+const HIDDEN_OFFICIAL: PromptPresetRow = {
+  ...OFFICIAL,
+  id: 'hidden-official',
+  title: 'Скрытый официальный',
+  is_active: false,
 };
 
 const MINE_DRAFT: PromptPresetRow = {
@@ -39,6 +51,14 @@ const MINE_PUBLISHED: PromptPresetRow = {
   sort_order: 0,
 };
 
+const MINE_HIDDEN: PromptPresetRow = {
+  ...MINE_PUBLISHED,
+  id: 'e',
+  slug: 'u_e',
+  title: 'Мой скрытый',
+  is_active: false,
+};
+
 const FOREIGN_PUBLISHED: PromptPresetRow = {
   ...OFFICIAL,
   id: 'd',
@@ -53,7 +73,7 @@ const FOREIGN_PUBLISHED: PromptPresetRow = {
 describe('buildCatalogEntries', () => {
   test('магазин: официальные плюс чужие выложенные, без своих черновиков', () => {
     const entries = buildCatalogEntries(
-      [OFFICIAL, MINE_DRAFT, MINE_PUBLISHED, FOREIGN_PUBLISHED],
+      [OFFICIAL, HIDDEN_OFFICIAL, MINE_DRAFT, MINE_PUBLISHED, MINE_HIDDEN, FOREIGN_PUBLISHED],
       'me',
       new Map([['other', 'Сосед']]),
     );
@@ -67,17 +87,27 @@ describe('buildCatalogEntries', () => {
 
   test('мои: черновики и выложенные', () => {
     const entries = buildCatalogEntries(
-      [OFFICIAL, MINE_DRAFT, MINE_PUBLISHED, FOREIGN_PUBLISHED],
+      [OFFICIAL, MINE_DRAFT, MINE_PUBLISHED, MINE_HIDDEN, FOREIGN_PUBLISHED],
       'me',
       new Map(),
     );
     // «Мои» держим в порядке названий: черновики рядом с выложенными.
-    expect(entries.mine.map((entry) => entry.id)).toEqual(['c', 'b']);
+    expect(new Set(entries.mine.map((entry) => entry.id))).toEqual(new Set(['b', 'c', 'e']));
+    expect(entries.mine.find((entry) => entry.id === 'e')?.isActive).toBe(false);
   });
 
   test('в магазине нет невитринных чужих черновиков', () => {
     const entries = buildCatalogEntries([FOREIGN_PUBLISHED], 'me', new Map());
     expect(entries.mine).toEqual([]);
+  });
+
+  test('автор видит административное скрытие отдельно от черновика и выкладки', () => {
+    const entries = buildCatalogEntries([MINE_DRAFT, MINE_PUBLISHED, MINE_HIDDEN], 'me', new Map());
+    const byId = new Map(entries.mine.map((entry) => [entry.id, entry]));
+
+    expect(minePresetStatusLabel(byId.get('b')!)).toBe('Черновик');
+    expect(minePresetStatusLabel(byId.get('c')!)).toBe('В магазине');
+    expect(minePresetStatusLabel(byId.get('e')!)).toBe('Скрыт администратором');
   });
 });
 
@@ -110,8 +140,48 @@ describe('buildFavoriteEntries', () => {
     const entries = buildFavoriteEntries(favorites, [FOREIGN_PUBLISHED]);
     expect(entries).toEqual([
       // Порядок — по названию.
-      { favoriteId: 'fav-2', title: 'Замороженный', summary: 'копия', body: 'снимок', frozen: true },
-      { favoriteId: 'fav-1', title: 'Чужой выложенный', summary: 'магазин', body: 'т', frozen: false },
+      {
+        favoriteId: 'fav-2',
+        title: 'Замороженный',
+        summary: 'копия',
+        body: 'снимок',
+        settings: null,
+        frozen: true,
+        unavailable: false,
+      },
+      {
+        favoriteId: 'fav-1',
+        title: 'Чужой выложенный',
+        summary: 'магазин',
+        body: 'т',
+        settings: null,
+        frozen: false,
+        unavailable: false,
+      },
+    ]);
+  });
+
+  test('ссылка на скрытый пресет без загруженного снимка не поднимает старое тело', () => {
+    const favorite: PresetFavoriteRow = {
+      id: 'fav-stale',
+      preset_id: 'hidden-foreign',
+      frozen_title: null,
+      frozen_summary: null,
+      frozen_body: null,
+      frozen_settings: null,
+      frozen_at: null,
+      created_at: '2026-10-11T00:00:00Z',
+      updated_at: '2026-10-11T00:00:00Z',
+    };
+
+    expect(buildFavoriteEntries([favorite], [])).toMatchObject([
+      {
+        title: 'Пресет больше недоступен',
+        summary: '',
+        body: '',
+        frozen: true,
+        unavailable: true,
+      },
     ]);
   });
 });

@@ -16,7 +16,6 @@ export async function fetchPromptPresets(
   const { data, error } = await client
     .from('prompt_presets')
     .select('*')
-    .eq('is_active', true)
     .order('sort_order');
 
   if (error) throw new Error(error.message);
@@ -26,8 +25,10 @@ export async function fetchPromptPresets(
 export function usePromptPresets() {
   return useQuery({
     queryKey: queryKeys.presets.list(),
-    // Справочник правится миграцией, в рамках сессии он неизменен.
-    staleTime: Infinity,
+    staleTime: 30_000,
+    refetchInterval: 60_000,
+    refetchOnWindowFocus: 'always',
+    refetchOnReconnect: true,
     queryFn: () => fetchPromptPresets(getSupabaseClient()),
   });
 }

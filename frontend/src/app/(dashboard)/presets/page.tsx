@@ -28,6 +28,7 @@ import {
   buildCatalogEntries,
   buildFavoriteEntries,
   filterCatalog,
+  minePresetStatusLabel,
   type CatalogEntry,
   type FavoriteEntry,
 } from '@/lib/presets/catalog';
@@ -376,7 +377,7 @@ function MineList({
           <div className="flex flex-wrap items-baseline justify-between gap-2">
             <h2 className="font-mono text-sm text-foreground">{entry.title}</h2>
             <span className="font-mono text-[11px] text-muted-foreground">
-              {entry.published ? 'В магазине' : 'Черновик'}
+              {minePresetStatusLabel(entry)}
             </span>
           </div>
           <p className="mt-1 font-mono text-xs text-muted-foreground">{entry.summary}</p>
@@ -445,14 +446,21 @@ function FavoritesList({
         >
           <div className="flex flex-wrap items-baseline justify-between gap-2">
             <h2 className="font-mono text-sm text-foreground">{entry.title}</h2>
-            {entry.frozen && (
+            {entry.unavailable ? (
+              <span
+                data-testid="favorite-unavailable"
+                className="font-mono text-[11px] text-warning"
+              >
+                Пресет больше недоступен
+              </span>
+            ) : entry.frozen ? (
               <span
                 data-testid="favorite-frozen"
                 className="font-mono text-[11px] text-amber-400"
               >
                 Копия
               </span>
-            )}
+            ) : null}
           </div>
           <p className="mt-1 font-mono text-xs text-muted-foreground">{entry.summary}</p>
           <div className="mt-3">

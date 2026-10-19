@@ -5,8 +5,7 @@ import type { PromptPresetRow } from '@/types';
 
 interface FakeCalls {
   table?: string;
-  eqColumn?: string;
-  eqValue?: unknown;
+  selectedColumns?: string;
   orderColumn?: string;
 }
 
@@ -16,17 +15,12 @@ function fakeClient(result: { data: unknown; error: { message: string } | null }
     from(table: string) {
       calls.table = table;
       return {
-        select() {
+        select(columns: string) {
+          calls.selectedColumns = columns;
           return {
-            eq(column: string, value: unknown) {
-              calls.eqColumn = column;
-              calls.eqValue = value;
-              return {
-                order(orderColumn: string) {
-                  calls.orderColumn = orderColumn;
-                  return Promise.resolve(result);
-                },
-              };
+            order(orderColumn: string) {
+              calls.orderColumn = orderColumn;
+              return Promise.resolve(result);
             },
           };
         },
@@ -52,16 +46,24 @@ const ROW: PromptPresetRow = {
 };
 
 describe('fetchPromptPresets', () => {
-  test('берёт только активные пресеты в порядке sort_order', async () => {
-    const { client, calls } = fakeClient({ data: [ROW], error: null });
+  test('возвращает безопасный набор строк RLS в порядке sort_order без клиентского фильтра активности', async () => {
+    const hiddenOwnPreset: PromptPresetRow = {
+      ...ROW,
+      id: '22222222-2222-2222-2222-222222222222',
+      owner_id: 'user-1',
+      published_at: '2026-10-01T00:00:00Z',
+      is_active: false,
+    };
+    const { client, calls } = fakeClient({ data: [ROW, hiddenOwnPreset], error: null });
 
     const presets = await fetchPromptPresets(client);
 
-    expect(presets).toEqual([ROW]);
-    expect(calls.table).toBe('prompt_presets');
-    expect(calls.eqColumn).toBe('is_active');
-    expect(calls.eqValue).toBe(true);
-    expect(calls.orderColumn).toBe('sort_order');
+    expect(presets).toEqual([ROW, hiddenOwnPreset]);
+    expect(calls).toEqual({
+      table: 'prompt_presets',
+      selectedColumns: '*',
+      orderColumn: 'sort_order',
+    });
   });
 
   test('пустой ответ превращается в пустой список', async () => {

@@ -89,11 +89,12 @@ export function useAdminPresets(
 
 export function useAdminPreset(presetId: string) {
   const { userId, isAdmin } = useAdminAccess();
+  const targetPresetId = presetId.trim();
   return useAdminRead(
-    queryKeys.admin.preset(userId ?? '', presetId),
+    queryKeys.admin.preset(userId ?? '', targetPresetId),
     userId,
-    isAdmin,
-    (signal) => adminApi.preset(presetId, { signal }),
+    isAdmin && targetPresetId.length > 0,
+    (signal) => adminApi.preset(targetPresetId, { signal }),
   );
 }
 
