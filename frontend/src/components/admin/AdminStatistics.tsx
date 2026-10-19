@@ -291,6 +291,7 @@ function DailyActivityChart({
                 <Area
                   dataKey="messages"
                   fill="rgb(var(--primary) / 0.16)"
+                  isAnimationActive={false}
                   name="Сообщения"
                   stroke="rgb(var(--primary))"
                   strokeWidth={2}
@@ -299,6 +300,7 @@ function DailyActivityChart({
                 <Area
                   dataKey="actions"
                   fill="rgb(var(--success) / 0.12)"
+                  isAnimationActive={false}
                   name="Действия"
                   stroke="rgb(var(--success))"
                   strokeWidth={2}
@@ -389,7 +391,13 @@ function DailyErrorsChart({
                   contentStyle={TOOLTIP_STYLE}
                   labelFormatter={(value) => formatUtcDate(`${String(value)}T00:00:00Z`)}
                 />
-                <Bar dataKey="errors" fill="rgb(var(--destructive))" name="Ошибки" radius={[2, 2, 0, 0]} />
+                <Bar
+                  dataKey="errors"
+                  fill="rgb(var(--destructive))"
+                  isAnimationActive={false}
+                  name="Ошибки"
+                  radius={[2, 2, 0, 0]}
+                />
               </BarChart>
             </ResponsiveContainer>
           </div>

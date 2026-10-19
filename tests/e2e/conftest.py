@@ -14,6 +14,7 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Iterator
+from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
 
 import httpx
@@ -34,6 +35,7 @@ from tests.e2e.helpers import (  # noqa: E402
     create_test_agent,
     login_via_form,
     reset_backend,
+    set_admin_role,
     users_from_slot_description,
 )
 from tests.servers import assert_port_free, spawn, terminate  # noqa: E402
@@ -220,6 +222,24 @@ def persona_page(browser: Browser, auth_states: dict[str, str]) -> Iterator[Call
 def api() -> Iterator[httpx.Client]:
     with httpx.Client(base_url=API_URL, timeout=HTTP_TIMEOUT_SECONDS) as client:
         yield client
+
+
+@pytest.fixture
+def admin_role(
+    api: httpx.Client,
+    slot_info: tuple[str, str, dict[str, E2EUser]],
+) -> Callable[[str, bool], AbstractContextManager[None]]:
+    slot = slot_info[0]
+
+    @contextmanager
+    def assign_role(owner_id: str, enabled: bool = True) -> Iterator[None]:
+        previously_enabled = set_admin_role(api, slot, owner_id, enabled)
+        try:
+            yield
+        finally:
+            set_admin_role(api, slot, owner_id, previously_enabled)
+
+    return assign_role
 
 
 @pytest.fixture

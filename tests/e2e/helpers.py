@@ -110,6 +110,25 @@ def current_draft_id(api: httpx.Client, owner_id: str) -> str:
     return str(draft_id)
 
 
+def set_admin_role(api: httpx.Client, slot: str, owner_id: str, enabled: bool) -> bool:
+    response = api.put(
+        "/__test__/admin-role",
+        json={"slot": slot, "owner_id": owner_id, "enabled": enabled},
+    )
+    response.raise_for_status()
+    previously_enabled = response.json().get("previously_enabled")
+    if not isinstance(previously_enabled, bool):
+        raise AssertionError("Тестовый сервер не вернул прежнее состояние роли")
+    return previously_enabled
+
+
+def delete_test_official_preset(api: httpx.Client, preset_id: str) -> None:
+    response = api.delete(f"/__test__/admin-presets/{preset_id}")
+    response.raise_for_status()
+    if response.json() != {"deleted": True}:
+        raise AssertionError("Тестовый сервер не подтвердил удаление fixture-пресета")
+
+
 def login_via_form(page: Page, user: E2EUser, path: str = "/login") -> None:
     page.goto(path)
     page.get_by_label("Email").fill(user.email)

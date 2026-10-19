@@ -10,8 +10,9 @@ import os
 from typing import Any, Literal
 from uuid import UUID, uuid4
 
+import asyncpg
 from fastapi import FastAPI, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 from mimic42.api.app import create_app
 from mimic42.api.auth import AuthVerifier
@@ -29,7 +30,12 @@ from mimic42.testing.cleanup import (
 from mimic42.testing.env import load_test_env
 from mimic42.testing.llm import Reply, ScriptedAgentFactory
 from mimic42.testing.memory import FakeLongTermMemory
-from mimic42.testing.slots import SLOTS, assert_test_project
+from mimic42.testing.slots import (
+    CONNECT_TIMEOUT_SECONDS,
+    SLOTS,
+    assert_test_project,
+    plain_dsn,
+)
 from mimic42.testing.telegram import FakeDialog, FakeTelegramAuthClientFactory, FakeTelegramClient
 
 # Точка входа для `uvicorn mimic42.testing.server:app`: файлы грузятся здесь,
@@ -88,6 +94,14 @@ class CreateTestAgentRequest(BaseModel):
     with_telegram_session: bool = True
 
 
+class TestAdminRoleRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    slot: str = Field(min_length=1, max_length=16)
+    owner_id: UUID
+    enabled: bool
+
+
 def _test_settings() -> Settings:
     database_connection_string = os.environ["DATABASE_CONNECTION_STRING"]
     supabase_url = os.environ["SUPABASE_URL"]
@@ -115,6 +129,79 @@ def _test_settings() -> Settings:
         # проверяют само восстановление, включают его явной настройкой.
         restore_running_agents=False,
     )
+
+
+async def set_test_admin_role(
+    dsn: str,
+    supabase_url: str | None,
+    slot_name: str,
+    owner_id: UUID,
+    *,
+    enabled: bool,
+) -> bool:
+    """Set one slot persona's admin role and return its previous state."""
+    if not dsn or not supabase_url:
+        raise RuntimeError("тестовой базе не заданы обязательные параметры")
+    assert_test_project(dsn, supabase_url)
+
+    slot = next((candidate for candidate in SLOTS if candidate.name == slot_name), None)
+    if slot is None:
+        raise ValueError("Неизвестный слот тестовых аккаунтов")
+    if owner_id not in {persona.user_id for persona in slot.personas}:
+        raise ValueError("Пользователь не относится к указанному тестовому слоту")
+
+    connection = await asyncpg.connect(
+        plain_dsn(dsn),
+        timeout=CONNECT_TIMEOUT_SECONDS,
+    )
+    try:
+        async with connection.transaction():
+            was_enabled = bool(
+                await connection.fetchval(
+                    "select exists (select 1 from public.admin_users where user_id = $1)",
+                    owner_id,
+                )
+            )
+            if enabled:
+                await connection.execute(
+                    "insert into public.admin_users (user_id) values ($1) "
+                    "on conflict (user_id) do nothing",
+                    owner_id,
+                )
+            else:
+                await connection.execute(
+                    "delete from public.admin_users where user_id = $1",
+                    owner_id,
+                )
+    finally:
+        await connection.close()
+    return was_enabled
+
+
+async def delete_test_official_preset(
+    dsn: str,
+    supabase_url: str | None,
+    preset_id: UUID,
+) -> bool:
+    """Delete only a captured, synthetic official preset used by E2E cleanup."""
+    if not dsn or not supabase_url:
+        raise RuntimeError("тестовой базе не заданы обязательные параметры")
+    assert_test_project(dsn, supabase_url)
+
+    connection = await asyncpg.connect(
+        plain_dsn(dsn),
+        timeout=CONNECT_TIMEOUT_SECONDS,
+    )
+    try:
+        async with connection.transaction():
+            result = await connection.execute(
+                "delete from public.prompt_presets "
+                "where id = $1 and owner_id is null and title like 'E2E admin fixture:%'",
+                preset_id,
+            )
+    finally:
+        await connection.close()
+    return result.endswith(" 1")
 
 
 def build_test_app(
@@ -163,6 +250,30 @@ def _mount_test_routes(application: FastAPI, settings: Settings) -> None:
         application.state.scripted_agents.scripts.clear()
         application.state.scripted_agents.built.clear()
         return {"status": "ok"}
+
+    @application.put("/__test__/admin-role")
+    async def set_admin_role(request: TestAdminRoleRequest) -> dict[str, bool]:
+        try:
+            previously_enabled = await set_test_admin_role(
+                dsn,
+                settings.supabase_url,
+                request.slot,
+                request.owner_id,
+                enabled=request.enabled,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        return {"previously_enabled": previously_enabled, "enabled": request.enabled}
+
+    @application.delete("/__test__/admin-presets/{preset_id}")
+    async def remove_test_official_preset(preset_id: UUID) -> dict[str, bool]:
+        deleted = await delete_test_official_preset(dsn, settings.supabase_url, preset_id)
+        if not deleted:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Тестовый официальный пресет не найден",
+            )
+        return {"deleted": True}
 
     @application.post("/__test__/onboarding/drafts/hide")
     async def hide_onboarding_drafts(request: OwnerRequest) -> dict[str, int]:

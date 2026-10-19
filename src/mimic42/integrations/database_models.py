@@ -154,7 +154,7 @@ class PromptPresetModel(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     owner_id: Mapped[UUID | None] = mapped_column(ForeignKey("profiles.id", ondelete="CASCADE"))
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    settings: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    settings: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
 
 
 class AgentModel(Base):

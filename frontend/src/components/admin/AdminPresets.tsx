@@ -296,7 +296,7 @@ export function AdminPresets() {
                 const isOfficial = preset.owner_id === null;
                 const rowBusy = pendingId === preset.id;
                 return (
-                  <TableRow key={preset.id}>
+                  <TableRow data-testid={`admin-preset-row-${preset.id}`} key={preset.id}>
                     <TableCell className="min-w-64 whitespace-normal">
                       <div className="space-y-1">
                         <div className="flex flex-wrap items-center gap-2">

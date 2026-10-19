@@ -114,6 +114,32 @@ async def test_official_creation_and_sort_order_patch_are_audited_atomically(
 
 
 @pytest.mark.asyncio
+async def test_null_official_preset_settings_are_stored_as_sql_null(
+    admin_db_factory: async_sessionmaker[Any],
+    test_slot: Slot,
+) -> None:
+    repository = DatabaseAdminRepository(admin_db_factory)
+    created = await repository.create_official_preset(
+        {
+            "title": "Official defaults",
+            "summary": "Use default tools",
+            "body": "Default settings remain unset.",
+            "settings": None,
+            "sort_order": 0,
+        },
+        actor_user_id=test_slot.persona("empty").user_id,
+    )
+
+    async with admin_db_factory() as session:
+        is_sql_null = await session.scalar(
+            select(PromptPresetModel.settings.is_(None)).where(PromptPresetModel.id == created.id)
+        )
+
+    assert created.settings is None
+    assert is_sql_null is True
+
+
+@pytest.mark.asyncio
 async def test_preset_list_filters_eligibility_and_escapes_search_wildcards(
     admin_db_factory: async_sessionmaker[Any],
     test_slot: Slot,
