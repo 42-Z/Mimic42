@@ -11,6 +11,7 @@ from mimic42.core.admin import (
     AdminPage,
     AdminPresetDetail,
     AdminPresetSummary,
+    AdminStatistics,
     AdminUserDetail,
     AdminUserNotFoundError,
     AdminUserSummary,
@@ -34,6 +35,7 @@ class FakeAdminRepository:
         telegram_settings: StoredTelegramSettings | None = None,
         users: list[AdminUserSummary] | None = None,
         user_details: dict[UUID, AdminUserDetail] | None = None,
+        statistics_value: AdminStatistics | None = None,
     ) -> None:
         self.admin_ids = set(admin_ids or ())
         self.unavailable = unavailable
@@ -47,6 +49,9 @@ class FakeAdminRepository:
         self.users = {user.user_id: user for user in users or []}
         self.user_details = dict(user_details or {})
         self.user_calls: list[tuple[str, dict[str, Any]]] = []
+        self.statistics_value = statistics_value
+        self.statistics_error: Exception | None = None
+        self.statistics_calls: list[dict[str, Any]] = []
 
     async def is_admin(self, user_id: UUID) -> bool:
         self.calls.append(user_id)
@@ -276,3 +281,23 @@ class FakeAdminRepository:
         if detail is None:
             raise AdminUserNotFoundError
         return detail
+
+    async def statistics(
+        self,
+        *,
+        days: Literal[7, 30],
+        now: datetime,
+        runtime_states: dict[UUID, AgentRuntimeState],
+    ) -> AdminStatistics:
+        self.statistics_calls.append(
+            {
+                "days": days,
+                "now": now,
+                "runtime_states": dict(runtime_states),
+            }
+        )
+        if self.statistics_error is not None:
+            raise self.statistics_error
+        if self.statistics_value is None:
+            raise RuntimeError("Statistics fake value was not configured")
+        return self.statistics_value

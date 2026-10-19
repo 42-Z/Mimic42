@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
-from typing import Any
+from datetime import UTC, datetime, timedelta
+from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from sqlalchemy import case, exists, func, or_, select
@@ -10,26 +10,31 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mimic42.core.admin import (
+    ActivityCounts,
     AdminAgentSummary,
     AdminNotFoundError,
     AdminPage,
     AdminPresetDetail,
     AdminPresetKind,
     AdminPresetSummary,
+    AdminStatistics,
     AdminUnavailableError,
     AdminUserDetail,
     AdminUserNotFoundError,
     AdminUserSummary,
+    DailyActivity,
     PresetCreateValues,
     PresetPatchValues,
     PublicTelegramSettings,
     StoredTelegramSettings,
+    statistics_window,
 )
 from mimic42.core.agent_runtime import AgentRuntimeState
 from mimic42.core.model_catalog import DEFAULT_LLM_MODEL
 from mimic42.integrations.database_admin_statistics import (
     effective_agents_cte,
     runtime_state_parameters,
+    statistics_statement,
 )
 from mimic42.integrations.database_models import (
     AdminAuditLogModel,
@@ -215,6 +220,71 @@ class DatabaseAdminRepository:
             page_size=page_size,
         )
         return AdminUserDetail(profile=profile_summary, agents=agents)
+
+    async def statistics(
+        self,
+        *,
+        days: Literal[7, 30],
+        now: datetime,
+        runtime_states: dict[UUID, AgentRuntimeState],
+    ) -> AdminStatistics:
+        since, until = statistics_window(days, now)
+        statement = statistics_statement(since, until)
+        try:
+            async with self._session_factory() as session:
+                rows = (
+                    await session.execute(
+                        statement,
+                        runtime_state_parameters(runtime_states),
+                    )
+                ).all()
+        except SQLAlchemyError:
+            raise AdminUnavailableError("Administrative storage is unavailable") from None
+        if not rows:
+            raise AdminUnavailableError("Administrative storage returned no statistics row")
+
+        row = rows[0]
+        states = {
+            AgentRuntimeState(state): int(count) for state, count in (row.states or {}).items()
+        }
+        activity_by_date = {
+            daily.date: ActivityCounts(
+                messages=int(daily.messages or 0),
+                actions=int(daily.actions or 0),
+                errors=int(daily.errors or 0),
+            )
+            for daily in rows
+            if daily.date is not None
+        }
+        daily_activity = []
+        for offset in range(days):
+            activity_date = since.date() + timedelta(days=offset)
+            counts = activity_by_date.get(activity_date, ActivityCounts())
+            daily_activity.append(
+                DailyActivity(
+                    date=activity_date,
+                    messages=counts.messages,
+                    actions=counts.actions,
+                    errors=counts.errors,
+                )
+            )
+        totals = ActivityCounts(
+            messages=sum(day.messages for day in daily_activity),
+            actions=sum(day.actions for day in daily_activity),
+            errors=sum(day.errors for day in daily_activity),
+        )
+        return AdminStatistics(
+            users=int(row.users),
+            agents=int(row.agents),
+            states=states,
+            input_tokens=int(row.input_tokens or 0),
+            output_tokens=int(row.output_tokens or 0),
+            period_days=days,
+            since=since,
+            until=until,
+            totals=totals,
+            daily=daily_activity,
+        )
 
     async def read_telegram_settings(self) -> StoredTelegramSettings | None:
         try:

@@ -801,7 +801,7 @@ group by owner_id, state;
 
 **Files:** `src/mimic42/core/admin.py`, `src/mimic42/integrations/database_admin_statistics.py`, `src/mimic42/integrations/database_admin.py`, `src/mimic42/api/admin.py`; новые `tests/core/test_admin_statistics.py`, `tests/api/test_admin_statistics.py`, `tests/integration/test_admin_statistics.py`.
 
-- [ ] **7.1. Проверить чистое вычисление UTC-окна** с инъекцией `now`, включая входной datetime с другим часовым поясом. Начало — полночь UTC 6/29 дней назад, верхняя граница — переданный `now`, полузакрытый диапазон `[since, until)`. DTO и UI называют текущий день неполным.
+- [x] **7.1. Проверить чистое вычисление UTC-окна** с инъекцией `now`, включая входной datetime с другим часовым поясом. Начало — полночь UTC 6/29 дней назад, верхняя граница — переданный `now`, полузакрытый диапазон `[since, until)`. DTO и UI называют текущий день неполным.
 
 ```python
 from datetime import UTC, datetime, timedelta
@@ -822,9 +822,16 @@ def test_statistics_window_uses_calendar_days_in_utc():
     assert end == now
 ```
 
-- [ ] **7.2. Написать DB-тест на базовый snapshot и дельту.** Общая Dev-база не пуста: получить статистику в одной `REPEATABLE READ` транзакции до создания собственных фикстур, затем после. Добавить два агента, 2 входящих, 1 agent_response, 1 tool_call-сообщение, успешный tool-event, неуспешный tool-event и отдельный model.failed; ожидаемая дельта — messages=3, actions=2, errors=2. Дневные числа в сумме равны totals; счётчик токенов 100/30 не удваивается от JOIN; переключение 7→30 не меняет токены.
-- [ ] **7.3. Выполнить** `uv run pytest tests/core/test_admin_statistics.py tests/api/test_admin_statistics.py tests/integration/test_admin_statistics.py -W error -q`.
-- [ ] **7.4. Реализовать независимые агрегаты:** профили count, эффективные состояния из CTE этапа 6, `coalesce(sum(input_tokens),0)` и output отдельно, дневные counts сообщений и событий. Одна AsyncSession не используется одновременно в `asyncio.gather`. Все SELECT одного ответа читаются в согласованном snapshot: предпочесть один SELECT из независимо агрегированных подзапросов; если запросы остаются последовательными, начать read-only транзакцию с `REPEATABLE READ` до первого SELECT.
+- [x] **7.2. Написать DB-тест на базовый snapshot и дельту.** Общая Dev-база не пуста: получить статистику в одной `REPEATABLE READ` транзакции до создания собственных фикстур, затем после. Добавить два агента, 2 входящих, 1 agent_response, 1 tool_call-сообщение, успешный tool-event, неуспешный tool-event и отдельный model.failed; ожидаемая дельта — messages=3, actions=2, errors=2. Дневные числа в сумме равны totals; счётчик токенов 100/30 не удваивается от JOIN; переключение 7→30 не меняет токены. Все записи фикстур откатываются внешней транзакцией.
+- [x] **7.3. Выполнить проверки** отдельными командами, потому что `pyproject.toml` по умолчанию исключает `db`-тесты:
+
+```bash
+uv run pytest tests/core/test_admin_statistics.py tests/api/test_admin_statistics.py -W error -q
+uv run pytest tests/integration/test_admin_statistics.py -m db -W error -q
+```
+
+Результат: core/API — 9 passed, DB integration — 1 passed.
+- [x] **7.4. Реализовать независимые агрегаты:** профили count, эффективные состояния из CTE этапа 6, `coalesce(sum(input_tokens),0)` и output отдельно, дневные counts сообщений и событий. Один SELECT с независимыми агрегатами и day rows обеспечивает согласованный snapshot; `AsyncSession` параллельно не используется. Строковые данные сообщений, событий, настроек и сессий не передаются в ответ.
 
 ```sql
 select (created_at at time zone 'UTC')::date as date, count(*) as messages
@@ -844,8 +851,8 @@ group by 1 order by 1;
 
 Заполнить 7/30 календарных дней нулями в Python; totals вычислить суммой этих же рядов, исключив расхождение формул. Каст даты только в SELECT/GROUP BY, диапазон фильтруется непосредственно по indexed `created_at`. Ограничить выборку `until`, не включать будущие строки.
 
-- [ ] **7.5. Добавить API-маршрут**, `days` вне 7/30 даёт `422`, ошибка SQL не превращается в успешный ответ с нулями. Проверить удаление своего fixture-агента внутри откатываемой транзакции: счётчики уменьшаются согласно каскадам. На данных Dev посмотреть `EXPLAIN` временных агрегатов без `ANALYZE` и без выгрузки payload/content; убедиться, что предикаты соответствуют новым индексам.
-- [ ] **7.6. Повторить команду 7.3. Коммит:** `feat(admin): aggregate platform activity and lifetime token usage`.
+- [x] **7.5. Добавить API-маршрут**, `days` вне 7/30 даёт `422`, ошибка SQL не превращается в успешный ответ с нулями. Проверить удаление своего fixture-агента внутри откатываемой транзакции: счётчики уменьшаются согласно каскадам. На данных Dev выполнен `EXPLAIN` без `ANALYZE` и без выборки payload/content: временные агрегаты используют `agent_messages_admin_activity_date_idx` (Index Only Scan) и `agent_events_admin_activity_date_idx` (Index Scan).
+- [x] **7.6. Повторить проверки 7.3. Коммит:** `feat(admin): aggregate platform activity and lifetime token usage`.
 
 ## Этап 8. Клиентский транспорт, роль и безопасный кеш
 

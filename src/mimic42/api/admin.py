@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable, Coroutine
-from typing import Annotated, Any, cast
+from datetime import UTC, datetime
+from typing import Annotated, Any, Literal, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
@@ -25,6 +26,7 @@ from mimic42.core.admin import (
     AdminPresetKind,
     AdminPresetSummary,
     AdminRepository,
+    AdminStatistics,
     AdminUnavailableError,
     AdminUserDetail,
     AdminUserNotFoundError,
@@ -349,6 +351,27 @@ async def get_user(
             user_id,
             page=page,
             page_size=page_size,
+            runtime_states=runtime_states,
+        )
+    )
+
+
+@router.get("/statistics", response_model=AdminStatistics)
+async def get_statistics(
+    request: Request,
+    days: Annotated[int, Query(ge=7, le=30)] = 7,
+) -> AdminStatistics:
+    if days not in (7, 30):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Период статистики должен быть 7 или 30 дней",
+        )
+    runtime_states = await _runtime_state_snapshot(request)
+    repository = _get_admin_repository(request)
+    return await _admin_result(
+        repository.statistics(
+            days=cast(Literal[7, 30], days),
+            now=datetime.now(UTC),
             runtime_states=runtime_states,
         )
     )

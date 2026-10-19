@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any, Literal, Protocol, TypedDict
 from uuid import UUID
 
@@ -100,6 +100,16 @@ class AdminStatistics(BaseModel):
     until: datetime
     totals: ActivityCounts
     daily: list[DailyActivity]
+
+
+def statistics_window(days: int, now: datetime) -> tuple[datetime, datetime]:
+    if days not in (7, 30):
+        raise ValueError("Статистика поддерживает периоды 7 или 30 дней")
+    if now.tzinfo is None or now.utcoffset() is None:
+        raise ValueError("Статистике требуется время с часовым поясом")
+    utc_now = now.astimezone(UTC)
+    utc_start = utc_now.replace(hour=0, minute=0, second=0, microsecond=0)
+    return utc_start - timedelta(days=days - 1), utc_now
 
 
 class PresetCreateValues(TypedDict):
