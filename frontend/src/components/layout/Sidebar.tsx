@@ -14,10 +14,12 @@ import {
   Plus,
   Zap,
   X,
+  ShieldCheck,
 } from 'lucide-react';
 import { getSupabaseClient } from '@/lib/supabase/client';
 import { useRouter } from 'next/navigation';
 import { useAgents } from '@/hooks/useAgents';
+import { useAdminAccess } from '@/hooks/useAdminAccess';
 import { Button } from '@/components/ui/button';
 
 interface NavItem {
@@ -56,6 +58,7 @@ export function Sidebar({ className, mobileOpen = false, onMobileClose }: Sideba
   const router = useRouter();
   const [collapsed, setCollapsed] = React.useState(false);
   const { data: agents } = useAgents();
+  const { isAdmin } = useAdminAccess();
 
   const handleLogout = async () => {
     const supabase = getSupabaseClient();
@@ -144,6 +147,17 @@ export function Sidebar({ className, mobileOpen = false, onMobileClose }: Sideba
             onNavigate={onMobileClose}
           />
         ))}
+
+        {isAdmin && (
+          <SidebarLink
+            href="/admin"
+            label="Администрирование"
+            icon={ShieldCheck}
+            isActive={pathname === '/admin' || pathname.startsWith('/admin/')}
+            collapsed={collapsed}
+            onNavigate={onMobileClose}
+          />
+        )}
 
         {/* Agents section */}
         {!collapsed && agents && agents.length > 0 && (
@@ -267,6 +281,7 @@ function SidebarLink({ href, label, icon: Icon, isActive, collapsed, badge, onNa
     <Link
       href={href}
       onClick={onNavigate}
+      aria-current={isActive ? 'page' : undefined}
       className={cn(
         navItemBase,
         navItemState(isActive),

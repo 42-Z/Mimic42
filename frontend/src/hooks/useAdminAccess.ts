@@ -27,6 +27,7 @@ export interface AdminAccess {
   userId: string | null;
   isLoading: boolean;
   isAdmin: boolean;
+  isDenied: boolean;
   error: unknown | null;
   retry: () => void;
 }
@@ -222,6 +223,14 @@ export function AdminAccessProvider({ children }: { children: ReactNode }) {
       !identityQuery.isError &&
       identityQuery.data?.user_id === auth.userId &&
       identityQuery.data.is_admin,
+    isDenied:
+      auth.ready &&
+      ((auth.userId === null && auth.error === null) ||
+        (auth.userId !== null &&
+          ((identityQuery.isFetchedAfterMount &&
+            identityQuery.data?.user_id === auth.userId &&
+            !identityQuery.data.is_admin) ||
+            errorStatus(identityQuery.error) === 403))),
     error: auth.error ?? (identityQuery.isError ? identityQuery.error : null),
     retry: () => {
       if (auth.userId !== null) void identityQuery.refetch();
