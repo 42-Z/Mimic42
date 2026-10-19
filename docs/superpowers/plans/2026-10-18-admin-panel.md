@@ -858,10 +858,10 @@ group by 1 order by 1;
 
 **Files:** новые `frontend/src/types/admin.ts`, `frontend/src/lib/adminApi.ts`, `frontend/src/hooks/useAdminAccess.ts`, `frontend/src/hooks/useAdmin.ts`; изменить `frontend/src/lib/queryClient.ts`, `frontend/src/app/providers.tsx`; новые `frontend/src/__tests__/admin-access.test.tsx`, `frontend/src/__tests__/admin-api.test.ts`.
 
-- [ ] **8.1. Перенести DTO в TypeScript** без переименования полей; `AdminPage<T>` и `AdminStatistics` должны совпадать с Python. У `PublicTelegramSettings` нет `api_hash`/ciphertext. Клиентский `SaveTelegramSettings` существует только как аргумент прямого вызова формы.
-- [ ] **8.2. Написать проверки:** общий Axios прикладывает существующий JWT; read-запрос получает AbortSignal; административные query не запускаются до роли; `403` не повторяется retry; после отзыва роли/выхода старые users/preset detail исчезают. Ключи двух UUID не совпадают. Для HTTP подменять adapter существующего `apiClient`, а не создавать второй unauthenticated клиент.
-- [ ] **8.3. Выполнить** из `frontend/`: `bun test src/__tests__/admin-api.test.ts src/__tests__/admin-access.test.tsx`.
-- [ ] **8.4. Добавить транспорт и query-ключи.** Все read helpers принимают `signal?: AbortSignal`, передают `signal` в Axios и возвращают только `r.data`. Публичные методы: `me`, `users`, `user`, `presets`, `preset`, `createPreset`, `updatePreset`, `setPresetVisibility`, `telegramSettings`, `saveTelegramSettings`, `statistics`. GET-методы совпадают с контрактом. Административные writes — прямые async-вызовы с локальным pending, не `useMutation`: это не оставляет в mutation cache ни HASH, ни тела редактируемых пресетов после отзыва роли.
+- [x] **8.1. Перенести DTO в TypeScript** без переименования полей; `AdminPage<T>` и `AdminStatistics` совпадают с Python. У `PublicTelegramSettings` нет `api_hash`/ciphertext. Клиентский `SaveTelegramSettings` существует только как аргумент прямого вызова формы.
+- [x] **8.2. Написать проверки:** общий Axios прикладывает существующий JWT; read-запрос получает AbortSignal; административные query не запускаются до роли; `403` не повторяется retry; после отзыва роли/выхода старые users/preset detail исчезают. Ключи двух UUID не совпадают. Для HTTP используется adapter существующего `apiClient`, не отдельный unauthenticated клиент.
+- [x] **8.3. Выполнить** из `frontend/`: `bun test src/__tests__/admin-api.test.ts src/__tests__/admin-access.test.tsx`.
+- [x] **8.4. Добавить транспорт и query-ключи.** Все read helpers принимают `signal?: AbortSignal`, передают `signal` в Axios и возвращают только `r.data`. Реализованы `me`, `users`, `user`, `presets`, `preset`, `createPreset`, `updatePreset`, `setPresetVisibility`, `telegramSettings`, `saveTelegramSettings`, `statistics`. Административные writes — прямые async-вызовы, без `useMutation`; тело и HASH не попадают в mutation cache.
 
 ```typescript
 const adminKeys = {
@@ -884,7 +884,7 @@ const adminKeys = {
 
 Добавить как `queryKeys.admin`, не дублировать отдельный набор в компонентах. `useAdminAccess` узнаёт текущего пользователя через существующий Supabase auth, слушает `onAuthStateChange` и вызывает `/me` с `staleTime: 0`, `refetchInterval: 30_000`, refetch при focus/reconnect. Обычная ошибка роли не блокирует Sidebar собственных агентов; административная граница не показывает защищённое содержимое на ошибке перепроверки.
 
-- [ ] **8.5. При отзыве/выходе сначала закрыть UI и запретить новые запросы**, затем отменить и удалить административные queries. Отменённые read-запросы должны потреблять signal. Локальные формы и их черновики размонтируются вместе с закрытой границей. Поздние callbacks write-запросов не заполняют кеш и не выставляют identity, если текущий UUID/роль уже изменились; серверную операцию после её отправки отменённой не считать.
+- [x] **8.5. При отзыве/выходе сначала закрыть UI и запретить новые запросы**, затем отменить и удалить административные queries. Отменённые read-запросы потребляют signal. Глобальный `AdminAccessProvider` слушает Supabase auth events, удаляет данные прежнего UUID и не даёт старой identity/cache открывать административные экраны. Поздние callbacks write-запросов не меняют QueryClient или identity; отправленную серверную операцию отменённой не считаем.
 
 ```typescript
 async function clearAdminData(client: QueryClient): Promise<void> {
@@ -895,8 +895,8 @@ async function clearAdminData(client: QueryClient): Promise<void> {
 
 При `403` любого административного запроса или мутации обновить identity до `is_admin:false` и выполнить тот же сброс. При выходе/смене UUID очищать и прежний identity; не очищать только `['admin', newUserId]`, оставляя данные старого. Helper использует существующий `QueryClient` и `queryKeys`, располагается в `hooks/useAdminAccess.ts` и переиспользуется hooks, не копируется по компонентам.
 
-- [ ] **8.6. Для read-запросов выставить `enabled` только при подтверждённой роли**, без retry на `401/403`, максимум один retry сетевой/`503` ошибки. Для async-действий проверять роль непосредственно перед вызовом, выключать UI-кнопки через локальный pending, не делать автоматических повторов и сбрасывать состояние при уходе с экрана. Пресетные действия инвалидируют `queryKeys.admin.scope(userId)` и `queryKeys.presets.all` только если не изменился вызывающий пользователь. Не кешировать HASH в query keys, mutation variables, local/sessionStorage, console или devtools.
-- [ ] **8.7. Повторить команду 8.3. Коммит:** `feat(admin): add identity-scoped client queries and access revocation`.
+- [x] **8.6. Для read-запросов выставить `enabled` только при подтверждённой роли**, без retry на `401/403`, максимум один retry сетевой/`503` ошибки. Async-действия проверяют роль перед вызовом, не используют мутационный кеш. Пресетные действия инвалидируют `queryKeys.admin.scope(userId)` и `queryKeys.presets.all` только пока вызывающий пользователь не сменился; смена роли сбрасывает admin queries. HASH не используется в query keys, mutation variables, local/sessionStorage, console или devtools.
+- [x] **8.7. Повторить команду 8.3. Результат:** 8 passed; `bun run typecheck` прошёл. Коммит: `feat(admin): add identity-scoped client queries and access revocation`.
 
 ## Этап 9. Оболочка, примитивы и вход без собственного мимика
 
