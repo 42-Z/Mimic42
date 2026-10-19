@@ -24,6 +24,7 @@ function useAdminRead<T>(
   userId: string | null,
   isAdmin: boolean,
   queryFn: (signal: AbortSignal) => Promise<T>,
+  refetchInterval?: number | false,
 ) {
   const queryClient = useQueryClient();
 
@@ -46,6 +47,7 @@ function useAdminRead<T>(
     },
     enabled: userId !== null && isAdmin,
     retry: retryAdminQuery,
+    refetchInterval,
     refetchOnWindowFocus: true,
     refetchOnReconnect: true,
   });
@@ -115,6 +117,7 @@ export function useAdminStatistics(days: 7 | 30) {
     userId,
     isAdmin,
     (signal) => adminApi.statistics(days, { signal }),
+    60_000,
   );
 }
 
