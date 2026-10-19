@@ -25,8 +25,8 @@ export function minePresetStatusLabel(entry: Pick<CatalogEntry, 'isActive' | 'pu
 }
 
 /**
- * Магазин — официальные активные плюс чужие выложенные; «Мои» — свои
- * черновики и выложенные. Официальные впереди, дальше по названию.
+ * Магазин показывает активные официальные и чужие опубликованные пресеты;
+ * «Мои» сохраняет все собственные строки, в том числе скрытые администратором.
  */
 export function buildCatalogEntries(
   presets: PromptPresetRow[],
@@ -71,7 +71,7 @@ export function buildCatalogEntries(
   return { store, mine };
 }
 
-/** Карточки избранного для страницы: живые и замороженные. */
+/** Карточки избранного: актуальные ссылки, замороженные снимки и недоступные stale links. */
 export interface FavoriteEntry {
   favoriteId: string;
   title: string;
