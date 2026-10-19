@@ -63,11 +63,12 @@ export function useAdminUsers(q: string, page: number, pageSize = 25) {
 
 export function useAdminUser(userId: string, page: number, pageSize = 25) {
   const access = useAdminAccess();
+  const targetUserId = userId.trim();
   return useAdminRead(
-    queryKeys.admin.user(access.userId ?? '', userId, page, pageSize),
+    queryKeys.admin.user(access.userId ?? '', targetUserId, page, pageSize),
     access.userId,
-    access.isAdmin,
-    (signal) => adminApi.user(userId, { page, page_size: pageSize }, { signal }),
+    access.isAdmin && targetUserId.length > 0,
+    (signal) => adminApi.user(targetUserId, { page, page_size: pageSize }, { signal }),
   );
 }
 

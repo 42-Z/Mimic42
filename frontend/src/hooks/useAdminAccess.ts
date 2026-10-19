@@ -32,7 +32,7 @@ export interface AdminAccess {
   retry: () => void;
 }
 
-const AdminAccessContext = createContext<AdminAccess | null>(null);
+export const AdminAccessContext = createContext<AdminAccess | null>(null);
 
 function errorStatus(error: unknown): number | undefined {
   if (typeof error !== 'object' || error === null || !('status' in error)) return undefined;
