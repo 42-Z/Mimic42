@@ -33,6 +33,7 @@ from tests.e2e.helpers import (  # noqa: E402
     AUTH_DIR,
     E2EUser,
     create_test_agent,
+    get_admin_role,
     login_via_form,
     reset_backend,
     set_admin_role,
@@ -230,14 +231,18 @@ def admin_role(
     slot_info: tuple[str, str, dict[str, E2EUser]],
 ) -> Callable[[str, bool], AbstractContextManager[None]]:
     slot = slot_info[0]
+    lease_holder = slot_info[1]
 
     @contextmanager
     def assign_role(owner_id: str, enabled: bool = True) -> Iterator[None]:
-        previously_enabled = set_admin_role(api, slot, owner_id, enabled)
+        previously_enabled = get_admin_role(api, slot, owner_id, lease_holder)
         try:
+            observed_previous = set_admin_role(api, slot, owner_id, lease_holder, enabled)
+            if observed_previous != previously_enabled:
+                raise AssertionError("Состояние admin-роли изменилось между чтением и установкой")
             yield
         finally:
-            set_admin_role(api, slot, owner_id, previously_enabled)
+            set_admin_role(api, slot, owner_id, lease_holder, previously_enabled)
 
     return assign_role
 

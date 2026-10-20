@@ -11,7 +11,7 @@ from typing import Any, Literal
 from uuid import UUID, uuid4
 
 import asyncpg
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from mimic42.api.app import create_app
@@ -102,6 +102,9 @@ class TestAdminRoleRequest(BaseModel):
     enabled: bool
 
 
+TEST_SLOT_HOLDER_HEADER = "X-Mimic42-Test-Slot-Holder"
+
+
 def _test_settings() -> Settings:
     database_connection_string = os.environ["DATABASE_CONNECTION_STRING"]
     supabase_url = os.environ["SUPABASE_URL"]
@@ -131,15 +134,12 @@ def _test_settings() -> Settings:
     )
 
 
-async def set_test_admin_role(
+def _validate_test_admin_persona(
     dsn: str,
     supabase_url: str | None,
     slot_name: str,
     owner_id: UUID,
-    *,
-    enabled: bool,
-) -> bool:
-    """Set one slot persona's admin role and return its previous state."""
+) -> None:
     if not dsn or not supabase_url:
         raise RuntimeError("тестовой базе не заданы обязательные параметры")
     assert_test_project(dsn, supabase_url)
@@ -150,16 +150,71 @@ async def set_test_admin_role(
     if owner_id not in {persona.user_id for persona in slot.personas}:
         raise ValueError("Пользователь не относится к указанному тестовому слоту")
 
+
+async def _require_active_test_slot_lease(
+    connection: asyncpg.Connection,
+    slot_name: str,
+    lease_holder: str,
+) -> None:
+    if not lease_holder.strip():
+        raise ValueError("Не передан владелец аренды тестового слота")
+    lease_active = await connection.fetchval(
+        "select expires_at > now() from test_support.slot_leases "
+        "where slot = $1 and holder = $2 for update",
+        slot_name,
+        lease_holder,
+    )
+    if not lease_active:
+        raise ValueError("Тестовый слот не арендован этим запуском")
+
+
+async def get_test_admin_role(
+    dsn: str,
+    supabase_url: str | None,
+    slot_name: str,
+    owner_id: UUID,
+    *,
+    lease_holder: str,
+) -> bool:
+    """Read one slot persona's admin role while holding its active lease."""
+    _validate_test_admin_persona(dsn, supabase_url, slot_name, owner_id)
     connection = await asyncpg.connect(
         plain_dsn(dsn),
         timeout=CONNECT_TIMEOUT_SECONDS,
     )
     try:
         async with connection.transaction():
+            await _require_active_test_slot_lease(connection, slot_name, lease_holder)
+            return bool(
+                await connection.fetchval(
+                    "select exists (select 1 from public.admin_users where user_id = $1)", owner_id
+                )
+            )
+    finally:
+        await connection.close()
+
+
+async def set_test_admin_role(
+    dsn: str,
+    supabase_url: str | None,
+    slot_name: str,
+    owner_id: UUID,
+    *,
+    lease_holder: str,
+    enabled: bool,
+) -> bool:
+    """Set one slot persona's admin role while holding its active lease."""
+    _validate_test_admin_persona(dsn, supabase_url, slot_name, owner_id)
+    connection = await asyncpg.connect(
+        plain_dsn(dsn),
+        timeout=CONNECT_TIMEOUT_SECONDS,
+    )
+    try:
+        async with connection.transaction():
+            await _require_active_test_slot_lease(connection, slot_name, lease_holder)
             was_enabled = bool(
                 await connection.fetchval(
-                    "select exists (select 1 from public.admin_users where user_id = $1)",
-                    owner_id,
+                    "select exists (select 1 from public.admin_users where user_id = $1)", owner_id
                 )
             )
             if enabled:
@@ -182,11 +237,16 @@ async def delete_test_official_preset(
     dsn: str,
     supabase_url: str | None,
     preset_id: UUID,
+    *,
+    slot_name: str,
+    lease_holder: str,
 ) -> bool:
     """Delete only a captured, synthetic official preset used by E2E cleanup."""
     if not dsn or not supabase_url:
         raise RuntimeError("тестовой базе не заданы обязательные параметры")
     assert_test_project(dsn, supabase_url)
+    if not any(candidate.name == slot_name for candidate in SLOTS):
+        raise ValueError("Неизвестный слот тестовых аккаунтов")
 
     connection = await asyncpg.connect(
         plain_dsn(dsn),
@@ -194,6 +254,7 @@ async def delete_test_official_preset(
     )
     try:
         async with connection.transaction():
+            await _require_active_test_slot_lease(connection, slot_name, lease_holder)
             result = await connection.execute(
                 "delete from public.prompt_presets "
                 "where id = $1 and owner_id is null and title like 'E2E admin fixture:%'",
@@ -251,23 +312,51 @@ def _mount_test_routes(application: FastAPI, settings: Settings) -> None:
         application.state.scripted_agents.built.clear()
         return {"status": "ok"}
 
+    @application.get("/__test__/admin-role")
+    async def get_admin_role(request: Request, slot: str, owner_id: UUID) -> dict[str, bool]:
+        try:
+            enabled = await get_test_admin_role(
+                dsn,
+                settings.supabase_url,
+                slot,
+                owner_id,
+                lease_holder=request.headers.get(TEST_SLOT_HOLDER_HEADER, ""),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        return {"enabled": enabled}
+
     @application.put("/__test__/admin-role")
-    async def set_admin_role(request: TestAdminRoleRequest) -> dict[str, bool]:
+    async def set_admin_role(request: Request, values: TestAdminRoleRequest) -> dict[str, bool]:
         try:
             previously_enabled = await set_test_admin_role(
                 dsn,
                 settings.supabase_url,
-                request.slot,
-                request.owner_id,
-                enabled=request.enabled,
+                values.slot,
+                values.owner_id,
+                lease_holder=request.headers.get(TEST_SLOT_HOLDER_HEADER, ""),
+                enabled=values.enabled,
             )
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-        return {"previously_enabled": previously_enabled, "enabled": request.enabled}
+        return {"previously_enabled": previously_enabled, "enabled": values.enabled}
 
     @application.delete("/__test__/admin-presets/{preset_id}")
-    async def remove_test_official_preset(preset_id: UUID) -> dict[str, bool]:
-        deleted = await delete_test_official_preset(dsn, settings.supabase_url, preset_id)
+    async def remove_test_official_preset(
+        request: Request,
+        preset_id: UUID,
+        slot: str,
+    ) -> dict[str, bool]:
+        try:
+            deleted = await delete_test_official_preset(
+                dsn,
+                settings.supabase_url,
+                preset_id,
+                slot_name=slot,
+                lease_holder=request.headers.get(TEST_SLOT_HOLDER_HEADER, ""),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
         if not deleted:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,

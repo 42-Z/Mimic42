@@ -11,6 +11,7 @@ import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from urllib.parse import unquote, urlsplit
 from uuid import UUID
 
 import asyncpg
@@ -47,14 +48,36 @@ def _jwt_payload(value: str) -> dict[str, Any] | None:
 
 
 def _project_ref(value: str) -> str | None:
+    value = value.strip()
     payload = _jwt_payload(value)
     if payload is not None:
         ref = payload.get("ref")
         return ref if isinstance(ref, str) else None
-    if DEV_PROJECT_REF in value:
-        return DEV_PROJECT_REF
-    if PROD_PROJECT_REF in value:
-        return PROD_PROJECT_REF
+
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return None
+    host = (parsed.hostname or "").lower()
+    scheme = parsed.scheme.lower()
+
+    if scheme in {"http", "https"}:
+        if host == f"{DEV_PROJECT_REF}.supabase.co":
+            return DEV_PROJECT_REF
+        if host == f"{PROD_PROJECT_REF}.supabase.co":
+            return PROD_PROJECT_REF
+        return None
+
+    if scheme in {"postgres", "postgresql", "postgresql+asyncpg"}:
+        if host == f"db.{DEV_PROJECT_REF}.supabase.co":
+            return DEV_PROJECT_REF
+        if host == f"db.{PROD_PROJECT_REF}.supabase.co":
+            return PROD_PROJECT_REF
+        if host.endswith(".pooler.supabase.com"):
+            username = unquote(parsed.username or "")
+            ref = username.rsplit(".", 1)[-1]
+            if ref in {DEV_PROJECT_REF, PROD_PROJECT_REF}:
+                return ref
     return None
 
 
@@ -62,7 +85,8 @@ def assert_test_project(*values: str | None) -> None:
     """Отказ, если хоть одно значение не опознаётся как проект Mimic42 Dev.
 
     Allowlist, а не denylist: DSN, адрес и ключи обязаны явно указывать на
-    Dev — рефом в строке подключения, в домене или в claim ``ref`` JWT.
+    Dev — проектным hostname, именем пользователя Supabase pooler или claim
+    ``ref`` JWT. Подстрока в пароле или пути не считается идентификатором проекта.
     Значение без рефа (IP-литерал, кастомный домен, чужой ключ) отвергается
     целиком, а не проскакивает, как при поиске рефа прода подстрокой.
 

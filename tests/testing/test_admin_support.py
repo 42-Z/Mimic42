@@ -10,7 +10,11 @@ from fastapi.routing import APIRoute
 from mimic42.api.app import create_app
 from mimic42.config import Settings
 from mimic42.testing import server
-from mimic42.testing.server import delete_test_official_preset, set_test_admin_role
+from mimic42.testing.server import (
+    delete_test_official_preset,
+    get_test_admin_role,
+    set_test_admin_role,
+)
 from mimic42.testing.slots import DEV_PROJECT_REF, PROD_PROJECT_REF, SLOTS
 
 DEV_DSN = f"postgresql+asyncpg://test:test@db.{DEV_PROJECT_REF}.supabase.co:5432/postgres"
@@ -26,8 +30,15 @@ class FakeTransaction:
 
 
 class FakeConnection:
-    def __init__(self, *, existing: bool = False, delete_result: str = "DELETE 1") -> None:
+    def __init__(
+        self,
+        *,
+        existing: bool = False,
+        lease_active: bool = True,
+        delete_result: str = "DELETE 1",
+    ) -> None:
         self.existing = existing
+        self.lease_active = lease_active
         self.delete_result = delete_result
         self.statements: list[tuple[str, tuple[Any, ...]]] = []
         self.closed = False
@@ -37,6 +48,8 @@ class FakeConnection:
 
     async def fetchval(self, query: str, *args: Any) -> bool:
         self.statements.append((query, args))
+        if "test_support.slot_leases" in query.lower():
+            return self.lease_active
         return self.existing
 
     async def execute(self, query: str, *args: Any) -> str:
@@ -73,15 +86,20 @@ async def test_admin_role_helper_changes_only_the_persona_in_the_named_slot(
     monkeypatch.setattr(server.asyncpg, "connect", connect)
     owner_id = SLOTS[0].persona("empty").user_id
 
-    was_enabled = await set_test_admin_role(DEV_DSN, DEV_URL, "a", owner_id, enabled=True)
+    was_enabled = await set_test_admin_role(
+        DEV_DSN, DEV_URL, "a", owner_id, lease_holder="run-a", enabled=True
+    )
 
     assert was_enabled is False
-    assert len(connection.statements) == 2
-    assert connection.statements[0][1] == (owner_id,)
+    assert len(connection.statements) == 3
+    assert connection.statements[0][1] == ("a", "run-a")
+    assert "test_support.slot_leases" in connection.statements[0][0].lower()
+    assert "for update" in connection.statements[0][0].lower()
     assert connection.statements[1][1] == (owner_id,)
-    assert "insert into public.admin_users" in connection.statements[1][0].lower()
-    assert "on conflict (user_id) do nothing" in connection.statements[1][0].lower()
-    assert "delete from public.admin_users" not in connection.statements[1][0].lower()
+    assert connection.statements[2][1] == (owner_id,)
+    assert "insert into public.admin_users" in connection.statements[2][0].lower()
+    assert "on conflict (user_id) do nothing" in connection.statements[2][0].lower()
+    assert "delete from public.admin_users" not in connection.statements[2][0].lower()
     assert connect_calls[0][0] == DEV_DSN.replace("postgresql+asyncpg://", "postgresql://", 1)
     assert connection.closed is True
 
@@ -98,7 +116,9 @@ async def test_admin_role_restore_deletes_only_the_requested_user_row(
     monkeypatch.setattr(server.asyncpg, "connect", connect)
     owner_id = SLOTS[0].persona("empty").user_id
 
-    was_enabled = await set_test_admin_role(DEV_DSN, DEV_URL, "a", owner_id, enabled=False)
+    was_enabled = await set_test_admin_role(
+        DEV_DSN, DEV_URL, "a", owner_id, lease_holder="run-a", enabled=False
+    )
 
     assert was_enabled is True
     assert connection.statements[-1][1] == (owner_id,)
@@ -119,9 +139,56 @@ async def test_admin_role_helper_rejects_unknown_slots_and_cross_slot_users_befo
     owner_id = SLOTS[1].persona("empty").user_id
 
     with pytest.raises(ValueError, match="слот"):
-        await set_test_admin_role(DEV_DSN, DEV_URL, "missing", owner_id, enabled=True)
+        await set_test_admin_role(
+            DEV_DSN, DEV_URL, "missing", owner_id, lease_holder="run-a", enabled=True
+        )
     with pytest.raises(ValueError, match="слоту"):
-        await set_test_admin_role(DEV_DSN, DEV_URL, "a", owner_id, enabled=True)
+        await set_test_admin_role(
+            DEV_DSN, DEV_URL, "a", owner_id, lease_holder="run-a", enabled=True
+        )
+
+
+@pytest.mark.asyncio
+async def test_admin_role_helper_rejects_an_inactive_slot_lease_before_role_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = FakeConnection(lease_active=False)
+
+    async def connect(_dsn: str, *, timeout: int) -> FakeConnection:
+        return connection
+
+    monkeypatch.setattr(server.asyncpg, "connect", connect)
+    owner_id = SLOTS[0].persona("empty").user_id
+
+    with pytest.raises(ValueError, match="арендован"):
+        await set_test_admin_role(
+            DEV_DSN, DEV_URL, "a", owner_id, lease_holder="stale-run", enabled=True
+        )
+
+    assert len(connection.statements) == 1
+    assert "test_support.slot_leases" in connection.statements[0][0].lower()
+    assert connection.closed is True
+
+
+@pytest.mark.asyncio
+async def test_admin_role_read_is_scoped_to_the_active_slot_lease(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = FakeConnection(existing=True)
+
+    async def connect(_dsn: str, *, timeout: int) -> FakeConnection:
+        return connection
+
+    monkeypatch.setattr(server.asyncpg, "connect", connect)
+    owner_id = SLOTS[0].persona("empty").user_id
+
+    enabled = await get_test_admin_role(DEV_DSN, DEV_URL, "a", owner_id, lease_holder="run-a")
+
+    assert enabled is True
+    assert len(connection.statements) == 2
+    assert connection.statements[0][1] == ("a", "run-a")
+    assert connection.statements[1][1] == (owner_id,)
+    assert connection.closed is True
 
 
 @pytest.mark.asyncio
@@ -136,7 +203,9 @@ async def test_admin_role_helper_refuses_production_database_before_connecting(
     production_dsn = f"postgresql://test:test@db.{PROD_PROJECT_REF}.supabase.co:5432/postgres"
 
     with pytest.raises(RuntimeError, match="прод"):
-        await set_test_admin_role(production_dsn, DEV_URL, "a", owner_id, enabled=True)
+        await set_test_admin_role(
+            production_dsn, DEV_URL, "a", owner_id, lease_holder="run-a", enabled=True
+        )
 
 
 @pytest.mark.asyncio
@@ -151,10 +220,19 @@ async def test_cleanup_deletes_only_the_captured_test_official_preset_uuid(
     monkeypatch.setattr(server.asyncpg, "connect", connect)
     preset_id = UUID("33333333-3333-4333-8333-333333333333")
 
-    deleted = await delete_test_official_preset(DEV_DSN, DEV_URL, preset_id)
+    deleted = await delete_test_official_preset(
+        DEV_DSN,
+        DEV_URL,
+        preset_id,
+        slot_name="a",
+        lease_holder="run-a",
+    )
 
     assert deleted is True
-    query, args = connection.statements[0]
+    lease_query, lease_args = connection.statements[0]
+    assert lease_args == ("a", "run-a")
+    assert "test_support.slot_leases" in lease_query.lower()
+    query, args = connection.statements[1]
     assert args == (preset_id,)
     assert "where id = $1" in query.lower()
     assert "owner_id is null" in query.lower()
@@ -170,6 +248,9 @@ def test_test_server_exposes_support_routes_but_production_app_does_not(
 
     test_app = server.build_test_app(settings=_fake_app_settings())
     test_routes = [route for route in test_app.routes if isinstance(route, APIRoute)]
+    assert any(
+        route.path == "/__test__/admin-role" and "GET" in route.methods for route in test_routes
+    )
     assert any(
         route.path == "/__test__/admin-role" and "PUT" in route.methods for route in test_routes
     )

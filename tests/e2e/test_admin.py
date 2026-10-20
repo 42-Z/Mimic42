@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from contextlib import AbstractContextManager
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlsplit
 from uuid import uuid4
@@ -59,6 +60,7 @@ def test_admin_without_agents_moderates_and_loses_access_after_revoke(
 ) -> None:
     empty_user = users["empty"]
     slot = slot_info[0]
+    lease_holder = slot_info[1]
     authorization_headers: list[str] = []
     created_preset_ids: list[str] = []
     page = persona_page("empty")
@@ -82,6 +84,43 @@ def test_admin_without_agents_moderates_and_loses_access_after_revoke(
 
     with admin_role(empty_user.id, True):
         try:
+
+            def mock_statistics(route: Route) -> None:
+                requested_days = int(
+                    parse_qs(urlsplit(route.request.url).query).get("days", ["7"])[0]
+                )
+                today = datetime.now(UTC).date()
+                since = today - timedelta(days=requested_days - 1)
+                daily = []
+                for offset in range(requested_days):
+                    activity_date = since + timedelta(days=offset)
+                    messages = 4 if offset == 1 else 2 if offset == requested_days - 3 else 0
+                    actions = 11 if offset == 1 else 0
+                    errors = 23 if offset == 1 else 0
+                    daily.append(
+                        {
+                            "date": activity_date.isoformat(),
+                            "messages": messages,
+                            "actions": actions,
+                            "errors": errors,
+                        }
+                    )
+                route.fulfill(
+                    json={
+                        "users": 42,
+                        "agents": 9,
+                        "states": {"running": 3, "stopped": 6},
+                        "input_tokens": 1_234_567,
+                        "output_tokens": 234_567,
+                        "period_days": requested_days,
+                        "since": f"{since.isoformat()}T00:00:00Z",
+                        "until": f"{(today + timedelta(days=1)).isoformat()}T00:00:00Z",
+                        "totals": {"messages": 6, "actions": 11, "errors": 23},
+                        "daily": daily,
+                    }
+                )
+
+            page.route("**/api/v1/admin/statistics**", mock_statistics)
             # SSR boundary starts closed and reveals the real overview only after /me.
             page.set_viewport_size({"width": 1440, "height": 1000})
             page.goto("/admin", wait_until="domcontentloaded")
@@ -303,7 +342,7 @@ def test_admin_without_agents_moderates_and_loses_access_after_revoke(
             page.set_viewport_size({"width": 390, "height": 844})
             _capture(page, "admin-telegram-mobile.png")
 
-            set_admin_role(api, slot, empty_user.id, False)
+            set_admin_role(api, slot, empty_user.id, lease_holder, False)
             page.unroute("**/api/v1/admin/telegram-settings*")
             page.reload()
             expect(page.get_by_role("heading", name="Нет доступа")).to_be_visible()
@@ -321,4 +360,4 @@ def test_admin_without_agents_moderates_and_loses_access_after_revoke(
             expect(regular_user_page.get_by_role("heading", name="Пресеты")).to_be_visible()
         finally:
             for preset_id in created_preset_ids:
-                delete_test_official_preset(api, preset_id)
+                delete_test_official_preset(api, preset_id, slot, lease_holder)
