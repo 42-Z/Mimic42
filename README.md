@@ -75,6 +75,59 @@ Nemotron 3.5 Lightning, all through OpenRouter. A catalog model must support too
 required tool choice: the agent's structured reply is returned through a tool call, and a model
 that cannot be forced to call it answers in plain text and never finishes the turn.
 
+## Administration
+
+The dashboard's `/admin` route is available only to profiles explicitly listed in
+`public.admin_users`. Middleware still requires a valid login; the backend checks the role on each
+admin API request. A profile does not need to own an agent to be an administrator. The role is
+assigned manually in the database, never by a migration or from a client request.
+
+To grant access, use the SQL editor for the intended Supabase project. First look up the target
+profile and verify its email and UUID:
+
+```sql
+select id, email
+from public.profiles
+where email = '<confirmed-account-email>';
+```
+
+Only after confirming the returned profile, replace the placeholder with that exact UUID and insert
+one role row:
+
+```sql
+insert into public.admin_users (user_id)
+values ('<confirmed-profile-uuid>'::uuid)
+on conflict (user_id) do nothing;
+```
+
+To revoke access, delete only that profile's role row:
+
+```sql
+delete from public.admin_users
+where user_id = '<confirmed-profile-uuid>'::uuid;
+```
+
+Use a verified operator account; never substitute your own account or the first profile returned.
+Keep real emails and UUIDs out of migrations, source control, and screenshots. The local dashboard
+is normally `http://localhost:3000/admin`; if Next.js selects another port, use the URL printed by
+its dev server.
+
+### Telegram application credentials
+
+The shared Telegram application pair is resolved from the saved database row first. Server
+environment variables `TELEGRAM_API_ID` and `TELEGRAM_API_HASH` are used only when no saved row
+exists. A database read or decryption failure is an error, not a reason to fall back to the
+environment. The HASH is encrypted with `SECRET_KEY`; keep that key available and unchanged across
+API restarts and replicas. The admin form is write-only: it shows whether a HASH exists, never its
+saved or encrypted value.
+
+Changing the shared pair affects new Telegram connections that use platform defaults (including
+new onboarding and rebinds); a complete per-agent override still takes precedence. Existing agent
+sessions keep their current credentials and are not migrated. If the application is rolled back, do
+not drop the settings or audit tables and do not delete the saved row to force an environment
+fallback. Restore a previous pair by explicitly saving its known API ID and HASH in the admin form;
+a saved HASH cannot be recovered from that form or from the status API.
+
 ## Tracing (Braintrust)
 
 Agent turn tracing is off by default and enabled with a key:
