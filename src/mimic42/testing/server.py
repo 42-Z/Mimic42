@@ -158,11 +158,15 @@ async def _require_active_test_slot_lease(
 ) -> None:
     if not lease_holder.strip():
         raise ValueError("Не передан владелец аренды тестового слота")
-    lease_active = await connection.fetchval(
-        "select expires_at > now() from test_support.slot_leases "
+    expires_at = await connection.fetchval(
+        "select expires_at from test_support.slot_leases "
         "where slot = $1 and holder = $2 for update",
         slot_name,
         lease_holder,
+    )
+    lease_active = expires_at is not None and await connection.fetchval(
+        "select $1::timestamptz > clock_timestamp()",
+        expires_at,
     )
     if not lease_active:
         raise ValueError("Тестовый слот не арендован этим запуском")

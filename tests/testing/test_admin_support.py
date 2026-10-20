@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -35,10 +36,12 @@ class FakeConnection:
         *,
         existing: bool = False,
         lease_active: bool = True,
+        lease_expires_at: datetime | None = None,
         delete_result: str = "DELETE 1",
     ) -> None:
         self.existing = existing
         self.lease_active = lease_active
+        self.lease_expires_at = lease_expires_at or datetime.now(UTC) + timedelta(minutes=1)
         self.delete_result = delete_result
         self.statements: list[tuple[str, tuple[Any, ...]]] = []
         self.closed = False
@@ -46,9 +49,12 @@ class FakeConnection:
     def transaction(self) -> FakeTransaction:
         return FakeTransaction()
 
-    async def fetchval(self, query: str, *args: Any) -> bool:
+    async def fetchval(self, query: str, *args: Any) -> Any:
         self.statements.append((query, args))
-        if "test_support.slot_leases" in query.lower():
+        lowered_query = query.lower()
+        if "test_support.slot_leases" in lowered_query:
+            return self.lease_expires_at
+        if "clock_timestamp()" in lowered_query:
             return self.lease_active
         return self.existing
 
@@ -91,15 +97,16 @@ async def test_admin_role_helper_changes_only_the_persona_in_the_named_slot(
     )
 
     assert was_enabled is False
-    assert len(connection.statements) == 3
+    assert len(connection.statements) == 4
     assert connection.statements[0][1] == ("a", "run-a")
     assert "test_support.slot_leases" in connection.statements[0][0].lower()
     assert "for update" in connection.statements[0][0].lower()
-    assert connection.statements[1][1] == (owner_id,)
+    assert "clock_timestamp()" in connection.statements[1][0].lower()
     assert connection.statements[2][1] == (owner_id,)
-    assert "insert into public.admin_users" in connection.statements[2][0].lower()
-    assert "on conflict (user_id) do nothing" in connection.statements[2][0].lower()
-    assert "delete from public.admin_users" not in connection.statements[2][0].lower()
+    assert connection.statements[3][1] == (owner_id,)
+    assert "insert into public.admin_users" in connection.statements[3][0].lower()
+    assert "on conflict (user_id) do nothing" in connection.statements[3][0].lower()
+    assert "delete from public.admin_users" not in connection.statements[3][0].lower()
     assert connect_calls[0][0] == DEV_DSN.replace("postgresql+asyncpg://", "postgresql://", 1)
     assert connection.closed is True
 
@@ -149,10 +156,15 @@ async def test_admin_role_helper_rejects_unknown_slots_and_cross_slot_users_befo
 
 
 @pytest.mark.asyncio
-async def test_admin_role_helper_rejects_an_inactive_slot_lease_before_role_lookup(
+async def test_admin_role_helper_checks_expiry_after_locking_the_slot_lease(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    connection = FakeConnection(lease_active=False)
+    # The row timestamp can appear valid at transaction start but expire while
+    # waiting on its row lock; the second query must check the live wall clock.
+    connection = FakeConnection(
+        lease_active=False,
+        lease_expires_at=datetime.now(UTC) + timedelta(minutes=1),
+    )
 
     async def connect(_dsn: str, *, timeout: int) -> FakeConnection:
         return connection
@@ -165,8 +177,10 @@ async def test_admin_role_helper_rejects_an_inactive_slot_lease_before_role_look
             DEV_DSN, DEV_URL, "a", owner_id, lease_holder="stale-run", enabled=True
         )
 
-    assert len(connection.statements) == 1
+    assert len(connection.statements) == 2
     assert "test_support.slot_leases" in connection.statements[0][0].lower()
+    assert "clock_timestamp()" in connection.statements[1][0].lower()
+    assert connection.statements[1][1] == (connection.lease_expires_at,)
     assert connection.closed is True
 
 
@@ -185,9 +199,10 @@ async def test_admin_role_read_is_scoped_to_the_active_slot_lease(
     enabled = await get_test_admin_role(DEV_DSN, DEV_URL, "a", owner_id, lease_holder="run-a")
 
     assert enabled is True
-    assert len(connection.statements) == 2
+    assert len(connection.statements) == 3
     assert connection.statements[0][1] == ("a", "run-a")
-    assert connection.statements[1][1] == (owner_id,)
+    assert "clock_timestamp()" in connection.statements[1][0].lower()
+    assert connection.statements[2][1] == (owner_id,)
     assert connection.closed is True
 
 
@@ -232,7 +247,8 @@ async def test_cleanup_deletes_only_the_captured_test_official_preset_uuid(
     lease_query, lease_args = connection.statements[0]
     assert lease_args == ("a", "run-a")
     assert "test_support.slot_leases" in lease_query.lower()
-    query, args = connection.statements[1]
+    assert "clock_timestamp()" in connection.statements[1][0].lower()
+    query, args = connection.statements[2]
     assert args == (preset_id,)
     assert "where id = $1" in query.lower()
     assert "owner_id is null" in query.lower()

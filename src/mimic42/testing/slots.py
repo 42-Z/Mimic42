@@ -3,14 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-import base64
-import binascii
 import contextlib
-import json
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
 from urllib.parse import unquote, urlsplit
 from uuid import UUID
 
@@ -31,29 +27,8 @@ CONNECT_TIMEOUT_SECONDS = 20.0
 PERSONA_KEYS = ("empty", "full", "flow", "twofa", "code")
 
 
-def _jwt_payload(value: str) -> dict[str, Any] | None:
-    """Payload Supabase-ключа, если значение похоже на JWT.
-
-    У service_role/anon ключей ref проекта лежит в claim ``ref`` и в сыром
-    виде подстрокой не встречается — его надо декодировать."""
-    parts = value.split(".")
-    if len(parts) != 3:
-        return None
-    try:
-        padded = parts[1] + "=" * (-len(parts[1]) % 4)
-        payload = json.loads(base64.urlsafe_b64decode(padded))
-    except (ValueError, binascii.Error):
-        return None
-    return payload if isinstance(payload, dict) else None
-
-
 def _project_ref(value: str) -> str | None:
     value = value.strip()
-    payload = _jwt_payload(value)
-    if payload is not None:
-        ref = payload.get("ref")
-        return ref if isinstance(ref, str) else None
-
     try:
         parsed = urlsplit(value)
     except ValueError:
@@ -84,11 +59,11 @@ def _project_ref(value: str) -> str | None:
 def assert_test_project(*values: str | None) -> None:
     """Отказ, если хоть одно значение не опознаётся как проект Mimic42 Dev.
 
-    Allowlist, а не denylist: DSN, адрес и ключи обязаны явно указывать на
-    Dev — проектным hostname, именем пользователя Supabase pooler или claim
-    ``ref`` JWT. Подстрока в пароле или пути не считается идентификатором проекта.
-    Значение без рефа (IP-литерал, кастомный домен, чужой ключ) отвергается
-    целиком, а не проскакивает, как при поиске рефа прода подстрокой.
+    Allowlist, а не denylist: DSN и URL обязаны явно указывать на Dev через
+    проектный hostname или имя пользователя Supabase pooler. Непроверенный JWT
+    не считается доказательством проекта; ref в пароле или пути тоже игнорируется.
+    Значение без распознанного endpoint (IP-литерал, кастомный домен, чужой ключ)
+    отвергается целиком.
 
     Единая точка проверки для всего, что имеет доступ на запись/удаление
     в тестовую базу: pytest-фикстуры, разовые скрипты и тестовый сервер."""
@@ -104,7 +79,7 @@ def assert_test_project(*values: str | None) -> None:
             )
         raise RuntimeError(
             "отказ: значение не опознано как проект Mimic42 Dev "
-            f"(нужен ref {DEV_PROJECT_REF} в строке, домене или JWT-ключе)"
+            f"(нужен host или pooler username проекта {DEV_PROJECT_REF})"
         )
 
 
