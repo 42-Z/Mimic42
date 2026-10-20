@@ -35,13 +35,13 @@ class FakeConnection:
         self,
         *,
         existing: bool = False,
-        lease_active: bool = True,
         lease_expires_at: datetime | None = None,
+        clock_now: datetime | None = None,
         delete_result: str = "DELETE 1",
     ) -> None:
         self.existing = existing
-        self.lease_active = lease_active
         self.lease_expires_at = lease_expires_at or datetime.now(UTC) + timedelta(minutes=1)
+        self.clock_now = clock_now or datetime.now(UTC)
         self.delete_result = delete_result
         self.statements: list[tuple[str, tuple[Any, ...]]] = []
         self.closed = False
@@ -55,7 +55,7 @@ class FakeConnection:
         if "test_support.slot_leases" in lowered_query:
             return self.lease_expires_at
         if "clock_timestamp()" in lowered_query:
-            return self.lease_active
+            return args[0] > self.clock_now
         return self.existing
 
     async def execute(self, query: str, *args: Any) -> str:
@@ -159,12 +159,15 @@ async def test_admin_role_helper_rejects_unknown_slots_and_cross_slot_users_befo
 async def test_admin_role_helper_checks_expiry_after_locking_the_slot_lease(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # The row timestamp can appear valid at transaction start but expire while
-    # waiting on its row lock; the second query must check the live wall clock.
+    transaction_started_at = datetime.now(UTC)
+    lease_expires_at = transaction_started_at + timedelta(seconds=1)
+    clock_after_lock = transaction_started_at + timedelta(seconds=2)
     connection = FakeConnection(
-        lease_active=False,
-        lease_expires_at=datetime.now(UTC) + timedelta(minutes=1),
+        lease_expires_at=lease_expires_at,
+        clock_now=clock_after_lock,
     )
+    assert lease_expires_at > transaction_started_at
+    assert clock_after_lock > lease_expires_at
 
     async def connect(_dsn: str, *, timeout: int) -> FakeConnection:
         return connection
