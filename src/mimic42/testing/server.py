@@ -115,8 +115,6 @@ def _test_settings() -> Settings:
         database_connection_string=database_connection_string,
         supabase_url=supabase_url,
         secret_key=os.environ["SECRET_KEY"],
-        telegram_api_id=int(os.environ.get("TELEGRAM_API_ID", "1")),
-        telegram_api_hash=os.environ.get("TELEGRAM_API_HASH", "test-api-hash"),
         cors_allow_origins=cors_allow_origins,
         # Явно отключает Mem0 и Braintrust: без этого Settings() подхватил бы
         # боевые ключи из .env разработчика, и тесты били бы по настоящим

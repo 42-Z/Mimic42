@@ -295,8 +295,9 @@ def test_admin_without_agents_moderates_and_loses_access_after_revoke(
                     route.fulfill(
                         json={
                             "api_id": 12345,
+                            "api_hash": "synthetic-saved-hash",
                             "has_api_hash": True,
-                            "source": "environment",
+                            "source": "database",
                             "updated_at": None,
                             "updated_by": None,
                         }
@@ -316,6 +317,7 @@ def test_admin_without_agents_moderates_and_loses_access_after_revoke(
                     route.fulfill(
                         json={
                             "api_id": api_id,
+                            "api_hash": api_hash,
                             "has_api_hash": True,
                             "source": "database",
                             "updated_at": "2026-10-19T12:00:00Z",
@@ -330,12 +332,16 @@ def test_admin_without_agents_moderates_and_loses_access_after_revoke(
             page.set_viewport_size({"width": 1440, "height": 1000})
             page.goto("/admin/telegram")
             expect(page.get_by_label("API ID")).to_have_value("12345")
-            expect(page.get_by_label("API HASH")).to_be_empty()
+            expect(page.get_by_label("API HASH")).to_have_value("synthetic-saved-hash")
+            expect(page.get_by_label("API HASH")).to_have_attribute("type", "password")
+            page.get_by_role("button", name="Показать HASH").click()
+            expect(page.get_by_label("API HASH")).to_have_attribute("type", "text")
+            expect(page.get_by_label("API HASH")).to_have_value("synthetic-saved-hash")
             page.get_by_label("API ID").fill("67890")
             page.get_by_label("API HASH").fill("synthetic-route-mocked-hash")
             page.get_by_role("button", name="Сохранить настройки").click()
             expect(page.get_by_text("Настройки Telegram сохранены.")).to_be_visible()
-            expect(page.get_by_label("API HASH")).to_be_empty()
+            expect(page.get_by_label("API HASH")).to_have_value("synthetic-route-mocked-hash")
             assert telegram_writes == [{"api_id": 67890, "api_hash": "synthetic-route-mocked-hash"}]
             _capture(page, "admin-telegram-desktop.png")
 

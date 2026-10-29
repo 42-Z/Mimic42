@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { KeyRound, ShieldCheck } from 'lucide-react';
+import { Eye, EyeOff, KeyRound, ShieldCheck } from 'lucide-react';
 import { useAdminActions, useAdminTelegramSettings } from '@/hooks/useAdmin';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
@@ -22,9 +22,8 @@ function parseTelegramApiId(value: string): number | null {
     : null;
 }
 
-function sourceLabel(source: 'database' | 'environment' | 'unconfigured'): string {
+function sourceLabel(source: 'database' | 'unconfigured'): string {
   if (source === 'database') return 'Настройка платформы';
-  if (source === 'environment') return 'Окружение сервера';
   return 'Не настроено';
 }
 
@@ -35,15 +34,23 @@ export function AdminTelegramSettings() {
   const [apiId, setApiId] = useState('');
   const [apiIdTouched, setApiIdTouched] = useState(false);
   const [apiHash, setApiHash] = useState('');
+  const [showApiHash, setShowApiHash] = useState(false);
   const [saving, setSaving] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const apiIdDirty = useRef(false);
+  const apiHashDirty = useRef(false);
 
   useEffect(() => {
     const serverApiId = settingsQuery.data?.api_id;
     if (serverApiId === undefined || apiIdDirty.current) return;
     setApiId(serverApiId === null ? '' : String(serverApiId));
   }, [settingsQuery.data?.api_id]);
+
+  useEffect(() => {
+    const serverApiHash = settingsQuery.data?.api_hash;
+    if (serverApiHash === undefined || apiHashDirty.current) return;
+    setApiHash(serverApiHash ?? '');
+  }, [settingsQuery.data?.api_hash]);
 
   const parsedApiId = parseTelegramApiId(apiId);
   const apiIdError = !apiIdTouched
@@ -67,12 +74,13 @@ export function AdminTelegramSettings() {
     try {
       const saved = await saveTelegramSettings({ api_id: apiIdValue, api_hash: apiHashValue });
       apiIdDirty.current = false;
+      apiHashDirty.current = false;
       setApiId(saved.api_id === null ? String(apiIdValue) : String(saved.api_id));
+      setApiHash(saved.api_hash ?? apiHashValue);
       toast('Настройки Telegram сохранены.', 'success');
     } catch {
       setSubmitError('Не удалось сохранить настройки. Проверь данные и попробуй снова.');
     } finally {
-      setApiHash('');
       setSaving(false);
     }
   };
@@ -124,9 +132,11 @@ export function AdminTelegramSettings() {
           </Badge>
         </div>
         <p className="text-sm text-muted-foreground">
-          {settings.has_api_hash
-            ? 'Сохранённый HASH не показывается.'
-            : 'Общая пара ещё не настроена.'}
+          {settings.api_hash
+            ? 'Сохранённый HASH подставлен в поле — его можно скрыть или заменить.'
+            : settings.has_api_hash
+              ? 'HASH сохранён, но недоступен для показа. Введи его заново, чтобы заменить пару.'
+              : 'Общая пара ещё не настроена.'}
         </p>
       </header>
 
@@ -159,20 +169,36 @@ export function AdminTelegramSettings() {
           <Field>
             <FieldLabel htmlFor="platform-api-hash">API HASH</FieldLabel>
             <Input
-              autoComplete="new-password"
+              autoComplete="off"
               disabled={saving}
               id="platform-api-hash"
               onChange={(event) => {
+                apiHashDirty.current = true;
                 setApiHash(event.target.value);
                 setSubmitError(null);
               }}
-              placeholder="Введи новый HASH"
+              placeholder="Введи API HASH"
               required
-              type="password"
+              rightElement={
+                <Button
+                  aria-label={showApiHash ? 'Скрыть HASH' : 'Показать HASH'}
+                  onClick={() => setShowApiHash((value) => !value)}
+                  size="icon-sm"
+                  type="button"
+                  variant="ghost"
+                >
+                  {showApiHash ? (
+                    <EyeOff aria-hidden="true" className="h-4 w-4" />
+                  ) : (
+                    <Eye aria-hidden="true" className="h-4 w-4" />
+                  )}
+                </Button>
+              }
+              type={showApiHash ? 'text' : 'password'}
               value={apiHash}
             />
             <FieldDescription>
-              Введи HASH новой пары. Сохранённое значение не показывается.
+              HASH сохранённой пары. Введи новое значение, чтобы заменить его.
             </FieldDescription>
           </Field>
         </FieldGroup>

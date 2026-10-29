@@ -4,7 +4,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any, Literal, Protocol, TypedDict
 from uuid import UUID
 
-from pydantic import BaseModel, SecretStr
+from pydantic import BaseModel, SecretStr, field_serializer
 
 from mimic42.core.agent_runtime import AgentRuntimeState
 
@@ -73,10 +73,17 @@ class AdminPresetDetail(AdminPresetSummary):
 
 class PublicTelegramSettings(BaseModel):
     api_id: int | None
+    # Расшифрованное значение — только для админ-формы. SecretStr маскирует его
+    # в repr и логах; сериализатор отдаёт реальное значение в JSON ответа.
+    api_hash: SecretStr | None = None
     has_api_hash: bool
-    source: Literal["database", "environment", "unconfigured"]
+    source: Literal["database", "unconfigured"]
     updated_at: datetime | None
     updated_by: UUID | None
+
+    @field_serializer("api_hash", when_used="json")
+    def _reveal_api_hash(self, value: SecretStr | None) -> str | None:
+        return value.get_secret_value() if value is not None else None
 
 
 class ActivityCounts(BaseModel):
@@ -141,7 +148,21 @@ class StoredTelegramSettings(BaseModel):
     updated_by: UUID | None
 
 
-class AdminRepository(Protocol):
+class TelegramSettingsStore(Protocol):
+    """Хранилище пары Telegram-приложения — узкий срез AdminRepository."""
+
+    async def read_telegram_settings(self) -> StoredTelegramSettings | None: ...
+
+    async def save_telegram_settings(
+        self,
+        *,
+        api_id: int,
+        api_hash_ciphertext: str,
+        actor_user_id: UUID,
+    ) -> PublicTelegramSettings: ...
+
+
+class AdminRepository(TelegramSettingsStore, Protocol):
     async def is_admin(self, user_id: UUID) -> bool: ...
 
     async def list_users(
@@ -195,18 +216,6 @@ class AdminRepository(Protocol):
         *,
         actor_user_id: UUID,
     ) -> AdminPresetDetail: ...
-
-    async def read_telegram_settings(self) -> StoredTelegramSettings | None: ...
-
-    async def read_telegram_settings_status(self) -> PublicTelegramSettings | None: ...
-
-    async def save_telegram_settings(
-        self,
-        *,
-        api_id: int,
-        api_hash_ciphertext: str,
-        actor_user_id: UUID,
-    ) -> PublicTelegramSettings: ...
 
     async def statistics(
         self,

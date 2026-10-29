@@ -30,7 +30,7 @@
 | --- | --- |
 | `src/mimic42/core/admin.py` | Новые публичные DTO, протокол `AdminRepository`, предметные ошибки и правила публичности пресетов. |
 | `src/mimic42/core/runtime_status.py` | Новая чистая функция согласования сохранённого и текущего состояния; извлечение существующего правила без изменения поведения. |
-| `src/mimic42/core/telegram_app_settings.py` | Новый поставщик эффективной общей пары; plaintext существует только на сервере и не входит в публичные DTO. |
+| `src/mimic42/core/telegram_app_settings.py` | Новый поставщик общей пары: plaintext возвращается только в JSON админского GET/PUT, в repr и `model_dump()` остаётся `SecretStr`. |
 | `src/mimic42/integrations/database_models.py` | ORM-модели `AdminUserModel`, `AdminAuditLogModel`, `PlatformTelegramSettingsModel`, `PromptPresetModel`. |
 | `src/mimic42/integrations/database_admin.py` | Фасад `DatabaseAdminRepository`: роль, профили, пресеты, настройки, аудит; собственная AsyncSession на операцию. |
 | `src/mimic42/integrations/database_admin_statistics.py` | SQL-агрегаты статистики и таблица эффективных состояний для групповых запросов; без HTTP и сериализации секретов. |
@@ -53,7 +53,7 @@
 | `frontend/src/components/admin/AdminPagination.tsx` | Общая доступная постраничная навигация со сбросом страницы при смене поиска. |
 | `frontend/src/components/admin/AdminUsers.tsx` | Поиск и список профилей, раскрытие постраничного списка мимиков выбранного пользователя. |
 | `frontend/src/components/admin/AdminPresets.tsx` | Официальный редактор, порядок и видимость; read-only просмотр пользовательского пресета. |
-| `frontend/src/components/admin/AdminTelegramSettings.tsx` | Форма полной новой пары; HASH только в локальном состоянии компонента. |
+| `frontend/src/components/admin/AdminTelegramSettings.tsx` | Форма пары: API ID и сохранённый HASH, HASH скрыт маской и раскрывается кнопкой. |
 | `frontend/src/components/admin/AdminStatistics.tsx` | KPI, распределение состояний, графики активности, отдельные пожизненные токены. |
 | `frontend/src/app/(dashboard)/admin/layout.tsx` | Общая граница и административная навигация. |
 | `frontend/src/app/(dashboard)/admin/page.tsx` | Тонкий маршрут статистики. |
@@ -136,8 +136,9 @@ class AdminPresetDetail(AdminPresetSummary):
 
 class PublicTelegramSettings(BaseModel):
     api_id: int | None
+    api_hash: SecretStr | None
     has_api_hash: bool
-    source: Literal["database", "environment", "unconfigured"]
+    source: Literal["database", "unconfigured"]
     updated_at: datetime | None
     updated_by: UUID | None
 
@@ -677,7 +678,7 @@ async def set_preset_visibility(self, preset_id: UUID, is_active: bool, *, actor
 **Files:** новый `src/mimic42/core/telegram_app_settings.py`; `src/mimic42/api/admin.py`, `src/mimic42/api/app.py`, `src/mimic42/integrations/database_admin.py`; новые `tests/core/test_telegram_app_settings.py`, `tests/api/test_admin_telegram.py`, `tests/integration/test_admin_telegram.py`; дополнить `tests/api/test_onboarding_api.py`.
 
 - [x] **5.1. Написать проверки поставщика:** нет строки → env; строка есть → сохранённая пара; ошибка чтения/расшифровки → отказ без fallback; полная явно переданная пара не нуждается в чтении defaults; частичное переопределение сохраняет существующий контракт `_resolve_telegram_app`; после записи следующий вход получает новую пару без рестарта.
-- [x] **5.2. Написать проверки API:** GET никогда не возвращает plaintext/ciphertext; без `SECRET_KEY` PUT даёт `503` и ничего не пишет; неверный `api_id` при валидном HASH даёт `422` без HASH в ответе; неверный JSON и лишние поля тоже не отражают body. Проверить `repr` DTO и captured logs.
+- [x] **5.2. Написать проверки API:** GET отдаёт API ID и расшифрованный HASH для формы, но не ciphertext; `SecretStr` маскирует HASH в `repr` и `model_dump()`; без `SECRET_KEY` PUT даёт `503` и ничего не пишет; неверный `api_id` при валидном HASH даёт `422` без HASH в ответе; неверный JSON и лишние поля тоже не отражают body. Проверить `repr` DTO и captured logs.
 - [x] **5.3. Написать DB-проверки на `admin_db_factory`:** HASH расшифровывается исходным тестовым ключом, upsert проверяет вставку и замену, строка id=1 единственна, пара и аудит атомарны. До теста не удалять реальную глобальную строку; её обновление существует только во внешней транзакции с rollback. Команды разделены: настройки проекта по умолчанию исключают `db`-тесты.
 
 ```bash
@@ -701,7 +702,7 @@ async def resolve(self, api_id: int | None, api_hash: str | None) -> tuple[int, 
 
 `_read_defaults()` возвращает внутренний `TelegramAppDefaults(api_id: int | None, api_hash: SecretStr | None)`; при строке из базы расшифровывает её, иначе берёт env. `TelegramAppUnavailableError` определён в том же модуле. Не обновлять объекты `Settings` или глобальную пару в памяти.
 
-- [x] **5.5. Реализовать PUT** через PostgreSQL upsert по singleton PK `id=1` в одной транзакции с `telegram.settings_updated`; хранить только ciphertext. `updated_at` выставлять явно в `ON CONFLICT DO UPDATE`, `updated_by` — UUID зависимости. Метаданные аудита: только `{"credentials_replaced": true}`. GET строить отдельным SELECT публичных колонок плюс признак наличия HASH, без расшифровки для отображения формы.
+- [x] **5.5. Реализовать PUT** через PostgreSQL upsert по singleton PK `id=1` в одной транзакции с `telegram.settings_updated`; хранить только ciphertext. `updated_at` выставлять явно в `ON CONFLICT DO UPDATE`, `updated_by` — UUID зависимости. Метаданные аудита: только `{"credentials_replaced": true}`. GET строить из сохранённой строки с расшифровкой HASH для формы; расшифровка недоступна без `SECRET_KEY`.
 - [x] **5.6. Ограничить очистку ошибок административным router.** Для него использовать `APIRoute.get_route_handler()` и перехват `RequestValidationError`; не копировать пример документации, который логирует тело:
 
 ```python
@@ -895,7 +896,7 @@ async function clearAdminData(client: QueryClient): Promise<void> {
 
 При `403` любого административного запроса или мутации обновить identity до `is_admin:false` и выполнить тот же сброс. При выходе/смене UUID очищать и прежний identity; не очищать только `['admin', newUserId]`, оставляя данные старого. Helper использует существующий `QueryClient` и `queryKeys`, располагается в `hooks/useAdminAccess.ts` и переиспользуется hooks, не копируется по компонентам.
 
-- [x] **8.6. Для read-запросов выставить `enabled` только при подтверждённой роли**, без retry на `401/403`, максимум один retry сетевой/`503` ошибки. Async-действия проверяют роль перед вызовом, не используют мутационный кеш. Пресетные действия инвалидируют `queryKeys.admin.scope(userId)` и `queryKeys.presets.all` только пока вызывающий пользователь не сменился; смена роли сбрасывает admin queries. HASH не используется в query keys, mutation variables, local/sessionStorage, console или devtools.
+- [x] **8.6. Для read-запросов выставить `enabled` только при подтверждённой роли**, без retry на `401/403`, максимум один retry сетевой/`503` ошибки. Async-действия проверяют роль перед вызовом, не используют мутационный кеш. Пресетные действия инвалидируют `queryKeys.admin.scope(userId)` и `queryKeys.presets.all` только пока вызывающий пользователь не сменился; смена роли сбрасывает admin queries. HASH не попадает в query keys, mutation variables, local/sessionStorage, console или devtools.
 - [x] **8.7. Повторить команду 8.3. Результат:** 8 passed; `bun run typecheck` прошёл. Коммит: `feat(admin): add identity-scoped client queries and access revocation`.
 
 ## Этап 9. Оболочка, примитивы и вход без собственного мимика
@@ -978,9 +979,9 @@ const mine = presets.filter((preset) =>
 
 **Files:** `frontend/src/components/admin/AdminTelegramSettings.tsx`, `frontend/src/app/(dashboard)/admin/telegram/page.tsx`; новый `frontend/src/__tests__/admin-telegram-settings.test.tsx`.
 
-- [x] **12.1. Написать проверки формы:** API ID из GET; HASH пуст независимо от `has_api_hash`; ввод новой пары обязателен; повторное сохранение недоступно; успешная операция очищает HASH; ошибка сохраняет API ID, но очищает HASH; `403` закрывает экран. HASH отсутствует в QueryClient и MutationCache после запроса.
+- [x] **12.1. Написать проверки формы:** API ID и HASH приходят из GET; HASH скрыт маской и раскрывается кнопкой с глазом; ввод новой пары заменяет сохранённую; успешная операция показывает сохранённый HASH; ошибка сохраняет введённые значения; `403` закрывает экран. Мутации не попадают в MutationCache.
 - [x] **12.2. Выполнить** `bun test src/__tests__/admin-telegram-settings.test.tsx`: 5 passed.
-- [x] **12.3. Построить форму** на FieldGroup/Field/FieldLabel, существующих Input и Button. API ID использует `inputMode="numeric"` и строгую проверку целого 1–2147483647. HASH — `type="password"`, `autoComplete="new-password"`; сохранение отправляет пару прямым `adminApi.saveTelegramSettings`, без `useMutation`. Во время сохранения Button отключает повтор.
+- [x] **12.3. Построить форму** на FieldGroup/Field/FieldLabel, существующих Input и Button. API ID использует `inputMode="numeric"` и строгую проверку целого 1–2147483647. HASH приходит из GET, по умолчанию `type="password"`, раскрывается кнопкой `Eye`/`EyeOff`; сохранение отправляет пару прямым `adminApi.saveTelegramSettings`, без `useMutation`. Во время сохранения Button отключает повтор.
 
 ```tsx
 <Field>
@@ -994,12 +995,12 @@ const mine = presets.filter((preset) =>
     disabled={saving}
   />
   <FieldDescription>
-    Введи HASH новой пары. Сохранённое значение не показывается.
+    HASH сохранённой пары. Введи новое значение, чтобы заменить его.
   </FieldDescription>
 </Field>
 ```
 
-- [x] **12.4. В обработчике submit** HASH копируется только в аргумент прямого API-вызова и очищается в `finally`. Ошибка получает безопасный общий текст. После успеха запускается инвалидирование публичного query и показывается штатный Toast; повторный GET не задерживает очистку секретного поля. Сохранённая HASH не маскируется фиктивным значением. Под формой есть пояснение о применении пары только к новым подключениям; источник отображается как «Окружение сервера»/«Настройка платформы»/«Не настроено».
+- [x] **12.4. В обработчике submit** HASH копируется в аргумент прямого API-вызова; после успеха поле показывает сохранённое значение из ответа, при ошибке введённые значения сохраняются для повтора. Ошибка получает безопасный общий текст. После успеха запускается инвалидирование публичного query и показывается штатный Toast. Под формой есть пояснение о применении пары только к новым подключениям; источник отображается как «Настройка платформы»/«Не настроено».
 - [x] **12.5. Повторить команду 12.2.** 5 passed, `bun run typecheck` прошёл, Impeccable detector вернул пустой список. Коммит: `feat(admin): add write-only Telegram credentials form`.
 
 ## Этап 13. Экран общей статистики
@@ -1038,7 +1039,7 @@ const mine = presets.filter((preset) =>
 - [x] **14.4. Написать сквозные проверки:** 3 сценария покрывают гостевой redirect, отказ обычной персоне без агентов, доступ выданной персоне без агентов, уникальный официальный fixture-пресет, порядок, hide/unhide, отзыв роли и API `403`; после отзыва также открываются обычный каталог и онбординг. Пресет удаляется только по захваченному UUID и с проверкой синтетического title.
 - [x] **14.5. Общую Telegram-настройку в shared Dev браузером не сохранять.** GET/PUT формы проверяются только route-mocking; в Dev, проде и общих настройках пара не менялась. Скриншот общей статистики также получает синтетические данные через route mock и не содержит агрегаты общей Dev-базы.
 - [x] **14.6. Выполнить только новый браузерный сценарий:** `uv run pytest tests/e2e/test_admin.py -m e2e -W error -q` — 3 passed после финальных review fixes. Перед запуском порты свободны, конкурирующих `next dev`/`next build` не было; E2E использовал существующие `E2E_API_PORT/E2E_APP_PORT` и проверил аренду слота.
-- [x] **14.7. Снять и открыть desktop 1440 и mobile 390** для четырёх подразделов, загрузки/ошибки, длинных данных и прокручиваемых графиков. Снимки ограничены реальным viewport; прокручиваемые dashboard-контейнеры сняты отдельными кадрами. Telegram HASH пуст, статистика синтетическая. Исправлены два дефекта, обнаруженные QA: JSON `null` вместо SQL `NULL` для nullable JSONB-настроек и задерживающая появление графиков анимация. Impeccable detector на изменённых UI-targets вернул `[]`.
+- [x] **14.7. Снять и открыть desktop 1440 и mobile 390** для четырёх подразделов, загрузки/ошибки, длинных данных и прокручиваемых графиков. Снимки ограничены реальным viewport; прокручиваемые dashboard-контейнеры сняты отдельными кадрами. Telegram HASH скрыт маской, статистика синтетическая. Исправлены два дефекта, обнаруженные QA: JSON `null` вместо SQL `NULL` для nullable JSONB-настроек и задерживающая появление графиков анимация. Impeccable detector на изменённых UI-targets вернул `[]`.
 - [x] **14.8. Коммиты:** `test(admin): cover access, moderation, and dashboard workflows`, `fix(testing): bind admin fixtures to dev slot leases` и `test(testing): model lease expiry after row lock`.
 
 ## Этап 15. Документация эксплуатации и передача на локальную проверку
@@ -1046,7 +1047,7 @@ const mine = presets.filter((preset) =>
 **Files:** `README.md` — существующий раздел настройки/эксплуатации; этот план — фактические migration paths и отметки.
 
 - [x] **15.1. Описать назначение/снятие роли в базе**, отдельно от миграций. В README сначала выдаётся запрос `SELECT id, email`; роль вставляется только после ручной проверки UUID, снимается только по UUID. В документации нет реальных email/UUID.
-- [x] **15.2. Описать приоритет credentials:** сохранённая пара → env только при отсутствии строки; HASH не читается через UI; требуется прежний `SECRET_KEY`; существующие сессии не мигрируют. Откат не удаляет таблицы/аудит и не советует удалять строку, а требует явно сохранить известную прежнюю пару.
+- [x] **15.2. Описать credentials:** единственный источник — сохранённая строка в базе; переменные окружения не используются; пока пара не сохранена, новые подключения отвечают `503`; HASH показывается в форме по кнопке; требуется прежний `SECRET_KEY`; существующие сессии не мигрируют. Откат не удаляет таблицы/аудит и требует явно сохранить известную прежнюю пару.
 - [x] **15.3. Передать пользователю локальный адрес `/admin` и способ назначения тестового аккаунта.** В README указан обычный `http://localhost:3000/admin` с учётом фактического порта Next.js; запрос подтверждения работы до PR будет передан отдельно. PR не открыт, push не выполнялся, issue не помечена «Сделано».
 - [x] **15.4. Коммит:** `docs(admin): document access grants and Telegram settings lifecycle`.
 
@@ -1088,7 +1089,7 @@ bun test
 | Пользователи без мимиков, поиск, пагинация, реальные состояния | 6, 10, 14 |
 | Официальные пресеты, скрытие опубликованных, приватность черновиков | 3, 4, 11, 14 |
 | Заморозка избранного, сохранение авторских прав и обновление кешей | 3, 4, 8, 11 |
-| Шифрование пары, write-only HASH, безопасные ошибки и аудит | 1, 4, 5, 12 |
+| Шифрование пары, показ HASH по запросу, безопасные ошибки и аудит | 1, 4, 5, 12 |
 | Новые defaults без рестарта; старые сессии не меняются | 5, 14, 15 |
 | UTC-графики, пожизненные токены, отсутствие JOIN-дублирования | 7, 13 |
 | Адаптивный UI, загрузка/пустота/ошибка, работа без собственного агента | 9–14 |

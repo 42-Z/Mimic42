@@ -176,20 +176,6 @@ class FakeAdminRepository:
             raise self.telegram_settings_error
         return self.telegram_settings
 
-    async def read_telegram_settings_status(self) -> PublicTelegramSettings | None:
-        self.telegram_calls.append(("status", {}))
-        if self.telegram_settings_error is not None:
-            raise self.telegram_settings_error
-        if self.telegram_settings is None:
-            return None
-        return PublicTelegramSettings(
-            api_id=self.telegram_settings.api_id,
-            has_api_hash=True,
-            source="database",
-            updated_at=self.telegram_settings.updated_at,
-            updated_by=self.telegram_settings.updated_by,
-        )
-
     async def save_telegram_settings(
         self,
         *,

@@ -193,6 +193,7 @@ describe('admin access boundary state', () => {
       saved.push(values);
       return {
         api_id: values.api_id,
+        api_hash: values.api_hash,
         has_api_hash: true,
         source: 'database',
         updated_at: null,
@@ -203,8 +204,9 @@ describe('admin access boundary state', () => {
     const telegramKey = queryKeys.admin.telegram(userA);
     view.queryClient.setQueryData(telegramKey, {
       api_id: 1,
+      api_hash: null,
       has_api_hash: true,
-      source: 'environment',
+      source: 'database',
       updated_at: null,
       updated_by: null,
     });

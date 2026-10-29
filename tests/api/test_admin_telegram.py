@@ -30,8 +30,6 @@ def _settings(*, secret_key: str | None = None) -> Settings:
         supabase_url=None,
         supabase_service_key=None,
         secret_key=secret_key,
-        telegram_api_id=777,
-        telegram_api_hash="environment-hash",
     )
 
 
@@ -46,7 +44,6 @@ def _app(
         FernetSecretCipher(app_settings.secret_key) if app_settings.secret_key is not None else None
     )
     provider = TelegramAppSettings(
-        settings=app_settings,
         repository=cast(AdminRepository, repository),
         cipher=cipher,
     )
@@ -59,7 +56,7 @@ def _app(
 
 
 @pytest.mark.asyncio
-async def test_get_returns_only_public_telegram_settings_and_disables_caching() -> None:
+async def test_get_shows_saved_pair_for_the_admin_form_and_disables_caching() -> None:
     admin_id = uuid4()
     api_hash = "database-secret-hash"
     key = Fernet.generate_key().decode()
@@ -84,10 +81,12 @@ async def test_get_returns_only_public_telegram_settings_and_disables_caching() 
     stored = repository.telegram_settings
     assert stored is not None
     assert result["api_id"] == 42
+    assert result["api_hash"] == api_hash
     assert result["has_api_hash"] is True
     assert result["source"] == "database"
     assert set(result) == {
         "api_id",
+        "api_hash",
         "has_api_hash",
         "source",
         "updated_at",
@@ -97,7 +96,6 @@ async def test_get_returns_only_public_telegram_settings_and_disables_caching() 
         stored.updated_at
     )
     assert result["updated_by"] == str(admin_id)
-    assert api_hash not in response.text
     assert stored.api_hash_ciphertext.get_secret_value() not in response.text
 
 
@@ -160,7 +158,7 @@ async def test_invalid_requests_do_not_echo_hashes_or_log_request_bodies(
 
 
 @pytest.mark.asyncio
-async def test_put_encrypts_secret_and_returns_only_public_status() -> None:
+async def test_put_encrypts_secret_and_returns_the_saved_value() -> None:
     admin_id = uuid4()
     api_hash = "replacement-private-hash"
     key = Fernet.generate_key().decode()
@@ -178,9 +176,9 @@ async def test_put_encrypts_secret_and_returns_only_public_status() -> None:
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-store"
     assert response.json()["api_id"] == 4242
+    assert response.json()["api_hash"] == api_hash
     assert response.json()["has_api_hash"] is True
     assert response.json()["source"] == "database"
-    assert api_hash not in response.text
     stored = repository.telegram_settings
     assert stored is not None
     ciphertext = stored.api_hash_ciphertext.get_secret_value()

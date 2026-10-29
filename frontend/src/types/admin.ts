@@ -70,8 +70,9 @@ export interface UpdateAdminPreset {
 
 export interface PublicTelegramSettings {
   api_id: number | null;
+  api_hash: string | null;
   has_api_hash: boolean;
-  source: 'database' | 'environment' | 'unconfigured';
+  source: 'database' | 'unconfigured';
   updated_at: string | null;
   updated_by: string | null;
 }

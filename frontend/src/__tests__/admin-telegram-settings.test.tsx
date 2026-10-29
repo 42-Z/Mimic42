@@ -11,6 +11,7 @@ import type { PublicTelegramSettings, SaveTelegramSettings } from '@/types/admin
 const adminId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const publicSettings: PublicTelegramSettings = {
   api_id: 12345,
+  api_hash: 'saved-api-hash',
   has_api_hash: true,
   source: 'database',
   updated_at: '2026-10-18T12:00:00Z',
@@ -92,6 +93,7 @@ beforeEach(() => {
     settingsResult = {
       ...publicSettings,
       api_id: values.api_id,
+      api_hash: values.api_hash,
       updated_at: '2026-10-19T12:00:00Z',
     };
     return settingsResult;
@@ -115,22 +117,23 @@ afterEach(() => {
 const { AdminTelegramSettings } = await import('@/components/admin/AdminTelegramSettings');
 
 describe('AdminTelegramSettings', () => {
-  test('loads API ID while never populating HASH from the public response', async () => {
+  test('loads the saved pair and keeps HASH masked until the eye is pressed', async () => {
     renderSettings();
 
     expect((await screen.findByLabelText('API ID') as HTMLInputElement).value).toBe('12345');
     const hash = screen.getByLabelText('API HASH') as HTMLInputElement;
     expect(hash.type).toBe('password');
-    expect(hash.autocomplete).toBe('new-password');
-    expect(hash.value).toBe('');
+    expect(hash.value).toBe('saved-api-hash');
     expect(screen.getByText('Настройка платформы')).toBeTruthy();
-    expect((screen.getByRole('button', { name: 'Сохранить настройки' }) as HTMLButtonElement).disabled).toBe(
-      true,
-    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Показать HASH' }));
+    expect(hash.type).toBe('text');
+    fireEvent.click(screen.getByRole('button', { name: 'Скрыть HASH' }));
+    expect(hash.type).toBe('password');
   });
 
-  test('requires a strict positive integer API ID and a new HASH', async () => {
-    settingsResult = { ...publicSettings, api_id: null, has_api_hash: true };
+  test('requires a strict positive integer API ID and a non-empty HASH', async () => {
+    settingsResult = { ...publicSettings, api_id: null, has_api_hash: false, api_hash: null };
     renderSettings();
     const apiId = (await screen.findByLabelText('API ID')) as HTMLInputElement;
     const apiHash = screen.getByLabelText('API HASH');
@@ -147,7 +150,7 @@ describe('AdminTelegramSettings', () => {
     expect(saveCalls).toEqual([]);
   });
 
-  test('writes directly, clears HASH after success, and keeps secrets out of React Query caches', async () => {
+  test('writes directly, shows the saved HASH, and keeps mutations out of the cache', async () => {
     let resolveSave: ((value: PublicTelegramSettings) => void) | undefined;
     saveImplementation = (values) =>
       new Promise<PublicTelegramSettings>((resolve) => {
@@ -167,18 +170,15 @@ describe('AdminTelegramSettings', () => {
     expect((screen.getByRole('button', { name: 'Сохраняю…' }) as HTMLButtonElement).disabled).toBe(true);
     expect(apiHash.value).toBe('new-api-hash');
 
-    resolveSave?.({ ...publicSettings, api_id: 45678 });
+    resolveSave?.({ ...publicSettings, api_id: 45678, api_hash: 'new-api-hash' });
     expect(await screen.findByText('Настройки Telegram сохранены.')).toBeTruthy();
     expect((screen.getByLabelText('API ID') as HTMLInputElement).value).toBe('45678');
-    expect((screen.getByLabelText('API HASH') as HTMLInputElement).value).toBe('');
+    expect((screen.getByLabelText('API HASH') as HTMLInputElement).value).toBe('new-api-hash');
     expect(queryClient.getMutationCache().getAll()).toEqual([]);
-    expect(JSON.stringify(queryClient.getQueryCache().getAll().map((query) => query.state.data))).not.toContain(
-      'new-api-hash',
-    );
     await waitFor(() => expect(settingsCalls).toBeGreaterThan(1));
   });
 
-  test('failure retains API ID, clears HASH, and shows only a safe message', async () => {
+  test('failure retains API ID and HASH and shows only a safe message', async () => {
     saveImplementation = async () => {
       throw { status: 503, message: 'secret echoed by transport' };
     };
@@ -192,7 +192,7 @@ describe('AdminTelegramSettings', () => {
     expect(await screen.findByRole('alert')).toBeTruthy();
     expect(screen.getByRole('alert').textContent).not.toContain('secret echoed by transport');
     expect((screen.getByLabelText('API ID') as HTMLInputElement).value).toBe('789');
-    expect((screen.getByLabelText('API HASH') as HTMLInputElement).value).toBe('');
+    expect((screen.getByLabelText('API HASH') as HTMLInputElement).value).toBe('temporary-hash');
   });
 
   test('a 403 revokes admin access and unmounts the secret field', async () => {

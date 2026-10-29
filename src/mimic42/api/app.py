@@ -151,8 +151,6 @@ class WarmupStateResponse(BaseModel):
 class CreateAgentRequest(BaseModel):
     agent_id: UUID = Field(default_factory=uuid4)
     telegram_session_string: str | None = Field(default=None, min_length=1)
-    telegram_api_id: int | None = Field(default=None, gt=0)
-    telegram_api_hash: str | None = Field(default=None, min_length=1)
     soul_prompt: str = Field(default="", max_length=20_000)
     auto_start: bool = False
 
@@ -189,8 +187,6 @@ class ContextResetResult(BaseModel):
 
 
 class TelegramLoginRequest(BaseModel):
-    api_id: int | None = Field(default=None, gt=0)
-    api_hash: str | None = Field(default=None, min_length=1)
     phone_number: str = Field(min_length=5)
     onboarding_id: UUID | None = None
 
@@ -245,11 +241,9 @@ def _get_telegram_app_settings(app: FastAPI) -> TelegramAppSettings:
 
 async def _resolve_telegram_app(
     provider: TelegramAppSettings,
-    api_id: int | None,
-    api_hash: str | None,
 ) -> tuple[int, str]:
     try:
-        return await provider.resolve(api_id, api_hash)
+        return await provider.resolve()
     except TelegramAppUnavailableError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -286,7 +280,7 @@ def _telegram_login_http_error(exc: Exception) -> HTTPException | None:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
                 "Telegram отклонил приложение сервера: "
-                "неверная комбинация TELEGRAM_API_ID и TELEGRAM_API_HASH."
+                "неверная пара API ID и API HASH. Проверьте её в админ-панели."
             ),
         )
     if isinstance(exc, ApiIdPublishedFloodError):
@@ -294,7 +288,7 @@ def _telegram_login_http_error(exc: Exception) -> HTTPException | None:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=(
                 "Telegram заблокировал приложение сервера как опубликованное. "
-                "Замените TELEGRAM_API_ID и TELEGRAM_API_HASH."
+                "Сохраните другую пару API ID и API HASH в админ-панели."
             ),
         )
     if isinstance(exc, PhoneNumberBannedError):
@@ -348,7 +342,6 @@ def create_app(
     app_settings = settings or Settings()
     app_telegram_factory = telegram_factory or TelethonAuthClientFactory()
     app_telegram_app_settings = telegram_app_settings or TelegramAppSettings(
-        settings=app_settings,
         repository=admin_repository,
         cipher=_telegram_settings_cipher(app_settings),
     )
@@ -445,7 +438,6 @@ def create_app(
 
             if telegram_app_settings is None:
                 app.state.telegram_app_settings = TelegramAppSettings(
-                    settings=app_settings,
                     repository=getattr(app.state, "admin_repository", None),
                     cipher=_telegram_settings_cipher(app_settings),
                 )
@@ -587,8 +579,6 @@ def create_app(
     ) -> OnboardingPublicStatus:
         api_id, api_hash = await _resolve_telegram_app(
             _get_telegram_app_settings(app),
-            payload.api_id,
-            payload.api_hash,
         )
         credentials = TelegramCredentials(
             owner_id=current_user.user_id,
@@ -898,8 +888,6 @@ def create_app(
     ) -> AgentStatus:
         api_id, api_hash = await _resolve_telegram_app(
             _get_telegram_app_settings(app),
-            payload.telegram_api_id,
-            payload.telegram_api_hash,
         )
         try:
             manager_for_request = _get_agent_manager(app)

@@ -27,7 +27,7 @@ from mimic42.core.telegram_app_settings import TelegramAppSettings
 from mimic42.testing.telegram import FakeTelegramAccount, FakeTelegramAuthClientFactory
 from tests.api.admin_fakes import FakeAdminRepository
 from tests.api.auth_helpers import AUTH_HEADERS, FakeAuthVerifier
-from tests.api.fakes import FakeAgentManager
+from tests.api.fakes import FakeAgentManager, configured_telegram_app
 
 
 def test_telegram_login_value_error_does_not_expose_internal_message() -> None:
@@ -50,7 +50,11 @@ async def test_onboarding_creates_login_flow_verifies_code_and_finalizes_agent()
         telegram_factory=FakeTelegramAuthClientFactory(FakeTelegramAccount()),
     )
     owner_id = uuid4()
-    app = create_app(onboarding_service=service, auth_verifier=FakeAuthVerifier(owner_id))
+    app = create_app(
+        onboarding_service=service,
+        auth_verifier=FakeAuthVerifier(owner_id),
+        telegram_app_settings=configured_telegram_app(12345, "api-hash"),
+    )
 
     async with AsyncClient(
         transport=ASGITransport(app=app),
@@ -60,8 +64,6 @@ async def test_onboarding_creates_login_flow_verifies_code_and_finalizes_agent()
             "/api/v1/onboarding/telegram",
             headers=AUTH_HEADERS,
             json={
-                "api_id": 12345,
-                "api_hash": "api-hash",
                 "phone_number": "+79990000000",
             },
         )
@@ -99,7 +101,7 @@ async def test_onboarding_creates_login_flow_verifies_code_and_finalizes_agent()
 
 
 @pytest.mark.asyncio
-async def test_onboarding_uses_deployment_telegram_app_when_none_supplied() -> None:
+async def test_onboarding_uses_pair_saved_in_admin_panel() -> None:
     factory = FakeTelegramAuthClientFactory(FakeTelegramAccount())
     service = AgentOnboardingService(
         repository=InMemoryOnboardingRepository(),
@@ -109,7 +111,7 @@ async def test_onboarding_uses_deployment_telegram_app_when_none_supplied() -> N
     app = create_app(
         onboarding_service=service,
         auth_verifier=FakeAuthVerifier(owner_id),
-        settings=Settings(telegram_api_id=777, telegram_api_hash="deployment-hash"),
+        telegram_app_settings=configured_telegram_app(777, "deployment-hash"),
     )
 
     async with AsyncClient(
@@ -149,11 +151,8 @@ async def test_onboarding_keeps_old_credentials_while_new_agent_uses_updated_def
         supabase_url=None,
         supabase_service_key=None,
         secret_key=key,
-        telegram_api_id=None,
-        telegram_api_hash=None,
     )
     provider = TelegramAppSettings(
-        settings=settings,
         repository=cast(AdminRepository, repository),
         cipher=cipher,
     )
@@ -224,7 +223,6 @@ async def test_onboarding_fails_when_no_telegram_app_configured() -> None:
     app = create_app(
         onboarding_service=service,
         auth_verifier=FakeAuthVerifier(uuid4()),
-        settings=Settings(telegram_api_id=None, telegram_api_hash=None),
     )
 
     async with AsyncClient(
@@ -238,7 +236,7 @@ async def test_onboarding_fails_when_no_telegram_app_configured() -> None:
         )
 
     assert response.status_code == 503
-    assert "TELEGRAM_API_ID" in response.json()["detail"]
+    assert "не настроено" in response.json()["detail"]
 
 
 @pytest.mark.asyncio
@@ -265,7 +263,7 @@ async def test_onboarding_cannot_replace_a_completed_agents_telegram_account() -
     app = create_app(
         onboarding_service=service,
         auth_verifier=FakeAuthVerifier(owner_id),
-        settings=Settings(telegram_api_id=777, telegram_api_hash="deployment-hash"),
+        telegram_app_settings=configured_telegram_app(),
     )
 
     async with AsyncClient(
@@ -316,7 +314,7 @@ async def test_verify_code_reports_phone_without_telegram_account() -> None:
     app = create_app(
         onboarding_service=service,
         auth_verifier=FakeAuthVerifier(uuid4()),
-        settings=Settings(telegram_api_id=777, telegram_api_hash="deployment-hash"),
+        telegram_app_settings=configured_telegram_app(),
     )
 
     async with AsyncClient(

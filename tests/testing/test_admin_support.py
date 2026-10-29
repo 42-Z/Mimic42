@@ -71,8 +71,6 @@ def _fake_app_settings() -> Settings:
         database_connection_string=DEV_DSN,
         supabase_url=DEV_URL,
         secret_key="test-only-secret",
-        telegram_api_id=1,
-        telegram_api_hash="test-only-hash",
         mem0_api_key=None,
         braintrust_api_key=None,
     )

@@ -23,8 +23,6 @@ class Settings(BaseSettings):
     mem0_api_key: str | None = Field(default=None, validation_alias="MEM0_API_KEY")
     openrouter_api_key: str | None = Field(default=None, validation_alias="OPENROUTER_API_KEY")
     secret_key: str | None = Field(default=None, validation_alias="SECRET_KEY")
-    telegram_api_id: int | None = Field(default=None, validation_alias="TELEGRAM_API_ID")
-    telegram_api_hash: str | None = Field(default=None, validation_alias="TELEGRAM_API_HASH")
     braintrust_api_key: str | None = Field(default=None, validation_alias="BRAINTRUST_API_KEY")
     braintrust_project: str = Field(default="Mimic42", validation_alias="BRAINTRUST_PROJECT")
     # Поднимать ли RUNNING-агентов из базы при старте приложения. Тесты

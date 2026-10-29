@@ -294,7 +294,6 @@ export function AdminPresets() {
             <TableBody>
               {list.items.map((preset) => {
                 const isOfficial = preset.owner_id === null;
-                const rowBusy = pendingId === preset.id;
                 return (
                   <TableRow data-testid={`admin-preset-row-${preset.id}`} key={preset.id}>
                     <TableCell className="min-w-64 whitespace-normal">

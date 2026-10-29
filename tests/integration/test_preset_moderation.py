@@ -6,10 +6,12 @@ import asyncio
 import contextlib
 import json
 from collections.abc import AsyncIterator
+from typing import Any
 from uuid import UUID, uuid4
 
 import asyncpg
 import pytest
+from asyncpg.transaction import Transaction
 
 from mimic42.testing.slots import Slot, plain_dsn
 
@@ -31,7 +33,7 @@ async def _create_preset(
     title: str,
     summary: str,
     body: str,
-    settings: dict[str, object] | None = None,
+    settings: dict[str, Any] | None = None,
     is_active: bool = True,
     is_published: bool = True,
 ) -> UUID:
@@ -409,7 +411,7 @@ async def test_concurrent_favorite_then_hide_leaves_no_live_hidden_reference(
     favorite_connection: asyncpg.Connection | None = None
     hide_connection: asyncpg.Connection | None = None
     observer: asyncpg.Connection | None = None
-    favorite_transaction: asyncpg.Transaction | None = None
+    favorite_transaction: Transaction | None = None
     hide_task: asyncio.Task[str] | None = None
     favorite_id: UUID | None = None
     try:

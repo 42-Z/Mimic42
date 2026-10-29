@@ -58,10 +58,6 @@ The current `.env` names used by the backend are:
 - `OPENROUTER_API_KEY` for model access.
 - `MEM0_API_KEY` for long-term memory integration.
 - `SECRET_KEY` for encrypting Telegram session strings before database storage.
-- `TELEGRAM_API_ID` and `TELEGRAM_API_HASH` for the Telegram application every agent logs in
-  through. Onboarding asks the user only for a phone number; these values are the deployment-wide
-  default, and requests may still override them per agent. Without them, onboarding answers
-  `503`.
 
 Generate `SECRET_KEY` with:
 
@@ -114,19 +110,17 @@ its dev server.
 
 ### Telegram application credentials
 
-The shared Telegram application pair is resolved from the saved database row first. Server
-environment variables `TELEGRAM_API_ID` and `TELEGRAM_API_HASH` are used only when no saved row
-exists. A database read or decryption failure is an error, not a reason to fall back to the
-environment. The HASH is encrypted with `SECRET_KEY`; keep that key available and unchanged across
-API restarts and replicas. The admin form is write-only: it shows whether a HASH exists, never its
-saved or encrypted value.
+The shared Telegram application pair lives only in `public.platform_telegram_settings` and is
+managed from `/admin/telegram`. The backend never reads the pair from environment variables: until
+an administrator saves one, onboarding and agent creation answer `503` and the panel marks the pair
+as unconfigured. The HASH is encrypted with `SECRET_KEY`; keep that key available and unchanged
+across API restarts and replicas. The admin form loads the saved API ID and HASH, masks the HASH by
+default and reveals it on demand.
 
-Changing the shared pair affects new Telegram connections that use platform defaults (including
-new onboarding and rebinds); a complete per-agent override still takes precedence. Existing agent
-sessions keep their current credentials and are not migrated. If the application is rolled back, do
-not drop the settings or audit tables and do not delete the saved row to force an environment
-fallback. Restore a previous pair by explicitly saving its known API ID and HASH in the admin form;
-a saved HASH cannot be recovered from that form or from the status API.
+Changing the shared pair affects new Telegram connections (including new onboarding and rebinds).
+Existing agent sessions keep their current credentials and are not migrated. If the application is
+rolled back, do not drop the settings or audit tables and do not delete the saved row. Restore a
+previous pair by explicitly saving its known API ID and HASH in the admin form.
 
 ## Tracing (Braintrust)
 

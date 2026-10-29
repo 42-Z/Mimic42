@@ -87,9 +87,10 @@ describe('adminApi', () => {
     expect(getSession).toHaveBeenCalledTimes(1);
   });
 
-  test('writes go directly through the shared API client without storing the HASH', async () => {
+  test('writes go directly through the shared API client and return the saved HASH', async () => {
     const publicResponse = {
       api_id: 12345,
+      api_hash: 'sensitive-api-hash',
       has_api_hash: true,
       source: 'database' as const,
       updated_at: '2026-10-19T10:00:00Z',
@@ -111,8 +112,7 @@ describe('adminApi', () => {
       api_id: 12345,
       api_hash: apiHash,
     });
-    expect(result).not.toHaveProperty('api_hash');
-    expect(JSON.stringify(result)).not.toContain(apiHash);
+    expect(result.api_hash).toBe(apiHash);
   });
 
   test('maps every read route under the admin API and passes cancellation signals', async () => {

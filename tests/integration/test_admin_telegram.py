@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from mimic42.core.admin import AdminUnavailableError
 from mimic42.core.crypto import FernetSecretCipher
+from mimic42.core.telegram_app_settings import TelegramAppSettings
 from mimic42.integrations.database_admin import DatabaseAdminRepository
 from mimic42.integrations.database_models import AdminAuditLogModel, PlatformTelegramSettingsModel
 from mimic42.testing.slots import Slot
@@ -71,7 +72,7 @@ async def test_telegram_settings_upsert_encrypts_hash_and_audits_atomically(
     )
 
     stored = await repository.read_telegram_settings()
-    public_status = await repository.read_telegram_settings_status()
+    public_status = await TelegramAppSettings(repository=repository, cipher=cipher).status()
     async with admin_db_factory() as session:
         audit = await session.scalar(
             select(AdminAuditLogModel)
@@ -92,9 +93,12 @@ async def test_telegram_settings_upsert_encrypts_hash_and_audits_atomically(
     assert cipher.decrypt(stored.api_hash_ciphertext.get_secret_value()) == replacement_hash
     assert public_status is not None
     assert public_status.api_id == 5252
+    assert public_status.api_hash is not None
+    assert public_status.api_hash.get_secret_value() == replacement_hash
     assert public_status.has_api_hash is True
     assert set(public_status.model_dump()) == {
         "api_id",
+        "api_hash",
         "has_api_hash",
         "source",
         "updated_at",

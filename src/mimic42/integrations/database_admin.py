@@ -310,30 +310,6 @@ class DatabaseAdminRepository:
             updated_by=row.updated_by,
         )
 
-    async def read_telegram_settings_status(self) -> PublicTelegramSettings | None:
-        try:
-            async with self._session_factory() as session:
-                row = (
-                    await session.execute(
-                        select(
-                            PlatformTelegramSettingsModel.api_id,
-                            PlatformTelegramSettingsModel.updated_at,
-                            PlatformTelegramSettingsModel.updated_by,
-                        ).where(PlatformTelegramSettingsModel.id == 1)
-                    )
-                ).one_or_none()
-        except SQLAlchemyError:
-            raise AdminUnavailableError("Administrative storage is unavailable") from None
-        if row is None:
-            return None
-        return PublicTelegramSettings(
-            api_id=row.api_id,
-            has_api_hash=True,
-            source="database",
-            updated_at=row.updated_at,
-            updated_by=row.updated_by,
-        )
-
     async def save_telegram_settings(
         self,
         *,
