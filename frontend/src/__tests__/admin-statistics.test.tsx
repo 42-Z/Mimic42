@@ -59,7 +59,10 @@ mock.module('recharts', () => ({
   Bar: ChartElement,
   BarChart: ChartWrapper,
   CartesianGrid: ChartElement,
+  Cell: ChartElement,
   Legend: ChartElement,
+  Pie: ChartElement,
+  PieChart: ChartWrapper,
   ResponsiveContainer: ChartWrapper,
   Tooltip: ChartElement,
   XAxis: ChartElement,
@@ -101,15 +104,16 @@ const { AdminStatistics } = await import('@/components/admin/AdminStatistics');
 describe('AdminStatistics', () => {
   test('period selection changes the user-scoped query and ignores an empty single-toggle value', async () => {
     const { queryClient } = renderStatistics();
-    expect((await screen.findByTestId('stat-users')).textContent).toContain('4');
+    expect(await screen.findByTestId('states-chart')).toBeTruthy();
+    expect(screen.getByTestId('stat-agents').textContent).toBe('3');
+    expect(screen.getByLabelText('Распределение мимиков по состояниям')).toBeTruthy();
     expect(calls).toEqual([7]);
-    expect(screen.getByTestId('stat-errors').textContent).toBe('0');
     expect(
       queryClient.getQueryData<AdminStatistics>(queryKeys.admin.statistics(adminId, 7))?.period_days,
     ).toBe(7);
 
     fireEvent.click(screen.getByRole('radio', { name: '30 дней' }));
-    expect((await screen.findByTestId('stat-messages')).textContent).toContain('30');
+    expect((await screen.findByText(/За период: 30 сообщений/)).textContent).toContain('30');
     await waitFor(() => expect(calls).toEqual([7, 30]));
     expect(
       queryClient.getQueryData<AdminStatistics>(queryKeys.admin.statistics(adminId, 30))?.period_days,
@@ -126,6 +130,7 @@ describe('AdminStatistics', () => {
     expect(await screen.findByText('Токены за всё время')).toBeTruthy();
     expect(screen.getByTestId('stat-input-tokens').textContent?.replace(/\s/g, '')).toBe('1200');
     expect(screen.getByTestId('stat-output-tokens').textContent).toBe('340');
+    expect(screen.queryByText('Всего')).toBeNull();
     expect(screen.getByTestId('utc-range').textContent).toContain('UTC');
     expect(screen.getByText('Текущий день неполный')).toBeTruthy();
     expect(screen.getByLabelText('Текстовая сводка активности по дням')).toBeTruthy();
@@ -143,9 +148,10 @@ describe('AdminStatistics', () => {
         daily: statistics(days).daily.map((day) => ({ ...day, messages: 0, actions: 0, errors: 0 })),
       });
     renderStatistics();
-    expect((await screen.findByTestId('stat-users')).textContent).toContain('0');
-    expect(screen.getByTestId('stat-agents').textContent).toBe('0');
-    expect(screen.getByTestId('stat-errors').textContent).toBe('0');
+    expect(await screen.findByText('Мимиков пока нет.')).toBeTruthy();
+    expect(screen.getByTestId('stat-input-tokens').textContent).toBe('0');
+    expect(screen.getByTestId('stat-output-tokens').textContent).toBe('0');
+    expect(screen.getByText(/За период: 0 ошибок/)).toBeTruthy();
   });
 
   test('does not convert a failed statistics response into zeros or an empty chart', async () => {
@@ -155,7 +161,7 @@ describe('AdminStatistics', () => {
     renderStatistics();
 
     expect((await screen.findByRole('alert')).textContent).toContain('Не удалось загрузить статистику');
-    expect(screen.queryByTestId('stat-users')).toBeNull();
+    expect(screen.queryByTestId('states-chart')).toBeNull();
     expect(screen.queryByTestId('activity-chart')).toBeNull();
     expect(screen.getByRole('alert').textContent).not.toContain('private statistics failure');
   });

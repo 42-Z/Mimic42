@@ -7,7 +7,10 @@ import {
   Bar,
   BarChart,
   CartesianGrid,
+  Cell,
   Legend,
+  Pie,
+  PieChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -23,6 +26,22 @@ import type { AgentState } from '@/types';
 import type { AdminStatistics as AdminStatisticsData } from '@/types/admin';
 
 const STATE_ORDER: AgentState[] = ['running', 'starting', 'stopping', 'stopped', 'draft', 'error'];
+const STATE_LABELS: Record<AgentState, string> = {
+  running: 'Активен',
+  starting: 'Запуск',
+  stopping: 'Остановка',
+  stopped: 'Остановлен',
+  draft: 'Черновик',
+  error: 'Ошибка',
+};
+const STATE_COLORS: Record<AgentState, string> = {
+  running: 'rgb(var(--success))',
+  starting: 'rgb(var(--primary))',
+  stopping: 'rgb(var(--warning))',
+  stopped: 'rgb(var(--muted-foreground) / 0.55)',
+  draft: 'rgb(var(--muted-foreground) / 0.28)',
+  error: 'rgb(var(--destructive))',
+};
 const NUMBER_FORMAT = new Intl.NumberFormat('ru-RU');
 const TOOLTIP_STYLE: CSSProperties = {
   backgroundColor: 'rgb(var(--popover))',
@@ -40,6 +59,19 @@ const TICK_STYLE = {
 
 function formatCount(value: number): string {
   return NUMBER_FORMAT.format(value);
+}
+
+function plural(value: number, forms: [one: string, few: string, many: string]): string {
+  const abs = Math.abs(value) % 100;
+  if (abs > 10 && abs < 20) return forms[2];
+  const last = abs % 10;
+  if (last === 1) return forms[0];
+  if (last >= 2 && last <= 4) return forms[1];
+  return forms[2];
+}
+
+function counted(value: number, forms: [one: string, few: string, many: string]): string {
+  return `${formatCount(value)} ${plural(value, forms)}`;
 }
 
 function parseUtcDate(value: string): Date {
@@ -67,58 +99,105 @@ function formatDay(value: string): string {
   }).format(date);
 }
 
-function StatCard({
-  label,
-  value,
-  testId,
-  detail,
+function StateDistribution({
+  states,
+  total,
 }: {
-  label: string;
-  value: number;
-  testId: string;
-  detail?: string;
+  states: Partial<Record<AgentState, number>>;
+  total: number;
 }) {
-  return (
-    <Card className="min-w-0" padding="md">
-      <p className="font-mono text-xs text-muted-foreground">{label}</p>
-      <p className="mt-2 font-display text-2xl font-semibold tabular-nums text-foreground" data-testid={testId}>
-        {formatCount(value)}
-      </p>
-      {detail && <p className="mt-1 text-xs text-muted-foreground">{detail}</p>}
-    </Card>
-  );
-}
-
-function StateDistribution({ states }: { states: Partial<Record<AgentState, number>> }) {
   const populated = STATE_ORDER.flatMap((state) => {
+    // eslint-disable-next-line security/detect-object-injection -- key is typed AgentState union, not user input
     const count = states[state] ?? 0;
-    return count > 0 ? [{ state, count }] : [];
+    // eslint-disable-next-line security/detect-object-injection -- key is typed AgentState union, not user input
+    return count > 0 ? [{ state, count, label: STATE_LABELS[state] }] : [];
   });
 
   if (populated.length === 0) {
     return <p className="text-sm text-muted-foreground">Мимиков пока нет.</p>;
   }
 
+  const single = populated.length === 1 ? populated[0] : null;
+
   return (
-    <ul aria-label="Распределение мимиков по состояниям" className="flex flex-wrap gap-2">
-      {populated.map(({ state, count }) => (
-        <li className="inline-flex items-center gap-1.5" key={state}>
-          <AgentStatusBadge size="sm" state={state} />
-          <span className="font-mono text-xs tabular-nums text-muted-foreground">×{count}</span>
-        </li>
-      ))}
-    </ul>
+    <div className="flex flex-col items-center justify-center gap-5 sm:flex-row">
+      <div
+        aria-hidden="true"
+        className="relative h-52 w-full max-w-52 shrink-0"
+        data-testid="states-chart"
+      >
+        {single ? (
+          <div
+            aria-hidden="true"
+            className="absolute inset-2 rounded-full border-[30px]"
+            // eslint-disable-next-line security/detect-object-injection -- key is typed AgentState union, not user input
+            style={{ borderColor: STATE_COLORS[single.state] }}
+          />
+        ) : (
+          <ResponsiveContainer height="100%" width="100%">
+            <PieChart>
+              <Pie
+                data={populated}
+                dataKey="count"
+                innerRadius="62%"
+                isAnimationActive={false}
+                nameKey="label"
+                outerRadius="92%"
+                paddingAngle={2}
+                stroke="none"
+              >
+                {populated.map(({ state }) => {
+                  // eslint-disable-next-line security/detect-object-injection -- key is typed AgentState union, not user input
+                  return <Cell fill={STATE_COLORS[state]} key={state} />;
+                })}
+              </Pie>
+              <Tooltip
+                contentStyle={TOOLTIP_STYLE}
+                formatter={(value) => formatCount(Number(value))}
+              />
+            </PieChart>
+          </ResponsiveContainer>
+        )}
+        <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
+          <span
+            className="font-display text-2xl font-semibold tabular-nums text-foreground"
+            data-testid="stat-agents"
+          >
+            {formatCount(total)}
+          </span>
+          <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
+            мимиков
+          </span>
+        </div>
+      </div>
+
+      <ul
+        aria-label="Распределение мимиков по состояниям"
+        className="flex w-full min-w-0 max-w-48 flex-col gap-2"
+      >
+        {populated.map(({ state, count, label }) => (
+          <li
+            aria-label={`${label}: ${formatCount(count)}`}
+            className="flex items-center justify-between gap-3 border-b border-border/50 pb-1.5 last:border-0 last:pb-0"
+            key={state}
+          >
+            <AgentStatusBadge size="sm" state={state} />
+            <span className="font-mono text-xs tabular-nums text-foreground">
+              {formatCount(count)}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
 function StatisticsSkeleton() {
   return (
     <div aria-label="Загружаем статистику" aria-busy="true" className="space-y-6" role="status">
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <Skeleton className="h-24" />
-        <Skeleton className="h-24" />
-        <Skeleton className="h-24" />
-        <Skeleton className="h-24" />
+      <div className="grid gap-5 xl:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)]">
+        <Skeleton className="h-80" />
+        <Skeleton className="h-80" />
       </div>
       <div className="grid gap-5 xl:grid-cols-2">
         <Skeleton className="h-80" />
@@ -189,46 +268,34 @@ export function AdminStatistics() {
             </p>
           </div>
 
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-        <StatCard label="Пользователи" value={data.users} testId="stat-users" />
-        <StatCard label="Мимики" value={data.agents} testId="stat-agents" />
-        <StatCard label="Сообщения за период" value={data.totals.messages} testId="stat-messages" />
-        <StatCard label="Действия за период" value={data.totals.actions} testId="stat-actions" />
-        <StatCard label="Ошибки за период" value={data.totals.errors} testId="stat-errors" />
-          </div>
-
-          <div className="grid min-w-0 gap-5 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+          <div className="grid min-w-0 gap-5 xl:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)]">
             <Card className="min-w-0" padding="md">
               <div className="mb-4 flex flex-wrap items-baseline justify-between gap-2">
                 <h3 className="font-mono text-sm font-medium text-foreground">Мимики по состояниям</h3>
                 <span className="font-mono text-xs text-muted-foreground">Сейчас</span>
               </div>
-              <StateDistribution states={data.states} />
+              <StateDistribution states={data.states} total={data.agents} />
             </Card>
 
-            <Card className="min-w-0" padding="md">
+            <Card className="flex min-w-0 flex-col" padding="md">
               <div className="mb-4 flex flex-wrap items-baseline justify-between gap-2">
                 <h3 className="font-mono text-sm font-medium text-foreground">Токены за всё время</h3>
                 <span className="font-mono text-xs text-muted-foreground">Не зависят от периода</span>
               </div>
-              <div className="grid gap-4 sm:grid-cols-3">
-                <div>
-                  <p className="font-mono text-xs text-muted-foreground">Входные</p>
-                  <p className="mt-1 font-display text-xl font-semibold tabular-nums text-primary" data-testid="stat-input-tokens">
-                    {formatCount(data.input_tokens)}
-                  </p>
-                </div>
-                <div>
-                  <p className="font-mono text-xs text-muted-foreground">Выходные</p>
-                  <p className="mt-1 font-display text-xl font-semibold tabular-nums text-success" data-testid="stat-output-tokens">
-                    {formatCount(data.output_tokens)}
-                  </p>
-                </div>
-                <div>
-                  <p className="font-mono text-xs text-muted-foreground">Всего</p>
-                  <p className="mt-1 font-display text-xl font-semibold tabular-nums text-foreground" data-testid="stat-total-tokens">
-                    {formatCount(data.input_tokens + data.output_tokens)}
-                  </p>
+              <div className="flex flex-1 items-center">
+                <div className="grid w-full gap-6 sm:grid-cols-2">
+                  <div>
+                    <p className="font-mono text-xs text-muted-foreground">Входные</p>
+                    <p className="mt-1 font-display text-2xl font-semibold tabular-nums text-primary" data-testid="stat-input-tokens">
+                      {formatCount(data.input_tokens)}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="font-mono text-xs text-muted-foreground">Выходные</p>
+                    <p className="mt-1 font-display text-2xl font-semibold tabular-nums text-success" data-testid="stat-output-tokens">
+                      {formatCount(data.output_tokens)}
+                    </p>
+                  </div>
                 </div>
               </div>
             </Card>
@@ -253,7 +320,12 @@ function DailyActivityChart({
 }) {
   const summaryId = `admin-activity-summary-${days}`;
   const summary = data
-    .map((day) => `${formatUtcDate(`${day.date}T00:00:00Z`)}: ${formatCount(day.messages)} сообщений, ${formatCount(day.actions)} действий`)
+    .map(
+      (day) =>
+        `${formatUtcDate(`${day.date}T00:00:00Z`)}: ` +
+        `${counted(day.messages, ['сообщение', 'сообщения', 'сообщений'])}, ` +
+        `${counted(day.actions, ['действие', 'действия', 'действий'])}`,
+    )
     .join('; ');
 
   return (
@@ -266,8 +338,17 @@ function DailyActivityChart({
           <span className="font-mono text-xs text-muted-foreground">{days} дней · UTC</span>
         </figcaption>
         <p className="mb-3 text-xs text-muted-foreground" id={summaryId}>
-          За период: {formatCount(data.reduce((total, day) => total + day.messages, 0))} сообщений и{' '}
-          {formatCount(data.reduce((total, day) => total + day.actions, 0))} действий.
+          За период:{' '}
+          {counted(
+            data.reduce((total, day) => total + day.messages, 0),
+            ['сообщение', 'сообщения', 'сообщений'],
+          )}{' '}
+          и{' '}
+          {counted(
+            data.reduce((total, day) => total + day.actions, 0),
+            ['действие', 'действия', 'действий'],
+          )}
+          .
         </p>
         {data.length === 0 ? (
           <p className="text-sm text-muted-foreground">Нет данных за выбранный период.</p>
@@ -371,7 +452,7 @@ function DailyErrorsChart({
           <span className="font-mono text-xs text-muted-foreground">{days} дней · UTC</span>
         </figcaption>
         <p className="mb-3 text-xs text-muted-foreground">
-          За период: {formatCount(totalErrors)} ошибок.
+          За период: {counted(totalErrors, ['ошибка', 'ошибки', 'ошибок'])}.
         </p>
         {data.length === 0 ? (
           <p className="text-sm text-muted-foreground">Нет данных за выбранный период.</p>
@@ -403,7 +484,13 @@ function DailyErrorsChart({
           </div>
         )}
         <p className="sr-only" data-testid="errors-text-summary" id={`admin-errors-summary-${days}`}>
-          {data.map((day) => `${formatUtcDate(`${day.date}T00:00:00Z`)}: ${formatCount(day.errors)} ошибок`).join('; ')}
+          {data
+            .map(
+              (day) =>
+                `${formatUtcDate(`${day.date}T00:00:00Z`)}: ` +
+                counted(day.errors, ['ошибка', 'ошибки', 'ошибок']),
+            )
+            .join('; ')}
         </p>
       </figure>
     </Card>
