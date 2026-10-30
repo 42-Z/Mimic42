@@ -47,7 +47,9 @@ jobs:
   backend-db:
     name: backend-db
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Полный набор db-тестов уже подходит к 20 минутам и с новыми сценариями
+    # не укладывается в старый лимит. Джоба по-прежнему ограничена явно.
+    timeout-minutes: 30
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     concurrency:
       group: mimic42-dev-testdb
