@@ -8,6 +8,7 @@ import { clearAdminData, retryAdminQuery, useAdminAccess } from '@/hooks/useAdmi
 import type { ApiError } from '@/types';
 import type {
   AdminPresetKind,
+  AdminProxyImportInput,
   AdminProxyInput,
   CreateAdminPreset,
   SaveTelegramSettings,
@@ -224,6 +225,10 @@ export function useAdminActions() {
       }),
     createProxy: (values: AdminProxyInput) =>
       execute(() => adminApi.createProxy(values), async (ownerId) => {
+        await queryClient.invalidateQueries({ queryKey: queryKeys.admin.scope(ownerId) });
+      }),
+    importProxies: (values: AdminProxyImportInput) =>
+      execute(() => adminApi.importProxies(values), async (ownerId) => {
         await queryClient.invalidateQueries({ queryKey: queryKeys.admin.scope(ownerId) });
       }),
     updateProxy: (proxyId: string, values: UpdateAdminProxy) =>

@@ -42,10 +42,17 @@ from mimic42.core.admin import (
     PresetCreateValues,
     PresetPatchValues,
     ProxyCreateValues,
+    ProxyImportResult,
     ProxyPatchValues,
     PublicTelegramSettings,
 )
 from mimic42.core.agent_runtime import AgentRuntimeState
+from mimic42.core.proxy_import import (
+    MAX_PROXY_IMPORT_TEXT,
+    normalize_proxy_host,
+    normalize_proxy_label,
+    parse_proxy_file,
+)
 from mimic42.core.telegram_app_settings import TelegramAppSettings
 from mimic42.core.telegram_proxy import TelegramProxyCheckResult
 from mimic42.integrations.telegram_proxy_check import check_telegram_proxy
@@ -130,15 +137,6 @@ class TelegramSettingsRequest(BaseModel):
         return value
 
 
-def _validated_proxy_host(value: str) -> str:
-    host = value.strip()
-    if not host:
-        raise ValueError("Адрес прокси не может быть пустым")
-    if "://" in host or "/" in host or any(character.isspace() for character in host):
-        raise ValueError("Укажите только хост без схемы, слешей и пробелов")
-    return host
-
-
 def _optional_proxy_username(value: str | None) -> str | None:
     if value is None:
         return None
@@ -155,7 +153,7 @@ def _optional_proxy_password(value: SecretStr | None) -> SecretStr | None:
 class ProxyCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    label: str = Field(min_length=1, max_length=100)
+    label: str | None = Field(default=None, max_length=100)
     protocol: Literal["socks5", "http"]
     host: str = Field(min_length=1, max_length=255)
     port: int = Field(strict=True, ge=1, le=65535)
@@ -165,16 +163,13 @@ class ProxyCreateRequest(BaseModel):
 
     @field_validator("label")
     @classmethod
-    def reject_blank_label(cls, value: str) -> str:
-        label = value.strip()
-        if not label:
-            raise ValueError("Метка не может состоять только из пробелов")
-        return label
+    def normalize_label(cls, value: str | None) -> str | None:
+        return normalize_proxy_label(value)
 
     @field_validator("host")
     @classmethod
     def validate_host(cls, value: str) -> str:
-        return _validated_proxy_host(value)
+        return normalize_proxy_host(value)
 
     @field_validator("username")
     @classmethod
@@ -196,7 +191,7 @@ class ProxyCreateRequest(BaseModel):
 class ProxyPatchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    label: str | None = Field(default=None, min_length=1, max_length=100)
+    label: str | None = Field(default=None, max_length=100)
     protocol: Literal["socks5", "http"] | None = None
     host: str | None = Field(default=None, min_length=1, max_length=255)
     port: int | None = Field(default=None, strict=True, ge=1, le=65535)
@@ -204,25 +199,17 @@ class ProxyPatchRequest(BaseModel):
     password: SecretStr | None = Field(default=None, max_length=512)
     is_active: bool | None = Field(default=None, strict=True)
 
-    @field_validator("label", "host")
-    @classmethod
-    def reject_null_text(cls, value: str | None) -> str:
-        if value is None:
-            raise ValueError("Поле не может быть null")
-        return value
-
     @field_validator("label")
     @classmethod
-    def reject_blank_label(cls, value: str) -> str:
-        label = value.strip()
-        if not label:
-            raise ValueError("Метка не может состоять только из пробелов")
-        return label
+    def normalize_label(cls, value: str | None) -> str | None:
+        return normalize_proxy_label(value)
 
     @field_validator("host")
     @classmethod
-    def validate_host(cls, value: str) -> str:
-        return _validated_proxy_host(value)
+    def reject_null_host(cls, value: str | None) -> str:
+        if value is None:
+            raise ValueError("Поле не может быть null")
+        return normalize_proxy_host(value)
 
     @field_validator("protocol", "port", "is_active")
     @classmethod
@@ -252,6 +239,14 @@ class ProxyAssignmentRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     proxy_id: UUID | None = None
+
+
+class ProxyImportRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    text: str = Field(min_length=1, max_length=MAX_PROXY_IMPORT_TEXT)
+    protocol: Literal["socks5", "http"] = "socks5"
+    is_active: bool = Field(default=True, strict=True)
 
 
 class AdminRoute(APIRoute):
@@ -470,6 +465,47 @@ async def list_proxies(
 async def list_proxy_options(request: Request) -> list[AdminAgentProxy]:
     repository = _get_admin_repository(request)
     return await _admin_result(repository.list_proxy_options())
+
+
+@router.post("/proxies/import", response_model=ProxyImportResult)
+async def import_proxies(
+    request: Request,
+    values: ProxyImportRequest,
+    current_user: Annotated[CurrentUser, Depends(require_admin)],
+) -> ProxyImportResult:
+    repository = _get_admin_repository(request)
+    parsed = parse_proxy_file(values.text, values.protocol)
+    imported = 0
+    skipped = parsed.skipped
+    errors = list(parsed.errors)
+    for entry in parsed.entries:
+        exists = await _admin_result(
+            repository.proxy_exists(
+                protocol=entry.protocol,
+                host=entry.host,
+                port=entry.port,
+                username=entry.username,
+            )
+        )
+        if exists:
+            skipped += 1
+            continue
+        await _admin_result(
+            repository.create_proxy(
+                ProxyCreateValues(
+                    label=None,
+                    protocol=entry.protocol,
+                    host=entry.host,
+                    port=entry.port,
+                    username=entry.username,
+                    password=entry.password,
+                    is_active=values.is_active,
+                ),
+                actor_user_id=current_user.user_id,
+            )
+        )
+        imported += 1
+    return ProxyImportResult(imported=imported, skipped=skipped, errors=errors)
 
 
 @router.post(

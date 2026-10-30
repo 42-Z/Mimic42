@@ -7,7 +7,7 @@ from uuid import UUID, uuid4
 import asyncpg
 import pytest
 from cryptography.fernet import Fernet
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from mimic42.core.admin import AdminProxyInUseError
@@ -28,6 +28,12 @@ from mimic42.testing.slots import Slot, plain_dsn
 
 def _cipher() -> FernetSecretCipher:
     return FernetSecretCipher(Fernet.generate_key().decode())
+
+
+async def _clear_proxies(factory: async_sessionmaker[Any]) -> None:
+    """В Dev могут быть настоящие прокси: тест живёт в своей транзакции."""
+    async with factory() as session, session.begin():
+        await session.execute(delete(TelegramProxyModel))
 
 
 async def _agent(
@@ -136,6 +142,48 @@ async def test_admin_proxy_crud_encrypts_password_and_audits(
 
 
 @pytest.mark.asyncio
+async def test_proxy_label_is_optional_and_can_be_cleared(
+    admin_db_factory: async_sessionmaker[Any],
+    test_slot: Slot,
+) -> None:
+    actor_id = test_slot.persona("full").user_id
+    repository = DatabaseAdminRepository(admin_db_factory, cipher=_cipher())
+    created = await repository.create_proxy(
+        {
+            "label": None,
+            "protocol": "socks5",
+            "host": "unnamed.example.test",
+            "port": 1080,
+            "username": "mimic",
+            "password": None,
+            "is_active": True,
+        },
+        actor_user_id=actor_id,
+    )
+    assert created.label is None
+    assert await repository.proxy_exists(
+        protocol="socks5",
+        host="unnamed.example.test",
+        port=1080,
+        username="mimic",
+    )
+
+    named = await repository.update_proxy(
+        created.id,
+        {"label": "Рабочий"},
+        actor_user_id=actor_id,
+    )
+    assert named.label == "Рабочий"
+
+    cleared = await repository.update_proxy(
+        created.id,
+        {"label": None},
+        actor_user_id=actor_id,
+    )
+    assert cleared.label is None
+
+
+@pytest.mark.asyncio
 async def test_assigned_proxy_cannot_be_deleted_and_is_visible_on_the_agent(
     admin_db_factory: async_sessionmaker[Any],
     test_slot: Slot,
@@ -195,6 +243,7 @@ async def test_allocation_prefers_the_least_loaded_active_proxy(
     test_slot: Slot,
 ) -> None:
     cipher = _cipher()
+    await _clear_proxies(admin_db_factory)
     repository = DatabaseAdminRepository(admin_db_factory, cipher=cipher)
     actor_id = test_slot.persona("full").user_id
     older = await repository.create_proxy(

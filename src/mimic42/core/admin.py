@@ -4,7 +4,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any, Literal, Protocol, TypedDict
 from uuid import UUID
 
-from pydantic import BaseModel, SecretStr, field_serializer
+from pydantic import BaseModel, Field, SecretStr, field_serializer
 
 from mimic42.core.agent_runtime import AgentRuntimeState, TelegramProxyConfig
 
@@ -64,7 +64,7 @@ class AdminUserSummary(BaseModel):
 
 class AdminAgentProxy(BaseModel):
     id: UUID
-    label: str
+    label: str | None
     protocol: Literal["socks5", "http"]
     host: str
     port: int
@@ -86,7 +86,7 @@ class AdminUserDetail(BaseModel):
 
 class AdminProxySummary(BaseModel):
     id: UUID
-    label: str
+    label: str | None
     protocol: Literal["socks5", "http"]
     host: str
     port: int
@@ -101,6 +101,12 @@ class AdminProxySummary(BaseModel):
 
 class AdminProxyDetail(AdminProxySummary):
     created_by: UUID | None
+
+
+class ProxyImportResult(BaseModel):
+    imported: int
+    skipped: int
+    errors: list[str] = Field(default_factory=list)
 
 
 class AdminPresetSummary(BaseModel):
@@ -185,7 +191,7 @@ class PresetPatchValues(TypedDict, total=False):
 
 
 class ProxyCreateValues(TypedDict):
-    label: str
+    label: str | None
     protocol: Literal["socks5", "http"]
     host: str
     port: int
@@ -195,7 +201,7 @@ class ProxyCreateValues(TypedDict):
 
 
 class ProxyPatchValues(TypedDict, total=False):
-    label: str
+    label: str | None
     protocol: Literal["socks5", "http"]
     host: str
     port: int
@@ -296,6 +302,15 @@ class AdminRepository(TelegramSettingsStore, Protocol):
     async def list_proxy_options(self) -> list[AdminAgentProxy]: ...
 
     async def read_proxy_config(self, proxy_id: UUID) -> TelegramProxyConfig: ...
+
+    async def proxy_exists(
+        self,
+        *,
+        protocol: Literal["socks5", "http"],
+        host: str,
+        port: int,
+        username: str | None,
+    ) -> bool: ...
 
     async def create_proxy(
         self,

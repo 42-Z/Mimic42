@@ -187,6 +187,65 @@ async def test_create_proxy_rejects_password_without_username() -> None:
 
 
 @pytest.mark.asyncio
+async def test_create_proxy_without_a_label_returns_null_label() -> None:
+    admin_id = uuid4()
+    repository = FakeAdminRepository(admin_ids={admin_id})
+    app = _app(admin_id, repository)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/v1/admin/proxies",
+            headers=AUTH_HEADERS,
+            json={
+                "protocol": "socks5",
+                "host": "proxy.example.test",
+                "port": 1080,
+            },
+        )
+
+    assert response.status_code == 201
+    assert response.json()["label"] is None
+    assert repository.proxy_calls[0][1]["values"]["label"] is None
+
+
+@pytest.mark.asyncio
+async def test_import_parses_file_lines_and_skips_existing_proxy() -> None:
+    admin_id = uuid4()
+    existing = _proxy_detail(label="Уже есть")
+    repository = FakeAdminRepository(admin_ids={admin_id}, proxies=[existing])
+    app = _app(admin_id, repository)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/v1/admin/proxies/import",
+            headers=AUTH_HEADERS,
+            json={
+                "text": "\n".join(
+                    [
+                        f"{existing.host}:{existing.port}:{existing.username}:new-password",
+                        "5.6.7.8:3128:second:secret",
+                        "not-a-proxy",
+                    ]
+                ),
+                "protocol": "socks5",
+                "is_active": True,
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "imported": 1,
+        "skipped": 1,
+        "errors": ["Строка 3: Ожидается host:port или host:port:login:password"],
+    }
+    assert "new-password" not in response.text
+    assert "secret" not in response.text
+    created = [call for call in repository.proxy_calls if call[0] == "create"]
+    assert created[0][1]["values"]["label"] is None
+    assert created[0][1]["values"]["password"] == "secret"
+
+
+@pytest.mark.asyncio
 async def test_create_proxy_rejects_an_overlong_password() -> None:
     admin_id = uuid4()
     repository = FakeAdminRepository(admin_ids={admin_id})

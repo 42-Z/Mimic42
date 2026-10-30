@@ -115,6 +115,28 @@ describe('adminApi', () => {
     expect(result.api_hash).toBe(apiHash);
   });
 
+  test('posts proxy import text to the admin import route', async () => {
+    const requests = useResponseAdapter({ imported: 1, skipped: 0, errors: [] });
+
+    await adminApi.importProxies({
+      text: '1.2.3.4:1080:user:pass',
+      protocol: 'socks5',
+      is_active: true,
+    });
+    record(requests);
+
+    expect(captured[0]).toMatchObject({
+      method: 'post',
+      url: '/admin/proxies/import',
+      authorization: 'Bearer admin-api-test-token',
+    });
+    expect(JSON.parse(String(captured[0]?.data))).toEqual({
+      text: '1.2.3.4:1080:user:pass',
+      protocol: 'socks5',
+      is_active: true,
+    });
+  });
+
   test('maps every read route under the admin API and passes cancellation signals', async () => {
     const requests = useResponseAdapter({});
     const signal = new AbortController().signal;

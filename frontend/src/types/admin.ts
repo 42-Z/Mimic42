@@ -25,7 +25,7 @@ export type AdminProxyProtocol = 'socks5' | 'http';
 
 export interface AdminAgentProxy {
   id: string;
-  label: string;
+  label: string | null;
   protocol: AdminProxyProtocol;
   host: string;
   port: number;
@@ -42,7 +42,7 @@ export interface AdminAgentSummary {
 
 export interface AdminProxySummary {
   id: string;
-  label: string;
+  label: string | null;
   protocol: AdminProxyProtocol;
   host: string;
   port: number;
@@ -60,7 +60,7 @@ export interface AdminProxyDetail extends AdminProxySummary {
 }
 
 export interface AdminProxyInput {
-  label: string;
+  label?: string | null;
   protocol: AdminProxyProtocol;
   host: string;
   port: number;
@@ -70,7 +70,7 @@ export interface AdminProxyInput {
 }
 
 export interface UpdateAdminProxy {
-  label?: string;
+  label?: string | null;
   protocol?: AdminProxyProtocol;
   host?: string;
   port?: number;
@@ -83,6 +83,18 @@ export interface AdminProxyCheckResult {
   ok: boolean;
   latency_ms: number | null;
   error: string | null;
+}
+
+export interface AdminProxyImportInput {
+  text: string;
+  protocol: AdminProxyProtocol;
+  is_active: boolean;
+}
+
+export interface AdminProxyImportResult {
+  imported: number;
+  skipped: number;
+  errors: string[];
 }
 
 export interface AdminUserDetail {

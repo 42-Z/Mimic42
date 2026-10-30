@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Network, Pencil, Plus, Radar, Trash2 } from 'lucide-react';
+import { Network, Pencil, Plus, Radar, Trash2, Upload } from 'lucide-react';
 import { useAdminActions, useAdminProxies } from '@/hooks/useAdmin';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
@@ -14,7 +14,7 @@ import {
   EmptyTitle,
 } from '@/components/ui/empty';
 import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui/field';
-import { Input } from '@/components/ui/input';
+import { Input, Textarea } from '@/components/ui/input';
 import { ConfirmDialog, Modal } from '@/components/ui/modal';
 import { Skeleton } from '@/components/ui/card';
 import { Switch } from '@/components/ui/switch';
@@ -31,9 +31,10 @@ import { AdminPagination } from '@/components/admin/AdminPagination';
 import { useToast } from '@/components/ui/toast';
 import type { ApiError } from '@/types';
 import type {
+  AdminProxyImportResult,
+  AdminProxyInput,
   AdminProxyProtocol,
   AdminProxySummary,
-  AdminProxyInput,
   UpdateAdminProxy,
 } from '@/types/admin';
 
@@ -95,8 +96,11 @@ function updatedDate(value: string): string {
   }).format(parsed);
 }
 
+function proxyName(proxy: { label: string | null; host: string; port: number }): string {
+  return proxy.label?.trim() || `${proxy.host}:${proxy.port}`;
+}
+
 function validateForm(form: FormState, editing: AdminProxySummary | null): string | null {
-  if (!form.label.trim()) return 'Укажите название прокси.';
   if (!form.host.trim()) return 'Укажите адрес прокси.';
   if (/[\s/]/.test(form.host.trim()) || form.host.includes('://')) {
     return 'Укажите только хост без схемы, слешей и пробелов.';
@@ -134,6 +138,14 @@ export function AdminProxies() {
   const [deleteTarget, setDeleteTarget] = useState<AdminProxySummary | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [checkingId, setCheckingId] = useState<string | null>(null);
+  const [importOpen, setImportOpen] = useState(false);
+  const [importText, setImportText] = useState('');
+  const [importProtocol, setImportProtocol] = useState<AdminProxyProtocol>('socks5');
+  const [importActive, setImportActive] = useState(true);
+  const [importFileName, setImportFileName] = useState<string | null>(null);
+  const [importing, setImporting] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
+  const [importResult, setImportResult] = useState<AdminProxyImportResult | null>(null);
 
   const listQuery = useAdminProxies(page, PAGE_SIZE);
   const actions = useAdminActions();
@@ -154,10 +166,65 @@ export function AdminProxies() {
     setEditorOpen(true);
   };
 
+  const openImport = () => {
+    setImportText('');
+    setImportFileName(null);
+    setImportProtocol('socks5');
+    setImportActive(true);
+    setImportError(null);
+    setImportResult(null);
+    setImportOpen(true);
+  };
+
+  const readImportFile = async (file: File | undefined) => {
+    if (!file) return;
+    if (file.size > 200_000) {
+      setImportError('Файл больше 200 КБ.');
+      return;
+    }
+    try {
+      setImportText(await file.text());
+      setImportFileName(file.name);
+      setImportError(null);
+    } catch {
+      setImportError('Не удалось прочитать файл.');
+    }
+  };
+
+  const submitImport = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (importing) return;
+    if (!importText.trim()) {
+      setImportError('Выберите файл или вставьте содержимое.');
+      return;
+    }
+    setImporting(true);
+    setImportError(null);
+    try {
+      const result = await actions.importProxies({
+        text: importText,
+        protocol: importProtocol,
+        is_active: importActive,
+      });
+      setImportResult(result);
+      setImportOpen(false);
+      toast(
+        `Импорт завершён: добавлено ${result.imported}, пропущено ${result.skipped}.`,
+        result.imported > 0 ? 'success' : 'warning',
+      );
+    } catch (error) {
+      setImportError(
+        apiErrorText(error, 'Не удалось импортировать прокси. Проверьте файл.'),
+      );
+    } finally {
+      setImporting(false);
+    }
+  };
+
   const openEdit = (proxy: AdminProxySummary) => {
     setEditing(proxy);
     setForm({
-      label: proxy.label,
+      label: proxy.label ?? '',
       protocol: proxy.protocol,
       host: proxy.host,
       port: String(proxy.port),
@@ -199,7 +266,7 @@ export function AdminProxies() {
     try {
       if (editing) {
         const patch: UpdateAdminProxy = {
-          label: form.label.trim(),
+          label: form.label.trim() || null,
           protocol: form.protocol,
           host: form.host.trim(),
           port,
@@ -211,7 +278,7 @@ export function AdminProxies() {
         toast('Прокси сохранён.', 'success');
       } else {
         const values: AdminProxyInput = {
-          label: form.label.trim(),
+          label: form.label.trim() || null,
           protocol: form.protocol,
           host: form.host.trim(),
           port,
@@ -301,10 +368,16 @@ export function AdminProxies() {
             автоматически, вручную его можно заменить или снять.
           </p>
         </div>
-        <Button onClick={openCreate} size="sm">
-          <Plus aria-hidden="true" className="h-4 w-4" />
-          Новый прокси
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button onClick={openImport} size="sm" variant="outline">
+            <Upload aria-hidden="true" className="h-4 w-4" />
+            Импортировать
+          </Button>
+          <Button onClick={openCreate} size="sm">
+            <Plus aria-hidden="true" className="h-4 w-4" />
+            Новый прокси
+          </Button>
+        </div>
       </header>
 
       {actionError && (
@@ -316,6 +389,33 @@ export function AdminProxies() {
             <Button
               className="mt-3"
               onClick={() => setActionError(null)}
+              size="sm"
+              variant="outline"
+            >
+              Закрыть
+            </Button>
+          </div>
+        </Alert>
+      )}
+
+      {importResult && (
+        <Alert variant={importResult.errors.length > 0 ? 'destructive' : 'default'}>
+          <Upload aria-hidden="true" />
+          <div className="min-w-0">
+            <AlertTitle>Импорт прокси</AlertTitle>
+            <AlertDescription>
+              Добавлено: {importResult.imported}. Пропущено: {importResult.skipped}.
+              {importResult.errors.length > 0 && (
+                <ul className="mt-2 flex list-disc flex-col gap-1 pl-5 font-mono text-xs">
+                  {importResult.errors.slice(0, 10).map((error, index) => (
+                    <li key={`${index}-${error}`}>{error}</li>
+                  ))}
+                </ul>
+              )}
+            </AlertDescription>
+            <Button
+              className="mt-3"
+              onClick={() => setImportResult(null)}
               size="sm"
               variant="outline"
             >
@@ -374,7 +474,7 @@ export function AdminProxies() {
               {list.items.map((proxy) => (
                 <TableRow key={proxy.id}>
                   <TableCell className="max-w-56 whitespace-normal break-words font-medium">
-                    {proxy.label}
+                    {proxyName(proxy)}
                   </TableCell>
                   <TableCell>
                     <Badge variant="outline">{protocolLabel(proxy.protocol)}</Badge>
@@ -401,7 +501,7 @@ export function AdminProxies() {
                   <TableCell>
                     <div className="flex items-center gap-1">
                       <Button
-                        aria-label={`Проверить прокси ${proxy.label}`}
+                        aria-label={`Проверить прокси ${proxyName(proxy)}`}
                         disabled={checkingId !== null}
                         isLoading={checkingId === proxy.id}
                         onClick={() => void checkProxy(proxy)}
@@ -412,7 +512,7 @@ export function AdminProxies() {
                         <Radar aria-hidden="true" className="h-4 w-4" />
                       </Button>
                       <Button
-                        aria-label={`Изменить прокси ${proxy.label}`}
+                        aria-label={`Изменить прокси ${proxyName(proxy)}`}
                         onClick={() => openEdit(proxy)}
                         size="icon-sm"
                         title="Изменить"
@@ -421,7 +521,7 @@ export function AdminProxies() {
                         <Pencil aria-hidden="true" className="h-4 w-4" />
                       </Button>
                       <Button
-                        aria-label={`Удалить прокси ${proxy.label}`}
+                        aria-label={`Удалить прокси ${proxyName(proxy)}`}
                         onClick={() => setDeleteTarget(proxy)}
                         size="icon-sm"
                         title="Удалить"
@@ -466,10 +566,12 @@ export function AdminProxies() {
                 id="proxy-label"
                 maxLength={100}
                 onChange={(event) => setField('label', event.target.value)}
-                placeholder="Например, основной SOCKS5"
-                required
+                placeholder="Необязательно"
                 value={form.label}
               />
+              <FieldDescription>
+                Если не заполнить, в списке будет показан адрес прокси.
+              </FieldDescription>
             </Field>
 
             <div className="grid gap-4 sm:grid-cols-2">
@@ -588,6 +690,110 @@ export function AdminProxies() {
         </form>
       </Modal>
 
+      <Modal
+        className="max-h-[90dvh] overflow-y-auto"
+        description="Файл .txt: host:port:login:password, host:port или socks5://login:password@host:port."
+        isOpen={importOpen}
+        onClose={() => {
+          if (!importing) setImportOpen(false);
+        }}
+        size="lg"
+        title="Импорт прокси"
+      >
+        <form className="flex flex-col gap-5" onSubmit={(event) => void submitImport(event)}>
+          <FieldGroup>
+            <Field>
+              <FieldLabel htmlFor="proxy-import-file">Файл</FieldLabel>
+              <Input
+                accept=".txt,text/plain"
+                disabled={importing}
+                id="proxy-import-file"
+                key={importOpen ? 'import-open' : 'import-closed'}
+                onChange={(event) => void readImportFile(event.target.files?.[0])}
+                type="file"
+              />
+              <FieldDescription>
+                {importFileName
+                  ? `Выбран файл: ${importFileName}`
+                  : 'Можно выбрать файл или вставить строки ниже.'}
+              </FieldDescription>
+            </Field>
+
+            <Field>
+              <FieldLabel htmlFor="proxy-import-text">Содержимое</FieldLabel>
+              <Textarea
+                disabled={importing}
+                id="proxy-import-text"
+                maxLength={200_000}
+                onChange={(event) => {
+                  setImportText(event.target.value);
+                  setImportError(null);
+                }}
+                placeholder={'1.2.3.4:1080:login:password\n5.6.7.8:3128'}
+                rows={7}
+                value={importText}
+              />
+              <FieldDescription>
+                По одному прокси на строку. Пустые строки и строки с # пропускаются.
+              </FieldDescription>
+            </Field>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field>
+                <FieldLabel id="proxy-import-protocol-label">Протокол</FieldLabel>
+                <ToggleGroup
+                  aria-labelledby="proxy-import-protocol-label"
+                  disabled={importing}
+                  onValueChange={(value) => {
+                    if (value === 'socks5' || value === 'http') setImportProtocol(value);
+                  }}
+                  type="single"
+                  value={importProtocol}
+                  variant="outline"
+                >
+                  <ToggleGroupItem value="socks5">SOCKS5</ToggleGroupItem>
+                  <ToggleGroupItem value="http">HTTP</ToggleGroupItem>
+                </ToggleGroup>
+              </Field>
+
+              <Field orientation="horizontal">
+                <Switch
+                  checked={importActive}
+                  disabled={importing}
+                  label="Импортируемые прокси активны"
+                  onChange={setImportActive}
+                />
+                <div className="flex flex-col gap-0.5">
+                  <FieldLabel>Активны</FieldLabel>
+                  <FieldDescription>Новые мимики смогут их получить.</FieldDescription>
+                </div>
+              </Field>
+            </div>
+          </FieldGroup>
+
+          {importError && (
+            <Alert variant="destructive">
+              <AlertTitle>Импорт не выполнен</AlertTitle>
+              <AlertDescription>{importError}</AlertDescription>
+            </Alert>
+          )}
+
+          <div className="flex flex-wrap justify-end gap-2">
+            <Button
+              disabled={importing}
+              onClick={() => setImportOpen(false)}
+              type="button"
+              variant="ghost"
+            >
+              Отмена
+            </Button>
+            <Button isLoading={importing} type="submit">
+              Импортировать
+            </Button>
+          </div>
+        </form>
+      </Modal>
+
       <ConfirmDialog
         confirmLabel="Удалить"
         description="Свободный прокси исчезнет из пула. Занятый прокси удалить нельзя."
@@ -597,7 +803,7 @@ export function AdminProxies() {
           if (!deleting) setDeleteTarget(null);
         }}
         onConfirm={() => void confirmDelete()}
-        title={`Удалить «${deleteTarget?.label ?? ''}»?`}
+        title={`Удалить «${deleteTarget ? proxyName(deleteTarget) : ''}»?`}
         variant="danger"
       />
     </section>

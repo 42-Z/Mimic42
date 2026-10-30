@@ -113,7 +113,7 @@ class TelegramProxyModel(Base):
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
-    label: Mapped[str] = mapped_column(Text)
+    label: Mapped[str | None] = mapped_column(Text)
     protocol: Mapped[str] = mapped_column(Text)
     host: Mapped[str] = mapped_column(Text)
     port: Mapped[int] = mapped_column(Integer)

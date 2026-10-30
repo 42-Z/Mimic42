@@ -173,6 +173,10 @@ function UserRow({
   );
 }
 
+function proxyName(proxy: AdminAgentProxy): string {
+  return proxy.label?.trim() || `${proxy.host}:${proxy.port}`;
+}
+
 function UserAgentsTable({
   agents,
   proxyOptions,
@@ -224,7 +228,8 @@ function UserAgentsTable({
                   <option value="">Без прокси</option>
                   {options.map((proxy) => (
                     <option key={proxy.id} value={proxy.id}>
-                      {proxy.label} · {proxy.protocol.toUpperCase()} · {proxy.host}:{proxy.port}
+                      {proxyName(proxy)} · {proxy.protocol.toUpperCase()}
+                      {proxy.label?.trim() ? ` · ${proxy.host}:${proxy.port}` : ''}
                       {proxy.is_active ? '' : ' · отключён'}
                     </option>
                   ))}

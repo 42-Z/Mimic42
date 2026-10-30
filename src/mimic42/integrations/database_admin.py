@@ -702,6 +702,29 @@ class DatabaseAdminRepository:
         except Exception as exc:
             raise AdminSecretStorageError(str(exc)) from None
 
+    async def proxy_exists(
+        self,
+        *,
+        protocol: Literal["socks5", "http"],
+        host: str,
+        port: int,
+        username: str | None,
+    ) -> bool:
+        conditions = [
+            TelegramProxyModel.protocol == protocol,
+            TelegramProxyModel.host == host,
+            TelegramProxyModel.port == port,
+        ]
+        if username is None:
+            conditions.append(TelegramProxyModel.username.is_(None))
+        else:
+            conditions.append(TelegramProxyModel.username == username)
+        try:
+            async with self._session_factory() as session:
+                return bool(await session.scalar(select(exists().where(*conditions))))
+        except SQLAlchemyError:
+            raise AdminUnavailableError("Administrative storage is unavailable") from None
+
     async def create_proxy(
         self,
         values: ProxyCreateValues,

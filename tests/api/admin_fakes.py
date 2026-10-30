@@ -330,6 +330,33 @@ class FakeAdminRepository:
             raise AdminSecretStorageError("Пароль прокси недоступен")
         return config
 
+    async def proxy_exists(
+        self,
+        *,
+        protocol: Literal["socks5", "http"],
+        host: str,
+        port: int,
+        username: str | None,
+    ) -> bool:
+        self.proxy_calls.append(
+            (
+                "exists",
+                {
+                    "protocol": protocol,
+                    "host": host,
+                    "port": port,
+                    "username": username,
+                },
+            )
+        )
+        return any(
+            proxy.protocol == protocol
+            and proxy.host == host
+            and proxy.port == port
+            and proxy.username == username
+            for proxy in self.proxies.values()
+        )
+
     async def create_proxy(
         self,
         values: ProxyCreateValues,

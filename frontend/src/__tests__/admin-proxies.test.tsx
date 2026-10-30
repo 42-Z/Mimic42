@@ -67,11 +67,13 @@ const originalCreate = adminApi.createProxy;
 const originalUpdate = adminApi.updateProxy;
 const originalDelete = adminApi.deleteProxy;
 const originalCheck = adminApi.checkProxy;
+const originalImport = adminApi.importProxies;
 let listCalls: Array<{ page: number; page_size?: number }>;
 let createCalls: AdminProxyInput[];
 let updateCalls: Array<{ proxyId: string; values: UpdateAdminProxy }>;
 let deleteCalls: string[];
 let checkCalls: string[];
+let importCalls: Array<{ text: string; protocol: string; is_active: boolean }>;
 let loadProxies: () => Promise<AdminPage<AdminProxySummary>>;
 let deleteError: unknown;
 
@@ -81,6 +83,7 @@ beforeEach(() => {
   updateCalls = [];
   deleteCalls = [];
   checkCalls = [];
+  importCalls = [];
   deleteError = null;
   loadProxies = async () => proxyPage([]);
   adminApi.proxies = async (params) => {
@@ -104,6 +107,10 @@ beforeEach(() => {
     checkCalls.push(proxyId);
     return { ok: true, latency_ms: 12, error: null };
   };
+  adminApi.importProxies = async (values) => {
+    importCalls.push(values);
+    return { imported: 1, skipped: 0, errors: [] };
+  };
 });
 
 afterEach(() => {
@@ -113,6 +120,7 @@ afterEach(() => {
   adminApi.updateProxy = originalUpdate;
   adminApi.deleteProxy = originalDelete;
   adminApi.checkProxy = originalCheck;
+  adminApi.importProxies = originalImport;
 });
 
 describe('AdminProxies', () => {
@@ -184,6 +192,31 @@ describe('AdminProxies', () => {
     expect(await screen.findByText('Прокси добавлен в пул.')).toBeTruthy();
   });
 
+  test('creates a proxy without a name', async () => {
+    renderProxies();
+    fireEvent.click(await screen.findByRole('button', { name: 'Новый прокси' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Новый прокси' });
+
+    fireEvent.change(within(dialog).getByLabelText('Адрес'), {
+      target: { value: 'proxy.example.test' },
+    });
+    fireEvent.change(within(dialog).getByLabelText('Порт'), { target: { value: '1080' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Добавить' }));
+
+    await waitFor(() =>
+      expect(createCalls).toEqual([
+        {
+          protocol: 'socks5',
+          host: 'proxy.example.test',
+          port: 1080,
+          username: null,
+          is_active: true,
+          label: null,
+        },
+      ]),
+    );
+  });
+
   test('edits a proxy without pre-filling or sending the stored password', async () => {
     loadProxies = async () => proxyPage([proxySummary()]);
     renderProxies();
@@ -248,6 +281,29 @@ describe('AdminProxies', () => {
       ),
     ).toBeTruthy();
     expect(deleteCalls).toEqual([proxySummary().id]);
+  });
+
+  test('imports proxies from pasted file content', async () => {
+    renderProxies();
+    fireEvent.click(await screen.findByRole('button', { name: 'Импортировать' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Импорт прокси' });
+
+    fireEvent.change(within(dialog).getByLabelText('Содержимое'), {
+      target: { value: '1.2.3.4:1080:user:pass' },
+    });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Импортировать' }));
+
+    await waitFor(() =>
+      expect(importCalls).toEqual([
+        {
+          text: '1.2.3.4:1080:user:pass',
+          protocol: 'socks5',
+          is_active: true,
+        },
+      ]),
+    );
+    expect(await screen.findByText('Импорт завершён: добавлено 1, пропущено 0.')).toBeTruthy();
+    expect(await screen.findByText(/Добавлено: 1\. Пропущено: 0\./)).toBeTruthy();
   });
 
   test('reports a successful proxy check', async () => {

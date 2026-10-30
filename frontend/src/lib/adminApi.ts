@@ -8,6 +8,8 @@ import type {
   AdminPresetSummary,
   AdminProxyCheckResult,
   AdminProxyDetail,
+  AdminProxyImportInput,
+  AdminProxyImportResult,
   AdminProxyInput,
   AdminProxySummary,
   AdminStatistics,
@@ -105,6 +107,11 @@ export const adminApi = {
 
   createProxy: (values: AdminProxyInput) =>
     apiClient.post<AdminProxyDetail>('/admin/proxies', values).then((response) => response.data),
+
+  importProxies: (values: AdminProxyImportInput) =>
+    apiClient
+      .post<AdminProxyImportResult>('/admin/proxies/import', values)
+      .then((response) => response.data),
 
   updateProxy: (proxyId: string, values: UpdateAdminProxy) =>
     apiClient
