@@ -2,11 +2,7 @@ import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
 import { createElement, type ReactNode } from 'react';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 
-let pathname = '/admin';
-
-mock.module('next/navigation', () => ({
-  usePathname: () => pathname,
-}));
+import { navigationMock } from './next-navigation-mock';
 
 mock.module('next/link', () => ({
   default: ({ href, children, ...props }: { href: string; children?: ReactNode }) =>
@@ -17,14 +13,14 @@ const { AdminNavigation } = await import('@/components/admin/AdminNavigation');
 const { AdminPagination } = await import('@/components/admin/AdminPagination');
 
 beforeEach(() => {
-  pathname = '/admin';
+  navigationMock.pathname = '/admin';
 });
 
 afterEach(cleanup);
 
 describe('AdminNavigation', () => {
   test('links to all four deep-linked sections and only marks the exact overview route active', () => {
-    pathname = '/admin';
+    navigationMock.pathname = '/admin';
     const { rerender } = render(<AdminNavigation />);
 
     const links = screen.getAllByRole('link');
@@ -37,14 +33,14 @@ describe('AdminNavigation', () => {
     expect(links.filter((link) => link.getAttribute('aria-current') === 'page')).toHaveLength(1);
     expect(links[0]?.getAttribute('aria-current')).toBe('page');
 
-    pathname = '/admin/users/11111111-1111-1111-1111-111111111111';
+    navigationMock.pathname = '/admin/users/11111111-1111-1111-1111-111111111111';
     rerender(<AdminNavigation />);
     expect(screen.getByRole('link', { name: 'Пользователи' }).getAttribute('aria-current')).toBe(
       'page',
     );
     expect(screen.getByRole('link', { name: 'Обзор' }).getAttribute('aria-current')).toBeNull();
 
-    pathname = '/administrator';
+    navigationMock.pathname = '/administrator';
     rerender(<AdminNavigation />);
     expect(screen.getAllByRole('link').every((link) => !link.hasAttribute('aria-current'))).toBe(
       true,

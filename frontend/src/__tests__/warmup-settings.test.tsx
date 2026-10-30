@@ -4,8 +4,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 
-const push = mock(() => {});
-mock.module('next/navigation', () => ({ useRouter: () => ({ push }) }));
+import { navigationMock } from './next-navigation-mock';
 
 import {
   EMPTY_WARMUP,
@@ -78,7 +77,7 @@ describe('WarmupSettingsSection', () => {
 });
 
 describe('WarmupRestrictionNotice', () => {
-  beforeEach(() => push.mockClear());
+  beforeEach(() => navigationMock.push.mockClear());
   afterEach(() => mock.restore());
 
   const restricted: WarmupState = { restricted_at: '2026-10-02T10:00:00+00:00', recovery: false };
@@ -130,7 +129,7 @@ describe('WarmupRestrictionNotice', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Точно удалить агента' }));
     await waitFor(() => expect(remove).toHaveBeenCalledTimes(1));
     expect(remove.mock.calls[0]?.[0]).toBe(AGENT_ID);
-    await waitFor(() => expect(push).toHaveBeenCalledWith('/dashboard'));
+    await waitFor(() => expect(navigationMock.push).toHaveBeenCalledWith('/dashboard'));
   });
 
   test('при уже включённом восстановлении кнопок выбора нет', async () => {
