@@ -108,8 +108,6 @@ def real_app_settings() -> Settings:
         database_connection_string=os.environ["DATABASE_CONNECTION_STRING"],
         supabase_url=os.environ["SUPABASE_URL"],
         secret_key=os.environ["SECRET_KEY"],
-        telegram_api_id=int(os.environ["TELEGRAM_API_ID"]),
-        telegram_api_hash=os.environ["TELEGRAM_API_HASH"],
         mem0_api_key=None,  # Mem0 в тестах не дёргаем
         braintrust_api_key=None,  # и в Braintrust тесты не пишут
         restore_running_agents=False,  # чужие RUNNING-агенты не поднимаем

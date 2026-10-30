@@ -3,14 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-import base64
-import binascii
 import contextlib
-import json
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from urllib.parse import unquote, urlsplit
 from uuid import UUID
 
 import asyncpg
@@ -30,41 +27,43 @@ CONNECT_TIMEOUT_SECONDS = 20.0
 PERSONA_KEYS = ("empty", "full", "flow", "twofa", "code")
 
 
-def _jwt_payload(value: str) -> dict[str, Any] | None:
-    """Payload Supabase-ключа, если значение похоже на JWT.
-
-    У service_role/anon ключей ref проекта лежит в claim ``ref`` и в сыром
-    виде подстрокой не встречается — его надо декодировать."""
-    parts = value.split(".")
-    if len(parts) != 3:
-        return None
-    try:
-        padded = parts[1] + "=" * (-len(parts[1]) % 4)
-        payload = json.loads(base64.urlsafe_b64decode(padded))
-    except (ValueError, binascii.Error):
-        return None
-    return payload if isinstance(payload, dict) else None
-
-
 def _project_ref(value: str) -> str | None:
-    payload = _jwt_payload(value)
-    if payload is not None:
-        ref = payload.get("ref")
-        return ref if isinstance(ref, str) else None
-    if DEV_PROJECT_REF in value:
-        return DEV_PROJECT_REF
-    if PROD_PROJECT_REF in value:
-        return PROD_PROJECT_REF
+    value = value.strip()
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return None
+    host = (parsed.hostname or "").lower()
+    scheme = parsed.scheme.lower()
+
+    if scheme in {"http", "https"}:
+        if host == f"{DEV_PROJECT_REF}.supabase.co":
+            return DEV_PROJECT_REF
+        if host == f"{PROD_PROJECT_REF}.supabase.co":
+            return PROD_PROJECT_REF
+        return None
+
+    if scheme in {"postgres", "postgresql", "postgresql+asyncpg"}:
+        if host == f"db.{DEV_PROJECT_REF}.supabase.co":
+            return DEV_PROJECT_REF
+        if host == f"db.{PROD_PROJECT_REF}.supabase.co":
+            return PROD_PROJECT_REF
+        if host.endswith(".pooler.supabase.com"):
+            username = unquote(parsed.username or "")
+            ref = username.rsplit(".", 1)[-1]
+            if ref in {DEV_PROJECT_REF, PROD_PROJECT_REF}:
+                return ref
     return None
 
 
 def assert_test_project(*values: str | None) -> None:
     """Отказ, если хоть одно значение не опознаётся как проект Mimic42 Dev.
 
-    Allowlist, а не denylist: DSN, адрес и ключи обязаны явно указывать на
-    Dev — рефом в строке подключения, в домене или в claim ``ref`` JWT.
-    Значение без рефа (IP-литерал, кастомный домен, чужой ключ) отвергается
-    целиком, а не проскакивает, как при поиске рефа прода подстрокой.
+    Allowlist, а не denylist: DSN и URL обязаны явно указывать на Dev через
+    проектный hostname или имя пользователя Supabase pooler. Непроверенный JWT
+    не считается доказательством проекта; ref в пароле или пути тоже игнорируется.
+    Значение без распознанного endpoint (IP-литерал, кастомный домен, чужой ключ)
+    отвергается целиком.
 
     Единая точка проверки для всего, что имеет доступ на запись/удаление
     в тестовую базу: pytest-фикстуры, разовые скрипты и тестовый сервер."""
@@ -80,7 +79,7 @@ def assert_test_project(*values: str | None) -> None:
             )
         raise RuntimeError(
             "отказ: значение не опознано как проект Mimic42 Dev "
-            f"(нужен ref {DEV_PROJECT_REF} в строке, домене или JWT-ключе)"
+            f"(нужен host или pooler username проекта {DEV_PROJECT_REF})"
         )
 
 

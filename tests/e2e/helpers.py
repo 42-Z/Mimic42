@@ -110,6 +110,58 @@ def current_draft_id(api: httpx.Client, owner_id: str) -> str:
     return str(draft_id)
 
 
+TEST_SLOT_HOLDER_HEADER = "X-Mimic42-Test-Slot-Holder"
+
+
+def get_admin_role(api: httpx.Client, slot: str, owner_id: str, lease_holder: str) -> bool:
+    response = api.get(
+        "/__test__/admin-role",
+        params={"slot": slot, "owner_id": owner_id},
+        headers={TEST_SLOT_HOLDER_HEADER: lease_holder},
+    )
+    response.raise_for_status()
+    enabled = response.json().get("enabled")
+    if not isinstance(enabled, bool):
+        raise AssertionError("Тестовый сервер не вернул состояние роли")
+    return enabled
+
+
+def set_admin_role(
+    api: httpx.Client,
+    slot: str,
+    owner_id: str,
+    lease_holder: str,
+    enabled: bool,
+) -> bool:
+    response = api.put(
+        "/__test__/admin-role",
+        json={"slot": slot, "owner_id": owner_id, "enabled": enabled},
+        headers={TEST_SLOT_HOLDER_HEADER: lease_holder},
+    )
+    response.raise_for_status()
+    result = response.json()
+    previously_enabled = result.get("previously_enabled")
+    if not isinstance(previously_enabled, bool) or result.get("enabled") is not enabled:
+        raise AssertionError("Тестовый сервер не подтвердил изменение роли")
+    return previously_enabled
+
+
+def delete_test_official_preset(
+    api: httpx.Client,
+    preset_id: str,
+    slot: str,
+    lease_holder: str,
+) -> None:
+    response = api.delete(
+        f"/__test__/admin-presets/{preset_id}",
+        params={"slot": slot},
+        headers={TEST_SLOT_HOLDER_HEADER: lease_holder},
+    )
+    response.raise_for_status()
+    if response.json() != {"deleted": True}:
+        raise AssertionError("Тестовый сервер не подтвердил удаление fixture-пресета")
+
+
 def login_via_form(page: Page, user: E2EUser, path: str = "/login") -> None:
     page.goto(path)
     page.get_by_label("Email").fill(user.email)

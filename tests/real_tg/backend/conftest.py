@@ -19,12 +19,19 @@ ROOT = Path(__file__).resolve().parents[3]
 load_dotenv(ROOT / ".env", override=True)
 
 from mimic42.api.app import create_app  # noqa: E402
+from mimic42.testing.cleanup import seed_platform_telegram_settings  # noqa: E402
 from tests.real_tg.backend.helpers import media_storage, real_app_settings  # noqa: E402
 
 
 @pytest_asyncio.fixture
 async def real_app() -> AsyncIterator[tuple[FastAPI, AsyncClient]]:
     settings = real_app_settings()
+    await seed_platform_telegram_settings(
+        os.environ["DATABASE_CONNECTION_STRING"],
+        secret_key=os.environ["SECRET_KEY"],
+        api_id=int(os.environ["TELEGRAM_API_ID"]),
+        api_hash=os.environ["TELEGRAM_API_HASH"],
+    )
     # Медиа-архив: настоящий Storage при SUPABASE_SERVICE_ROLE_KEY, иначе
     # хранилище в памяти — сценарий «архив переживает потерю файла» (#98)
     # должен быть достижим и без сервисного ключа.

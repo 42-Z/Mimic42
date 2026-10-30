@@ -29,8 +29,6 @@ OPENROUTER_API_KEY=
 BRAINTRUST_API_KEY=
 BRAINTRUST_PROJECT=Mimic42 Prod
 SECRET_KEY=
-TELEGRAM_API_ID=
-TELEGRAM_API_HASH=
 CORS_ALLOW_ORIGINS=https://mimic42.zomb.top
 EOF
 chmod 600 /etc/mimic42.env
@@ -49,7 +47,11 @@ EOF
 #      supabase db push
 #    Migrations are applied manually on purpose — the pipeline never migrates.
 
-# 5. Register the domain in Caddy: append deploy/Caddyfile.snippet to
+# 5. Open https://mimic42.zomb.top/admin/telegram as an administrator and
+#    save the shared API ID / API HASH. Until it is saved, new Telegram
+#    connections answer 503. The pair is not read from environment variables.
+
+# 6. Register the domain in Caddy: append deploy/Caddyfile.snippet to
 #    /etc/caddy/Caddyfile, then:
 systemctl reload caddy
 ```

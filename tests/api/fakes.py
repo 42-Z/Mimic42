@@ -1,10 +1,15 @@
-"""Shared test doubles for API tests (single home for FakeAgentManager)."""
+"""Shared test doubles for API tests."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from uuid import UUID
 
+from cryptography.fernet import Fernet
+from pydantic import SecretStr
+
+from mimic42.core.admin import PublicTelegramSettings, StoredTelegramSettings
 from mimic42.core.agent_runtime import (
     UNAUTHORIZED_SESSION_MESSAGE,
     AgentRuntimeConfig,
@@ -14,6 +19,61 @@ from mimic42.core.agent_runtime import (
     AgentTriggerResult,
     TelegramAuthorizationRequired,
 )
+from mimic42.core.crypto import FernetSecretCipher
+from mimic42.core.telegram_app_settings import TelegramAppSettings
+
+
+class FakeTelegramSettingsStore:
+    """Хранит пару Telegram-приложения в памяти, как строка telegram.settings."""
+
+    def __init__(self, *, api_id: int, api_hash: str, cipher: FernetSecretCipher) -> None:
+        self.cipher = cipher
+        self.stored = StoredTelegramSettings(
+            api_id=api_id,
+            api_hash_ciphertext=SecretStr(cipher.encrypt(api_hash)),
+            updated_at=datetime.now(UTC),
+            updated_by=None,
+        )
+
+    async def read_telegram_settings(self) -> StoredTelegramSettings | None:
+        return self.stored
+
+    async def save_telegram_settings(
+        self,
+        *,
+        api_id: int,
+        api_hash_ciphertext: str,
+        actor_user_id: UUID,
+    ) -> PublicTelegramSettings:
+        self.stored = StoredTelegramSettings(
+            api_id=api_id,
+            api_hash_ciphertext=SecretStr(api_hash_ciphertext),
+            updated_at=datetime.now(UTC),
+            updated_by=actor_user_id,
+        )
+        return PublicTelegramSettings(
+            api_id=api_id,
+            has_api_hash=True,
+            source="database",
+            updated_at=self.stored.updated_at,
+            updated_by=actor_user_id,
+        )
+
+
+def configured_telegram_app(
+    api_id: int = 777,
+    api_hash: str = "deployment-hash",
+) -> TelegramAppSettings:
+    """Пара, сохранённая в панели: единственный источник для API-тестов."""
+    cipher = FernetSecretCipher(Fernet.generate_key().decode())
+    return TelegramAppSettings(
+        repository=FakeTelegramSettingsStore(
+            api_id=api_id,
+            api_hash=api_hash,
+            cipher=cipher,
+        ),
+        cipher=cipher,
+    )
 
 
 @dataclass

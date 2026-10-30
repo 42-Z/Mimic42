@@ -11,6 +11,7 @@ import { readEnabledTools } from '@/lib/tools/agentTools';
 import { TOOL_INFO } from '@/lib/tools/toolInfo';
 import { getSupabaseClient } from '@/lib/supabase/client';
 import { cn } from '@/lib/utils';
+import { buildFavoriteEntries } from '@/lib/presets/catalog';
 import type { PromptPresetRow, PresetFavoriteRow } from '@/types';
 
 /**
@@ -31,6 +32,8 @@ export interface PickerEntry {
   body: string;
   settings: Record<string, unknown> | null;
   section: 'official' | 'mine' | 'favorites';
+  isActive: boolean;
+  unavailable: boolean;
 }
 
 // Секции списка выбора: заголовок → записи. Пустые секции не рендерятся.
@@ -128,11 +131,14 @@ export function PresetPickerDialog({
   // пресеты без избранного в меню не попадают. Живое избранное (preset_id
   // задан) показывает текущую версию пресета, замороженное — снимок.
   const sections = useMemo(() => {
-    const liveById = new Map(presets.map((preset) => [preset.id, preset]));
     const official: PickerEntry[] = [];
     const mine: PickerEntry[] = [];
     for (const preset of presets) {
-      if (preset.owner_id !== null && preset.owner_id !== userId) continue;
+      if (preset.owner_id === null) {
+        if (!preset.is_active) continue;
+      } else if (preset.owner_id !== userId) {
+        continue;
+      }
       const entry: PickerEntry = {
         key: `preset:${preset.id}`,
         title: preset.title,
@@ -140,20 +146,23 @@ export function PresetPickerDialog({
         body: preset.body,
         settings: preset.settings,
         section: preset.owner_id === null ? 'official' : 'mine',
+        isActive: preset.is_active,
+        unavailable: false,
       };
       if (preset.owner_id === null) official.push(entry);
       else mine.push(entry);
     }
     mine.sort((a, b) => a.title.localeCompare(b.title, 'ru'));
-    const favoritesSection: PickerEntry[] = favorites.map((favorite) => {
-      const source = favorite.preset_id ? liveById.get(favorite.preset_id) : undefined;
+    const favoritesSection: PickerEntry[] = buildFavoriteEntries(favorites, presets).map((favorite) => {
       return {
-        key: `fav:${favorite.id}`,
-        title: source?.title ?? favorite.frozen_title ?? 'Без названия',
-        summary: source?.summary ?? favorite.frozen_summary ?? '',
-        body: source ? source.body : favorite.frozen_body ?? '',
-        settings: source ? source.settings : favorite.frozen_settings,
+        key: `fav:${favorite.favoriteId}`,
+        title: favorite.title,
+        summary: favorite.summary,
+        body: favorite.body,
+        settings: favorite.settings,
         section: 'favorites' as const,
+        isActive: !favorite.unavailable,
+        unavailable: favorite.unavailable,
       };
     });
     return { official, mine, favorites: favoritesSection };
@@ -179,7 +188,7 @@ export function PresetPickerDialog({
   };
 
   const handleApply = () => {
-    if (!selected) return;
+    if (!selected || selected.unavailable) return;
     if (willOverwrite && !confirming) {
       setConfirming(true);
       return;
@@ -237,6 +246,7 @@ export function PresetPickerDialog({
                       key={entry.key}
                       type="button"
                       role="option"
+                      disabled={entry.unavailable}
                       aria-selected={selected?.key === entry.key}
                       onClick={() => handleSelect(entry.key)}
                       className={cn(
@@ -249,8 +259,13 @@ export function PresetPickerDialog({
                     >
                       <span className="block font-mono text-xs text-foreground">{entry.title}</span>
                       <span className="block font-mono text-[11px] text-muted-foreground">
-                        {entry.summary}
+                        {entry.unavailable ? 'Пресет больше недоступен' : entry.summary}
                       </span>
+                      {entry.section === 'mine' && !entry.isActive && !entry.unavailable && (
+                        <span className="mt-1 block font-mono text-[10px] text-warning">
+                          Скрыт администратором
+                        </span>
+                      )}
                     </button>
                   ))}
                 </div>
@@ -263,7 +278,7 @@ export function PresetPickerDialog({
               data-testid="preset-body"
               className="max-h-72 overflow-y-auto whitespace-pre-wrap rounded-sm border border-border bg-background/60 p-3 font-mono text-xs text-foreground/90"
             >
-              {selected?.body}
+              {selected?.unavailable ? 'Пресет больше недоступен' : selected?.body}
             </pre>
             {selectedTools !== null && (
               <p data-testid="preset-tools" className="font-mono text-[11px] text-muted-foreground">
@@ -285,7 +300,12 @@ export function PresetPickerDialog({
         <Button type="button" variant="ghost" size="sm" onClick={handleClose}>
           Отмена
         </Button>
-        <Button type="button" size="sm" onClick={handleApply} disabled={!selected}>
+        <Button
+          type="button"
+          size="sm"
+          onClick={handleApply}
+          disabled={!selected || selected.unavailable}
+        >
           {confirming ? 'Всё равно заменить' : 'Применить пресет'}
         </Button>
       </div>

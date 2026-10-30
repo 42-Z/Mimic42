@@ -104,6 +104,22 @@ const MY_PRESET: PromptPresetRow = {
   updated_at: '2026-10-11T00:00:00Z',
 };
 
+const HIDDEN_OFFICIAL: PromptPresetRow = {
+  ...PRESETS[0]!,
+  id: '77777777-7777-4777-8777-777777777777',
+  slug: 'hidden_official',
+  title: 'Скрытый официальный',
+  is_active: false,
+};
+
+const HIDDEN_MINE: PromptPresetRow = {
+  ...MY_PRESET,
+  id: '66666666-6666-4666-8666-666666666666',
+  title: 'Свой скрытый пресет',
+  body: 'ТЕЛО СВОЕГО СКРЫТОГО',
+  is_active: false,
+};
+
 const OTHER_PUBLISHED: PromptPresetRow = {
   id: '99999999-9999-9999-9999-999999999999',
   slug: 'u_99999999',
@@ -278,5 +294,33 @@ describe('PresetPickerDialog', () => {
     expect(screen.getByText('Официальные')).toBeTruthy();
     expect(screen.queryByText('Мои')).toBeNull();
     expect(screen.queryByText('Избранное')).toBeNull();
+  });
+
+  test('неактивный официальный скрыт, а собственный скрытый пресет остаётся применимым', async () => {
+    const user = userEvent.setup();
+    const { onApply } = renderDialog({ presets: [...PRESETS, HIDDEN_OFFICIAL, HIDDEN_MINE] });
+
+    expect(screen.queryByRole('option', { name: /Скрытый официальный/ })).toBeNull();
+    const hiddenMine = screen.getByRole('option', { name: /Свой скрытый пресет/ });
+    expect(hiddenMine.textContent).toContain('Скрыт администратором');
+    await user.click(hiddenMine);
+    expect(screen.getByTestId('preset-body').textContent).toBe('ТЕЛО СВОЕГО СКРЫТОГО');
+
+    await user.click(screen.getByRole('button', { name: 'Применить пресет' }));
+    expect(onApply).toHaveBeenCalledWith({
+      body: 'ТЕЛО СВОЕГО СКРЫТОГО',
+      settings: null,
+    });
+  });
+
+  test('устаревшая ссылка избранного показывает отказ и не возвращает старое тело', () => {
+    renderDialog({ presets: [], favorites: [FAVORITE] });
+
+    expect(screen.getByRole('option', { name: /Пресет больше недоступен/ })).toBeTruthy();
+    expect(screen.getByTestId('preset-body').textContent).toBe('Пресет больше недоступен');
+    expect((screen.getByRole('button', { name: 'Применить пресет' }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+    expect(screen.queryByText('ЖИВОЙ ТЕКСТ')).toBeNull();
   });
 });

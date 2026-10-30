@@ -22,6 +22,7 @@ import pytest
 from dotenv import load_dotenv
 from playwright.sync_api import Browser
 
+from mimic42.testing.cleanup import seed_platform_telegram_settings
 from mimic42.testing.real_tg.checker import SyncChecker
 from tests.real_tg.backend.helpers import (
     agent_id_for_phone,
@@ -81,6 +82,14 @@ def real_servers() -> Iterator[None]:
     # CORS бэкенда должен знать фактический порт фронта (он может быть
     # переопределён через E2E_APP_PORT, если 3000 занят).
     env["CORS_ALLOW_ORIGINS"] = f"http://127.0.0.1:{APP_PORT},http://localhost:{APP_PORT}"
+    asyncio.run(
+        seed_platform_telegram_settings(
+            env["DATABASE_CONNECTION_STRING"],
+            secret_key=env["SECRET_KEY"],
+            api_id=int(env["TELEGRAM_API_ID"]),
+            api_hash=env["TELEGRAM_API_HASH"],
+        )
+    )
     api_proc = spawn(
         ["uv", "run", "uvicorn", "mimic42.main:app", "--port", str(API_PORT)],
         cwd=ROOT,

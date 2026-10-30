@@ -22,8 +22,11 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from mimic42.api.admin import get_admin_identity
+from mimic42.api.admin import router as admin_router
 from mimic42.api.auth import AuthVerifier, CurrentUser, SupabaseJWTVerifier, require_user
 from mimic42.config import Settings
+from mimic42.core.admin import AdminIdentity, AdminRepository
 from mimic42.core.agent_runtime import (
     AgentRuntimeConfig,
     AgentRuntimeState,
@@ -67,9 +70,15 @@ from mimic42.core.onboarding import (
     TelegramPasswordRequiredError,
     TelegramRebindUnavailableError,
 )
+from mimic42.core.runtime_status import effective_runtime_state
+from mimic42.core.telegram_app_settings import (
+    TelegramAppSettings,
+    TelegramAppUnavailableError,
+)
 from mimic42.core.warmup import WarmupState
 from mimic42.core.warmup_service import pair_policy_for
 from mimic42.integrations import openrouter_catalog
+from mimic42.integrations.database_admin import DatabaseAdminRepository
 from mimic42.integrations.database_agent_store import DatabaseAgentStore
 from mimic42.integrations.database_memory import DatabaseShortTermMemory
 from mimic42.integrations.database_onboarding import (
@@ -142,8 +151,6 @@ class WarmupStateResponse(BaseModel):
 class CreateAgentRequest(BaseModel):
     agent_id: UUID = Field(default_factory=uuid4)
     telegram_session_string: str | None = Field(default=None, min_length=1)
-    telegram_api_id: int | None = Field(default=None, gt=0)
-    telegram_api_hash: str | None = Field(default=None, min_length=1)
     soul_prompt: str = Field(default="", max_length=20_000)
     auto_start: bool = False
 
@@ -180,8 +187,6 @@ class ContextResetResult(BaseModel):
 
 
 class TelegramLoginRequest(BaseModel):
-    api_id: int | None = Field(default=None, gt=0)
-    api_hash: str | None = Field(default=None, min_length=1)
     phone_number: str = Field(min_length=5)
     onboarding_id: UUID | None = None
 
@@ -224,23 +229,36 @@ async def _read_limited(file: UploadFile, limit: int) -> bytes | None:
     return b"".join(chunks)
 
 
-def _resolve_telegram_app(
-    settings: Settings,
-    api_id: int | None,
-    api_hash: str | None,
-) -> tuple[int, str]:
-    """Fall back to the deployment-wide Telegram application when none is supplied."""
-    resolved_id = api_id if api_id is not None else settings.telegram_api_id
-    resolved_hash = api_hash if api_hash is not None else settings.telegram_api_hash
-    if resolved_id is None or resolved_hash is None:
+def _get_telegram_app_settings(app: FastAPI) -> TelegramAppSettings:
+    provider: TelegramAppSettings | None = getattr(app.state, "telegram_app_settings", None)
+    if provider is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=(
-                "Telegram-приложение не настроено на сервере. "
-                "Задайте TELEGRAM_API_ID и TELEGRAM_API_HASH в окружении."
-            ),
+            detail="Настройки Telegram-приложения временно недоступны.",
         )
-    return resolved_id, resolved_hash
+    return provider
+
+
+async def _resolve_telegram_app(
+    provider: TelegramAppSettings,
+) -> tuple[int, str]:
+    try:
+        return await provider.resolve()
+    except TelegramAppUnavailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from None
+
+
+def _telegram_settings_cipher(settings: Settings) -> FernetSecretCipher | None:
+    if settings.secret_key is None:
+        return None
+    try:
+        return FernetSecretCipher(settings.secret_key)
+    except (TypeError, ValueError):
+        logger.error("Invalid SECRET_KEY; Telegram application settings are unavailable")
+        return None
 
 
 def _telegram_login_http_error(exc: Exception) -> HTTPException | None:
@@ -262,7 +280,7 @@ def _telegram_login_http_error(exc: Exception) -> HTTPException | None:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
                 "Telegram отклонил приложение сервера: "
-                "неверная комбинация TELEGRAM_API_ID и TELEGRAM_API_HASH."
+                "неверная пара API ID и API HASH. Проверьте её в админ-панели."
             ),
         )
     if isinstance(exc, ApiIdPublishedFloodError):
@@ -270,7 +288,7 @@ def _telegram_login_http_error(exc: Exception) -> HTTPException | None:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=(
                 "Telegram заблокировал приложение сервера как опубликованное. "
-                "Замените TELEGRAM_API_ID и TELEGRAM_API_HASH."
+                "Сохраните другую пару API ID и API HASH в админ-панели."
             ),
         )
     if isinstance(exc, PhoneNumberBannedError):
@@ -311,8 +329,10 @@ def create_app(
     manager: AgentManagerLike | None = None,
     onboarding_service: AgentOnboardingService | None = None,
     agent_store: AgentStore | None = None,
+    admin_repository: AdminRepository | None = None,
     auth_verifier: AuthVerifier | None = None,
     settings: Settings | None = None,
+    telegram_app_settings: TelegramAppSettings | None = None,
     telegram_factory: TelegramAuthClientFactory | None = None,
     telegram_client_factory: TelegramClientFactory | None = None,
     langchain_agent_factory: LangChainAgentFactory | None = None,
@@ -321,6 +341,10 @@ def create_app(
 ) -> FastAPI:
     app_settings = settings or Settings()
     app_telegram_factory = telegram_factory or TelethonAuthClientFactory()
+    app_telegram_app_settings = telegram_app_settings or TelegramAppSettings(
+        repository=admin_repository,
+        cipher=_telegram_settings_cipher(app_settings),
+    )
     # Resolution order: explicit argument → uploader of an injected manager →
     # storage built from settings. A broken Storage configuration must degrade
     # to "media unavailable", not crash application startup.
@@ -355,54 +379,77 @@ def create_app(
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         database_engine = None
-        should_build_database = app_settings.database_connection_string and (
+        session_factory = None
+        build_agent_services = bool(app_settings.database_connection_string) and (
             onboarding_service is None or agent_store is None
         )
-        if should_build_database:
-            database_engine = create_engine(app_settings.database_connection_string)
-            session_factory = create_session_factory(database_engine)
-            cipher = (
-                FernetSecretCipher(app_settings.secret_key)
-                if app_settings.secret_key is not None
-                else None
-            )
-            database_agent_store = agent_store or DatabaseAgentStore(
-                session_factory,
-                cipher=cipher,
-            )
-            app.state.agent_store = database_agent_store
-            if onboarding_service is None:
-                app.state.onboarding_service = AgentOnboardingService(
-                    repository=DatabaseOnboardingRepository(session_factory),
-                    telegram_factory=app_telegram_factory,
-                    cipher=cipher,
-                    agent_store=database_agent_store,
-                )
-            if manager is None:
-                agent_memory = long_term_memory or build_mem0_memory(app_settings.mem0_api_key)
-                app.state.long_term_memory = agent_memory
-                app.state.agent_manager = AgentManager(
-                    memory_service_factory=lambda _config: RuntimeMemoryService(
-                        short_term=DatabaseShortTermMemory(session_factory),
-                        long_term=agent_memory,
-                    ),
-                    config_loader=database_agent_store.get_runtime_config,
-                    status_sink=database_agent_store.update_status,
-                    session_factory=session_factory,
-                    telegram_client_factory=telegram_client_factory,
-                    langchain_agent_factory=langchain_agent_factory,
-                    media_uploader=app_media_storage,
-                    warmup_history=DatabaseWarmupHistory(session_factory),
-                    warmup_state_store=DatabaseWarmupStateStore(session_factory),
-                    warmup_pair_policy=pair_policy_for(app_settings.warmup_partners),
-                )
+        build_admin_repository = bool(app_settings.database_connection_string) and (
+            admin_repository is None
+        )
+        build_database = build_agent_services or build_admin_repository
         try:
+            if build_database:
+                database_url = app_settings.database_connection_string
+                assert database_url is not None
+                database_engine = create_engine(database_url)
+                session_factory = create_session_factory(database_engine)
+
+            if build_agent_services:
+                assert session_factory is not None
+                cipher = (
+                    FernetSecretCipher(app_settings.secret_key)
+                    if app_settings.secret_key is not None
+                    else None
+                )
+                database_agent_store = agent_store or DatabaseAgentStore(
+                    session_factory,
+                    cipher=cipher,
+                )
+                app.state.agent_store = database_agent_store
+                if onboarding_service is None:
+                    app.state.onboarding_service = AgentOnboardingService(
+                        repository=DatabaseOnboardingRepository(session_factory),
+                        telegram_factory=app_telegram_factory,
+                        cipher=cipher,
+                        agent_store=database_agent_store,
+                    )
+                if manager is None:
+                    agent_memory = long_term_memory or build_mem0_memory(app_settings.mem0_api_key)
+                    app.state.long_term_memory = agent_memory
+                    app.state.agent_manager = AgentManager(
+                        memory_service_factory=lambda _config: RuntimeMemoryService(
+                            short_term=DatabaseShortTermMemory(session_factory),
+                            long_term=agent_memory,
+                        ),
+                        config_loader=database_agent_store.get_runtime_config,
+                        status_sink=database_agent_store.update_status,
+                        session_factory=session_factory,
+                        telegram_client_factory=telegram_client_factory,
+                        langchain_agent_factory=langchain_agent_factory,
+                        media_uploader=app_media_storage,
+                        warmup_history=DatabaseWarmupHistory(session_factory),
+                        warmup_state_store=DatabaseWarmupStateStore(session_factory),
+                        warmup_pair_policy=pair_policy_for(app_settings.warmup_partners),
+                    )
+
+            if build_admin_repository:
+                assert session_factory is not None
+                app.state.admin_repository = DatabaseAdminRepository(session_factory)
+
+            if telegram_app_settings is None:
+                app.state.telegram_app_settings = TelegramAppSettings(
+                    repository=getattr(app.state, "admin_repository", None),
+                    cipher=_telegram_settings_cipher(app_settings),
+                )
+
             setup_tracing(app_settings)
             # Restore running agents from database after restart
             logger.info(
-                f"[lifespan] should_build={should_build_database}, manager_none={manager is None}"
+                "[lifespan] build_agent_services=%s, manager_none=%s",
+                build_agent_services,
+                manager is None,
             )
-            if should_build_database and manager is None and app_settings.restore_running_agents:
+            if build_agent_services and manager is None and app_settings.restore_running_agents:
                 try:
                     agent_records = await database_agent_store.list_agents()
                     logger.info(f"[lifespan] Found {len(agent_records)} agents")
@@ -432,7 +479,7 @@ def create_app(
                             )
                 except Exception as exc:
                     logger.exception(f"[lifespan] Failed to restore running agents: {exc}")
-            if should_build_database and manager is None:
+            if build_agent_services and manager is None:
                 warmup = app.state.agent_manager.warmup
                 if warmup is not None:
                     warmup.start()
@@ -461,6 +508,8 @@ def create_app(
     app.state.agent_manager = app_manager
     app.state.onboarding_service = app_onboarding_service
     app.state.agent_store = agent_store
+    app.state.admin_repository = admin_repository
+    app.state.telegram_app_settings = app_telegram_app_settings
     app.state.media_uploader = app_media_storage
     app.state.long_term_memory = None
     app.state.auth_verifier = auth_verifier or (
@@ -469,9 +518,20 @@ def create_app(
         else None
     )
 
+    app.include_router(admin_router)
+
     @app.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok", "service": "mimic42-api"}
+
+    @app.get("/api/v1/me", response_model=AdminIdentity)
+    async def get_me(
+        current_user: CurrentUserDep,
+        request: Request,
+        response: Response,
+    ) -> AdminIdentity:
+        response.headers["Cache-Control"] = "no-store"
+        return await get_admin_identity(request, current_user)
 
     @app.get("/api/v1/agents", response_model=list[AgentRecord])
     async def list_agents(current_user: CurrentUserDep) -> list[AgentRecord]:
@@ -486,19 +546,12 @@ def create_app(
                     owner_id=current_user.user_id
                 )
             }
-            unloaded_active_states = {
-                AgentRuntimeState.STARTING,
-                AgentRuntimeState.RUNNING,
-                AgentRuntimeState.STOPPING,
-            }
             return [
                 record.model_copy(
                     update={
-                        "state": runtime_states.get(
-                            record.agent_id,
-                            AgentRuntimeState.STOPPED
-                            if record.state in unloaded_active_states
-                            else record.state,
+                        "state": effective_runtime_state(
+                            record.state,
+                            runtime_states.get(record.agent_id),
                         )
                     }
                 )
@@ -524,7 +577,9 @@ def create_app(
         payload: TelegramLoginRequest,
         current_user: CurrentUserDep,
     ) -> OnboardingPublicStatus:
-        api_id, api_hash = _resolve_telegram_app(app_settings, payload.api_id, payload.api_hash)
+        api_id, api_hash = await _resolve_telegram_app(
+            _get_telegram_app_settings(app),
+        )
         credentials = TelegramCredentials(
             owner_id=current_user.user_id,
             api_id=api_id,
@@ -831,8 +886,8 @@ def create_app(
         payload: CreateAgentRequest,
         current_user: CurrentUserDep,
     ) -> AgentStatus:
-        api_id, api_hash = _resolve_telegram_app(
-            app_settings, payload.telegram_api_id, payload.telegram_api_hash
+        api_id, api_hash = await _resolve_telegram_app(
+            _get_telegram_app_settings(app),
         )
         try:
             manager_for_request = _get_agent_manager(app)

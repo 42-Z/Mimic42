@@ -24,6 +24,10 @@ export async function fetchPresetFavorites(
 export function usePresetFavorites() {
   return useQuery({
     queryKey: queryKeys.presets.favorites(),
+    staleTime: 30_000,
+    refetchInterval: 60_000,
+    refetchOnWindowFocus: 'always',
+    refetchOnReconnect: true,
     queryFn: () => fetchPresetFavorites(getSupabaseClient()),
   });
 }

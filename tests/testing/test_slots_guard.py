@@ -18,18 +18,18 @@ def _jwt_with_ref(ref: str) -> str:
 
 def test_dev_values_are_allowed() -> None:
     assert_test_project("postgresql://user:pw@db.ipqylrdmmjitemjrygej.supabase.co:5432/postgres")
+    assert_test_project(
+        "postgresql://postgres.ipqylrdmmjitemjrygej:pw@aws-1-eu-central-1.pooler.supabase.com:5432/postgres"
+    )
     assert_test_project("https://ipqylrdmmjitemjrygej.supabase.co")
-    assert_test_project(_jwt_with_ref(DEV_PROJECT_REF))
     assert_test_project(None, None)
 
 
-def test_prod_values_are_rejected() -> None:
+def test_prod_endpoints_are_rejected() -> None:
     with pytest.raises(RuntimeError, match="прод"):
         assert_test_project(f"postgresql://user:pw@db.{PROD_PROJECT_REF}.supabase.co:5432/postgres")
     with pytest.raises(RuntimeError, match="прод"):
         assert_test_project(None, f"https://{PROD_PROJECT_REF}.supabase.co")
-    with pytest.raises(RuntimeError, match="прод"):
-        assert_test_project(_jwt_with_ref(PROD_PROJECT_REF))
 
 
 def test_values_without_a_project_ref_are_rejected() -> None:
@@ -41,3 +41,15 @@ def test_values_without_a_project_ref_are_rejected() -> None:
         assert_test_project("https://supabase.example.com")
     with pytest.raises(RuntimeError, match="не опознано"):
         assert_test_project(_jwt_with_ref("someoneelsesproject"))
+
+
+def test_project_ref_in_password_cannot_override_a_production_endpoint() -> None:
+    dsn = f"postgresql://user:{DEV_PROJECT_REF}@db.{PROD_PROJECT_REF}.supabase.co:5432/postgres"
+
+    with pytest.raises(RuntimeError, match="прод"):
+        assert_test_project(dsn)
+
+
+def test_unsigned_jwt_project_claim_is_not_accepted_as_project_identity() -> None:
+    with pytest.raises(RuntimeError, match="не опознано"):
+        assert_test_project(_jwt_with_ref(DEV_PROJECT_REF))

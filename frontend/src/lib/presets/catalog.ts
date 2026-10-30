@@ -11,6 +11,7 @@ export interface CatalogEntry {
   authorName: string | null;
   published: boolean;
   isOfficial: boolean;
+  isActive: boolean;
 }
 
 export interface CatalogEntries {
@@ -18,9 +19,14 @@ export interface CatalogEntries {
   mine: CatalogEntry[];
 }
 
+export function minePresetStatusLabel(entry: Pick<CatalogEntry, 'isActive' | 'published'>): string {
+  if (!entry.isActive) return 'Скрыт администратором';
+  return entry.published ? 'В магазине' : 'Черновик';
+}
+
 /**
- * Магазин — официальные активные плюс чужие выложенные; «Мои» — свои
- * черновики и выложенные. Официальные впереди, дальше по названию.
+ * Магазин показывает активные официальные и чужие опубликованные пресеты;
+ * «Мои» сохраняет все собственные строки, в том числе скрытые администратором.
  */
 export function buildCatalogEntries(
   presets: PromptPresetRow[],
@@ -41,13 +47,15 @@ export function buildCatalogEntries(
       : null,
     published: preset.published_at !== null,
     isOfficial: preset.owner_id === null,
+    isActive: preset.is_active,
   });
 
   const store = presets
     .filter(
       (preset) =>
-        preset.owner_id === null ||
-        (preset.published_at !== null && preset.owner_id !== userId),
+        preset.is_active &&
+        (preset.owner_id === null ||
+          (preset.published_at !== null && preset.owner_id !== userId)),
     )
     .map(entry)
     .sort((a, b) => {
@@ -63,13 +71,15 @@ export function buildCatalogEntries(
   return { store, mine };
 }
 
-/** Карточки избранного для страницы: живые и замороженные. */
+/** Карточки избранного: актуальные ссылки, замороженные снимки и недоступные stale links. */
 export interface FavoriteEntry {
   favoriteId: string;
   title: string;
   summary: string;
   body: string;
+  settings: Record<string, unknown> | null;
   frozen: boolean;
+  unavailable: boolean;
 }
 
 export function buildFavoriteEntries(
@@ -80,12 +90,34 @@ export function buildFavoriteEntries(
   return favorites
     .map((favorite) => {
       const source = favorite.preset_id ? liveById.get(favorite.preset_id) : undefined;
+      const livePreset =
+        source !== undefined &&
+        source.owner_id !== null &&
+        source.is_active &&
+        source.published_at !== null
+          ? source
+          : undefined;
+      const hasSnapshot =
+        favorite.frozen_at !== null ||
+        favorite.frozen_title !== null ||
+        favorite.frozen_summary !== null ||
+        favorite.frozen_body !== null ||
+        favorite.frozen_settings !== null;
+      const unavailable = livePreset === undefined && !hasSnapshot;
       return {
         favoriteId: favorite.id,
-        title: source?.title ?? favorite.frozen_title ?? 'Без названия',
-        summary: source?.summary ?? favorite.frozen_summary ?? '',
-        body: source ? source.body : favorite.frozen_body ?? '',
-        frozen: !source,
+        title: unavailable
+          ? 'Пресет больше недоступен'
+          : livePreset?.title ?? favorite.frozen_title ?? 'Без названия',
+        summary: unavailable ? '' : livePreset?.summary ?? favorite.frozen_summary ?? '',
+        body: unavailable ? '' : livePreset?.body ?? favorite.frozen_body ?? '',
+        settings: unavailable
+          ? null
+          : livePreset
+            ? livePreset.settings
+            : favorite.frozen_settings ?? null,
+        frozen: livePreset === undefined,
+        unavailable,
       };
     })
     .sort((a, b) => a.title.localeCompare(b.title, 'ru'));

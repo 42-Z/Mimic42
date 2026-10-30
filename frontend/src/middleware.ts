@@ -9,6 +9,10 @@ const PUBLIC_PATHS = ['/login', '/register', '/auth/callback', '/reset-password'
 // Routes that should redirect authenticated users away
 const AUTH_ONLY_PATHS = ['/login', '/register', '/reset-password'];
 
+function isAdminPath(pathname: string): boolean {
+  return pathname === '/admin' || pathname.startsWith('/admin/');
+}
+
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
@@ -57,6 +61,7 @@ export async function middleware(request: NextRequest) {
 
   const isPublicPath = PUBLIC_PATHS.some((p) => pathname.startsWith(p));
   const isAuthOnlyPath = AUTH_ONLY_PATHS.some((p) => pathname.startsWith(p));
+  const isAdminRoute = isAdminPath(pathname);
 
   const origin = getRequestOrigin(request);
 
@@ -77,7 +82,7 @@ export async function middleware(request: NextRequest) {
 
   // ── Check if onboarding is complete ───────────────────────────────────────
   // Only check when navigating to protected dashboard routes (not onboarding itself)
-  if (!pathname.startsWith('/onboarding') && !isPublicPath) {
+  if (!pathname.startsWith('/onboarding') && !isPublicPath && !isAdminRoute) {
     const { data: agents, error: agentsError } = await supabase
       .from('agents')
       .select('id')

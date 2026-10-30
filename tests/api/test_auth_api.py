@@ -10,7 +10,7 @@ from mimic42.api.app import create_app
 from mimic42.core.agent_runtime import AgentRuntimeState
 from mimic42.core.agent_store import AgentMessageRecord, AgentRecord, InMemoryAgentStore
 from tests.api.auth_helpers import AUTH_HEADERS, FakeAuthVerifier
-from tests.api.fakes import FakeAgentManager
+from tests.api.fakes import FakeAgentManager, configured_telegram_app
 
 
 @pytest.mark.asyncio
@@ -85,7 +85,11 @@ async def test_agent_messages_are_forbidden_for_other_owner() -> None:
 async def test_create_agent_uses_authenticated_user_not_payload_owner_id() -> None:
     user_id = uuid4()
     payload_owner_id = uuid4()
-    app = create_app(manager=FakeAgentManager(), auth_verifier=FakeAuthVerifier(user_id))
+    app = create_app(
+        manager=FakeAgentManager(),
+        auth_verifier=FakeAuthVerifier(user_id),
+        telegram_app_settings=configured_telegram_app(),
+    )
     agent_id = uuid4()
 
     async with AsyncClient(
@@ -99,8 +103,6 @@ async def test_create_agent_uses_authenticated_user_not_payload_owner_id() -> No
                 "agent_id": str(agent_id),
                 "owner_id": str(payload_owner_id),
                 "telegram_session_string": "1BQANOTEuMTA4LjUuMLB6LjE",
-                "telegram_api_id": 12345,
-                "telegram_api_hash": "hash",
             },
         )
 

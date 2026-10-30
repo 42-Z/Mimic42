@@ -27,8 +27,6 @@ def _leaky_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DATABASE_CONNECTION_STRING", "postgresql://test@localhost/test")
     monkeypatch.setenv("SUPABASE_URL", "https://test.supabase.co")
     monkeypatch.setenv("SECRET_KEY", "test-secret")
-    monkeypatch.setenv("TELEGRAM_API_ID", "1")
-    monkeypatch.setenv("TELEGRAM_API_HASH", "test-api-hash")
     monkeypatch.setenv("MEM0_API_KEY", "leak-mem0")
     monkeypatch.setenv("BRAINTRUST_API_KEY", "leak-braintrust")
 

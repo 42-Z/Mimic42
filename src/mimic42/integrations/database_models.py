@@ -8,14 +8,17 @@ from sqlalchemy import (
     JSON,
     BigInteger,
     Boolean,
+    CheckConstraint,
     DateTime,
     Enum,
     ForeignKey,
     Index,
     Integer,
+    SmallInteger,
     Text,
     UniqueConstraint,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.sql import func
 
@@ -72,6 +75,86 @@ class ProfileModel(Base):
     display_name: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AdminUserModel(Base):
+    __tablename__ = "admin_users"
+
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("profiles.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class PlatformTelegramSettingsModel(Base):
+    __tablename__ = "platform_telegram_settings"
+    __table_args__ = (
+        CheckConstraint("id = 1"),
+        CheckConstraint("api_id > 0"),
+        CheckConstraint("btrim(api_hash_ciphertext) <> ''"),
+    )
+
+    id: Mapped[int] = mapped_column(SmallInteger, primary_key=True, default=1)
+    api_id: Mapped[int] = mapped_column(Integer)
+    api_hash_ciphertext: Mapped[str] = mapped_column(Text)
+    updated_by: Mapped[UUID | None] = mapped_column(ForeignKey("profiles.id", ondelete="SET NULL"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AdminAuditLogModel(Base):
+    __tablename__ = "admin_audit_log"
+    __table_args__ = (
+        CheckConstraint(
+            "action in ('preset.created', 'preset.updated', "
+            "'preset.visibility_changed', 'telegram.settings_updated')"
+        ),
+        CheckConstraint("object_type in ('preset', 'telegram_settings')"),
+        CheckConstraint("jsonb_typeof(metadata) = 'object'"),
+        CheckConstraint(
+            "(object_type = 'preset' and object_id is not null) or "
+            "(object_type = 'telegram_settings' and object_id is null)"
+        ),
+        CheckConstraint(
+            "(action in ('preset.created', 'preset.updated', 'preset.visibility_changed') "
+            "and object_type = 'preset' and object_id is not null) or "
+            "(action = 'telegram.settings_updated' and "
+            "object_type = 'telegram_settings' and object_id is null)",
+            name="admin_audit_action_object_consistency",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    actor_user_id: Mapped[UUID] = mapped_column()
+    action: Mapped[str] = mapped_column(Text)
+    object_type: Mapped[str] = mapped_column(Text)
+    object_id: Mapped[UUID | None] = mapped_column()
+    metadata_: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+Index(
+    "admin_audit_log_actor_created_idx",
+    AdminAuditLogModel.actor_user_id,
+    AdminAuditLogModel.created_at.desc(),
+)
+
+
+class PromptPresetModel(Base):
+    __tablename__ = "prompt_presets"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    slug: Mapped[str] = mapped_column(Text)
+    title: Mapped[str] = mapped_column(Text)
+    summary: Mapped[str] = mapped_column(Text)
+    body: Mapped[str] = mapped_column(Text)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    owner_id: Mapped[UUID | None] = mapped_column(ForeignKey("profiles.id", ondelete="CASCADE"))
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    settings: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
 
 
 class AgentModel(Base):

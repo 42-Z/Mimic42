@@ -2,6 +2,22 @@ import { QueryClient } from '@tanstack/react-query';
 
 // ── Query keys — centralized for predictable cache invalidation ───────────────
 export const queryKeys = {
+  // Admin identity and data are scoped to the authenticated user.
+  identity: (userId: string) => ['identity', userId] as const,
+  admin: {
+    all: ['admin'] as const,
+    scope: (userId: string) => ['admin', userId] as const,
+    users: (userId: string, q: string, page: number, pageSize: number) =>
+      ['admin', userId, 'users', { q, page, pageSize }] as const,
+    user: (userId: string, targetId: string, page: number, pageSize: number) =>
+      ['admin', userId, 'user', targetId, { page, pageSize }] as const,
+    presets: (userId: string, q: string, kind: string, page: number, pageSize: number) =>
+      ['admin', userId, 'presets', { q, kind, page, pageSize }] as const,
+    preset: (userId: string, presetId: string) => ['admin', userId, 'preset', presetId] as const,
+    telegram: (userId: string) => ['admin', userId, 'telegram'] as const,
+    statistics: (userId: string, days: 7 | 30) => ['admin', userId, 'statistics', days] as const,
+  },
+
   // Agents
   agents: {
     all: ['agents'] as const,

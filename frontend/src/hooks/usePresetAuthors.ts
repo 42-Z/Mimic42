@@ -24,6 +24,10 @@ export async function fetchPresetAuthors(
 export function usePresetAuthors() {
   return useQuery({
     queryKey: queryKeys.presets.authors(),
+    staleTime: 30_000,
+    refetchInterval: 60_000,
+    refetchOnWindowFocus: 'always',
+    refetchOnReconnect: true,
     queryFn: () => fetchPresetAuthors(getSupabaseClient()),
   });
 }

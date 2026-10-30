@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
+from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from mimic42.api.app import create_app
-from mimic42.config import Settings
 from mimic42.core.agent_runtime import (
+    AgentRuntimeConfig,
     AgentRuntimeState,
 )
 from mimic42.core.agent_store import AgentRecord, InMemoryAgentStore
@@ -20,12 +22,74 @@ from mimic42.core.onboarding import (
 )
 from mimic42.testing.telegram import FakeTelegramAccount, FakeTelegramAuthClientFactory
 from tests.api.auth_helpers import AUTH_HEADERS, FakeAuthVerifier
-from tests.api.fakes import FakeAgentManager
+from tests.api.fakes import FakeAgentManager, configured_telegram_app
+
+
+def create_test_app(**kwargs: Any) -> FastAPI:
+    """Приложение с парой, сохранённой в панели (единственный источник)."""
+    kwargs.setdefault("telegram_app_settings", configured_telegram_app())
+    return create_app(**kwargs)
+
+
+@pytest.mark.asyncio
+async def test_agent_list_keeps_effective_state_rules_after_extraction() -> None:
+    owner_id = uuid4()
+    runtime_agent_id = uuid4()
+    stale_agent_id = uuid4()
+    error_agent_id = uuid4()
+    manager = FakeAgentManager()
+    await manager.create_agent(
+        AgentRuntimeConfig(
+            agent_id=runtime_agent_id,
+            owner_id=owner_id,
+            telegram_api_id=12345,
+            telegram_api_hash="test-hash",
+            system_prompt="Test system prompt",
+        )
+    )
+    manager.created[runtime_agent_id].state = AgentRuntimeState.ERROR
+    store = InMemoryAgentStore(
+        agents=[
+            AgentRecord(
+                agent_id=runtime_agent_id,
+                owner_id=owner_id,
+                name="Runtime override",
+                state=AgentRuntimeState.RUNNING,
+            ),
+            AgentRecord(
+                agent_id=stale_agent_id,
+                owner_id=owner_id,
+                name="Stale database state",
+                state=AgentRuntimeState.STARTING,
+            ),
+            AgentRecord(
+                agent_id=error_agent_id,
+                owner_id=owner_id,
+                name="Saved error",
+                state=AgentRuntimeState.ERROR,
+            ),
+        ]
+    )
+    app = create_test_app(
+        manager=manager,
+        agent_store=store,
+        auth_verifier=FakeAuthVerifier(owner_id),
+    )
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/api/v1/agents", headers=AUTH_HEADERS)
+
+    assert response.status_code == 200
+    assert {UUID(row["agent_id"]): row["state"] for row in response.json()} == {
+        runtime_agent_id: "error",
+        stale_agent_id: "stopped",
+        error_agent_id: "error",
+    }
 
 
 @pytest.mark.asyncio
 async def test_health_endpoint() -> None:
-    app = create_app(manager=FakeAgentManager())
+    app = create_test_app(manager=FakeAgentManager())
 
     async with AsyncClient(
         transport=ASGITransport(app=app),
@@ -41,7 +105,7 @@ async def test_health_endpoint() -> None:
 async def test_create_start_and_trigger_agent_through_api() -> None:
     manager = FakeAgentManager()
     owner_id = uuid4()
-    app = create_app(manager=manager, auth_verifier=FakeAuthVerifier(owner_id))
+    app = create_test_app(manager=manager, auth_verifier=FakeAuthVerifier(owner_id))
     agent_id = uuid4()
 
     async with AsyncClient(
@@ -54,8 +118,6 @@ async def test_create_start_and_trigger_agent_through_api() -> None:
             json={
                 "agent_id": str(agent_id),
                 "telegram_session_string": "1BQANOTEuMTA4LjUuMLB6LjE",
-                "telegram_api_id": 12345,
-                "telegram_api_hash": "hash",
                 "soul_prompt": "Short replies",
                 "auto_start": True,
             },
@@ -87,7 +149,7 @@ async def test_create_start_and_trigger_agent_through_api() -> None:
 async def test_reload_agent_returns_204_for_owner() -> None:
     manager = FakeAgentManager()
     owner_id = uuid4()
-    app = create_app(manager=manager, auth_verifier=FakeAuthVerifier(owner_id))
+    app = create_test_app(manager=manager, auth_verifier=FakeAuthVerifier(owner_id))
     agent_id = uuid4()
 
     async with AsyncClient(
@@ -100,8 +162,6 @@ async def test_reload_agent_returns_204_for_owner() -> None:
             json={
                 "agent_id": str(agent_id),
                 "telegram_session_string": "1BQANOTEuMTA4LjUuMLB6LjE",
-                "telegram_api_id": 12345,
-                "telegram_api_hash": "hash",
                 "soul_prompt": "Short replies",
                 "auto_start": True,
             },
@@ -121,7 +181,7 @@ async def test_reload_agent_returns_404_for_unknown_agent() -> None:
     owner_id = uuid4()
     unknown_agent_id = uuid4()
     store = InMemoryAgentStore()
-    app = create_app(
+    app = create_test_app(
         manager=manager,
         agent_store=store,
         auth_verifier=FakeAuthVerifier(owner_id),
@@ -155,7 +215,7 @@ async def test_delete_agent_returns_204_for_owner() -> None:
             )
         ]
     )
-    app = create_app(
+    app = create_test_app(
         manager=manager,
         agent_store=store,
         auth_verifier=FakeAuthVerifier(owner_id),
@@ -181,7 +241,7 @@ async def test_delete_agent_returns_404_for_foreign_agent() -> None:
     owner_id = uuid4()
     foreign_agent_id = uuid4()
     store = InMemoryAgentStore()
-    app = create_app(
+    app = create_test_app(
         manager=manager,
         agent_store=store,
         auth_verifier=FakeAuthVerifier(owner_id),
@@ -214,7 +274,7 @@ async def test_reset_context_moves_the_boundary_for_owner() -> None:
             )
         ]
     )
-    app = create_app(
+    app = create_test_app(
         manager=FakeAgentManager(),
         agent_store=store,
         auth_verifier=FakeAuthVerifier(owner_id),
@@ -247,7 +307,7 @@ async def test_reset_context_returns_404_for_foreign_agent() -> None:
             )
         ]
     )
-    app = create_app(
+    app = create_test_app(
         manager=FakeAgentManager(),
         agent_store=store,
         auth_verifier=FakeAuthVerifier(uuid4()),
@@ -270,7 +330,7 @@ async def test_reset_context_returns_404_for_foreign_agent() -> None:
 async def test_start_agent_reports_unauthorized_session_in_russian() -> None:
     manager = FakeAgentManager(start_unauthorized=True)
     owner_id = uuid4()
-    app = create_app(manager=manager, auth_verifier=FakeAuthVerifier(owner_id))
+    app = create_test_app(manager=manager, auth_verifier=FakeAuthVerifier(owner_id))
     agent_id = uuid4()
 
     async with AsyncClient(
@@ -283,8 +343,6 @@ async def test_start_agent_reports_unauthorized_session_in_russian() -> None:
             json={
                 "agent_id": str(agent_id),
                 "telegram_session_string": "1BQANOTEuMTA4LjUuMLB6LjE",
-                "telegram_api_id": 12345,
-                "telegram_api_hash": "hash",
                 "soul_prompt": "Short replies",
             },
         )
@@ -328,12 +386,11 @@ async def test_rebind_flow_reuses_agent_session_and_keeps_agent_profile() -> Non
         telegram_factory=FakeTelegramAuthClientFactory(FakeTelegramAccount()),
         agent_store=store,
     )
-    app = create_app(
+    app = create_test_app(
         manager=manager,
         onboarding_service=onboarding_service,
         agent_store=store,
         auth_verifier=FakeAuthVerifier(owner_id),
-        settings=Settings(telegram_api_id=777, telegram_api_hash="deployment-hash"),
     )
     await store.create_from_onboarding(
         OnboardingSession(
@@ -425,12 +482,11 @@ async def test_rebind_start_reuses_stored_phone_without_payload() -> None:
         telegram_factory=FakeTelegramAuthClientFactory(FakeTelegramAccount()),
         agent_store=store,
     )
-    app = create_app(
+    app = create_test_app(
         manager=FakeAgentManager(),
         onboarding_service=onboarding_service,
         agent_store=store,
         auth_verifier=FakeAuthVerifier(owner_id),
-        settings=Settings(telegram_api_id=777, telegram_api_hash="deployment-hash"),
     )
     await store.create_from_onboarding(
         OnboardingSession(
@@ -493,12 +549,11 @@ async def test_rebind_confirm_rejects_foreign_onboarding_session() -> None:
         telegram_factory=FakeTelegramAuthClientFactory(FakeTelegramAccount()),
         agent_store=store,
     )
-    app = create_app(
+    app = create_test_app(
         manager=FakeAgentManager(),
         onboarding_service=onboarding_service,
         agent_store=store,
         auth_verifier=FakeAuthVerifier(owner_id),
-        settings=Settings(telegram_api_id=777, telegram_api_hash="deployment-hash"),
     )
 
     async with AsyncClient(
@@ -535,7 +590,7 @@ async def test_rebind_confirm_requires_completed_authorization() -> None:
             completed_agent_id=agent_id,
         )
     )
-    app = create_app(
+    app = create_test_app(
         manager=manager,
         onboarding_service=AgentOnboardingService(
             repository=repository,
@@ -544,7 +599,6 @@ async def test_rebind_confirm_requires_completed_authorization() -> None:
         ),
         agent_store=store,
         auth_verifier=FakeAuthVerifier(owner_id),
-        settings=Settings(telegram_api_id=777, telegram_api_hash="deployment-hash"),
     )
     await store.create_from_onboarding(
         OnboardingSession(
@@ -601,7 +655,7 @@ async def test_rebind_confirm_returns_404_for_unknown_onboarding_session() -> No
             soul_prompt="Short replies",
         )
     )
-    app = create_app(
+    app = create_test_app(
         manager=FakeAgentManager(),
         onboarding_service=AgentOnboardingService(
             repository=InMemoryOnboardingRepository(),
@@ -610,7 +664,6 @@ async def test_rebind_confirm_returns_404_for_unknown_onboarding_session() -> No
         ),
         agent_store=store,
         auth_verifier=FakeAuthVerifier(owner_id),
-        settings=Settings(telegram_api_id=777, telegram_api_hash="deployment-hash"),
     )
 
     async with AsyncClient(
@@ -630,7 +683,7 @@ async def test_rebind_confirm_returns_404_for_unknown_onboarding_session() -> No
 async def test_rebind_start_returns_404_for_unknown_agent() -> None:
     owner_id = uuid4()
     store = InMemoryAgentStore()
-    app = create_app(
+    app = create_test_app(
         manager=FakeAgentManager(),
         onboarding_service=AgentOnboardingService(
             repository=InMemoryOnboardingRepository(),
@@ -639,7 +692,6 @@ async def test_rebind_start_returns_404_for_unknown_agent() -> None:
         ),
         agent_store=store,
         auth_verifier=FakeAuthVerifier(owner_id),
-        settings=Settings(telegram_api_id=777, telegram_api_hash="deployment-hash"),
     )
 
     async with AsyncClient(
@@ -674,7 +726,7 @@ async def test_rebind_start_restores_missing_onboarding_from_agent_store() -> No
     )
     repository = InMemoryOnboardingRepository()
     account = FakeTelegramAccount()
-    app = create_app(
+    app = create_test_app(
         manager=FakeAgentManager(),
         onboarding_service=AgentOnboardingService(
             repository=repository,
@@ -683,7 +735,6 @@ async def test_rebind_start_restores_missing_onboarding_from_agent_store() -> No
         ),
         agent_store=store,
         auth_verifier=FakeAuthVerifier(owner_id),
-        settings=Settings(telegram_api_id=777, telegram_api_hash="deployment-hash"),
     )
 
     async with AsyncClient(
@@ -707,10 +758,9 @@ async def test_rebind_start_restores_missing_onboarding_from_agent_store() -> No
 async def test_rebind_requires_agent_store() -> None:
     owner_id = uuid4()
     manager = FakeAgentManager(default_owner_id=owner_id)
-    app = create_app(
+    app = create_test_app(
         manager=manager,
         auth_verifier=FakeAuthVerifier(owner_id),
-        settings=Settings(telegram_api_id=777, telegram_api_hash="deployment-hash"),
     )
     agent_id = uuid4()
 
@@ -762,7 +812,7 @@ async def test_rebind_confirm_returns_503_when_runtime_lifecycle_fails(
             completed_agent_id=agent_id,
         )
     )
-    app = create_app(
+    app = create_test_app(
         manager=manager,
         onboarding_service=AgentOnboardingService(
             repository=repository,
@@ -771,7 +821,6 @@ async def test_rebind_confirm_returns_503_when_runtime_lifecycle_fails(
         ),
         agent_store=store,
         auth_verifier=FakeAuthVerifier(owner_id),
-        settings=Settings(telegram_api_id=777, telegram_api_hash="deployment-hash"),
     )
     await store.create_from_onboarding(
         OnboardingSession(
@@ -845,7 +894,7 @@ async def test_rebind_confirm_is_idempotent_for_consumed_session() -> None:
             completed_agent_id=agent_id,
         )
     )
-    app = create_app(
+    app = create_test_app(
         manager=manager,
         onboarding_service=AgentOnboardingService(
             repository=repository,
@@ -854,7 +903,6 @@ async def test_rebind_confirm_is_idempotent_for_consumed_session() -> None:
         ),
         agent_store=store,
         auth_verifier=FakeAuthVerifier(owner_id),
-        settings=Settings(telegram_api_id=777, telegram_api_hash="deployment-hash"),
     )
     await store.create_from_onboarding(
         OnboardingSession(
