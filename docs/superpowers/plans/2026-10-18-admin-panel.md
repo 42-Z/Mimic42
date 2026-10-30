@@ -20,7 +20,7 @@
 - Команды Python выполняются из корня через `uv run`; команды Bun — из `frontend/`. В каждом этапе сначала новая точечная проверка, затем реализация и та же проверка. Полный набор — только перед PR после подтверждения пользователем локальной работы.
 - Для каждой указанной точечной команды ожидаемый результат до изменения — отказ нового сценария по проверяемому поведению, после — PASS с exit code 0. Сбой подключения, ошибка фикстуры или пропуск сценария не считаются подтверждением ни отказа, ни исправления.
 - После каждого завершённого этапа отмечать его пункты и делать отдельный Conventional Commit с указанной темой. Не включать чужие изменения через `git add .`.
-- Миграции создаёт `supabase migration new`; не выдумывать timestamp. Пользователь разрешил скорректировать уже применённые в Dev, но ещё не выпущенные migration-файлы, чтобы production path не блокировал живые записи и не имел окна отказа favorites; production не затрагивать. Текущий набор: `20261018095739_admin_platform.sql`, `20261018101931_restrict_admin_service_role_grants.sql`, `20261018132159_admin_audit_action_object_consistency.sql`, `20261018145306_preset_moderation.sql`, `20261018163931_preset_lock_policy.sql`, `20261018174711_agent_messages_admin_activity_index.sql`, `20261018174739_agent_events_admin_activity_index.sql`.
+- Миграции создаёт `supabase migration new`; не выдумывать timestamp. Пользователь разрешил скорректировать уже применённые в Dev, но ещё не выпущенные migration-файлы, чтобы production path не блокировал живые записи и не имел окна отказа favorites; production не затрагивать. Текущий набор: `20261018095739_admin_users_platform_settings_audit.sql`, `20261018101931_tighten_service_role_admin_grants.sql`, `20261018132159_admin_audit_action_object_consistency.sql`, `20261018145306_preset_catalog_and_favorites_policies.sql`, `20261018163931_lock_published_presets_update_policy.sql`, `20261018174711_admin_activity_agent_messages_index.sql`, `20261018174739_admin_activity_agent_events_index.sql`.
 
 ## Карта файлов и ответственности
 
@@ -179,7 +179,7 @@ Request-модели находятся в `api/admin.py`, `extra="forbid"`:
 
 ## Этап 1. Закрытая схема и безопасная DB-обвязка
 
-**Files:** `supabase/migrations/20261018095739_admin_platform.sql`, `supabase/migrations/20261018101931_restrict_admin_service_role_grants.sql`, `supabase/migrations/20261018132159_admin_audit_action_object_consistency.sql`; `src/mimic42/integrations/database_models.py`; новые `tests/integration/conftest.py`, `tests/integration/test_admin_schema.py`.
+**Files:** `supabase/migrations/20261018095739_admin_users_platform_settings_audit.sql`, `supabase/migrations/20261018101931_tighten_service_role_admin_grants.sql`, `supabase/migrations/20261018132159_admin_audit_action_object_consistency.sql`; `src/mimic42/integrations/database_models.py`; новые `tests/integration/conftest.py`, `tests/integration/test_admin_schema.py`.
 
 - [x] **1.1. Добавить проверку схемы до её появления.** В `test_admin_schema.py` проверить `to_regclass`, RLS и отсутствие любых table/column privileges для `PUBLIC`, `anon` и `authenticated`, а также точный allowlist table/column privileges `service_role` для каждой из трёх таблиц. Для SQL-отказов использовать отдельные savepoint/сессии, а не несколько запросов в уже прерванной транзакции.
 
@@ -295,7 +295,7 @@ grant select, insert, update on public.platform_telegram_settings to service_rol
 grant select, insert on public.admin_audit_log to service_role;
 ```
 
-UUID автора аудита намеренно сохраняется без FK: удаление профиля не стирает и не переписывает историю. Клиентские политики для этих таблиц отсутствуют. Сохранённая общая пара не создаётся миграцией, поэтому старый код продолжает работать с env. Supabase может выдавать новые public-таблицы с уже существующими default grants для `service_role`, поэтому их надо отозвать перед точечными grant. Первая миграция этого этапа уже применена в Dev до обнаружения default ACL; её не переписывать. Миграция `20261018101931_restrict_admin_service_role_grants.sql` повторно отзывает права только у `service_role` и задаёт точный allowlist. Ревью также выявило, что базовая проверка identity не связывает action с object_type; миграция `20261018132159_admin_audit_action_object_consistency.sql` закрепляет обе пары действий и объектов отдельным named CHECK constraint, не изменяя применённую миграцию.
+UUID автора аудита намеренно сохраняется без FK: удаление профиля не стирает и не переписывает историю. Клиентские политики для этих таблиц отсутствуют. Сохранённая общая пара не создаётся миграцией, поэтому старый код продолжает работать с env. Supabase может выдавать новые public-таблицы с уже существующими default grants для `service_role`, поэтому их надо отозвать перед точечными grant. Первая миграция этого этапа уже применена в Dev до обнаружения default ACL; её не переписывать. Миграция `20261018101931_tighten_service_role_admin_grants.sql` повторно отзывает права только у `service_role` и задаёт точный allowlist. Ревью также выявило, что базовая проверка identity не связывает action с object_type; миграция `20261018132159_admin_audit_action_object_consistency.sql` закрепляет обе пары действий и объектов отдельным named CHECK constraint, не изменяя применённую миграцию.
 
 - [x] **1.4. Добавить ORM-модели** с теми же колонками и типами; `PromptPresetModel` отображает существующую таблицу, включая `settings`, `owner_id`, `published_at`, `is_active`, `sort_order`. Не вызывать `Base.metadata.create_all()` вместо Supabase-миграций.
 - [x] **1.5. Добавить именованную фикстуру для транзакционных тестов** в новом `tests/integration/conftest.py`:
@@ -493,7 +493,7 @@ Engine/session factory создаются один раз при `build_database
 
 ## Этап 3. Модерация на уровне базы
 
-**Files:** `supabase/migrations/20261018145306_preset_moderation.sql`, `supabase/migrations/20261018163931_preset_lock_policy.sql`, `supabase/migrations/20261018174711_agent_messages_admin_activity_index.sql`, `supabase/migrations/20261018174739_agent_events_admin_activity_index.sql`; новый `tests/integration/test_preset_moderation.py`; изменить `tests/integration/test_prompt_presets.py`, чтобы persona-based DB-тесты арендовали `test_slot`.
+**Files:** `supabase/migrations/20261018145306_preset_catalog_and_favorites_policies.sql`, `supabase/migrations/20261018163931_lock_published_presets_update_policy.sql`, `supabase/migrations/20261018174711_admin_activity_agent_messages_index.sql`, `supabase/migrations/20261018174739_admin_activity_agent_events_index.sql`; новый `tests/integration/test_preset_moderation.py`; изменить `tests/integration/test_prompt_presets.py`, чтобы persona-based DB-тесты арендовали `test_slot`.
 
 - [x] **3.1. Написать DB-сценарии** с персоны текущего `test_slot`, с rollback тестовых данных: видимый опубликованный пресет, скрытый опубликованный, приватный, официальный. Все UUID тестовых пресетов генерируются отдельно; существующие записи персон не удаляются.
 - [x] **3.2. Проверить:** чужой скрытый недоступен; автор видит его; автор не меняет `is_active`; повторная публикация не открывает каталог; добавление скрытого в избранное запрещено; скрытие замораживает старое избранное без потери `frozen_*`; unhide не оживляет снимок; автор скрытого не попадает в `preset_authors`, если других активных публикаций нет. В двухсоединительном сценарии конкурентного добавления избранного и скрытия не остаётся живая ссылка на скрытый пресет. Выполнить `uv run pytest tests/integration/test_preset_moderation.py tests/integration/test_prompt_presets.py -m db -W error -q`.
@@ -602,12 +602,12 @@ create policy "Authenticated users can update own and lock published presets"
 Индексы на активных `agent_messages` и `agent_events` строить concurrently: обычный `CREATE INDEX` блокирует запись на время построения. Supabase CLI исполняет одиночный `CREATE INDEX CONCURRENTLY` вне транзакции (локальный образец — `20261001175020_media_messages_lookup_index.sql`), поэтому каждый индекс находится в отдельном однооператорном migration-файле:
 
 ```sql
--- 20261018174711_agent_messages_admin_activity_index.sql
+-- 20261018174711_admin_activity_agent_messages_index.sql
 create index concurrently if not exists agent_messages_admin_activity_date_idx
     on public.agent_messages(created_at)
     where direction in ('incoming', 'agent_response');
 
--- 20261018174739_agent_events_admin_activity_index.sql
+-- 20261018174739_admin_activity_agent_events_index.sql
 create index concurrently if not exists agent_events_admin_activity_date_idx
     on public.agent_events(created_at)
     where event_type like 'tool.%' or status = 'failed';
