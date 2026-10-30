@@ -35,6 +35,7 @@ class DatabaseOnboardingRepository:
             model.soul_prompt = session.soul_prompt
             model.settings = session.settings
             model.completed_agent_id = session.completed_agent_id
+            model.proxy_id = session.proxy_id
             await db_session.commit()
 
     async def get(self, onboarding_id: UUID) -> OnboardingSession:
@@ -79,4 +80,5 @@ def _model_to_session(model: AgentOnboardingSessionModel) -> OnboardingSession:
         soul_prompt=model.soul_prompt,
         settings=model.settings or {},
         completed_agent_id=model.completed_agent_id,
+        proxy_id=model.proxy_id,
     )

@@ -6,7 +6,10 @@ from telethon import TelegramClient
 from telethon.errors import SessionPasswordNeededError
 from telethon.sessions import StringSession
 
+from mimic42.core.agent_runtime import TelegramProxyConfig
 from mimic42.core.onboarding import TelegramPasswordRequiredError
+from mimic42.core.telegram_proxy import TelegramProxyUnavailableError
+from mimic42.integrations.telethon_client import build_proxy_argument
 
 
 class TelethonAuthClient:
@@ -16,15 +19,25 @@ class TelethonAuthClient:
         api_id: int,
         api_hash: str,
         session_string: str | None = None,
+        proxy: TelegramProxyConfig | None = None,
     ) -> None:
-        self._client = TelegramClient(
-            StringSession(session_string or ""),
-            api_id,
-            api_hash,
-        )
+        self._proxy = proxy
+        proxy_argument = build_proxy_argument(proxy)
+        session = StringSession(session_string or "")
+        if proxy_argument is None:
+            self._client = TelegramClient(session, api_id, api_hash)
+        else:
+            self._client = TelegramClient(session, api_id, api_hash, proxy=proxy_argument)
 
     async def connect(self) -> None:
-        await self._client.connect()
+        try:
+            await self._client.connect()
+        except Exception as exc:
+            if self._proxy is not None:
+                raise TelegramProxyUnavailableError(
+                    "Не удалось подключиться через прокси: он недоступен или не пропускает Telegram"
+                ) from exc
+            raise
 
     async def disconnect(self) -> None:
         await self._client.disconnect()
@@ -74,9 +87,11 @@ class TelethonAuthClientFactory:
         api_id: int,
         api_hash: str,
         session_string: str | None = None,
+        proxy: TelegramProxyConfig | None = None,
     ) -> TelethonAuthClient:
         return TelethonAuthClient(
             api_id=api_id,
             api_hash=api_hash,
             session_string=session_string,
+            proxy=proxy,
         )

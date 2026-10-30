@@ -12,7 +12,7 @@ from pydantic import SecretStr
 from mimic42.api.app import _telegram_login_http_error, create_app
 from mimic42.config import Settings
 from mimic42.core.admin import AdminRepository, StoredTelegramSettings
-from mimic42.core.agent_runtime import AgentRuntimeState
+from mimic42.core.agent_runtime import AgentRuntimeState, TelegramProxyConfig
 from mimic42.core.agent_store import AgentRecord, InMemoryAgentStore
 from mimic42.core.crypto import FernetSecretCipher
 from mimic42.core.onboarding import (
@@ -303,6 +303,7 @@ async def test_verify_code_reports_phone_without_telegram_account() -> None:
             api_id: int,
             api_hash: str,
             session_string: str | None = None,
+            proxy: TelegramProxyConfig | None = None,
         ) -> UnoccupiedPhoneAuthClient:
             self.built_with = (api_id, api_hash)
             return UnoccupiedPhoneAuthClient(self._account)

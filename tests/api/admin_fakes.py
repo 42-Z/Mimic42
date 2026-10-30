@@ -7,20 +7,30 @@ from uuid import UUID
 from pydantic import SecretStr
 
 from mimic42.core.admin import (
+    AdminAgentNotFoundError,
+    AdminAgentProxy,
     AdminNotFoundError,
     AdminPage,
     AdminPresetDetail,
     AdminPresetSummary,
+    AdminProxyDetail,
+    AdminProxyInUseError,
+    AdminProxyNotFoundError,
+    AdminProxySummary,
+    AdminProxyValidationError,
+    AdminSecretStorageError,
     AdminStatistics,
     AdminUserDetail,
     AdminUserNotFoundError,
     AdminUserSummary,
     PresetCreateValues,
     PresetPatchValues,
+    ProxyCreateValues,
+    ProxyPatchValues,
     PublicTelegramSettings,
     StoredTelegramSettings,
 )
-from mimic42.core.agent_runtime import AgentRuntimeState
+from mimic42.core.agent_runtime import AgentRuntimeState, TelegramProxyConfig
 
 
 class FakeAdminRepository:
@@ -36,6 +46,10 @@ class FakeAdminRepository:
         users: list[AdminUserSummary] | None = None,
         user_details: dict[UUID, AdminUserDetail] | None = None,
         statistics_value: AdminStatistics | None = None,
+        proxies: list[AdminProxyDetail] | None = None,
+        proxy_configs: dict[UUID, TelegramProxyConfig] | None = None,
+        agent_proxies: dict[UUID, AdminAgentProxy | None] | None = None,
+        has_cipher: bool = True,
     ) -> None:
         self.admin_ids = set(admin_ids or ())
         self.unavailable = unavailable
@@ -52,6 +66,11 @@ class FakeAdminRepository:
         self.statistics_value = statistics_value
         self.statistics_error: Exception | None = None
         self.statistics_calls: list[dict[str, Any]] = []
+        self.proxies = {proxy.id: proxy for proxy in proxies or []}
+        self.proxy_configs = dict(proxy_configs or {})
+        self.agent_proxies = dict(agent_proxies or {})
+        self.has_cipher = has_cipher
+        self.proxy_calls: list[tuple[str, dict[str, Any]]] = []
 
     async def is_admin(self, user_id: UUID) -> bool:
         self.calls.append(user_id)
@@ -267,6 +286,154 @@ class FakeAdminRepository:
         if detail is None:
             raise AdminUserNotFoundError
         return detail
+
+    async def list_proxies(
+        self,
+        *,
+        page: int,
+        page_size: int,
+    ) -> AdminPage[AdminProxySummary]:
+        self.proxy_calls.append(("list", {"page": page, "page_size": page_size}))
+        proxies = sorted(
+            self.proxies.values(),
+            key=lambda proxy: (proxy.created_at, str(proxy.id)),
+            reverse=True,
+        )
+        start = (page - 1) * page_size
+        items = [
+            AdminProxySummary.model_validate(proxy.model_dump())
+            for proxy in proxies[start : start + page_size]
+        ]
+        return AdminPage(items=items, total=len(proxies), page=page, page_size=page_size)
+
+    async def list_proxy_options(self) -> list[AdminAgentProxy]:
+        self.proxy_calls.append(("options", {}))
+        return [
+            AdminAgentProxy(
+                id=proxy.id,
+                label=proxy.label,
+                protocol=proxy.protocol,
+                host=proxy.host,
+                port=proxy.port,
+                is_active=proxy.is_active,
+            )
+            for proxy in self.proxies.values()
+            if proxy.is_active
+        ]
+
+    async def read_proxy_config(self, proxy_id: UUID) -> TelegramProxyConfig:
+        self.proxy_calls.append(("config", {"proxy_id": proxy_id}))
+        if proxy_id not in self.proxies:
+            raise AdminProxyNotFoundError
+        config = self.proxy_configs.get(proxy_id)
+        if config is None:
+            raise AdminSecretStorageError("Пароль прокси недоступен")
+        return config
+
+    async def create_proxy(
+        self,
+        values: ProxyCreateValues,
+        *,
+        actor_user_id: UUID,
+    ) -> AdminProxyDetail:
+        self.proxy_calls.append(
+            ("create", {"values": dict(values), "actor_user_id": actor_user_id})
+        )
+        if values.get("password") and not self.has_cipher:
+            raise AdminSecretStorageError("SECRET_KEY не настроен")
+        if values.get("password") and not values.get("username"):
+            raise AdminProxyValidationError("Для пароля укажите логин прокси")
+        now = datetime.now(UTC)
+        proxy = AdminProxyDetail(
+            id=UUID(int=len(self.proxies) + 1),
+            label=values["label"],
+            protocol=values["protocol"],
+            host=values["host"],
+            port=values["port"],
+            username=values.get("username"),
+            has_password=bool(values.get("password")),
+            is_active=values["is_active"],
+            agents_total=0,
+            onboarding_total=0,
+            created_at=now,
+            updated_at=now,
+            created_by=actor_user_id,
+        )
+        self.proxies[proxy.id] = proxy
+        return proxy
+
+    async def update_proxy(
+        self,
+        proxy_id: UUID,
+        values: ProxyPatchValues,
+        *,
+        actor_user_id: UUID,
+    ) -> AdminProxyDetail:
+        self.proxy_calls.append(
+            (
+                "update",
+                {"proxy_id": proxy_id, "values": dict(values), "actor_user_id": actor_user_id},
+            )
+        )
+        proxy = self.proxies.get(proxy_id)
+        if proxy is None:
+            raise AdminProxyNotFoundError
+        if values.get("password") and not self.has_cipher:
+            raise AdminSecretStorageError("SECRET_KEY не настроен")
+        updated = proxy.model_copy(
+            update={
+                **{key: value for key, value in values.items() if key != "password"},
+                "has_password": proxy.has_password or bool(values.get("password")),
+                "updated_at": datetime.now(UTC),
+            }
+        )
+        if updated.has_password and not updated.username:
+            raise AdminProxyValidationError("Для пароля укажите логин прокси")
+        self.proxies[proxy_id] = updated
+        return updated
+
+    async def delete_proxy(self, proxy_id: UUID, *, actor_user_id: UUID) -> None:
+        self.proxy_calls.append(("delete", {"proxy_id": proxy_id, "actor_user_id": actor_user_id}))
+        proxy = self.proxies.get(proxy_id)
+        if proxy is None:
+            raise AdminProxyNotFoundError
+        if proxy.agents_total > 0:
+            raise AdminProxyInUseError
+        del self.proxies[proxy_id]
+
+    async def assign_agent_proxy(
+        self,
+        agent_id: UUID,
+        proxy_id: UUID | None,
+        *,
+        actor_user_id: UUID,
+    ) -> AdminAgentProxy | None:
+        self.proxy_calls.append(
+            (
+                "assign",
+                {"agent_id": agent_id, "proxy_id": proxy_id, "actor_user_id": actor_user_id},
+            )
+        )
+        if agent_id not in self.agent_proxies and agent_id not in {
+            agent.agent_id for detail in self.user_details.values() for agent in detail.agents.items
+        }:
+            raise AdminAgentNotFoundError
+        if proxy_id is None:
+            self.agent_proxies[agent_id] = None
+            return None
+        proxy = self.proxies.get(proxy_id)
+        if proxy is None:
+            raise AdminProxyNotFoundError
+        assigned = AdminAgentProxy(
+            id=proxy.id,
+            label=proxy.label,
+            protocol=proxy.protocol,
+            host=proxy.host,
+            port=proxy.port,
+            is_active=proxy.is_active,
+        )
+        self.agent_proxies[agent_id] = assigned
+        return assigned
 
     async def statistics(
         self,

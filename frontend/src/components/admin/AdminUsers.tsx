@@ -1,8 +1,13 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Bot, Search, UserRound, UsersRound } from 'lucide-react';
-import { useAdminUser, useAdminUsers } from '@/hooks/useAdmin';
+import { Bot, Network, Search, UserRound, UsersRound } from 'lucide-react';
+import {
+  useAdminActions,
+  useAdminProxyOptions,
+  useAdminUser,
+  useAdminUsers,
+} from '@/hooks/useAdmin';
 import { AgentStatusBadge } from '@/components/agents/AgentStatusBadge';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
@@ -31,8 +36,9 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { AdminPagination } from '@/components/admin/AdminPagination';
-import type { AgentState } from '@/types';
-import type { AdminAgentSummary, AdminUserSummary } from '@/types/admin';
+import { useToast } from '@/components/ui/toast';
+import type { AgentState, ApiError } from '@/types';
+import type { AdminAgentProxy, AdminAgentSummary, AdminUserSummary } from '@/types/admin';
 
 const USER_PAGE_SIZE = 25;
 const AGENT_PAGE_SIZE = 5;
@@ -169,32 +175,64 @@ function UserRow({
 
 function UserAgentsTable({
   agents,
+  proxyOptions,
+  proxyOptionsLoading,
+  pendingAgentId,
+  onAssignProxy,
 }: {
   agents: AdminAgentSummary[];
+  proxyOptions: AdminAgentProxy[];
+  proxyOptionsLoading: boolean;
+  pendingAgentId: string | null;
+  onAssignProxy: (agentId: string, proxyId: string | null) => void;
 }) {
   return (
-    <Table className="min-w-[32rem] border border-border">
+    <Table className="min-w-[46rem] border border-border">
       <TableHeader>
         <TableRow>
           <TableHead scope="col">Имя</TableHead>
           <TableHead scope="col">Модель</TableHead>
           <TableHead scope="col">Состояние</TableHead>
+          <TableHead scope="col">Прокси</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
-        {agents.map((agent) => (
-          <TableRow key={agent.agent_id}>
-            <TableCell className="max-w-64 whitespace-normal break-words font-medium">
-              {agent.name}
-            </TableCell>
-            <TableCell className="max-w-64 whitespace-normal break-all font-mono text-xs text-muted-foreground">
-              {agent.llm_model}
-            </TableCell>
-            <TableCell>
-              <AgentStatusBadge size="sm" state={agent.state} />
-            </TableCell>
-          </TableRow>
-        ))}
+        {agents.map((agent) => {
+          const options =
+            agent.proxy && !proxyOptions.some((proxy) => proxy.id === agent.proxy?.id)
+              ? [agent.proxy, ...proxyOptions]
+              : proxyOptions;
+          return (
+            <TableRow key={agent.agent_id}>
+              <TableCell className="max-w-64 whitespace-normal break-words font-medium">
+                {agent.name}
+              </TableCell>
+              <TableCell className="max-w-64 whitespace-normal break-all font-mono text-xs text-muted-foreground">
+                {agent.llm_model}
+              </TableCell>
+              <TableCell>
+                <AgentStatusBadge size="sm" state={agent.state} />
+              </TableCell>
+              <TableCell className="min-w-52">
+                <select
+                  aria-label={`Прокси мимика ${agent.name}`}
+                  className="h-8 w-full rounded-sm border border-border bg-background px-2 font-mono text-xs text-foreground transition-colors hover:border-primary/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:opacity-50 [&>option]:bg-card [&>option]:text-foreground"
+                  disabled={proxyOptionsLoading || pendingAgentId === agent.agent_id}
+                  onChange={(event) => onAssignProxy(agent.agent_id, event.target.value || null)}
+                  value={agent.proxy?.id ?? ''}
+                >
+                  <option value="">Без прокси</option>
+                  {options.map((proxy) => (
+                    <option key={proxy.id} value={proxy.id}>
+                      {proxy.label} · {proxy.protocol.toUpperCase()} · {proxy.host}:{proxy.port}
+                      {proxy.is_active ? '' : ' · отключён'}
+                    </option>
+                  ))}
+                </select>
+              </TableCell>
+            </TableRow>
+          );
+        })}
       </TableBody>
     </Table>
   );
@@ -206,8 +244,13 @@ export function AdminUsers() {
   const [debouncedSearch, setDebouncedSearch] = useState(filters.q);
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
   const [agentPage, setAgentPage] = useState(1);
+  const [pendingProxyAgentId, setPendingProxyAgentId] = useState<string | null>(null);
+  const [proxyError, setProxyError] = useState<string | null>(null);
   const usersQuery = useAdminUsers(filters.q, filters.page, USER_PAGE_SIZE);
   const detailQuery = useAdminUser(selectedUserId ?? '', agentPage, AGENT_PAGE_SIZE);
+  const proxyOptionsQuery = useAdminProxyOptions(selectedUserId !== null);
+  const { assignAgentProxy } = useAdminActions();
+  const { toast } = useToast();
   const waitingForSearch = normalizeSearch(searchInput) !== filters.q;
 
   useEffect(() => {
@@ -268,8 +311,32 @@ export function AdminUsers() {
   };
 
   const closeDetails = () => {
+    if (pendingProxyAgentId !== null) return;
     setSelectedUserId(null);
     setAgentPage(1);
+    setProxyError(null);
+  };
+
+  const assignProxy = async (agentId: string, proxyId: string | null) => {
+    if (pendingProxyAgentId !== null) return;
+    setPendingProxyAgentId(agentId);
+    setProxyError(null);
+    try {
+      await assignAgentProxy(agentId, proxyId);
+      toast('Прокси мимика обновлён.', 'success');
+    } catch (error) {
+      const detail =
+        typeof error === 'object' && error !== null && 'detail' in error
+          ? (error as Partial<ApiError>).detail
+          : undefined;
+      setProxyError(
+        typeof detail === 'string' && detail
+          ? detail
+          : 'Не удалось сменить прокси. Повторите попытку.',
+      );
+    } finally {
+      setPendingProxyAgentId(null);
+    }
   };
 
   const userData = usersQuery.data;
@@ -444,7 +511,33 @@ export function AdminUsers() {
               </Empty>
             ) : (
               <>
-                <UserAgentsTable agents={detail.agents.items} />
+                {proxyError && (
+                  <Alert variant="destructive">
+                    <Network aria-hidden="true" />
+                    <div className="min-w-0">
+                      <AlertTitle>Прокси не изменён</AlertTitle>
+                      <AlertDescription>{proxyError}</AlertDescription>
+                    </div>
+                  </Alert>
+                )}
+                {proxyOptionsQuery.isError && (
+                  <Alert>
+                    <Network aria-hidden="true" />
+                    <div className="min-w-0">
+                      <AlertTitle>Пул прокси недоступен</AlertTitle>
+                      <AlertDescription>
+                        Список прокси не загрузился: сменить назначение сейчас нельзя.
+                      </AlertDescription>
+                    </div>
+                  </Alert>
+                )}
+                <UserAgentsTable
+                  agents={detail.agents.items}
+                  onAssignProxy={(agentId, proxyId) => void assignProxy(agentId, proxyId)}
+                  pendingAgentId={pendingProxyAgentId}
+                  proxyOptions={proxyOptionsQuery.data ?? []}
+                  proxyOptionsLoading={proxyOptionsQuery.isLoading || proxyOptionsQuery.isError}
+                />
                 {detail.agents.total > detail.agents.page_size || detail.agents.page > 1 ? (
                   <AdminPagination
                     onPageChange={setAgentPage}

@@ -34,8 +34,10 @@ from mimic42.integrations.database_models import (
     AgentMessageModel,
     AgentModel,
     AgentOnboardingSessionModel,
+    TelegramProxyModel,
     TelegramSessionModel,
 )
+from mimic42.integrations.database_proxies import telegram_proxy_config
 from mimic42.integrations.database_warmup import load_warmup_state
 
 logger = logging.getLogger("mimic42.agent_store")
@@ -198,7 +200,12 @@ class DatabaseAgentStore:
                 .with_for_update()
             )
             if telegram_session is None:
-                telegram_session = TelegramSessionModel(agent_id=session.onboarding_id)
+                telegram_session = TelegramSessionModel(
+                    agent_id=session.onboarding_id,
+                    # Прокси фиксируется только при создании. Повторная
+                    # финализация не должна откатывать ручную смену админа.
+                    proxy_id=session.proxy_id,
+                )
                 db_session.add(telegram_session)
 
             telegram_session.session_name = session.onboarding_id.hex
@@ -254,6 +261,9 @@ class DatabaseAgentStore:
             # в признаки аккаунта и может меняться у того же пользователя.
             telegram_session.username = session.username
             telegram_session.authorization_status = "authorized"
+            # Для агента без прокси автовыдача сработала на этот вход: фиксируем
+            # его, иначе аккаунт войдёт через прокси, а работать будет напрямую.
+            telegram_session.proxy_id = session.proxy_id
             telegram_session.last_authorized_at = _now()
             telegram_session.last_error = None
             await db_session.commit()
@@ -261,14 +271,18 @@ class DatabaseAgentStore:
     async def get_runtime_config(self, agent_id: UUID) -> AgentRuntimeConfig:
         async with self._session_factory() as db_session:
             row = await db_session.execute(
-                select(AgentModel, TelegramSessionModel)
+                select(AgentModel, TelegramSessionModel, TelegramProxyModel)
                 .join(TelegramSessionModel, TelegramSessionModel.agent_id == AgentModel.id)
+                .outerjoin(
+                    TelegramProxyModel,
+                    TelegramProxyModel.id == TelegramSessionModel.proxy_id,
+                )
                 .where(AgentModel.id == agent_id)
             )
             item = row.first()
             if item is None:
                 raise KeyError(f"Agent {agent_id} does not have a runtime config")
-            agent, telegram_session = item
+            agent, telegram_session, proxy_model = item
             from mimic42.core.onboarding import load_default_system_prompt
 
             return AgentRuntimeConfig(
@@ -286,6 +300,11 @@ class DatabaseAgentStore:
                     else telegram_session.session_ciphertext
                 ),
                 telegram_session_token=telegram_session.session_ciphertext,
+                telegram_proxy=(
+                    telegram_proxy_config(proxy_model, self._cipher)
+                    if proxy_model is not None
+                    else None
+                ),
                 llm_model=(
                     agent.settings.get("model", self._llm_model)
                     if agent.settings

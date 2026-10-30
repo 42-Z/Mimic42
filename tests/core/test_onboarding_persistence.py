@@ -6,7 +6,7 @@ from uuid import UUID, uuid4
 import pytest
 from telethon.errors import FloodWaitError
 
-from mimic42.core.agent_runtime import AgentRuntimeState
+from mimic42.core.agent_runtime import AgentRuntimeState, TelegramProxyConfig
 from mimic42.core.agent_store import InMemoryAgentStore
 from mimic42.core.onboarding import (
     AgentOnboardingService,
@@ -38,6 +38,7 @@ class UnusedTelegramFactory:
         api_id: int,
         api_hash: str,
         session_string: str | None = None,
+        proxy: TelegramProxyConfig | None = None,
     ) -> TelegramAuthClient:
         raise AssertionError("Telegram factory should not be used while finalizing an agent")
 
@@ -190,6 +191,7 @@ async def test_verify_telegram_code_survives_get_me_failure() -> None:
             api_id: int,
             api_hash: str,
             session_string: str | None = None,
+            proxy: TelegramProxyConfig | None = None,
         ) -> FakeTelegramAuthClient:
             return FailingGetMeClient(self._account)
 
@@ -315,6 +317,7 @@ class FloodedAuthFactory:
         api_id: int,
         api_hash: str,
         session_string: str | None = None,
+        proxy: TelegramProxyConfig | None = None,
     ) -> TelegramAuthClient:
         return FloodedAuthClient(FakeTelegramAccount(), self._seconds)
 

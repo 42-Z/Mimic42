@@ -15,6 +15,9 @@ export const queryKeys = {
       ['admin', userId, 'presets', { q, kind, page, pageSize }] as const,
     preset: (userId: string, presetId: string) => ['admin', userId, 'preset', presetId] as const,
     telegram: (userId: string) => ['admin', userId, 'telegram'] as const,
+    proxies: (userId: string, page: number, pageSize: number) =>
+      ['admin', userId, 'proxies', { page, pageSize }] as const,
+    proxyOptions: (userId: string) => ['admin', userId, 'proxy-options'] as const,
     statistics: (userId: string, days: 7 | 30) => ['admin', userId, 'statistics', days] as const,
   },
 

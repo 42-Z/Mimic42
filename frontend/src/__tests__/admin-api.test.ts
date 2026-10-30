@@ -128,6 +128,8 @@ describe('adminApi', () => {
     await adminApi.preset('preset-id', { signal });
     await adminApi.telegramSettings({ signal });
     await adminApi.statistics(30, { signal });
+    await adminApi.proxies({ page: 2, page_size: 10 }, { signal });
+    await adminApi.proxyOptions({ signal });
     record(requests);
 
     expect(captured.map(({ method, url, params, signal: requestSignal }) => ({
@@ -152,6 +154,13 @@ describe('adminApi', () => {
       { method: 'get', url: '/admin/presets/preset-id', params: undefined, signal },
       { method: 'get', url: '/admin/telegram-settings', params: undefined, signal },
       { method: 'get', url: '/admin/statistics', params: { days: 30 }, signal },
+      {
+        method: 'get',
+        url: '/admin/proxies',
+        params: { page: 2, page_size: 10 },
+        signal,
+      },
+      { method: 'get', url: '/admin/proxies/options', params: undefined, signal },
     ]);
   });
 });

@@ -13,9 +13,14 @@ from mimic42.core.agent_runtime import (
     AgentRuntimeConfig,
     AgentRuntimeState,
     AgentStatus,
+    TelegramProxyConfig,
 )
 from mimic42.core.agent_store import AgentStore
 from mimic42.core.telegram_attrs import read_attr, read_optional_attr
+from mimic42.core.telegram_proxy import (
+    TelegramProxyStore,
+    TelegramProxyUnavailableError,
+)
 
 logger = logging.getLogger("mimic42.onboarding")
 
@@ -88,6 +93,7 @@ class OnboardingSession(BaseModel):
     soul_prompt: str | None = None
     settings: dict[str, Any] = Field(default_factory=dict)
     completed_agent_id: UUID | None = None
+    proxy_id: UUID | None = None
 
 
 class OnboardingPublicStatus(BaseModel):
@@ -195,6 +201,7 @@ class TelegramAuthClientFactory(Protocol):
         api_id: int,
         api_hash: str,
         session_string: str | None = None,
+        proxy: TelegramProxyConfig | None = None,
     ) -> TelegramAuthClient: ...
 
 
@@ -206,11 +213,13 @@ class AgentOnboardingService:
         telegram_factory: TelegramAuthClientFactory,
         cipher: SecretCipher | None = None,
         agent_store: AgentStore | None = None,
+        proxy_store: TelegramProxyStore | None = None,
     ) -> None:
         self._repository = repository or InMemoryOnboardingRepository()
         self._telegram_factory = telegram_factory
         self._cipher = cipher or PlainTextCipher()
         self._agent_store = agent_store
+        self._proxy_store = proxy_store
         self._llm_model = DEFAULT_LLM_MODEL
 
     async def request_telegram_code(
@@ -233,16 +242,46 @@ class AgentOnboardingService:
             # Метка завершения переживает перезапись строки: иначе rebind-сессия
             # агента снова стала бы черновиком мастера онбординга.
             completed_agent_id = existing.completed_agent_id
+            proxy_id = existing.proxy_id
         else:
             onboarding_id = uuid4()
             name = None
             soul_prompt = None
             settings = {}
             completed_agent_id = None
+            proxy_id = None
+
+        proxy: TelegramProxyConfig | None = None
+        if self._proxy_store is not None:
+            if proxy_id is not None:
+                try:
+                    proxy = await self._proxy_store.load(proxy_id)
+                except TelegramProxyUnavailableError:
+                    if completed_agent_id is not None:
+                        # Перепривязка работающего агента: прямое соединение
+                        # сменило бы IP аккаунта между кодом и работой.
+                        raise
+                    # Черновик ещё не входил в Telegram: сломанная запись не
+                    # должна запирать мастер, прямое соединение здесь безопасно.
+                    logger.warning(
+                        "Прокси %s недоступен, онбординг продолжится напрямую",
+                        proxy_id,
+                        exc_info=True,
+                    )
+                    proxy_id = None
+            elif completed_agent_id is None:
+                # Только новый мимик получает прокси автоматически. У
+                # существующего агента прокси снят админом осознанно, и
+                # перепривязка не должна возвращать его из пула.
+                assignment = await self._proxy_store.allocate()
+                if assignment is not None:
+                    proxy_id = assignment.proxy_id
+                    proxy = assignment.config
 
         client = self._telegram_factory.build(
             api_id=credentials.api_id,
             api_hash=credentials.api_hash,
+            proxy=proxy,
         )
         try:
             try:
@@ -284,6 +323,7 @@ class AgentOnboardingService:
             soul_prompt=soul_prompt,
             settings=settings,
             completed_agent_id=completed_agent_id,
+            proxy_id=proxy_id,
         )
         await self._repository.save(session)
         return _public_status(session)
@@ -338,6 +378,12 @@ class AgentOnboardingService:
             api_hash=self._cipher.decrypt(existing.api_hash_secret),
             phone_number=existing.phone_number,
         )
+        if self._proxy_store is not None:
+            # Для работающего агента истина — telegram_sessions.proxy_id: админ
+            # мог сменить или снять прокси после создания. Строка онбординга
+            # хранит лишь первоначальный выбор и не должна его возвращать.
+            assignment = await self._proxy_store.assignment_for_agent(agent_id)
+            existing.proxy_id = assignment.proxy_id if assignment is not None else None
         # Старый AUTHORIZED нельзя оставлять пригодным для confirm, пока новый
         # код ещё запрашивается. Если Telegram недоступен, повторная попытка
         # начнёт flow заново, но применить прежнюю session string уже нельзя.
@@ -363,10 +409,16 @@ class AgentOnboardingService:
             or session.phone_number is None
         ):
             raise TelegramAuthorizationIncompleteError(onboarding_id)
+        proxy: TelegramProxyConfig | None = None
+        if self._proxy_store is not None and session.proxy_id is not None:
+            # Тот же прокси, что и при запросе кода: смена IP между шагами
+            # выглядит для Telegram подозрительнее, чем явная ошибка.
+            proxy = await self._proxy_store.load(session.proxy_id)
         client = self._telegram_factory.build(
             api_id=session.api_id,
             api_hash=self._cipher.decrypt(session.api_hash_secret),
             session_string=_decrypt_optional(self._cipher, session.session_secret),
+            proxy=proxy,
         )
         try:
             try:
@@ -489,6 +541,10 @@ class AgentOnboardingService:
         if not session.soul_prompt or session.api_id is None or session.api_hash_secret is None:
             raise TelegramAuthorizationIncompleteError(onboarding_id)
 
+        proxy: TelegramProxyConfig | None = None
+        if self._proxy_store is not None and session.proxy_id is not None:
+            proxy = await self._proxy_store.load(session.proxy_id)
+
         return AgentRuntimeConfig(
             agent_id=session.onboarding_id,
             owner_id=session.owner_id,
@@ -496,6 +552,7 @@ class AgentOnboardingService:
             telegram_api_hash=self._cipher.decrypt(session.api_hash_secret),
             telegram_session_string=_decrypt_optional(self._cipher, session.session_secret),
             telegram_session_token=session.session_secret,
+            telegram_proxy=proxy,
             llm_model=self._llm_model,
             system_prompt=load_default_system_prompt(),
             soul_prompt=session.soul_prompt,

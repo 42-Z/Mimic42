@@ -4,7 +4,7 @@ from uuid import uuid4
 
 import pytest
 
-from mimic42.core.agent_runtime import AgentRuntimeState
+from mimic42.core.agent_runtime import AgentRuntimeState, TelegramProxyConfig
 from mimic42.core.agent_store import InMemoryAgentStore
 from mimic42.core.onboarding import (
     AgentOnboardingService,
@@ -203,6 +203,7 @@ async def test_start_rebind_invalidates_old_authorization_before_requesting_code
             api_id: int,
             api_hash: str,
             session_string: str | None = None,
+            proxy: TelegramProxyConfig | None = None,
         ) -> FakeTelegramAuthClient:
             return FailingCodeClient(FakeTelegramAccount())
 
