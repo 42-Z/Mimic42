@@ -8,15 +8,17 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import os
 import subprocess
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Coroutine, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
+from typing import Any, cast
 
 import httpx
 import pytest
@@ -58,6 +60,16 @@ NAVIGATION_TIMEOUT_MS = 60_000
 # Как у Playwright APIRequestContext: первый старт агента может тянуть
 # холодные импорты LangChain, поэтому дефолтных 5 секунд httpx мало.
 HTTP_TIMEOUT_SECONDS = 30.0
+
+
+def _run_async[T](coro: Coroutine[Any, Any, T]) -> T:
+    """Выполнить корутину вне event loop, в котором живёт sync-фикстура.
+
+    pytest-playwright поднимает sync-фикстуры внутри собственного цикла:
+    `asyncio.run` там падает с «cannot be called from a running event loop».
+    """
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return cast("T", pool.submit(asyncio.run, coro).result(timeout=60))
 
 
 def _new_context(browser: Browser, *, storage_state: str | None = None) -> BrowserContext:
@@ -138,7 +150,7 @@ def servers() -> Iterator[None]:
     app_port = int(os.environ.get("E2E_APP_PORT", "3000"))
     env["CORS_ALLOW_ORIGINS"] = f"http://127.0.0.1:{app_port},http://localhost:{app_port}"
     assert_test_project(env["SUPABASE_URL"], env["DATABASE_CONNECTION_STRING"])
-    previous_telegram_settings = asyncio.run(
+    previous_telegram_settings = _run_async(
         seed_platform_telegram_settings(
             env["DATABASE_CONNECTION_STRING"],
             secret_key=env["SECRET_KEY"],
@@ -180,7 +192,7 @@ def servers() -> Iterator[None]:
         finally:
             terminate(api_proc)
     finally:
-        asyncio.run(
+        _run_async(
             restore_platform_telegram_settings(
                 env["DATABASE_CONNECTION_STRING"],
                 previous_telegram_settings,
