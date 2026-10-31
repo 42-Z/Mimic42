@@ -763,6 +763,11 @@ def create_app(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Не удалось создать агента: идентификатор уже занят другим агентом.",
             ) from exc
+        except OnboardingAlreadyCompletedError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Онбординг уже связан с агентом. Используйте перепривязку Telegram.",
+            ) from exc
 
     @app.get(
         "/api/v1/agents/{agent_id}/messages",

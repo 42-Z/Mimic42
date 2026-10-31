@@ -12,12 +12,14 @@ from pydantic import SecretStr
 from mimic42.api.app import _telegram_login_http_error, create_app
 from mimic42.config import Settings
 from mimic42.core.admin import AdminRepository, StoredTelegramSettings
-from mimic42.core.agent_runtime import AgentRuntimeState, TelegramProxyConfig
+from mimic42.core.agent_runtime import AgentRuntimeState, AgentStatus, TelegramProxyConfig
 from mimic42.core.agent_store import AgentRecord, InMemoryAgentStore
 from mimic42.core.crypto import FernetSecretCipher
 from mimic42.core.onboarding import (
     AgentOnboardingService,
+    AgentProfileInput,
     InMemoryOnboardingRepository,
+    OnboardingAlreadyCompletedError,
     OnboardingPublicStatus,
     OnboardingSession,
     TelegramLoginStatus,
@@ -358,6 +360,50 @@ class PasswordRequiredOnboardingService(AgentOnboardingService):
     ) -> OnboardingPublicStatus:
         assert owner_id == self._owner_id
         raise TelegramPasswordRequiredError
+
+
+@pytest.mark.asyncio
+async def test_finalize_reports_linked_onboarding_as_conflict() -> None:
+    owner_id = uuid4()
+    onboarding_id = uuid4()
+
+    class LinkedOnboardingService(AgentOnboardingService):
+        def __init__(self, owner_id: UUID) -> None:
+            self._owner_id = owner_id
+
+        async def get_status(self, onboarding_id: UUID) -> OnboardingPublicStatus:
+            return OnboardingPublicStatus(
+                onboarding_id=onboarding_id,
+                owner_id=self._owner_id,
+                authorization_status=TelegramLoginStatus.AUTHORIZED,
+                phone_number="+79990000000",
+            )
+
+        async def finalize_agent(
+            self,
+            onboarding_id: UUID,
+            profile: AgentProfileInput,
+            *,
+            owner_id: UUID | None = None,
+        ) -> AgentStatus:
+            assert owner_id == self._owner_id
+            raise OnboardingAlreadyCompletedError(onboarding_id)
+
+    service = LinkedOnboardingService(owner_id)
+    app = create_app(onboarding_service=service, auth_verifier=FakeAuthVerifier(owner_id))
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        response = await client.post(
+            f"/api/v1/onboarding/{onboarding_id}/agent",
+            headers=AUTH_HEADERS,
+            json={"name": "Mimic", "soul_prompt": "Short replies"},
+        )
+
+    assert response.status_code == 409
+    assert "перепривязку" in response.json()["detail"]
 
 
 @pytest.mark.asyncio
