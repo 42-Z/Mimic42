@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Any
+from unittest.mock import Mock
 from uuid import UUID, uuid4
 
 import pytest
@@ -12,23 +13,301 @@ from mimic42.api.app import create_app
 from mimic42.core.agent_runtime import (
     AgentRuntimeConfig,
     AgentRuntimeState,
+    MimicAgentRuntime,
+    TelegramProxyConfig,
 )
 from mimic42.core.agent_store import AgentRecord, InMemoryAgentStore
+from mimic42.core.manager import AgentManager
 from mimic42.core.onboarding import (
     AgentOnboardingService,
     InMemoryOnboardingRepository,
     OnboardingSession,
     TelegramLoginStatus,
 )
-from mimic42.testing.telegram import FakeTelegramAccount, FakeTelegramAuthClientFactory
+from mimic42.core.telegram_app_settings import TelegramAppSettings
+from mimic42.core.telegram_proxy import TelegramProxyUnavailableError
+from mimic42.testing.telegram import (
+    FakeTelegramAccount,
+    FakeTelegramAuthClientFactory,
+    FakeTelegramClient,
+)
 from tests.api.auth_helpers import AUTH_HEADERS, FakeAuthVerifier
 from tests.api.fakes import FakeAgentManager, configured_telegram_app
+from tests.core.test_agent_runtime import FakeLangChainAgent
 
 
 def create_test_app(**kwargs: Any) -> FastAPI:
     """Приложение с парой, сохранённой в панели (единственный источник)."""
     kwargs.setdefault("telegram_app_settings", configured_telegram_app())
     return create_app(**kwargs)
+
+
+class SavedConfigAgentStore(InMemoryAgentStore):
+    def __init__(self, config: AgentRuntimeConfig) -> None:
+        super().__init__(
+            agents=[
+                AgentRecord(
+                    agent_id=config.agent_id,
+                    owner_id=config.owner_id,
+                    name=config.name,
+                    state=AgentRuntimeState.STOPPED,
+                )
+            ]
+        )
+        self.config = config
+        self.loaded_ids: list[UUID] = []
+        self.load_error: Exception | None = None
+
+    async def get_runtime_config(self, agent_id: UUID) -> AgentRuntimeConfig:
+        self.loaded_ids.append(agent_id)
+        if self.load_error is not None:
+            raise self.load_error
+        if agent_id != self.config.agent_id:
+            raise KeyError(agent_id)
+        return self.config
+
+
+@pytest.fixture
+def saved_agent_config() -> AgentRuntimeConfig:
+    return AgentRuntimeConfig(
+        agent_id=uuid4(),
+        owner_id=uuid4(),
+        telegram_api_id=12345,
+        telegram_api_hash="saved-app-hash",
+        telegram_session_string="saved-session",
+        telegram_session_token="saved-session-token",
+        telegram_proxy=TelegramProxyConfig(protocol="socks5", host="assigned.invalid", port=1080),
+        system_prompt="Saved system prompt",
+        soul_prompt="Saved personality",
+        name="Saved agent",
+    )
+
+
+def _create_runtime(config: AgentRuntimeConfig) -> MimicAgentRuntime:
+    return MimicAgentRuntime(
+        config=config,
+        telegram_client=FakeTelegramClient(),
+        langchain_agent=FakeLangChainAgent(),
+    )
+
+
+@pytest.mark.parametrize("auto_start", [False, True])
+@pytest.mark.parametrize("assigned_proxy", [False, True])
+@pytest.mark.parametrize("server_defaults", [False, True])
+@pytest.mark.asyncio
+async def test_create_saved_agent_uses_only_saved_runtime_config(
+    saved_agent_config: AgentRuntimeConfig,
+    auto_start: bool,
+    assigned_proxy: bool,
+    server_defaults: bool,
+) -> None:
+    if not assigned_proxy:
+        saved_agent_config.telegram_proxy = None
+    store = SavedConfigAgentStore(saved_agent_config)
+    factory = Mock(side_effect=_create_runtime)
+    manager = AgentManager(runtime_factory=factory, config_loader=store.get_runtime_config)
+    app = create_app(
+        manager=manager,
+        agent_store=store,
+        auth_verifier=FakeAuthVerifier(saved_agent_config.owner_id),
+        telegram_app_settings=(
+            configured_telegram_app()
+            if server_defaults
+            else TelegramAppSettings(repository=None, cipher=None)
+        ),
+    )
+    payload = {
+        "agent_id": str(saved_agent_config.agent_id),
+        "telegram_session_string": "request-session",
+        "soul_prompt": "Request personality",
+        "auto_start": auto_start,
+    }
+
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post("/api/v1/agents", headers=AUTH_HEADERS, json=payload)
+            assert response.status_code == 201
+            assert response.json() == {
+                "agent_id": str(saved_agent_config.agent_id),
+                "owner_id": str(saved_agent_config.owner_id),
+                "state": "running" if auto_start else "stopped",
+            }
+            runtime = await manager.get_agent(saved_agent_config.agent_id)
+            assert runtime.config == saved_agent_config
+            duplicate = await client.post("/api/v1/agents", headers=AUTH_HEADERS, json=payload)
+
+        assert duplicate.status_code == 409
+        assert factory.call_count == 1
+        assert (await manager.get_agent(saved_agent_config.agent_id)) is runtime
+    finally:
+        await manager.shutdown()
+
+
+@pytest.mark.parametrize("target", ["unknown", "generated", "foreign", "foreign_cached"])
+@pytest.mark.parametrize("auto_start", [False, True])
+@pytest.mark.asyncio
+async def test_create_saved_agent_rejects_unowned_ids_before_loading_config(
+    saved_agent_config: AgentRuntimeConfig,
+    target: str,
+    auto_start: bool,
+) -> None:
+    user_id = uuid4()
+    store = SavedConfigAgentStore(saved_agent_config)
+    factory = Mock(side_effect=_create_runtime)
+    manager = AgentManager(runtime_factory=factory, config_loader=store.get_runtime_config)
+    if target == "foreign_cached":
+        await manager.create_agent(saved_agent_config)
+        factory.reset_mock()
+    app = create_test_app(
+        manager=manager,
+        agent_store=store,
+        auth_verifier=FakeAuthVerifier(user_id),
+    )
+    payload: dict[str, object] = {
+        "telegram_session_string": "request-session",
+        "soul_prompt": "Request personality",
+        "auto_start": auto_start,
+    }
+    if target != "generated":
+        payload["agent_id"] = str(
+            saved_agent_config.agent_id if target.startswith("foreign") else uuid4()
+        )
+
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post("/api/v1/agents", headers=AUTH_HEADERS, json=payload)
+
+        assert response.status_code == 404
+        assert response.json() == {"detail": "Агент не найден"}
+        assert store.loaded_ids == []
+        factory.assert_not_called()
+        assert await manager.list_agents(owner_id=user_id) == []
+    finally:
+        await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_create_saved_agent_rechecks_loaded_config_owner(
+    saved_agent_config: AgentRuntimeConfig,
+) -> None:
+    store = SavedConfigAgentStore(saved_agent_config)
+    store.config = saved_agent_config.model_copy(update={"owner_id": uuid4()})
+    factory = Mock(side_effect=_create_runtime)
+    manager = AgentManager(runtime_factory=factory, config_loader=store.get_runtime_config)
+    app = create_test_app(
+        manager=manager,
+        agent_store=store,
+        auth_verifier=FakeAuthVerifier(saved_agent_config.owner_id),
+    )
+
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post(
+                "/api/v1/agents",
+                headers=AUTH_HEADERS,
+                json={"agent_id": str(saved_agent_config.agent_id), "auto_start": True},
+            )
+
+        assert response.status_code == 404
+        assert response.json() == {"detail": "Агент не найден"}
+        factory.assert_not_called()
+        assert await manager.list_agents() == []
+    finally:
+        await manager.shutdown()
+
+
+@pytest.mark.parametrize(
+    ("load_error", "expected_status"),
+    [(KeyError("missing saved config"), 404), (TelegramProxyUnavailableError("broken proxy"), 503)],
+)
+@pytest.mark.asyncio
+async def test_create_saved_agent_load_failure_never_registers_raw_fallback(
+    saved_agent_config: AgentRuntimeConfig,
+    load_error: Exception,
+    expected_status: int,
+) -> None:
+    store = SavedConfigAgentStore(saved_agent_config)
+    store.load_error = load_error
+    factory = Mock(side_effect=_create_runtime)
+    manager = AgentManager(runtime_factory=factory, config_loader=store.get_runtime_config)
+    app = create_test_app(
+        manager=manager,
+        agent_store=store,
+        auth_verifier=FakeAuthVerifier(saved_agent_config.owner_id),
+    )
+    payload = {
+        "agent_id": str(saved_agent_config.agent_id),
+        "telegram_session_string": "request-session",
+        "auto_start": True,
+    }
+
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post("/api/v1/agents", headers=AUTH_HEADERS, json=payload)
+            assert response.status_code == expected_status
+            assert "broken proxy" not in response.text
+            factory.assert_not_called()
+            assert await manager.list_agents() == []
+            store.load_error = None
+            retry = await client.post("/api/v1/agents", headers=AUTH_HEADERS, json=payload)
+
+        assert retry.status_code == 201
+        assert (await manager.get_agent(saved_agent_config.agent_id)).config == saved_agent_config
+    finally:
+        await manager.shutdown()
+
+
+@pytest.mark.parametrize("auto_start", [False, True])
+@pytest.mark.asyncio
+async def test_create_without_store_keeps_server_defaults_and_request_config(
+    auto_start: bool,
+) -> None:
+    owner_id = uuid4()
+    manager = AgentManager(runtime_factory=_create_runtime)
+    app = create_test_app(manager=manager, auth_verifier=FakeAuthVerifier(owner_id))
+    agent_id = uuid4()
+
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post(
+                "/api/v1/agents",
+                headers=AUTH_HEADERS,
+                json={
+                    "agent_id": str(agent_id),
+                    "owner_id": str(uuid4()),
+                    "telegram_api_id": 999,
+                    "telegram_api_hash": "request-app-hash",
+                    "telegram_session_string": "request-session",
+                    "soul_prompt": "Request personality",
+                    "auto_start": auto_start,
+                },
+            )
+
+        assert response.status_code == 201
+        assert response.json()["state"] == ("running" if auto_start else "stopped")
+        config = (await manager.get_agent(agent_id)).config
+        assert config.owner_id == owner_id
+        assert config.telegram_api_id == 777
+        assert config.telegram_api_hash == "deployment-hash"
+        assert config.telegram_session_string == "request-session"
+        assert config.soul_prompt == "Request personality"
+        assert config.telegram_proxy is None
+    finally:
+        await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_create_without_store_preserves_428_for_unauthorized_auto_start() -> None:
+    manager = FakeAgentManager(start_unauthorized=True)
+    app = create_test_app(manager=manager, auth_verifier=FakeAuthVerifier(uuid4()))
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/v1/agents", headers=AUTH_HEADERS, json={"auto_start": True}
+        )
+
+    assert response.status_code == 428
+    assert manager.started == []
 
 
 @pytest.mark.asyncio
