@@ -147,13 +147,7 @@ class AgentManager:
         async with self._lock:
             runtime = self._register_locked(config)
         if start:
-            try:
-                await runtime.start()
-            except Exception:
-                # Как и в start_agent: без этого БД хранит устаревший статус
-                # (например, running после рестарта), и дэшборд врёт.
-                await self._save_status(config.agent_id, AgentRuntimeState.ERROR)
-                raise
+            await self._start_created_runtime(runtime)
         return runtime
 
     async def create_saved_agent(
@@ -175,7 +169,22 @@ class AgentManager:
                 raise TypeError("config_loader must return AgentRuntimeConfig")
             if config.owner_id != owner_id:
                 raise AgentNotFoundError(agent_id)
-            return await self.create_agent(config, start=start)
+            async with self._lock:
+                if agent_id in self._removed:
+                    raise AgentNotFoundError(agent_id)
+                runtime = self._register_locked(config)
+            if start:
+                await self._start_created_runtime(runtime)
+            return runtime
+
+    async def _start_created_runtime(self, runtime: MimicAgentRuntime) -> None:
+        try:
+            await runtime.start()
+        except Exception:
+            # Как и в start_agent: без этого БД хранит устаревший статус
+            # (например, running после рестарта), и дэшборд врёт.
+            await self._save_status(runtime.config.agent_id, AgentRuntimeState.ERROR)
+            raise
 
     def _register_locked(self, config: AgentRuntimeConfig) -> MimicAgentRuntime:
         """Собрать и положить рантайм в реестр. Вызывать только под ``_lock``."""
