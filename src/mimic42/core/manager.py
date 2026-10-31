@@ -181,8 +181,6 @@ class AgentManager:
         try:
             await runtime.start()
         except Exception:
-            # Как и в start_agent: без этого БД хранит устаревший статус
-            # (например, running после рестарта), и дэшборд врёт.
             await self._save_status(runtime.config.agent_id, AgentRuntimeState.ERROR)
             raise
 
