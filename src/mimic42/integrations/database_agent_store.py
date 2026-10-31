@@ -26,7 +26,16 @@ from mimic42.core.agent_store import (
 from mimic42.core.chat_access import parse_disabled_chats
 from mimic42.core.first_comment import parse_first_comment
 from mimic42.core.media_download import MediaRef
-from mimic42.core.onboarding import OnboardingSession, SecretCipher
+from mimic42.core.onboarding import (
+    AgentProfileInput,
+    OnboardingAlreadyCompletedError,
+    OnboardingOwnershipError,
+    OnboardingSession,
+    SecretCipher,
+    TelegramAuthorizationIncompleteError,
+    TelegramAuthorizationRef,
+    TelegramLoginStaleError,
+)
 from mimic42.core.tool_config import parse_enabled_tools
 from mimic42.core.warmup import parse_warmup
 from mimic42.integrations.database_models import (
@@ -34,8 +43,11 @@ from mimic42.integrations.database_models import (
     AgentMessageModel,
     AgentModel,
     AgentOnboardingSessionModel,
+    TelegramProxyModel,
     TelegramSessionModel,
 )
+from mimic42.integrations.database_onboarding import _model_to_session
+from mimic42.integrations.database_proxies import lock_proxy_pool, telegram_proxy_config
 from mimic42.integrations.database_warmup import load_warmup_state
 
 logger = logging.getLogger("mimic42.agent_store")
@@ -168,67 +180,96 @@ class DatabaseAgentStore:
     async def create_from_onboarding(self, session: OnboardingSession) -> AgentRecord:
         if not session.name or not session.soul_prompt:
             raise ValueError("Onboarding session is missing agent profile fields")
+        return await self.finalize_onboarding(
+            session.authorization_ref(),
+            AgentProfileInput(name=session.name, soul_prompt=session.soul_prompt),
+        )
 
-        async with self._session_factory() as db_session:
-            # Acquire row-level lock to prevent TOCTOU race on concurrent finalization
+    async def finalize_onboarding(
+        self, ref: TelegramAuthorizationRef, profile: AgentProfileInput
+    ) -> AgentRecord:
+        async with self._session_factory() as db_session, db_session.begin():
+            await lock_proxy_pool(db_session)
             agent = await db_session.scalar(
-                select(AgentModel).where(AgentModel.id == session.onboarding_id).with_for_update()
+                select(AgentModel).where(AgentModel.id == ref.onboarding_id).with_for_update()
             )
-            if agent is None:
-                agent = AgentModel(id=session.onboarding_id)
-                # Настройки инструментов, выбранные пресетом в визарде, переезжают
-                # в агента при создании. Повторная финализация не откатывает
-                # настройки, которые пользователь уже менял в дашборде.
-                agent.settings = dict(session.settings)
-                db_session.add(agent)
-            elif agent.owner_id != session.owner_id:
-                # Id онбординг-сессии выбирает клиент, поэтому существующего
-                # агента переприсваивать нельзя: поддельная сессия с id чужого
-                # агента забрала бы его вместе с Telegram-сессией и характером.
-                raise AgentOwnershipError(session.onboarding_id)
-
-            agent.owner_id = session.owner_id
-            agent.name = session.name
-            agent.status = AgentRuntimeState.STOPPED.value
-            agent.soul_prompt = session.soul_prompt
-
             telegram_session = await db_session.scalar(
                 select(TelegramSessionModel)
-                .where(TelegramSessionModel.agent_id == session.onboarding_id)
+                .where(TelegramSessionModel.agent_id == ref.onboarding_id)
                 .with_for_update()
             )
-            if telegram_session is None:
-                telegram_session = TelegramSessionModel(agent_id=session.onboarding_id)
+            model = await db_session.scalar(
+                select(AgentOnboardingSessionModel)
+                .where(AgentOnboardingSessionModel.id == ref.onboarding_id)
+                .with_for_update()
+            )
+            if model is None:
+                raise TelegramLoginStaleError()
+            if agent is not None and agent.owner_id != ref.owner_id:
+                raise AgentOwnershipError(ref.onboarding_id)
+            current_ref = ref
+            if ref.completed_agent_id is None and model.completed_agent_id == ref.onboarding_id:
+                current_ref = ref.model_copy(update={"completed_agent_id": ref.onboarding_id})
+            current_ref.check(_model_to_session(model))
+            if model.completed_agent_id not in (None, ref.onboarding_id):
+                raise OnboardingAlreadyCompletedError(ref.onboarding_id)
+            if model.authorization_status != "authorized":
+                raise TelegramAuthorizationIncompleteError(ref.onboarding_id)
+            if agent is None:
+                if (
+                    model.api_id is None
+                    or model.api_hash_ciphertext is None
+                    or model.session_ciphertext is None
+                ):
+                    raise TelegramAuthorizationIncompleteError(ref.onboarding_id)
+                agent = AgentModel(
+                    id=ref.onboarding_id,
+                    owner_id=ref.owner_id,
+                    name=profile.name,
+                    soul_prompt=profile.soul_prompt,
+                    status=AgentRuntimeState.STOPPED.value,
+                    settings=dict(model.settings or {}),
+                )
+                db_session.add(agent)
+                await db_session.flush()
+                telegram_session = TelegramSessionModel(
+                    agent_id=agent.id,
+                    session_name=agent.id.hex,
+                    proxy_id=model.proxy_id,
+                    phone_number=model.phone_number,
+                    username=model.username,
+                    api_id=model.api_id,
+                    api_hash_ciphertext=model.api_hash_ciphertext,
+                    session_ciphertext=model.session_ciphertext,
+                    authorization_status="authorized",
+                    last_authorized_at=_now(),
+                )
                 db_session.add(telegram_session)
-
-            telegram_session.session_name = session.onboarding_id.hex
-            telegram_session.phone_number = session.phone_number
-            telegram_session.username = session.username
-            telegram_session.api_id = session.api_id
-            telegram_session.api_hash_ciphertext = session.api_hash_secret
-            telegram_session.session_ciphertext = session.session_secret
-            telegram_session.authorization_status = "authorized"
-            telegram_session.last_authorized_at = _now()
-
-            await db_session.commit()
+                model.agent_name = profile.name
+                model.soul_prompt = profile.soul_prompt
+            elif telegram_session is None:
+                raise TelegramLoginStaleError()
+            elif model.completed_agent_id == agent.id:
+                return _agent_record(agent)
+            model.completed_agent_id = agent.id
+            model.proxy_id = None
+            model.applied_auth_generation = model.auth_generation
+            await db_session.flush()
             return _agent_record(agent)
 
     async def rebind_telegram_session(self, agent_id: UUID, session: OnboardingSession) -> None:
-        """Обновляется только авторизация (auth key).
+        await self.apply_rebind(session.authorization_ref(), agent_id)
 
-        Номер, приложение и остальные данные агента не меняются. Строковая
-        блокировка защищает от гонки с параллельным финалом онбординга того же
-        агента.
-        """
-        if (
-            session.api_id is None
-            or session.api_hash_secret is None
-            or session.session_secret is None
-            or session.phone_number is None
-        ):
-            raise ValueError("Onboarding session is missing Telegram credentials")
-
-        async with self._session_factory() as db_session:
+    async def apply_rebind(self, ref: TelegramAuthorizationRef, agent_id: UUID) -> None:
+        async with self._session_factory() as db_session, db_session.begin():
+            await lock_proxy_pool(db_session)
+            agent = await db_session.scalar(
+                select(AgentModel).where(AgentModel.id == agent_id).with_for_update()
+            )
+            if agent is None:
+                raise KeyError(f"Agent {agent_id} does not exist")
+            if agent.owner_id != ref.owner_id:
+                raise AgentOwnershipError(agent_id)
             telegram_session = await db_session.scalar(
                 select(TelegramSessionModel)
                 .where(TelegramSessionModel.agent_id == agent_id)
@@ -236,6 +277,25 @@ class DatabaseAgentStore:
             )
             if telegram_session is None:
                 raise KeyError(f"Agent {agent_id} does not have a telegram session")
+            model = await db_session.scalar(
+                select(AgentOnboardingSessionModel)
+                .where(AgentOnboardingSessionModel.id == ref.onboarding_id)
+                .with_for_update()
+            )
+            if model is None:
+                raise TelegramLoginStaleError()
+            session = _model_to_session(model)
+            ref.check(session)
+            if session.completed_agent_id != agent_id or session.owner_id != agent.owner_id:
+                raise OnboardingOwnershipError(ref.onboarding_id)
+            if (
+                model.authorization_status != "authorized"
+                or session.api_id is None
+                or session.api_hash_secret is None
+                or session.session_secret is None
+                or session.phone_number is None
+            ):
+                raise TelegramAuthorizationIncompleteError(ref.onboarding_id)
             stored_api_hash = telegram_session.api_hash_ciphertext or ""
             rebound_api_hash = session.api_hash_secret
             if self._cipher is not None:
@@ -249,26 +309,30 @@ class DatabaseAgentStore:
                 raise TelegramAccountMismatchError(
                     "Rebind session belongs to a different Telegram account or application"
                 )
+            if model.applied_auth_generation == model.auth_generation:
+                return
             telegram_session.session_ciphertext = session.session_secret
-            # Свежий @username после перелогина заменяет прежний: он не входит
-            # в признаки аккаунта и может меняться у того же пользователя.
             telegram_session.username = session.username
             telegram_session.authorization_status = "authorized"
             telegram_session.last_authorized_at = _now()
             telegram_session.last_error = None
-            await db_session.commit()
+            model.applied_auth_generation = model.auth_generation
 
     async def get_runtime_config(self, agent_id: UUID) -> AgentRuntimeConfig:
         async with self._session_factory() as db_session:
             row = await db_session.execute(
-                select(AgentModel, TelegramSessionModel)
+                select(AgentModel, TelegramSessionModel, TelegramProxyModel)
                 .join(TelegramSessionModel, TelegramSessionModel.agent_id == AgentModel.id)
+                .outerjoin(
+                    TelegramProxyModel,
+                    TelegramProxyModel.id == TelegramSessionModel.proxy_id,
+                )
                 .where(AgentModel.id == agent_id)
             )
             item = row.first()
             if item is None:
                 raise KeyError(f"Agent {agent_id} does not have a runtime config")
-            agent, telegram_session = item
+            agent, telegram_session, proxy_model = item
             from mimic42.core.onboarding import load_default_system_prompt
 
             return AgentRuntimeConfig(
@@ -286,6 +350,11 @@ class DatabaseAgentStore:
                     else telegram_session.session_ciphertext
                 ),
                 telegram_session_token=telegram_session.session_ciphertext,
+                telegram_proxy=(
+                    telegram_proxy_config(proxy_model, self._cipher)
+                    if proxy_model is not None
+                    else None
+                ),
                 llm_model=(
                     agent.settings.get("model", self._llm_model)
                     if agent.settings
@@ -356,10 +425,9 @@ class DatabaseAgentStore:
 
     async def delete_agent(self, agent_id: UUID) -> None:
         async with self._session_factory() as db_session:
-            # Remove leftover onboarding drafts first: the FK is `on delete set null`,
-            # so without this the wizard would pick up an abandoned session.
-            # `id == agent_id` covers the originating session even when the
-            # frontend failed to mark completed_agent_id after finalization.
+            await lock_proxy_pool(db_session)
+            # Копия по id нужна для черновика, который фронтенд не успел
+            # связать через completed_agent_id: каскад её не достанет.
             await db_session.execute(
                 delete(AgentOnboardingSessionModel).where(
                     or_(

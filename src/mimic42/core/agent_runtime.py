@@ -9,10 +9,10 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any, Protocol, cast
+from typing import Any, Literal, Protocol, cast
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SecretStr
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from telethon import errors
 
@@ -155,12 +155,23 @@ class OpenerResult(StrEnum):
     RESTRICTED = "restricted"
 
 
+class TelegramProxyConfig(BaseModel):
+    """Параметры прокси, через который идёт весь трафик Telegram-клиента."""
+
+    protocol: Literal["socks5", "http"]
+    host: str = Field(min_length=1, max_length=255)
+    port: int = Field(ge=1, le=65535)
+    username: str | None = Field(default=None, max_length=255)
+    password: SecretStr | None = Field(default=None, repr=False)
+
+
 class AgentRuntimeConfig(BaseModel):
     agent_id: UUID
     owner_id: UUID
     telegram_api_id: int = Field(gt=0)
     telegram_api_hash: str = Field(min_length=1)
     telegram_session_string: str | None = Field(default=None, min_length=1)
+    telegram_proxy: TelegramProxyConfig | None = Field(default=None, exclude=True)
     # Opaque identity of the persisted session ciphertext. It is deliberately
     # separate from the decrypted Telethon string and must never be serialized.
     telegram_session_token: str | None = Field(default=None, exclude=True, repr=False)
@@ -425,8 +436,10 @@ class MimicAgentRuntime:
             from sqlalchemy.engine import CursorResult
 
             from mimic42.integrations.database_models import AgentModel, TelegramSessionModel
+            from mimic42.integrations.database_proxies import lock_proxy_pool
 
             async with self._session_factory() as db_session:
+                await lock_proxy_pool(db_session)
                 result = await db_session.execute(
                     update(TelegramSessionModel)
                     .where(

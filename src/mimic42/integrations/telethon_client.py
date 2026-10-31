@@ -7,7 +7,11 @@ from typing import Any, cast
 from telethon import TelegramClient, errors
 from telethon.sessions import StringSession
 
-from mimic42.core.agent_runtime import AgentRuntimeConfig, TelegramAuthorizationRequired
+from mimic42.core.agent_runtime import (
+    AgentRuntimeConfig,
+    TelegramAuthorizationRequired,
+    TelegramProxyConfig,
+)
 
 logger = logging.getLogger("mimic42.telethon_client")
 
@@ -47,22 +51,53 @@ class MimicTelegramClient(TelegramClient):
             raise
 
 
+def build_proxy_argument(proxy: TelegramProxyConfig | None) -> dict[str, Any] | None:
+    """Аргумент ``proxy=`` для Telethon; без прокси — None, ключ не передаётся.
+
+    Формат описан в документации Telethon и требует ``python-socks[asyncio]``.
+    """
+    if proxy is None:
+        return None
+    argument: dict[str, Any] = {
+        "proxy_type": proxy.protocol,
+        "addr": proxy.host,
+        "port": proxy.port,
+        "rdns": True,
+    }
+    if proxy.username:
+        argument["username"] = proxy.username
+    if proxy.password is not None:
+        argument["password"] = proxy.password.get_secret_value()
+    return argument
+
+
 def build_telegram_client(config: AgentRuntimeConfig) -> TelegramClient:
     if not config.telegram_session_string:
         logger.warning("Agent %s has no stored telegram session string", config.agent_id)
         raise TelegramAuthorizationRequired(
             "Сессия Telegram не привязана. Требуется привязка Telegram-аккаунта."
         )
-    client = MimicTelegramClient(
-        StringSession(config.telegram_session_string),
-        config.telegram_api_id,
-        config.telegram_api_hash,
-        # По умолчанию порог 60: Telethon сам засыпает на флуд-ошибках короче
-        # порога, а SlowModeWaitError — флуд-ошибка. Такой сон прошёл бы внутри
-        # send_message под trigger_lock и вернул бы отставание, ради устранения
-        # которого сделано окно отправки.
-        flood_sleep_threshold=0,
-    )
+    proxy_argument = build_proxy_argument(config.telegram_proxy)
+    session = StringSession(config.telegram_session_string)
+    # По умолчанию порог 60: Telethon сам засыпает на флуд-ошибках короче
+    # порога, а SlowModeWaitError — флуд-ошибка. Такой сон прошёл бы внутри
+    # send_message под trigger_lock и вернул бы отставание, ради устранения
+    # которого сделано окно отправки.
+    if proxy_argument is None:
+        client = MimicTelegramClient(
+            session,
+            config.telegram_api_id,
+            config.telegram_api_hash,
+            flood_sleep_threshold=0,
+        )
+    else:
+        client = MimicTelegramClient(
+            session,
+            config.telegram_api_id,
+            config.telegram_api_hash,
+            flood_sleep_threshold=0,
+            proxy=proxy_argument,
+        )
 
     from mimic42.integrations.telegram_tools import CustomMarkdown
 

@@ -1,16 +1,25 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
 
 import pytest
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
 from telethon import TelegramClient, errors
 from telethon.crypto import AuthKey
 from telethon.sessions import StringSession
 
-from mimic42.core.agent_runtime import AgentRuntimeConfig, TelegramAuthorizationRequired
-from mimic42.integrations.telethon_client import MimicTelegramClient, build_telegram_client
+from mimic42.core.agent_runtime import (
+    AgentRuntimeConfig,
+    TelegramAuthorizationRequired,
+    TelegramProxyConfig,
+)
+from mimic42.integrations.telethon_client import (
+    MimicTelegramClient,
+    build_proxy_argument,
+    build_telegram_client,
+)
 
 
 def _config(session_string: str | None) -> AgentRuntimeConfig:
@@ -47,6 +56,91 @@ def test_string_session_used_when_present() -> None:
     client = build_telegram_client(_config(payload))
     assert isinstance(client.session, StringSession)
     assert client.session.save() == payload
+
+
+def test_proxy_argument_for_socks5_with_credentials() -> None:
+    proxy = TelegramProxyConfig(
+        protocol="socks5",
+        host="proxy.example.test",
+        port=1080,
+        username="mimic",
+        password=SecretStr("secret"),
+    )
+
+    assert build_proxy_argument(proxy) == {
+        "proxy_type": "socks5",
+        "addr": "proxy.example.test",
+        "port": 1080,
+        "username": "mimic",
+        "password": "secret",
+        "rdns": True,
+    }
+
+
+def test_proxy_argument_for_http_without_credentials() -> None:
+    proxy = TelegramProxyConfig(protocol="http", host="10.0.0.1", port=3128)
+
+    assert build_proxy_argument(proxy) == {
+        "proxy_type": "http",
+        "addr": "10.0.0.1",
+        "port": 3128,
+        "rdns": True,
+    }
+
+
+def test_client_without_proxy_gets_no_proxy_argument(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_client(*args: Any, **kwargs: Any) -> SimpleNamespace:
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return SimpleNamespace()
+
+    monkeypatch.setattr(
+        "mimic42.integrations.telethon_client.MimicTelegramClient",
+        fake_client,
+    )
+
+    build_telegram_client(_config(_valid_session_string()))
+
+    assert "proxy" not in captured["kwargs"]
+
+
+def test_client_passes_proxy_argument_to_telethon(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_client(*args: Any, **kwargs: Any) -> SimpleNamespace:
+        captured["kwargs"] = kwargs
+        return SimpleNamespace()
+
+    monkeypatch.setattr(
+        "mimic42.integrations.telethon_client.MimicTelegramClient",
+        fake_client,
+    )
+    config = _config(_valid_session_string()).model_copy(
+        update={
+            "telegram_proxy": TelegramProxyConfig(
+                protocol="socks5",
+                host="proxy.example.test",
+                port=1080,
+                username="mimic",
+                password=SecretStr("secret"),
+            )
+        }
+    )
+
+    build_telegram_client(config)
+
+    assert captured["kwargs"]["proxy"] == {
+        "proxy_type": "socks5",
+        "addr": "proxy.example.test",
+        "port": 1080,
+        "username": "mimic",
+        "password": "secret",
+        "rdns": True,
+    }
 
 
 def test_flood_waits_are_not_slept_through_by_telethon() -> None:

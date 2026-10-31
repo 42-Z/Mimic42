@@ -20,6 +20,7 @@ from fastapi import (
     status,
 )
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from mimic42.api.admin import get_admin_identity
@@ -67,6 +68,8 @@ from mimic42.core.onboarding import (
     TelegramAuthorizationIncompleteError,
     TelegramCodeVerification,
     TelegramCredentials,
+    TelegramLoginRouteChangedError,
+    TelegramLoginStaleError,
     TelegramPasswordRequiredError,
     TelegramRebindUnavailableError,
 )
@@ -75,6 +78,7 @@ from mimic42.core.telegram_app_settings import (
     TelegramAppSettings,
     TelegramAppUnavailableError,
 )
+from mimic42.core.telegram_proxy import TelegramProxyUnavailableError
 from mimic42.core.warmup import WarmupState
 from mimic42.core.warmup_service import pair_policy_for
 from mimic42.integrations import openrouter_catalog
@@ -84,6 +88,7 @@ from mimic42.integrations.database_memory import DatabaseShortTermMemory
 from mimic42.integrations.database_onboarding import (
     DatabaseOnboardingRepository,
 )
+from mimic42.integrations.database_proxies import DatabaseTelegramProxyStore
 from mimic42.integrations.database_session import create_engine, create_session_factory
 from mimic42.integrations.database_warmup import DatabaseWarmupHistory, DatabaseWarmupStateStore
 from mimic42.integrations.mem0_memory import build_mem0_memory
@@ -101,6 +106,14 @@ class AgentManagerLike(Protocol):
         self,
         config: AgentRuntimeConfig,
         *,
+        start: bool = False,
+    ) -> object: ...
+
+    async def create_saved_agent(
+        self,
+        agent_id: UUID,
+        *,
+        owner_id: UUID,
         start: bool = False,
     ) -> object: ...
 
@@ -275,6 +288,11 @@ def _telegram_login_http_error(exc: Exception) -> HTTPException | None:
         RPCError,
     )
 
+    if isinstance(exc, TelegramProxyUnavailableError):
+        return HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Прокси Telegram недоступен: {exc}",
+        )
     if isinstance(exc, ApiIdInvalidError):
         return HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -394,24 +412,31 @@ def create_app(
                 database_engine = create_engine(database_url)
                 session_factory = create_session_factory(database_engine)
 
+            # Строгая проверка: с невалидным SECRET_KEY онбординг писал бы
+            # HASH и session string открытым текстом через PlainTextCipher.
+            cipher = (
+                FernetSecretCipher(app_settings.secret_key)
+                if build_database and app_settings.secret_key is not None
+                else None
+            )
             if build_agent_services:
                 assert session_factory is not None
-                cipher = (
-                    FernetSecretCipher(app_settings.secret_key)
-                    if app_settings.secret_key is not None
-                    else None
-                )
                 database_agent_store = agent_store or DatabaseAgentStore(
+                    session_factory,
+                    cipher=cipher,
+                )
+                database_proxy_store = DatabaseTelegramProxyStore(
                     session_factory,
                     cipher=cipher,
                 )
                 app.state.agent_store = database_agent_store
                 if onboarding_service is None:
                     app.state.onboarding_service = AgentOnboardingService(
-                        repository=DatabaseOnboardingRepository(session_factory),
+                        repository=DatabaseOnboardingRepository(session_factory, cipher=cipher),
                         telegram_factory=app_telegram_factory,
                         cipher=cipher,
                         agent_store=database_agent_store,
+                        proxy_store=database_proxy_store,
                     )
                 if manager is None:
                     agent_memory = long_term_memory or build_mem0_memory(app_settings.mem0_api_key)
@@ -434,7 +459,10 @@ def create_app(
 
             if build_admin_repository:
                 assert session_factory is not None
-                app.state.admin_repository = DatabaseAdminRepository(session_factory)
+                app.state.admin_repository = DatabaseAdminRepository(
+                    session_factory,
+                    cipher=cipher,
+                )
 
             if telegram_app_settings is None:
                 app.state.telegram_app_settings = TelegramAppSettings(
@@ -498,6 +526,17 @@ def create_app(
                     await database_engine.dispose()
 
     app = FastAPI(title="Mimic42 API", version="0.1.0", lifespan=lifespan)
+
+    @app.exception_handler(TelegramLoginStaleError)
+    @app.exception_handler(TelegramLoginRouteChangedError)
+    async def telegram_login_conflict(
+        _request: Request, exc: TelegramLoginStaleError | TelegramLoginRouteChangedError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={"detail": str(exc)},
+        )
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=app_settings.cors_allow_origins,
@@ -628,8 +667,12 @@ def create_app(
         except HTTPException:
             raise _onboarding_not_found(onboarding_id) from None
         try:
-            result = await _get_onboarding_service(app).verify_telegram_code(onboarding_id, payload)
+            result = await _get_onboarding_service(app).verify_telegram_code(
+                onboarding_id, payload, owner_id=current_user.user_id
+            )
             return result
+        except (OnboardingNotFoundError, OnboardingOwnershipError) as exc:
+            raise _onboarding_not_found(onboarding_id) from exc
         except TelegramPasswordRequiredError as exc:
             raise HTTPException(
                 status_code=status.HTTP_428_PRECONDITION_REQUIRED,
@@ -647,6 +690,11 @@ def create_app(
                 RPCError,
             )
 
+            if isinstance(exc, TelegramProxyUnavailableError):
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail=f"Прокси Telegram недоступен: {exc}",
+                ) from exc
             if isinstance(exc, PhoneNumberUnoccupiedError):
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
@@ -697,8 +745,12 @@ def create_app(
         except HTTPException:
             raise _onboarding_not_found(onboarding_id) from None
         try:
-            result = await _get_onboarding_service(app).finalize_agent(onboarding_id, payload)
+            result = await _get_onboarding_service(app).finalize_agent(
+                onboarding_id, payload, owner_id=current_user.user_id
+            )
             return result
+        except (OnboardingNotFoundError, OnboardingOwnershipError) as exc:
+            raise _onboarding_not_found(onboarding_id) from exc
         except TelegramAuthorizationIncompleteError as exc:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -710,6 +762,11 @@ def create_app(
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Не удалось создать агента: идентификатор уже занят другим агентом.",
+            ) from exc
+        except OnboardingAlreadyCompletedError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Онбординг уже связан с агентом. Используйте перепривязку Telegram.",
             ) from exc
 
     @app.get(
@@ -886,19 +943,38 @@ def create_app(
         payload: CreateAgentRequest,
         current_user: CurrentUserDep,
     ) -> AgentStatus:
-        api_id, api_hash = await _resolve_telegram_app(
-            _get_telegram_app_settings(app),
-        )
-        try:
-            manager_for_request = _get_agent_manager(app)
-            await manager_for_request.create_agent(
-                payload.to_runtime_config(
-                    owner_id=current_user.user_id,
-                    api_id=api_id,
-                    api_hash=api_hash,
-                ),
-                start=payload.auto_start,
+        store = _get_agent_store(app)
+        if store is not None:
+            await _ensure_agent_owner(
+                store, agent_id=payload.agent_id, user_id=current_user.user_id
             )
+        manager_for_request = _get_agent_manager(app)
+        try:
+            if store is not None:
+                await manager_for_request.create_saved_agent(
+                    payload.agent_id,
+                    owner_id=current_user.user_id,
+                    start=payload.auto_start,
+                )
+            else:
+                api_id, api_hash = await _resolve_telegram_app(
+                    _get_telegram_app_settings(app),
+                )
+                await manager_for_request.create_agent(
+                    payload.to_runtime_config(
+                        owner_id=current_user.user_id,
+                        api_id=api_id,
+                        api_hash=api_hash,
+                    ),
+                    start=payload.auto_start,
+                )
+        except AgentNotFoundError as exc:
+            raise _not_found(payload.agent_id) from exc
+        except TelegramProxyUnavailableError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Прокси Telegram недоступен.",
+            ) from exc
         except ValueError as exc:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -909,7 +985,7 @@ def create_app(
                 status_code=status.HTTP_428_PRECONDITION_REQUIRED,
                 detail=str(exc),
             ) from exc
-        return await _get_agent_manager(app).get_agent_status(payload.agent_id)
+        return await manager_for_request.get_agent_status(payload.agent_id)
 
     @app.post(
         "/api/v1/agents/{agent_id}/telegram/rebind",
@@ -986,12 +1062,12 @@ def create_app(
         except HTTPException:
             raise _onboarding_not_found(payload.onboarding_id) from None
         try:
-            await _get_onboarding_service(app).validate_rebind_to_agent(
+            authorization = await _get_onboarding_service(app).validate_rebind_to_agent(
                 payload.onboarding_id,
                 agent_id,
                 owner_id=current_user.user_id,
             )
-        except OnboardingOwnershipError as exc:
+        except (OnboardingNotFoundError, OnboardingOwnershipError) as exc:
             raise _onboarding_not_found(payload.onboarding_id) from exc
         except TelegramAuthorizationIncompleteError as exc:
             raise HTTPException(
@@ -1017,6 +1093,7 @@ def create_app(
                 payload.onboarding_id,
                 agent_id,
                 owner_id=current_user.user_id,
+                authorization=authorization,
             )
         except OnboardingOwnershipError as exc:
             raise _onboarding_not_found(payload.onboarding_id) from exc

@@ -4,11 +4,13 @@ from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
 import pytest
+from cryptography.fernet import Fernet
 from httpx import ASGITransport, AsyncClient
 
 from mimic42.api.app import create_app
 from mimic42.config import Settings
 from mimic42.core.agent_runtime import AgentRuntimeConfig, AgentRuntimeState
+from mimic42.core.crypto import FernetSecretCipher
 from mimic42.testing.telegram import FakeTelegramAccount, FakeTelegramAuthClientFactory
 from tests.api.admin_fakes import FakeAdminRepository
 from tests.api.fakes import FakeAgentManager
@@ -23,6 +25,7 @@ def _api_settings(
     supabase_url: str | None = None,
     supabase_service_key: str | None = None,
     restore_running_agents: bool = True,
+    secret_key: str | None = None,
 ) -> Settings:
     return Settings(
         database_connection_string=database_connection_string,
@@ -30,7 +33,7 @@ def _api_settings(
         braintrust_api_key=None,
         supabase_url=supabase_url,
         supabase_service_key=supabase_service_key,
-        secret_key=None,
+        secret_key=secret_key,
         restore_running_agents=restore_running_agents,
     )
 
@@ -141,6 +144,25 @@ def _disable_external_lifespan_work(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("mimic42.api.app.flush_tracing", flush_tracing)
 
 
+async def test_invalid_secret_key_fails_startup_instead_of_writing_plaintext(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = DisposableEngine()
+    monkeypatch.setattr("mimic42.api.app.create_engine", lambda _url: engine)
+    monkeypatch.setattr("mimic42.api.app.create_session_factory", lambda _engine: object())
+    _disable_external_lifespan_work(monkeypatch)
+    app = create_app(
+        settings=_api_settings(
+            database_connection_string="postgresql+asyncpg://unused",
+            secret_key="not-a-fernet-key",
+        )
+    )
+
+    with pytest.raises(ValueError):
+        async with app.router.lifespan_context(app):
+            pass
+
+
 async def test_injected_database_services_do_not_create_or_dispose_engine(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -189,7 +211,7 @@ async def test_only_admin_repository_is_built_when_agent_services_are_injected(
     )
     monkeypatch.setattr(
         "mimic42.api.app.DatabaseAdminRepository",
-        lambda factory: repository_factories.append(factory) or FakeAdminRepository(),
+        lambda factory, **_kwargs: repository_factories.append(factory) or FakeAdminRepository(),
     )
     monkeypatch.setattr(
         "mimic42.api.app.DatabaseAgentStore",
@@ -235,6 +257,7 @@ async def test_agent_and_admin_services_share_one_engine_and_session_factory(
     engine_calls: list[str] = []
     session_factory_calls: list[object] = []
     service_factories: dict[str, object] = {}
+    service_kwargs: dict[str, dict[str, object]] = {}
 
     monkeypatch.setattr(
         "mimic42.api.app.create_engine",
@@ -249,8 +272,9 @@ async def test_agent_and_admin_services_share_one_engine_and_session_factory(
     monkeypatch.setattr("mimic42.api.app.create_session_factory", create_factory)
 
     class BuiltAgentStore:
-        def __init__(self, factory: object, **_kwargs: object) -> None:
+        def __init__(self, factory: object, **kwargs: object) -> None:
             service_factories["agent_store"] = factory
+            service_kwargs["agent_store"] = kwargs
 
         async def get_runtime_config(self, _agent_id: UUID) -> AgentRuntimeConfig:
             raise AssertionError("runtime config is not loaded in this test")
@@ -259,11 +283,12 @@ async def test_agent_and_admin_services_share_one_engine_and_session_factory(
             raise AssertionError("runtime status is not updated in this test")
 
     class BuiltOnboardingRepository:
-        def __init__(self, factory: object) -> None:
+        def __init__(self, factory: object, **kwargs: object) -> None:
             service_factories["onboarding"] = factory
+            service_kwargs["onboarding"] = kwargs
 
     class BuiltAdminRepository:
-        def __init__(self, factory: object) -> None:
+        def __init__(self, factory: object, **_kwargs: object) -> None:
             service_factories["admin"] = factory
 
     class BuiltManager:
@@ -296,6 +321,7 @@ async def test_agent_and_admin_services_share_one_engine_and_session_factory(
         settings=_api_settings(
             database_connection_string="postgresql+asyncpg://unused",
             restore_running_agents=False,
+            secret_key=Fernet.generate_key().decode(),
         )
     )
 
@@ -312,5 +338,13 @@ async def test_agent_and_admin_services_share_one_engine_and_session_factory(
         "admin": session_factory,
         "manager": session_factory,
     }
+    cipher = service_kwargs["agent_store"].get("cipher")
+    assert isinstance(cipher, FernetSecretCipher)
+    onboarding_cipher = service_kwargs["onboarding"].get("cipher")
+    assert onboarding_cipher is cipher
+    assert isinstance(onboarding_cipher, FernetSecretCipher)
+    ciphertext = cipher.encrypt("telegram-auth-key")
+    assert ciphertext != "telegram-auth-key"
+    assert onboarding_cipher.decrypt(ciphertext) == "telegram-auth-key"
     assert engine.dispose_calls == 1
     assert managers[-1].shutdown_calls == 1

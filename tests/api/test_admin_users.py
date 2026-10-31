@@ -189,6 +189,7 @@ async def test_user_detail_is_minimal_and_unknown_user_returns_404() -> None:
                 "name": "Mimic",
                 "llm_model": DEFAULT_LLM_MODEL,
                 "state": "stopped",
+                "proxy": None,
             }
         ],
         "total": 1,

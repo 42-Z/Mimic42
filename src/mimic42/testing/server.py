@@ -21,7 +21,7 @@ from mimic42.core.activity import ActivityRecorder
 from mimic42.core.agent_runtime import AgentRuntimeState
 from mimic42.core.crypto import FernetSecretCipher
 from mimic42.core.onboarding import OnboardingSession, TelegramLoginStatus
-from mimic42.testing import registry
+from mimic42.testing import registry, seed_agent
 from mimic42.testing.cleanup import (
     current_onboarding_draft_id,
     hide_incomplete_onboarding_drafts,
@@ -448,17 +448,19 @@ def _mount_test_routes(application: FastAPI, settings: Settings) -> None:
         agent_id = uuid4()
         cipher = FernetSecretCipher(settings.secret_key) if settings.secret_key else None
         store = application.state.agent_store
-        await store.create_from_onboarding(
+        await seed_agent(
+            store,
             OnboardingSession(
                 onboarding_id=agent_id,
                 owner_id=request.owner_id,
                 authorization_status=TelegramLoginStatus.AUTHORIZED,
                 api_id=1,
                 api_hash_secret=(cipher.encrypt("test-api-hash") if cipher else "test-api-hash"),
+                session_secret=(cipher.encrypt("test-session") if cipher else "test-session"),
                 phone_number=request.phone_number,
                 name=request.name,
                 soul_prompt=request.soul_prompt,
-            )
+            ),
         )
         if not request.with_telegram_session:
             # create_from_onboarding always writes a telegram_sessions row —

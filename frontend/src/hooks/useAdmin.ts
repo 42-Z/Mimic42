@@ -8,9 +8,12 @@ import { clearAdminData, retryAdminQuery, useAdminAccess } from '@/hooks/useAdmi
 import type { ApiError } from '@/types';
 import type {
   AdminPresetKind,
+  AdminProxyImportInput,
+  AdminProxyInput,
   CreateAdminPreset,
   SaveTelegramSettings,
   UpdateAdminPreset,
+  UpdateAdminProxy,
 } from '@/types/admin';
 
 function errorStatus(error: unknown): number | undefined {
@@ -25,6 +28,7 @@ function useAdminRead<T>(
   isAdmin: boolean,
   queryFn: (signal: AbortSignal) => Promise<T>,
   refetchInterval?: number | false,
+  active = true,
 ) {
   const queryClient = useQueryClient();
 
@@ -45,7 +49,7 @@ function useAdminRead<T>(
         throw error;
       }
     },
-    enabled: userId !== null && isAdmin,
+    enabled: active && userId !== null && isAdmin,
     retry: retryAdminQuery,
     refetchInterval,
     refetchOnWindowFocus: true,
@@ -107,6 +111,28 @@ export function useAdminTelegramSettings() {
     userId,
     isAdmin,
     (signal) => adminApi.telegramSettings({ signal }),
+  );
+}
+
+export function useAdminProxies(page: number, pageSize = 25) {
+  const { userId, isAdmin } = useAdminAccess();
+  return useAdminRead(
+    queryKeys.admin.proxies(userId ?? '', page, pageSize),
+    userId,
+    isAdmin,
+    (signal) => adminApi.proxies({ page, page_size: pageSize }, { signal }),
+  );
+}
+
+export function useAdminProxyOptions(active = true) {
+  const { userId, isAdmin } = useAdminAccess();
+  return useAdminRead(
+    queryKeys.admin.proxyOptions(userId ?? ''),
+    userId,
+    isAdmin,
+    (signal) => adminApi.proxyOptions({ signal }),
+    undefined,
+    active,
   );
 }
 
@@ -196,6 +222,27 @@ export function useAdminActions() {
         void queryClient
           .invalidateQueries({ queryKey: queryKeys.admin.telegram(ownerId) })
           .catch(() => undefined);
+      }),
+    createProxy: (values: AdminProxyInput) =>
+      execute(() => adminApi.createProxy(values), async (ownerId) => {
+        await queryClient.invalidateQueries({ queryKey: queryKeys.admin.scope(ownerId) });
+      }),
+    importProxies: (values: AdminProxyImportInput) =>
+      execute(() => adminApi.importProxies(values), async (ownerId) => {
+        await queryClient.invalidateQueries({ queryKey: queryKeys.admin.scope(ownerId) });
+      }),
+    updateProxy: (proxyId: string, values: UpdateAdminProxy) =>
+      execute(() => adminApi.updateProxy(proxyId, values), async (ownerId) => {
+        await queryClient.invalidateQueries({ queryKey: queryKeys.admin.scope(ownerId) });
+      }),
+    deleteProxy: (proxyId: string) =>
+      execute(() => adminApi.deleteProxy(proxyId), async (ownerId) => {
+        await queryClient.invalidateQueries({ queryKey: queryKeys.admin.scope(ownerId) });
+      }),
+    checkProxy: (proxyId: string) => execute(() => adminApi.checkProxy(proxyId)),
+    assignAgentProxy: (agentId: string, proxyId: string | null) =>
+      execute(() => adminApi.assignAgentProxy(agentId, proxyId), async (ownerId) => {
+        await queryClient.invalidateQueries({ queryKey: queryKeys.admin.scope(ownerId) });
       }),
   };
 }

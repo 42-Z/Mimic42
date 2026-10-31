@@ -1,22 +1,29 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import Any, Literal
+from typing import Any, Literal, cast
 from uuid import UUID, uuid4
 
-from sqlalchemy import case, exists, func, or_, select
+from sqlalchemy import case, exists, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as postgres_insert
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mimic42.core.admin import (
     ActivityCounts,
+    AdminAgentNotFoundError,
+    AdminAgentProxy,
     AdminAgentSummary,
     AdminNotFoundError,
     AdminPage,
     AdminPresetDetail,
     AdminPresetKind,
     AdminPresetSummary,
+    AdminProxyDetail,
+    AdminProxyNotFoundError,
+    AdminProxySummary,
+    AdminProxyValidationError,
+    AdminSecretStorageError,
     AdminStatistics,
     AdminUnavailableError,
     AdminUserDetail,
@@ -25,12 +32,15 @@ from mimic42.core.admin import (
     DailyActivity,
     PresetCreateValues,
     PresetPatchValues,
+    ProxyCreateValues,
+    ProxyPatchValues,
     PublicTelegramSettings,
     StoredTelegramSettings,
     statistics_window,
 )
-from mimic42.core.agent_runtime import AgentRuntimeState
+from mimic42.core.agent_runtime import AgentRuntimeState, TelegramProxyConfig
 from mimic42.core.model_catalog import DEFAULT_LLM_MODEL
+from mimic42.core.onboarding import SecretCipher
 from mimic42.integrations.database_admin_statistics import (
     effective_agents_cte,
     runtime_state_parameters,
@@ -39,15 +49,30 @@ from mimic42.integrations.database_admin_statistics import (
 from mimic42.integrations.database_models import (
     AdminAuditLogModel,
     AdminUserModel,
+    AgentModel,
+    AgentOnboardingSessionModel,
     PlatformTelegramSettingsModel,
     ProfileModel,
     PromptPresetModel,
+    TelegramProxyModel,
+    TelegramSessionModel,
+)
+from mimic42.integrations.database_proxies import (
+    least_loaded_proxy_id,
+    lock_proxy_pool,
+    telegram_proxy_config,
 )
 
 
 class DatabaseAdminRepository:
-    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+    def __init__(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        *,
+        cipher: SecretCipher | None = None,
+    ) -> None:
         self._session_factory = session_factory
+        self._cipher = cipher
 
     async def is_admin(self, user_id: UUID) -> bool:
         statement = select(exists().where(AdminUserModel.user_id == user_id))
@@ -183,6 +208,20 @@ class DatabaseAdminRepository:
                             effective_agents.c.name,
                             model,
                             effective_agents.c.state,
+                            TelegramProxyModel.id.label("proxy_id"),
+                            TelegramProxyModel.label.label("proxy_label"),
+                            TelegramProxyModel.protocol.label("proxy_protocol"),
+                            TelegramProxyModel.host.label("proxy_host"),
+                            TelegramProxyModel.port.label("proxy_port"),
+                            TelegramProxyModel.is_active.label("proxy_is_active"),
+                        )
+                        .outerjoin(
+                            TelegramSessionModel,
+                            TelegramSessionModel.agent_id == effective_agents.c.agent_id,
+                        )
+                        .outerjoin(
+                            TelegramProxyModel,
+                            TelegramProxyModel.id == TelegramSessionModel.proxy_id,
                         )
                         .where(effective_agents.c.owner_id == user_id)
                         .order_by(
@@ -212,6 +251,18 @@ class DatabaseAdminRepository:
                     name=row.name,
                     llm_model=row.llm_model,
                     state=AgentRuntimeState(row.state),
+                    proxy=(
+                        AdminAgentProxy(
+                            id=row.proxy_id,
+                            label=row.proxy_label,
+                            protocol=row.proxy_protocol,
+                            host=row.proxy_host,
+                            port=row.proxy_port,
+                            is_active=row.proxy_is_active,
+                        )
+                        if row.proxy_id is not None
+                        else None
+                    ),
                 )
                 for row in agent_rows
             ],
@@ -345,6 +396,7 @@ class DatabaseAdminRepository:
                     session,
                     actor_user_id=actor_user_id,
                     action="telegram.settings_updated",
+                    object_type="telegram_settings",
                     object_id=None,
                     metadata={"credentials_replaced": True},
                 )
@@ -477,6 +529,7 @@ class DatabaseAdminRepository:
                     session,
                     actor_user_id=actor_user_id,
                     action="preset.created",
+                    object_type="preset",
                     object_id=preset_id,
                     metadata={"fields": sorted(values)},
                 )
@@ -518,6 +571,7 @@ class DatabaseAdminRepository:
                         session,
                         actor_user_id=actor_user_id,
                         action="preset.updated",
+                        object_type="preset",
                         object_id=preset_id,
                         metadata={"fields": changed_fields},
                     )
@@ -558,6 +612,7 @@ class DatabaseAdminRepository:
                         session,
                         actor_user_id=actor_user_id,
                         action="preset.visibility_changed",
+                        object_type="preset",
                         object_id=preset_id,
                         metadata={"before": old_value, "after": is_active},
                     )
@@ -568,12 +623,428 @@ class DatabaseAdminRepository:
             raise AdminUnavailableError("Administrative storage is unavailable") from None
         return result
 
+    async def list_proxies(
+        self,
+        *,
+        page: int,
+        page_size: int,
+    ) -> AdminPage[AdminProxySummary]:
+        agents_total = func.count(TelegramSessionModel.id).label("agents_total")
+        pending_onboarding_total = (
+            select(func.count())
+            .select_from(AgentOnboardingSessionModel)
+            .where(
+                AgentOnboardingSessionModel.proxy_id == TelegramProxyModel.id,
+                AgentOnboardingSessionModel.completed_agent_id.is_(None),
+            )
+            .correlate(TelegramProxyModel)
+            .scalar_subquery()
+            .label("onboarding_total")
+        )
+        try:
+            async with self._session_factory() as session:
+                total = await session.scalar(select(func.count()).select_from(TelegramProxyModel))
+                rows = (
+                    await session.execute(
+                        select(TelegramProxyModel, agents_total, pending_onboarding_total)
+                        .outerjoin(
+                            TelegramSessionModel,
+                            TelegramSessionModel.proxy_id == TelegramProxyModel.id,
+                        )
+                        .group_by(TelegramProxyModel.id)
+                        .order_by(
+                            TelegramProxyModel.created_at.desc(),
+                            TelegramProxyModel.id.desc(),
+                        )
+                        .limit(page_size)
+                        .offset((page - 1) * page_size)
+                    )
+                ).all()
+        except SQLAlchemyError:
+            raise AdminUnavailableError("Administrative storage is unavailable") from None
+
+        return AdminPage(
+            items=[
+                self._proxy_summary(
+                    row[0],
+                    agents_total=row.agents_total,
+                    onboarding_total=row.onboarding_total,
+                )
+                for row in rows
+            ],
+            total=total or 0,
+            page=page,
+            page_size=page_size,
+        )
+
+    async def list_proxy_options(self) -> list[AdminAgentProxy]:
+        statement = (
+            select(TelegramProxyModel)
+            .where(TelegramProxyModel.is_active.is_(True))
+            .order_by(
+                TelegramProxyModel.label, TelegramProxyModel.created_at, TelegramProxyModel.id
+            )
+        )
+        try:
+            async with self._session_factory() as session:
+                proxies = list(await session.scalars(statement))
+        except SQLAlchemyError:
+            raise AdminUnavailableError("Administrative storage is unavailable") from None
+        return [self._agent_proxy(proxy) for proxy in proxies]
+
+    async def read_proxy_config(self, proxy_id: UUID) -> TelegramProxyConfig:
+        try:
+            async with self._session_factory() as session:
+                proxy = await session.get(TelegramProxyModel, proxy_id)
+                if proxy is None:
+                    raise AdminProxyNotFoundError
+        except SQLAlchemyError:
+            raise AdminUnavailableError("Administrative storage is unavailable") from None
+        try:
+            return telegram_proxy_config(proxy, self._cipher)
+        except Exception as exc:
+            raise AdminSecretStorageError(str(exc)) from None
+
+    async def proxy_exists(
+        self,
+        *,
+        protocol: Literal["socks5", "http"],
+        host: str,
+        port: int,
+        username: str | None,
+    ) -> bool:
+        conditions = [
+            TelegramProxyModel.protocol == protocol,
+            TelegramProxyModel.host == host,
+            TelegramProxyModel.port == port,
+        ]
+        if username is None:
+            conditions.append(TelegramProxyModel.username.is_(None))
+        else:
+            conditions.append(TelegramProxyModel.username == username)
+        try:
+            async with self._session_factory() as session:
+                return bool(await session.scalar(select(exists().where(*conditions))))
+        except SQLAlchemyError:
+            raise AdminUnavailableError("Administrative storage is unavailable") from None
+
+    async def create_proxy(
+        self,
+        values: ProxyCreateValues,
+        *,
+        actor_user_id: UUID,
+    ) -> AdminProxyDetail:
+        password_ciphertext = self._encrypt_proxy_password(values.get("password"))
+        if password_ciphertext is not None and not values.get("username"):
+            raise AdminProxyValidationError("Для пароля укажите логин прокси")
+        proxy = TelegramProxyModel(
+            id=uuid4(),
+            label=values["label"],
+            protocol=values["protocol"],
+            host=values["host"],
+            port=values["port"],
+            username=values.get("username"),
+            password_ciphertext=password_ciphertext,
+            is_active=values["is_active"],
+            created_by=actor_user_id,
+        )
+        try:
+            async with self._session_factory() as session, session.begin():
+                await lock_proxy_pool(session)
+                session.add(proxy)
+                await session.flush()
+                await self._append_audit(
+                    session,
+                    actor_user_id=actor_user_id,
+                    action="proxy.created",
+                    object_type="proxy",
+                    object_id=proxy.id,
+                    metadata={
+                        "fields": sorted(values),
+                        "password_set": password_ciphertext is not None,
+                    },
+                )
+                await session.refresh(proxy)
+                result = self._proxy_detail(proxy, agents_total=0)
+        except SQLAlchemyError:
+            raise AdminUnavailableError("Administrative storage is unavailable") from None
+        return result
+
+    async def update_proxy(
+        self,
+        proxy_id: UUID,
+        values: ProxyPatchValues,
+        *,
+        actor_user_id: UUID,
+    ) -> AdminProxyDetail:
+        try:
+            async with self._session_factory() as session, session.begin():
+                await lock_proxy_pool(session)
+                proxy = await session.scalar(
+                    select(TelegramProxyModel)
+                    .where(TelegramProxyModel.id == proxy_id)
+                    .with_for_update()
+                )
+                if proxy is None:
+                    raise AdminProxyNotFoundError
+
+                changed_fields: list[str] = []
+                for field in ("label", "protocol", "host", "port", "username", "is_active"):
+                    if field not in values:
+                        continue
+                    value = values[field]
+                    if getattr(proxy, field) != value:
+                        setattr(proxy, field, value)
+                        changed_fields.append(field)
+
+                password = values.get("password")
+                if password:
+                    proxy.password_ciphertext = self._encrypt_proxy_password(password)
+                    changed_fields.append("password")
+
+                if proxy.password_ciphertext is not None and not proxy.username:
+                    raise AdminProxyValidationError("Для пароля укажите логин прокси")
+
+                if changed_fields:
+                    proxy.updated_at = datetime.now(UTC)
+                    await session.flush()
+                    await self._append_audit(
+                        session,
+                        actor_user_id=actor_user_id,
+                        action="proxy.updated",
+                        object_type="proxy",
+                        object_id=proxy_id,
+                        metadata={"fields": changed_fields},
+                    )
+                    await session.refresh(proxy)
+
+                agents_total = await session.scalar(
+                    select(func.count())
+                    .select_from(TelegramSessionModel)
+                    .where(TelegramSessionModel.proxy_id == proxy_id)
+                )
+                onboarding_total = await session.scalar(
+                    select(func.count())
+                    .select_from(AgentOnboardingSessionModel)
+                    .where(
+                        AgentOnboardingSessionModel.proxy_id == proxy_id,
+                        AgentOnboardingSessionModel.completed_agent_id.is_(None),
+                    )
+                )
+                result = self._proxy_detail(
+                    proxy,
+                    agents_total=agents_total or 0,
+                    onboarding_total=onboarding_total or 0,
+                )
+        except SQLAlchemyError:
+            raise AdminUnavailableError("Administrative storage is unavailable") from None
+        return result
+
+    async def delete_proxy(self, proxy_id: UUID, *, actor_user_id: UUID) -> list[UUID]:
+        try:
+            async with self._session_factory() as session, session.begin():
+                await lock_proxy_pool(session)
+                proxy = await session.scalar(
+                    select(TelegramProxyModel)
+                    .where(TelegramProxyModel.id == proxy_id)
+                    .with_for_update()
+                )
+                if proxy is None:
+                    raise AdminProxyNotFoundError
+
+                agent_ids = list(
+                    await session.scalars(
+                        select(TelegramSessionModel.agent_id).where(
+                            TelegramSessionModel.proxy_id == proxy_id
+                        )
+                    )
+                )
+                pending_onboarding = await session.scalar(
+                    select(func.count())
+                    .select_from(AgentOnboardingSessionModel)
+                    .where(
+                        AgentOnboardingSessionModel.proxy_id == proxy_id,
+                        AgentOnboardingSessionModel.completed_agent_id.is_(None),
+                    )
+                )
+                replacement_id = await least_loaded_proxy_id(
+                    session,
+                    exclude_id=proxy_id,
+                )
+                await session.execute(
+                    update(TelegramSessionModel)
+                    .where(TelegramSessionModel.proxy_id == proxy_id)
+                    .values(proxy_id=replacement_id)
+                )
+                await session.execute(
+                    update(AgentOnboardingSessionModel)
+                    .where(
+                        AgentOnboardingSessionModel.proxy_id == proxy_id,
+                        AgentOnboardingSessionModel.completed_agent_id.is_(None),
+                    )
+                    .values(proxy_id=replacement_id)
+                )
+                await session.execute(
+                    update(AgentOnboardingSessionModel)
+                    .where(
+                        AgentOnboardingSessionModel.proxy_id == proxy_id,
+                        AgentOnboardingSessionModel.completed_agent_id.is_not(None),
+                    )
+                    .values(proxy_id=None)
+                )
+
+                for agent_id in agent_ids:
+                    await self._append_audit(
+                        session,
+                        actor_user_id=actor_user_id,
+                        action="agent.proxy_changed",
+                        object_type="agent",
+                        object_id=agent_id,
+                        metadata={
+                            "before": str(proxy_id),
+                            "after": (str(replacement_id) if replacement_id is not None else None),
+                            "reason": "proxy_deleted",
+                        },
+                    )
+
+                label = proxy.label
+                await session.delete(proxy)
+                await self._append_audit(
+                    session,
+                    actor_user_id=actor_user_id,
+                    action="proxy.deleted",
+                    object_type="proxy",
+                    object_id=proxy_id,
+                    metadata={
+                        "label": label,
+                        "affected_agents": len(agent_ids),
+                        "pending_onboarding": pending_onboarding or 0,
+                        "reassigned_to": (
+                            str(replacement_id) if replacement_id is not None else None
+                        ),
+                    },
+                )
+        except SQLAlchemyError:
+            raise AdminUnavailableError("Administrative storage is unavailable") from None
+        return agent_ids
+
+    async def assign_agent_proxy(
+        self,
+        agent_id: UUID,
+        proxy_id: UUID | None,
+        *,
+        actor_user_id: UUID,
+    ) -> AdminAgentProxy | None:
+        try:
+            async with self._session_factory() as session, session.begin():
+                await lock_proxy_pool(session)
+                agent = await session.get(AgentModel, agent_id)
+                if agent is None:
+                    raise AdminAgentNotFoundError
+
+                proxy: TelegramProxyModel | None = None
+                if proxy_id is not None:
+                    proxy = await session.get(TelegramProxyModel, proxy_id)
+                    if proxy is None:
+                        raise AdminProxyNotFoundError
+
+                telegram_session = await session.scalar(
+                    select(TelegramSessionModel)
+                    .where(TelegramSessionModel.agent_id == agent_id)
+                    .with_for_update()
+                )
+                if telegram_session is None:
+                    raise AdminAgentNotFoundError
+
+                previous_proxy_id = telegram_session.proxy_id
+                if previous_proxy_id != proxy_id:
+                    telegram_session.proxy_id = proxy_id
+                    await session.flush()
+                    await self._append_audit(
+                        session,
+                        actor_user_id=actor_user_id,
+                        action="agent.proxy_changed",
+                        object_type="agent",
+                        object_id=agent_id,
+                        metadata={
+                            "before": (
+                                str(previous_proxy_id) if previous_proxy_id is not None else None
+                            ),
+                            "after": str(proxy_id) if proxy_id is not None else None,
+                        },
+                    )
+
+                result = self._agent_proxy(proxy) if proxy is not None else None
+        except SQLAlchemyError:
+            raise AdminUnavailableError("Administrative storage is unavailable") from None
+        return result
+
+    def _encrypt_proxy_password(self, password: str | None) -> str | None:
+        if not password:
+            return None
+        if self._cipher is None:
+            raise AdminSecretStorageError(
+                "SECRET_KEY не настроен: пароль прокси нельзя сохранить зашифрованным"
+            )
+        return self._cipher.encrypt(password)
+
+    @staticmethod
+    def _agent_proxy(proxy: TelegramProxyModel) -> AdminAgentProxy:
+        return AdminAgentProxy(
+            id=proxy.id,
+            label=proxy.label,
+            protocol=cast(Literal["socks5", "http"], proxy.protocol),
+            host=proxy.host,
+            port=proxy.port,
+            is_active=proxy.is_active,
+        )
+
+    @staticmethod
+    def _proxy_summary(
+        proxy: TelegramProxyModel,
+        *,
+        agents_total: int,
+        onboarding_total: int = 0,
+    ) -> AdminProxySummary:
+        return AdminProxySummary(
+            id=proxy.id,
+            label=proxy.label,
+            protocol=cast(Literal["socks5", "http"], proxy.protocol),
+            host=proxy.host,
+            port=proxy.port,
+            username=proxy.username,
+            has_password=proxy.password_ciphertext is not None,
+            is_active=proxy.is_active,
+            agents_total=agents_total,
+            onboarding_total=onboarding_total,
+            created_at=proxy.created_at,
+            updated_at=proxy.updated_at,
+        )
+
+    @classmethod
+    def _proxy_detail(
+        cls,
+        proxy: TelegramProxyModel,
+        *,
+        agents_total: int,
+        onboarding_total: int = 0,
+    ) -> AdminProxyDetail:
+        return AdminProxyDetail(
+            **cls._proxy_summary(
+                proxy,
+                agents_total=agents_total,
+                onboarding_total=onboarding_total,
+            ).model_dump(),
+            created_by=proxy.created_by,
+        )
+
     @staticmethod
     async def _append_audit(
         session: AsyncSession,
         *,
         actor_user_id: UUID,
         action: str,
+        object_type: str,
         object_id: UUID | None,
         metadata: dict[str, Any],
     ) -> None:
@@ -581,7 +1052,7 @@ class DatabaseAdminRepository:
             AdminAuditLogModel(
                 actor_user_id=actor_user_id,
                 action=action,
-                object_type="telegram_settings" if object_id is None else "preset",
+                object_type=object_type,
                 object_id=object_id,
                 metadata_=metadata,
             )

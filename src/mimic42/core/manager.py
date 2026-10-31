@@ -147,14 +147,42 @@ class AgentManager:
         async with self._lock:
             runtime = self._register_locked(config)
         if start:
-            try:
-                await runtime.start()
-            except Exception:
-                # Как и в start_agent: без этого БД хранит устаревший статус
-                # (например, running после рестарта), и дэшборд врёт.
-                await self._save_status(config.agent_id, AgentRuntimeState.ERROR)
-                raise
+            await self._start_created_runtime(runtime)
         return runtime
+
+    async def create_saved_agent(
+        self,
+        agent_id: UUID,
+        *,
+        owner_id: UUID,
+        start: bool = False,
+    ) -> MimicAgentRuntime:
+        if self._config_loader is None:
+            raise AgentNotFoundError(agent_id)
+        reload_lock = self._reload_locks.setdefault(agent_id, asyncio.Lock())
+        async with reload_lock:
+            try:
+                config = await _await_result(self._config_loader(agent_id))
+            except KeyError as exc:
+                raise AgentNotFoundError(agent_id) from exc
+            if not isinstance(config, AgentRuntimeConfig):
+                raise TypeError("config_loader must return AgentRuntimeConfig")
+            if config.owner_id != owner_id:
+                raise AgentNotFoundError(agent_id)
+            async with self._lock:
+                if agent_id in self._removed:
+                    raise AgentNotFoundError(agent_id)
+                runtime = self._register_locked(config)
+            if start:
+                await self._start_created_runtime(runtime)
+            return runtime
+
+    async def _start_created_runtime(self, runtime: MimicAgentRuntime) -> None:
+        try:
+            await runtime.start()
+        except Exception:
+            await self._save_status(runtime.config.agent_id, AgentRuntimeState.ERROR)
+            raise
 
     def _register_locked(self, config: AgentRuntimeConfig) -> MimicAgentRuntime:
         """Собрать и положить рантайм в реестр. Вызывать только под ``_lock``."""

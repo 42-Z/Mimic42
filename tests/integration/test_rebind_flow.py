@@ -16,6 +16,7 @@ from mimic42.core.onboarding import (
 from mimic42.integrations.database_agent_store import DatabaseAgentStore
 from mimic42.integrations.database_models import TelegramSessionModel
 from mimic42.integrations.database_onboarding import DatabaseOnboardingRepository
+from mimic42.testing import seed_agent
 from mimic42.testing.slots import Slot
 from mimic42.testing.telegram import FakeTelegramAccount, FakeTelegramAuthClientFactory
 
@@ -35,7 +36,7 @@ async def test_rebind_reuses_wizard_row_and_does_not_conflict_with_unique_marker
     )
 
     # Мастер: черновик с id == agent_id, финализация ставит completed_agent_id = agent_id
-    await repository.save(
+    await repository.create(
         OnboardingSession(
             onboarding_id=agent_id,
             owner_id=owner_id,
@@ -100,7 +101,8 @@ async def test_start_rebind_recovers_missing_onboarding_row_from_agent_store(
 
     # У старого/API-агента нет onboarding-строки, но telegram_sessions хранит
     # номер и приложение, поэтому сервис восстанавливает внутреннюю строку.
-    await store.create_from_onboarding(
+    await seed_agent(
+        store,
         OnboardingSession(
             onboarding_id=agent_id,
             owner_id=owner_id,
@@ -111,7 +113,7 @@ async def test_start_rebind_recovers_missing_onboarding_row_from_agent_store(
             session_secret="api-session",
             name="Mimic",
             soul_prompt="Soul",
-        )
+        ),
     )
 
     status = await service.start_rebind(agent_id, owner_id=owner_id)

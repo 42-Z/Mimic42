@@ -20,6 +20,7 @@ from mimic42.core.agent_runtime import (
     TelegramAuthorizationRequired,
 )
 from mimic42.core.crypto import FernetSecretCipher
+from mimic42.core.manager import AgentNotFoundError
 from mimic42.core.telegram_app_settings import TelegramAppSettings
 
 
@@ -117,6 +118,15 @@ class FakeAgentManager:
         if start:
             await self.start_agent(config.agent_id)
         return self
+
+    async def create_saved_agent(
+        self,
+        agent_id: UUID,
+        *,
+        owner_id: UUID,
+        start: bool = False,
+    ) -> object:
+        raise AgentNotFoundError(agent_id)
 
     async def start_agent(self, agent_id: UUID) -> None:
         self.calls.append(("start", agent_id))

@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mimic42.core.onboarding import OnboardingSession, TelegramLoginStatus
 from mimic42.integrations.database_agent_store import DatabaseAgentStore
+from mimic42.testing import seed_agent
 from mimic42.testing.slots import CONNECT_TIMEOUT_SECONDS, Slot, plain_dsn
 
 VICTIM_AGENT_NAME = "Легальный агент"
@@ -38,7 +39,8 @@ async def _seed_victim_agent(
 ) -> UUID:
     """Агент жертвы вместе с завершённой строкой онбординга (id == id агента)."""
     agent_id = uuid4()
-    await DatabaseAgentStore(db_session_factory).create_from_onboarding(
+    await seed_agent(
+        DatabaseAgentStore(db_session_factory),
         OnboardingSession(
             onboarding_id=agent_id,
             owner_id=owner_id,
@@ -49,7 +51,7 @@ async def _seed_victim_agent(
             session_secret="encrypted-session",
             name=VICTIM_AGENT_NAME,
             soul_prompt="Честный характер",
-        )
+        ),
     )
     connection = await asyncpg.connect(plain_dsn(dsn), timeout=CONNECT_TIMEOUT_SECONDS)
     try:

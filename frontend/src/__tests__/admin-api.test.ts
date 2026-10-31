@@ -115,6 +115,28 @@ describe('adminApi', () => {
     expect(result.api_hash).toBe(apiHash);
   });
 
+  test('posts proxy import text to the admin import route', async () => {
+    const requests = useResponseAdapter({ imported: 1, skipped: 0, errors: [] });
+
+    await adminApi.importProxies({
+      text: '1.2.3.4:1080:user:pass',
+      protocol: 'socks5',
+      is_active: true,
+    });
+    record(requests);
+
+    expect(captured[0]).toMatchObject({
+      method: 'post',
+      url: '/admin/proxies/import',
+      authorization: 'Bearer admin-api-test-token',
+    });
+    expect(JSON.parse(String(captured[0]?.data))).toEqual({
+      text: '1.2.3.4:1080:user:pass',
+      protocol: 'socks5',
+      is_active: true,
+    });
+  });
+
   test('maps every read route under the admin API and passes cancellation signals', async () => {
     const requests = useResponseAdapter({});
     const signal = new AbortController().signal;
@@ -128,6 +150,8 @@ describe('adminApi', () => {
     await adminApi.preset('preset-id', { signal });
     await adminApi.telegramSettings({ signal });
     await adminApi.statistics(30, { signal });
+    await adminApi.proxies({ page: 2, page_size: 10 }, { signal });
+    await adminApi.proxyOptions({ signal });
     record(requests);
 
     expect(captured.map(({ method, url, params, signal: requestSignal }) => ({
@@ -152,6 +176,13 @@ describe('adminApi', () => {
       { method: 'get', url: '/admin/presets/preset-id', params: undefined, signal },
       { method: 'get', url: '/admin/telegram-settings', params: undefined, signal },
       { method: 'get', url: '/admin/statistics', params: { days: 30 }, signal },
+      {
+        method: 'get',
+        url: '/admin/proxies',
+        params: { page: 2, page_size: 10 },
+        signal,
+      },
+      { method: 'get', url: '/admin/proxies/options', params: undefined, signal },
     ]);
   });
 });

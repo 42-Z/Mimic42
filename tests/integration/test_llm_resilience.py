@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mimic42.core.onboarding import OnboardingSession, TelegramLoginStatus
 from mimic42.integrations.database_agent_store import DatabaseAgentStore
-from mimic42.testing import registry
+from mimic42.testing import registry, seed_agent
 from mimic42.testing.llm import Crash, Empty, Reply
 from mimic42.testing.server import build_test_app
 from mimic42.testing.slots import Slot, plain_dsn
@@ -32,7 +32,8 @@ async def _running_agent(
     owner_id = slot.persona("full").user_id
     agent_id = uuid4()
     store = DatabaseAgentStore(db_session_factory)
-    await store.create_from_onboarding(
+    await seed_agent(
+        store,
         OnboardingSession(
             onboarding_id=agent_id,
             owner_id=owner_id,
@@ -42,9 +43,10 @@ async def _running_agent(
             # к настоящему Telegram здесь не происходит.
             api_id=1,
             api_hash_secret="test-api-hash",
+            session_secret="test-session",
             name="устойчивый",
             soul_prompt="спокойный помощник, отвечает коротко",
-        )
+        ),
     )
     config = await store.get_runtime_config(agent_id)
     await app.state.agent_manager.create_agent(config, start=True)

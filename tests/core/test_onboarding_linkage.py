@@ -1,18 +1,22 @@
 from __future__ import annotations
 
+import asyncio
 from uuid import uuid4
 
 import pytest
 
-from mimic42.core.agent_runtime import AgentRuntimeState
+from mimic42.core.agent_runtime import AgentRuntimeState, TelegramProxyConfig
 from mimic42.core.agent_store import InMemoryAgentStore
 from mimic42.core.onboarding import (
     AgentOnboardingService,
+    AgentProfileInput,
     InMemoryOnboardingRepository,
     OnboardingOwnershipError,
     OnboardingSession,
     TelegramAuthorizationIncompleteError,
+    TelegramCodeVerification,
     TelegramCredentials,
+    TelegramLoginStaleError,
     TelegramLoginStatus,
     TelegramRebindUnavailableError,
 )
@@ -25,6 +29,45 @@ from mimic42.testing.telegram import (
 
 def _fake_telegram_factory() -> FakeTelegramAuthClientFactory:
     return FakeTelegramAuthClientFactory(FakeTelegramAccount())
+
+
+@pytest.mark.asyncio
+async def test_concurrent_finalize_is_idempotent_and_confirm_cannot_apply_a_newer_login() -> None:
+    owner_id = uuid4()
+    repository = InMemoryOnboardingRepository()
+    store = InMemoryAgentStore()
+    service = AgentOnboardingService(
+        repository=repository, agent_store=store, telegram_factory=_fake_telegram_factory()
+    )
+    started = await service.request_telegram_code(
+        TelegramCredentials(
+            owner_id=owner_id,
+            api_id=12345,
+            api_hash="hash",
+            phone_number="+79990000000",
+        )
+    )
+    agent_id = started.onboarding_id
+    await service.verify_telegram_code(agent_id, TelegramCodeVerification(code="12345"))
+    authorized = await repository.get(agent_id)
+    profile = AgentProfileInput(name="Original", soul_prompt="Original soul")
+    results = await asyncio.gather(
+        *[store.finalize_onboarding(authorized.authorization_ref(), profile) for _ in range(2)]
+    )
+    assert results[0] == results[1]
+    linked = await repository.get(agent_id)
+    assert linked.completed_agent_id == agent_id
+    assert linked.applied_auth_generation == linked.auth_generation
+
+    await service.start_rebind(agent_id, owner_id=owner_id)
+    await service.verify_telegram_code(agent_id, TelegramCodeVerification(code="12345"))
+    old_ref = await service.validate_rebind_to_agent(agent_id, agent_id, owner_id=owner_id)
+    await service.start_rebind(agent_id, owner_id=owner_id)
+    await service.verify_telegram_code(agent_id, TelegramCodeVerification(code="12345"))
+    with pytest.raises(TelegramLoginStaleError):
+        await service.rebind_to_agent(agent_id, agent_id, owner_id=owner_id, authorization=old_ref)
+    assert (await repository.get(agent_id)).applied_auth_generation is None
+    assert (await store.get_runtime_config(agent_id)).name == "Original"
 
 
 @pytest.mark.asyncio
@@ -203,6 +246,7 @@ async def test_start_rebind_invalidates_old_authorization_before_requesting_code
             api_id: int,
             api_hash: str,
             session_string: str | None = None,
+            proxy: TelegramProxyConfig | None = None,
         ) -> FakeTelegramAuthClient:
             return FailingCodeClient(FakeTelegramAccount())
 

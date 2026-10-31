@@ -4,7 +4,13 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { adminApi } from '@/lib/adminApi';
 import { AdminAccessContext, type AdminAccess } from '@/hooks/useAdminAccess';
 import { AdminUsers } from '@/components/admin/AdminUsers';
-import type { AdminPage, AdminUserDetail, AdminUserSummary } from '@/types/admin';
+import { ToastProvider } from '@/components/ui/toast';
+import type {
+  AdminAgentProxy,
+  AdminPage,
+  AdminUserDetail,
+  AdminUserSummary,
+} from '@/types/admin';
 
 const adminId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const noAgentUserId = '11111111-1111-4111-8111-111111111111';
@@ -64,9 +70,11 @@ function renderUsers() {
   });
   const view = render(
     <QueryClientProvider client={queryClient}>
-      <AdminAccessContext.Provider value={access}>
-        <AdminUsers />
-      </AdminAccessContext.Provider>
+      <ToastProvider>
+        <AdminAccessContext.Provider value={access}>
+          <AdminUsers />
+        </AdminAccessContext.Provider>
+      </ToastProvider>
     </QueryClientProvider>,
   );
   return { queryClient, ...view };
@@ -74,8 +82,12 @@ function renderUsers() {
 
 const originalUsers = adminApi.users;
 const originalUser = adminApi.user;
+const originalProxyOptions = adminApi.proxyOptions;
+const originalAssignAgentProxy = adminApi.assignAgentProxy;
 let listCalls: Array<{ q: string; page: number; page_size?: number }>;
 let detailCalls: Array<{ userId: string; page: number; page_size?: number }>;
+let proxyAssignments: Array<{ agentId: string; proxyId: string | null }>;
+let proxyOptions: AdminAgentProxy[];
 let loadUsers: (params: {
   q: string;
   page: number;
@@ -89,6 +101,8 @@ let loadUser: (
 beforeEach(() => {
   listCalls = [];
   detailCalls = [];
+  proxyAssignments = [];
+  proxyOptions = [];
   setUrl();
   loadUsers = async () => userPage([]);
   loadUser = async () => userDetail(userSummary(noAgentUserId));
@@ -100,12 +114,19 @@ beforeEach(() => {
     detailCalls.push({ userId, ...params });
     return loadUser(userId, params);
   };
+  adminApi.proxyOptions = async () => proxyOptions;
+  adminApi.assignAgentProxy = async (agentId, proxyId) => {
+    proxyAssignments.push({ agentId, proxyId });
+    return proxyOptions.find((proxy) => proxy.id === proxyId) ?? null;
+  };
 });
 
 afterEach(() => {
   cleanup();
   adminApi.users = originalUsers;
   adminApi.user = originalUser;
+  adminApi.proxyOptions = originalProxyOptions;
+  adminApi.assignAgentProxy = originalAssignAgentProxy;
   const happyDomWindow = window as Window & { happyDOM?: { setURL: (url: string) => void } };
   happyDomWindow.happyDOM?.setURL(initialUrl);
 });
@@ -200,6 +221,7 @@ describe('AdminUsers', () => {
       name: `Мимик ${index + 1}`,
       llm_model: 'openrouter/test-model',
       state: index === 5 ? ('running' as const) : ('stopped' as const),
+      proxy: null,
     }));
     loadUsers = async () => userPage([profile]);
     loadUser = async (_userId, params) =>
@@ -228,5 +250,62 @@ describe('AdminUsers', () => {
     expect(document.body.textContent).not.toContain('api_hash');
     expect(screen.queryByRole('button', { name: /Запустить|Остановить|Удалить/ })).toBeNull();
     expect(screen.queryByRole('link', { name: /Управлять агентом/ })).toBeNull();
+  });
+
+  test('assigns a proxy to a mimic from the details table', async () => {
+    const firstProxy: AdminAgentProxy = {
+      id: '11111111-1111-4111-8111-111111111111',
+      label: 'Основной',
+      protocol: 'socks5',
+      host: 'proxy-one.example.test',
+      port: 1080,
+      is_active: true,
+    };
+    const secondProxy: AdminAgentProxy = {
+      id: '22222222-2222-4222-8222-222222222222',
+      label: 'Резервный',
+      protocol: 'http',
+      host: 'proxy-two.example.test',
+      port: 3128,
+      is_active: true,
+    };
+    proxyOptions = [firstProxy, secondProxy];
+    const profile = userSummary(multiAgentUserId, {
+      display_name: 'Владелец',
+      agents_total: 1,
+    });
+    loadUsers = async () => userPage([profile]);
+    loadUser = async () =>
+      userDetail(profile, {
+        items: [
+          {
+            agent_id: '33333333-3333-4333-8333-333333333333',
+            name: 'Мимик',
+            llm_model: 'openrouter/test-model',
+            state: 'stopped',
+            proxy: firstProxy,
+          },
+        ],
+        total: 1,
+        page: 1,
+        page_size: 5,
+      });
+    renderUsers();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Мимики (1)' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Мимики пользователя' });
+    const select = await within(dialog).findByRole('combobox', {
+      name: 'Прокси мимика Мимик',
+    });
+    await waitFor(() => expect((select as HTMLSelectElement).disabled).toBe(false));
+    expect((select as HTMLSelectElement).value).toBe(firstProxy.id);
+
+    fireEvent.change(select, { target: { value: secondProxy.id } });
+
+    await waitFor(() =>
+      expect(proxyAssignments).toEqual([
+        { agentId: '33333333-3333-4333-8333-333333333333', proxyId: secondProxy.id },
+      ]),
+    );
   });
 });
