@@ -22,6 +22,7 @@ from mimic42.core.onboarding import (
     AgentOnboardingService,
     InMemoryOnboardingRepository,
     OnboardingSession,
+    TelegramCodeVerification,
     TelegramLoginStatus,
 )
 from mimic42.core.telegram_app_settings import TelegramAppSettings
@@ -846,6 +847,95 @@ async def test_rebind_confirm_rejects_foreign_onboarding_session() -> None:
         )
 
     assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_rebind_confirm_cannot_apply_authorization_completed_during_stop() -> None:
+    owner_id = uuid4()
+    agent_id = uuid4()
+    store = InMemoryAgentStore()
+    repository = InMemoryOnboardingRepository()
+    working_session = OnboardingSession(
+        onboarding_id=agent_id,
+        owner_id=owner_id,
+        api_id=12345,
+        api_hash_secret="saved-hash",
+        phone_number="+79990000000",
+        authorization_status=TelegramLoginStatus.AUTHORIZED,
+        session_secret="working-session",
+        name="Mimic",
+        soul_prompt="Short replies",
+        completed_agent_id=agent_id,
+    )
+    await store.create_from_onboarding(working_session)
+    working_config = await store.get_runtime_config(agent_id)
+    await repository.save(
+        working_session.model_copy(update={"session_secret": "first-authorized-rebind"})
+    )
+    service = AgentOnboardingService(
+        repository=repository,
+        telegram_factory=FakeTelegramAuthClientFactory(FakeTelegramAccount()),
+        agent_store=store,
+    )
+
+    class AuthorizeDuringStopManager(FakeAgentManager):
+        async def stop_agent(self, agent_id: UUID) -> None:
+            await super().stop_agent(agent_id)
+            if len(self.stopped) == 1:
+                await service.start_rebind(agent_id, owner_id=owner_id)
+                await service.verify_telegram_code(
+                    agent_id, TelegramCodeVerification(code="12345"), owner_id=owner_id
+                )
+
+    manager = AuthorizeDuringStopManager()
+    app = create_test_app(
+        manager=manager,
+        onboarding_service=service,
+        agent_store=store,
+        auth_verifier=FakeAuthVerifier(owner_id),
+    )
+    initial_authorization = (await repository.get(agent_id)).authorization_ref()
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        stale_response = await client.post(
+            f"/api/v1/agents/{agent_id}/telegram/rebind/confirm",
+            headers=AUTH_HEADERS,
+            json={"onboarding_id": str(agent_id)},
+        )
+
+        assert stale_response.status_code == 409
+        assert set(stale_response.json()) == {"detail"}
+        for secret in ("saved-hash", "working-session", "first-authorized-rebind", "+79990000000"):
+            assert secret not in stale_response.text
+        latest = await repository.get(agent_id)
+        assert latest.authorization_ref() != initial_authorization
+        assert latest.authorization_status is TelegramLoginStatus.AUTHORIZED
+        assert latest.session_secret == "fake-session:+79990000000"
+        assert latest.applied_auth_generation is None
+        assert await store.get_runtime_config(agent_id) == working_config
+        assert manager.stopped == [agent_id]
+        assert manager.reloaded == []
+
+        fresh_response = await client.post(
+            f"/api/v1/agents/{agent_id}/telegram/rebind/confirm",
+            headers=AUTH_HEADERS,
+            json={"onboarding_id": str(agent_id)},
+        )
+
+    assert fresh_response.status_code == 200
+    assert fresh_response.json() == {
+        "agent_id": str(agent_id),
+        "owner_id": str(owner_id),
+        "state": "stopped",
+    }
+    config = await store.get_runtime_config(agent_id)
+    assert config.telegram_session_string == latest.session_secret
+    assert config.name == "Mimic"
+    assert config.soul_prompt == "Short replies"
+    applied = await repository.get(agent_id)
+    assert applied.authorization_ref() == latest.authorization_ref()
+    assert applied.applied_auth_generation == latest.auth_generation
+    assert manager.reloaded == [agent_id]
 
 
 @pytest.mark.asyncio
