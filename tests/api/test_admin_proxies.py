@@ -246,6 +246,57 @@ async def test_import_parses_file_lines_and_skips_existing_proxy() -> None:
 
 
 @pytest.mark.asyncio
+async def test_import_url_errors_never_echo_credentials_and_keep_counters() -> None:
+    admin_id = uuid4()
+    existing = _proxy_detail()
+    repository = FakeAdminRepository(admin_ids={admin_id}, proxies=[existing])
+    app = _app(admin_id, repository)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/v1/admin/proxies/import",
+            headers=AUTH_HEADERS,
+            json={
+                "text": "\n".join(
+                    [
+                        "# comment",
+                        "socks5://user:review_secret#rest@proxy.example.test:1080",
+                        "http://user:nfkc_secret\uff03suffix@proxy.example.test:3128",
+                        "socks5://user:bracket_secret@[bracket_secret]:1080",
+                        f"{existing.host}:{existing.port}:{existing.username}:duplicate_secret",
+                        "",
+                        "5.6.7.8:3128:second:imported_secret",
+                        "5.6.7.8:3128:second:imported_secret",
+                    ]
+                ),
+                "protocol": "socks5",
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["imported"] == 1
+    assert body["skipped"] == 2
+    assert len(body["errors"]) == 3
+    for line_number, error in enumerate(body["errors"], start=2):
+        assert error.startswith(f"Строка {line_number}: ")
+    for fragment in (
+        "review_secret",
+        "rest",
+        "nfkc_secret",
+        "suffix",
+        "bracket_secret",
+        "duplicate_secret",
+        "imported_secret",
+    ):
+        assert fragment not in response.text
+    created = [call for call in repository.proxy_calls if call[0] == "create"]
+    assert len(created) == 1
+    assert created[0][1]["values"]["label"] is None
+    assert created[0][1]["values"]["password"] == "imported_secret"
+
+
+@pytest.mark.asyncio
 async def test_create_proxy_rejects_an_overlong_password() -> None:
     admin_id = uuid4()
     repository = FakeAdminRepository(admin_ids={admin_id})
