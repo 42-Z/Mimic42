@@ -375,21 +375,27 @@ async def test_revoke_waits_for_rebind_before_locking_telegram_session(
             return self
 
     rebind_factory = async_sessionmaker(
-        bind=db_session_factory.kw["bind"], class_=RebindSession, expire_on_commit=False
+        bind=db_session_factory.kw["bind"],
+        class_=RebindSession,
+        expire_on_commit=False,
     )
     revoke_factory = async_sessionmaker(
-        bind=db_session_factory.kw["bind"], class_=RevokeSession, expire_on_commit=False
+        bind=db_session_factory.kw["bind"],
+        class_=RevokeSession,
+        expire_on_commit=False,
     )
+    typed_rebind_factory = cast("async_sessionmaker[AsyncSession]", rebind_factory)
+    typed_revoke_factory = cast("async_sessionmaker[AsyncSession]", revoke_factory)
     runtime = MimicAgentRuntime(
         config=make_config(agent_id, owner_id).model_copy(
             update={"telegram_session_token": "old-session"}
         ),
         telegram_client=FakeTelegramClient(),
         langchain_agent=FakeLangChainAgent(),
-        session_factory=revoke_factory,
+        session_factory=typed_revoke_factory,
     )
     rebind = asyncio.create_task(
-        DatabaseOnboardingRepository(rebind_factory).begin_rebind(agent_id, owner_id=owner_id)
+        DatabaseOnboardingRepository(typed_rebind_factory).begin_rebind(agent_id, owner_id=owner_id)
     )
     revoke = None
     try:
