@@ -19,7 +19,7 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe('AdminNavigation', () => {
-  test('links to all four deep-linked sections and only marks the exact overview route active', () => {
+  test('links to all deep-linked sections and only marks the exact overview route active', () => {
     navigationMock.pathname = '/admin';
     const { rerender } = render(<AdminNavigation />);
 
@@ -28,6 +28,7 @@ describe('AdminNavigation', () => {
       '/admin',
       '/admin/users',
       '/admin/presets',
+      '/admin/proxies',
       '/admin/telegram',
     ]);
     expect(links.filter((link) => link.getAttribute('aria-current') === 'page')).toHaveLength(1);

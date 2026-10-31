@@ -16,6 +16,7 @@ ADMIN_TABLES = (
     "admin_users",
     "platform_telegram_settings",
     "admin_audit_log",
+    "telegram_proxies",
 )
 CLIENT_ROLES = ("public", "anon", "authenticated")
 TABLE_PRIVILEGES = (
@@ -32,6 +33,7 @@ SERVICE_ROLE_ALLOWED = {
     "admin_users": {"SELECT", "INSERT", "UPDATE", "DELETE"},
     "platform_telegram_settings": {"SELECT", "INSERT", "UPDATE"},
     "admin_audit_log": {"SELECT", "INSERT"},
+    "telegram_proxies": {"SELECT", "INSERT", "UPDATE", "DELETE"},
 }
 
 

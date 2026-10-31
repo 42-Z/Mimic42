@@ -4,9 +4,9 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any, Literal, Protocol, TypedDict
 from uuid import UUID
 
-from pydantic import BaseModel, SecretStr, field_serializer
+from pydantic import BaseModel, Field, SecretStr, field_serializer
 
-from mimic42.core.agent_runtime import AgentRuntimeState
+from mimic42.core.agent_runtime import AgentRuntimeState, TelegramProxyConfig
 
 
 class AdminUnavailableError(Exception):
@@ -19,6 +19,22 @@ class AdminNotFoundError(Exception):
 
 class AdminUserNotFoundError(AdminNotFoundError):
     """An administrative query could not find an accessible user."""
+
+
+class AdminProxyNotFoundError(AdminNotFoundError):
+    """An administrative proxy operation could not find the proxy."""
+
+
+class AdminAgentNotFoundError(AdminNotFoundError):
+    """An administrative proxy operation could not find the agent."""
+
+
+class AdminSecretStorageError(Exception):
+    """A secret cannot be stored or read because SECRET_KEY is unavailable."""
+
+
+class AdminProxyValidationError(ValueError):
+    """Proxy fields are inconsistent, e.g. a password without a username."""
 
 
 class AdminPage[T](BaseModel):
@@ -42,16 +58,51 @@ class AdminUserSummary(BaseModel):
     states: dict[AgentRuntimeState, int]
 
 
+class AdminAgentProxy(BaseModel):
+    id: UUID
+    label: str | None
+    protocol: Literal["socks5", "http"]
+    host: str
+    port: int
+    is_active: bool
+
+
 class AdminAgentSummary(BaseModel):
     agent_id: UUID
     name: str
     llm_model: str
     state: AgentRuntimeState
+    proxy: AdminAgentProxy | None = None
 
 
 class AdminUserDetail(BaseModel):
     profile: AdminUserSummary
     agents: AdminPage[AdminAgentSummary]
+
+
+class AdminProxySummary(BaseModel):
+    id: UUID
+    label: str | None
+    protocol: Literal["socks5", "http"]
+    host: str
+    port: int
+    username: str | None
+    has_password: bool
+    is_active: bool
+    agents_total: int
+    onboarding_total: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+
+class AdminProxyDetail(AdminProxySummary):
+    created_by: UUID | None
+
+
+class ProxyImportResult(BaseModel):
+    imported: int
+    skipped: int
+    errors: list[str] = Field(default_factory=list)
 
 
 class AdminPresetSummary(BaseModel):
@@ -135,6 +186,26 @@ class PresetPatchValues(TypedDict, total=False):
     sort_order: int
 
 
+class ProxyCreateValues(TypedDict):
+    label: str | None
+    protocol: Literal["socks5", "http"]
+    host: str
+    port: int
+    username: str | None
+    password: str | None
+    is_active: bool
+
+
+class ProxyPatchValues(TypedDict, total=False):
+    label: str | None
+    protocol: Literal["socks5", "http"]
+    host: str
+    port: int
+    username: str | None
+    password: str | None
+    is_active: bool
+
+
 AdminPresetKind = Literal["all", "official", "published"]
 MAX_ADMIN_PAGE = 1_000_000
 POSTGRES_INTEGER_MIN = -(2**31)
@@ -216,6 +287,51 @@ class AdminRepository(TelegramSettingsStore, Protocol):
         *,
         actor_user_id: UUID,
     ) -> AdminPresetDetail: ...
+
+    async def list_proxies(
+        self,
+        *,
+        page: int,
+        page_size: int,
+    ) -> AdminPage[AdminProxySummary]: ...
+
+    async def list_proxy_options(self) -> list[AdminAgentProxy]: ...
+
+    async def read_proxy_config(self, proxy_id: UUID) -> TelegramProxyConfig: ...
+
+    async def proxy_exists(
+        self,
+        *,
+        protocol: Literal["socks5", "http"],
+        host: str,
+        port: int,
+        username: str | None,
+    ) -> bool: ...
+
+    async def create_proxy(
+        self,
+        values: ProxyCreateValues,
+        *,
+        actor_user_id: UUID,
+    ) -> AdminProxyDetail: ...
+
+    async def update_proxy(
+        self,
+        proxy_id: UUID,
+        values: ProxyPatchValues,
+        *,
+        actor_user_id: UUID,
+    ) -> AdminProxyDetail: ...
+
+    async def delete_proxy(self, proxy_id: UUID, *, actor_user_id: UUID) -> list[UUID]: ...
+
+    async def assign_agent_proxy(
+        self,
+        agent_id: UUID,
+        proxy_id: UUID | None,
+        *,
+        actor_user_id: UUID,
+    ) -> AdminAgentProxy | None: ...
 
     async def statistics(
         self,

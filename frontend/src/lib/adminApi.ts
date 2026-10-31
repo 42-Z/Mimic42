@@ -1,10 +1,17 @@
 import { apiClient } from '@/lib/api';
 import type {
+  AdminAgentProxy,
   AdminIdentity,
   AdminPage,
   AdminPresetDetail,
   AdminPresetKind,
   AdminPresetSummary,
+  AdminProxyCheckResult,
+  AdminProxyDetail,
+  AdminProxyImportInput,
+  AdminProxyImportResult,
+  AdminProxyInput,
+  AdminProxySummary,
   AdminStatistics,
   AdminUserDetail,
   AdminUserSummary,
@@ -12,6 +19,7 @@ import type {
   PublicTelegramSettings,
   SaveTelegramSettings,
   UpdateAdminPreset,
+  UpdateAdminProxy,
 } from '@/types/admin';
 
 export interface AdminReadOptions {
@@ -82,6 +90,44 @@ export const adminApi = {
   saveTelegramSettings: (values: SaveTelegramSettings) =>
     apiClient
       .put<PublicTelegramSettings>('/admin/telegram-settings', values)
+      .then((response) => response.data),
+
+  proxies: (params: { page: number; page_size?: number }, options: AdminReadOptions = {}) =>
+    apiClient
+      .get<AdminPage<AdminProxySummary>>('/admin/proxies', {
+        params: { ...params, page_size: params.page_size ?? 25 },
+        signal: options.signal,
+      })
+      .then((response) => response.data),
+
+  proxyOptions: (options: AdminReadOptions = {}) =>
+    apiClient
+      .get<AdminAgentProxy[]>('/admin/proxies/options', { signal: options.signal })
+      .then((response) => response.data),
+
+  createProxy: (values: AdminProxyInput) =>
+    apiClient.post<AdminProxyDetail>('/admin/proxies', values).then((response) => response.data),
+
+  importProxies: (values: AdminProxyImportInput) =>
+    apiClient
+      .post<AdminProxyImportResult>('/admin/proxies/import', values)
+      .then((response) => response.data),
+
+  updateProxy: (proxyId: string, values: UpdateAdminProxy) =>
+    apiClient
+      .patch<AdminProxyDetail>(`/admin/proxies/${proxyId}`, values)
+      .then((response) => response.data),
+
+  deleteProxy: (proxyId: string) => apiClient.delete(`/admin/proxies/${proxyId}`),
+
+  checkProxy: (proxyId: string) =>
+    apiClient
+      .post<AdminProxyCheckResult>(`/admin/proxies/${proxyId}/check`)
+      .then((response) => response.data),
+
+  assignAgentProxy: (agentId: string, proxyId: string | null) =>
+    apiClient
+      .put<AdminAgentProxy | null>(`/admin/agents/${agentId}/proxy`, { proxy_id: proxyId })
       .then((response) => response.data),
 
   statistics: (days: 7 | 30, options: AdminReadOptions = {}) =>

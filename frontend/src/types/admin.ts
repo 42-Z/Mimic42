@@ -21,11 +21,80 @@ export interface AdminUserSummary {
   states: Partial<Record<AgentState, number>>;
 }
 
+export type AdminProxyProtocol = 'socks5' | 'http';
+
+export interface AdminAgentProxy {
+  id: string;
+  label: string | null;
+  protocol: AdminProxyProtocol;
+  host: string;
+  port: number;
+  is_active: boolean;
+}
+
 export interface AdminAgentSummary {
   agent_id: string;
   name: string;
   llm_model: string;
   state: AgentState;
+  proxy: AdminAgentProxy | null;
+}
+
+export interface AdminProxySummary {
+  id: string;
+  label: string | null;
+  protocol: AdminProxyProtocol;
+  host: string;
+  port: number;
+  username: string | null;
+  has_password: boolean;
+  is_active: boolean;
+  agents_total: number;
+  onboarding_total: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AdminProxyDetail extends AdminProxySummary {
+  created_by: string | null;
+}
+
+export interface AdminProxyInput {
+  label?: string | null;
+  protocol: AdminProxyProtocol;
+  host: string;
+  port: number;
+  username?: string | null;
+  password?: string;
+  is_active: boolean;
+}
+
+export interface UpdateAdminProxy {
+  label?: string | null;
+  protocol?: AdminProxyProtocol;
+  host?: string;
+  port?: number;
+  username?: string | null;
+  password?: string;
+  is_active?: boolean;
+}
+
+export interface AdminProxyCheckResult {
+  ok: boolean;
+  latency_ms: number | null;
+  error: string | null;
+}
+
+export interface AdminProxyImportInput {
+  text: string;
+  protocol: AdminProxyProtocol;
+  is_active: boolean;
+}
+
+export interface AdminProxyImportResult {
+  imported: number;
+  skipped: number;
+  errors: string[];
 }
 
 export interface AdminUserDetail {

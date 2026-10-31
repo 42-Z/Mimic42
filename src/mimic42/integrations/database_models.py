@@ -102,24 +102,51 @@ class PlatformTelegramSettingsModel(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class TelegramProxyModel(Base):
+    __tablename__ = "telegram_proxies"
+    __table_args__ = (
+        CheckConstraint("btrim(label) <> ''"),
+        CheckConstraint("protocol in ('socks5', 'http')"),
+        CheckConstraint("btrim(host) <> ''"),
+        CheckConstraint("port between 1 and 65535"),
+        Index("telegram_proxies_active_created_idx", "is_active", "created_at", "id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    label: Mapped[str | None] = mapped_column(Text)
+    protocol: Mapped[str] = mapped_column(Text)
+    host: Mapped[str] = mapped_column(Text)
+    port: Mapped[int] = mapped_column(Integer)
+    username: Mapped[str | None] = mapped_column(Text)
+    password_ciphertext: Mapped[str | None] = mapped_column(Text)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_by: Mapped[UUID | None] = mapped_column(ForeignKey("profiles.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class AdminAuditLogModel(Base):
     __tablename__ = "admin_audit_log"
     __table_args__ = (
         CheckConstraint(
             "action in ('preset.created', 'preset.updated', "
-            "'preset.visibility_changed', 'telegram.settings_updated')"
+            "'preset.visibility_changed', 'telegram.settings_updated', "
+            "'proxy.created', 'proxy.updated', 'proxy.deleted', 'agent.proxy_changed')"
         ),
-        CheckConstraint("object_type in ('preset', 'telegram_settings')"),
+        CheckConstraint("object_type in ('preset', 'telegram_settings', 'proxy', 'agent')"),
         CheckConstraint("jsonb_typeof(metadata) = 'object'"),
         CheckConstraint(
-            "(object_type = 'preset' and object_id is not null) or "
+            "(object_type in ('preset', 'proxy', 'agent') and object_id is not null) or "
             "(object_type = 'telegram_settings' and object_id is null)"
         ),
         CheckConstraint(
             "(action in ('preset.created', 'preset.updated', 'preset.visibility_changed') "
             "and object_type = 'preset' and object_id is not null) or "
             "(action = 'telegram.settings_updated' and "
-            "object_type = 'telegram_settings' and object_id is null)",
+            "object_type = 'telegram_settings' and object_id is null) or "
+            "(action in ('proxy.created', 'proxy.updated', 'proxy.deleted') "
+            "and object_type = 'proxy' and object_id is not null) or "
+            "(action = 'agent.proxy_changed' and object_type = 'agent' and object_id is not null)",
             name="admin_audit_action_object_consistency",
         ),
     )
@@ -186,6 +213,7 @@ class AgentOnboardingSessionModel(Base):
     __table_args__ = (
         Index("agent_onboarding_sessions_owner_id_idx", "owner_id"),
         Index("agent_onboarding_sessions_status_idx", "authorization_status"),
+        Index("agent_onboarding_sessions_proxy_id_idx", "proxy_id"),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
@@ -206,6 +234,9 @@ class AgentOnboardingSessionModel(Base):
         ForeignKey("agents.id", ondelete="SET NULL"),
         unique=True,
     )
+    proxy_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("telegram_proxies.id", ondelete="SET NULL")
+    )
     last_error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -213,6 +244,7 @@ class AgentOnboardingSessionModel(Base):
 
 class TelegramSessionModel(Base):
     __tablename__ = "telegram_sessions"
+    __table_args__ = (Index("telegram_sessions_proxy_id_idx", "proxy_id"),)
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     agent_id: Mapped[UUID] = mapped_column(
@@ -228,6 +260,9 @@ class TelegramSessionModel(Base):
     authorization_status: Mapped[str] = mapped_column(
         TelegramAuthorizationStatus,
         default="not_started",
+    )
+    proxy_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("telegram_proxies.id", ondelete="SET NULL")
     )
     last_authorized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_error: Mapped[str | None] = mapped_column(Text)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from mimic42.core.agent_runtime import TelegramProxyConfig
 from mimic42.core.onboarding import TelegramPasswordRequiredError
 from mimic42.testing.telegram.account import FakeTelegramAccount
 
@@ -62,6 +63,7 @@ class FakeTelegramAuthClientFactory:
     def __init__(self, account: FakeTelegramAccount) -> None:
         self._account = account
         self.built_with: tuple[int, str] | None = None
+        self.proxies: list[TelegramProxyConfig | None] = []
 
     def build(
         self,
@@ -69,8 +71,10 @@ class FakeTelegramAuthClientFactory:
         api_id: int,
         api_hash: str,
         session_string: str | None = None,
+        proxy: TelegramProxyConfig | None = None,
     ) -> FakeTelegramAuthClient:
         self.built_with = (api_id, api_hash)
+        self.proxies.append(proxy)
         if session_string:
             self._account.authorized = True
         return FakeTelegramAuthClient(self._account)

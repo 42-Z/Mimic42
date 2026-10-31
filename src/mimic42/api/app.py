@@ -75,6 +75,7 @@ from mimic42.core.telegram_app_settings import (
     TelegramAppSettings,
     TelegramAppUnavailableError,
 )
+from mimic42.core.telegram_proxy import TelegramProxyUnavailableError
 from mimic42.core.warmup import WarmupState
 from mimic42.core.warmup_service import pair_policy_for
 from mimic42.integrations import openrouter_catalog
@@ -84,6 +85,7 @@ from mimic42.integrations.database_memory import DatabaseShortTermMemory
 from mimic42.integrations.database_onboarding import (
     DatabaseOnboardingRepository,
 )
+from mimic42.integrations.database_proxies import DatabaseTelegramProxyStore
 from mimic42.integrations.database_session import create_engine, create_session_factory
 from mimic42.integrations.database_warmup import DatabaseWarmupHistory, DatabaseWarmupStateStore
 from mimic42.integrations.mem0_memory import build_mem0_memory
@@ -275,6 +277,11 @@ def _telegram_login_http_error(exc: Exception) -> HTTPException | None:
         RPCError,
     )
 
+    if isinstance(exc, TelegramProxyUnavailableError):
+        return HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Прокси Telegram недоступен: {exc}",
+        )
     if isinstance(exc, ApiIdInvalidError):
         return HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -394,14 +401,20 @@ def create_app(
                 database_engine = create_engine(database_url)
                 session_factory = create_session_factory(database_engine)
 
+            # Строгая проверка: с невалидным SECRET_KEY онбординг писал бы
+            # HASH и session string открытым текстом через PlainTextCipher.
+            cipher = (
+                FernetSecretCipher(app_settings.secret_key)
+                if build_database and app_settings.secret_key is not None
+                else None
+            )
             if build_agent_services:
                 assert session_factory is not None
-                cipher = (
-                    FernetSecretCipher(app_settings.secret_key)
-                    if app_settings.secret_key is not None
-                    else None
-                )
                 database_agent_store = agent_store or DatabaseAgentStore(
+                    session_factory,
+                    cipher=cipher,
+                )
+                database_proxy_store = DatabaseTelegramProxyStore(
                     session_factory,
                     cipher=cipher,
                 )
@@ -412,6 +425,7 @@ def create_app(
                         telegram_factory=app_telegram_factory,
                         cipher=cipher,
                         agent_store=database_agent_store,
+                        proxy_store=database_proxy_store,
                     )
                 if manager is None:
                     agent_memory = long_term_memory or build_mem0_memory(app_settings.mem0_api_key)
@@ -434,7 +448,10 @@ def create_app(
 
             if build_admin_repository:
                 assert session_factory is not None
-                app.state.admin_repository = DatabaseAdminRepository(session_factory)
+                app.state.admin_repository = DatabaseAdminRepository(
+                    session_factory,
+                    cipher=cipher,
+                )
 
             if telegram_app_settings is None:
                 app.state.telegram_app_settings = TelegramAppSettings(
@@ -647,6 +664,11 @@ def create_app(
                 RPCError,
             )
 
+            if isinstance(exc, TelegramProxyUnavailableError):
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail=f"Прокси Telegram недоступен: {exc}",
+                ) from exc
             if isinstance(exc, PhoneNumberUnoccupiedError):
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,

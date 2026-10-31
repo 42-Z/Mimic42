@@ -2,13 +2,14 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { LayoutDashboard, Library, Settings, Users } from 'lucide-react';
+import { LayoutDashboard, Library, Network, Settings, Users } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 const sections = [
   { href: '/admin', label: 'Обзор', icon: LayoutDashboard },
   { href: '/admin/users', label: 'Пользователи', icon: Users },
   { href: '/admin/presets', label: 'Пресеты', icon: Library },
+  { href: '/admin/proxies', label: 'Прокси', icon: Network },
   { href: '/admin/telegram', label: 'Telegram', icon: Settings },
 ] as const;
 
