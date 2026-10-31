@@ -28,7 +28,6 @@ from mimic42.core.admin import (
     AdminPresetKind,
     AdminPresetSummary,
     AdminProxyDetail,
-    AdminProxyInUseError,
     AdminProxyNotFoundError,
     AdminProxySummary,
     AdminProxyValidationError,
@@ -337,11 +336,6 @@ async def _admin_result[ResultT](operation: Awaitable[ResultT]) -> ResultT:
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Пресет не найден",
         ) from None
-    except AdminProxyInUseError:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=("Прокси используют мимики или незавершённый онбординг. Сначала снимите его."),
-        ) from None
     except AdminProxyValidationError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -560,7 +554,31 @@ async def delete_proxy(
     current_user: Annotated[CurrentUser, Depends(require_admin)],
 ) -> Response:
     repository = _get_admin_repository(request)
-    await _admin_result(repository.delete_proxy(proxy_id, actor_user_id=current_user.user_id))
+    affected_agent_ids = await _admin_result(
+        repository.delete_proxy(proxy_id, actor_user_id=current_user.user_id)
+    )
+    if affected_agent_ids:
+        manager = getattr(request.app.state, "agent_manager", None)
+        if manager is None:
+            raise _admin_unavailable()
+        failed: list[UUID] = []
+        for agent_id in affected_agent_ids:
+            try:
+                await manager.reload_agent(agent_id)
+            except Exception as exc:
+                logger.warning(
+                    "Не удалось пересобрать агента %s после удаления прокси (%s)",
+                    agent_id,
+                    type(exc).__name__,
+                )
+                failed.append(agent_id)
+        if failed:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=(
+                    "Прокси удалён, но часть мимиков не пересобралась. Перезапустите их вручную."
+                ),
+            )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 

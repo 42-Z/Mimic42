@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, cast
 from uuid import UUID, uuid4
 
-from sqlalchemy import case, exists, func, or_, select
+from sqlalchemy import case, exists, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as postgres_insert
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -20,7 +20,6 @@ from mimic42.core.admin import (
     AdminPresetKind,
     AdminPresetSummary,
     AdminProxyDetail,
-    AdminProxyInUseError,
     AdminProxyNotFoundError,
     AdminProxySummary,
     AdminProxyValidationError,
@@ -835,7 +834,7 @@ class DatabaseAdminRepository:
             raise AdminUnavailableError("Administrative storage is unavailable") from None
         return result
 
-    async def delete_proxy(self, proxy_id: UUID, *, actor_user_id: UUID) -> None:
+    async def delete_proxy(self, proxy_id: UUID, *, actor_user_id: UUID) -> list[UUID]:
         try:
             async with self._session_factory() as session, session.begin():
                 proxy = await session.scalar(
@@ -845,10 +844,13 @@ class DatabaseAdminRepository:
                 )
                 if proxy is None:
                     raise AdminProxyNotFoundError
-                assigned = await session.scalar(
-                    select(func.count())
-                    .select_from(TelegramSessionModel)
-                    .where(TelegramSessionModel.proxy_id == proxy_id)
+
+                agent_ids = list(
+                    await session.scalars(
+                        select(TelegramSessionModel.agent_id).where(
+                            TelegramSessionModel.proxy_id == proxy_id
+                        )
+                    )
                 )
                 pending_onboarding = await session.scalar(
                     select(func.count())
@@ -858,8 +860,41 @@ class DatabaseAdminRepository:
                         AgentOnboardingSessionModel.completed_agent_id.is_(None),
                     )
                 )
-                if assigned or pending_onboarding:
-                    raise AdminProxyInUseError
+                # Сначала уводим трафик на другой активный прокси, чтобы
+                # удаление не оставило работающих мимиков без сети.
+                replacement_id = await self._least_loaded_proxy_id(
+                    session,
+                    exclude_id=proxy_id,
+                )
+                if replacement_id is not None:
+                    await session.execute(
+                        update(TelegramSessionModel)
+                        .where(TelegramSessionModel.proxy_id == proxy_id)
+                        .values(proxy_id=replacement_id)
+                    )
+                    await session.execute(
+                        update(AgentOnboardingSessionModel)
+                        .where(
+                            AgentOnboardingSessionModel.proxy_id == proxy_id,
+                            AgentOnboardingSessionModel.completed_agent_id.is_(None),
+                        )
+                        .values(proxy_id=replacement_id)
+                    )
+
+                for agent_id in agent_ids:
+                    await self._append_audit(
+                        session,
+                        actor_user_id=actor_user_id,
+                        action="agent.proxy_changed",
+                        object_type="agent",
+                        object_id=agent_id,
+                        metadata={
+                            "before": str(proxy_id),
+                            "after": (str(replacement_id) if replacement_id is not None else None),
+                            "reason": "proxy_deleted",
+                        },
+                    )
+
                 label = proxy.label
                 await session.delete(proxy)
                 await self._append_audit(
@@ -868,10 +903,53 @@ class DatabaseAdminRepository:
                     action="proxy.deleted",
                     object_type="proxy",
                     object_id=proxy_id,
-                    metadata={"label": label},
+                    metadata={
+                        "label": label,
+                        "affected_agents": len(agent_ids),
+                        "pending_onboarding": pending_onboarding or 0,
+                        "reassigned_to": (
+                            str(replacement_id) if replacement_id is not None else None
+                        ),
+                    },
                 )
         except SQLAlchemyError:
             raise AdminUnavailableError("Administrative storage is unavailable") from None
+        return agent_ids
+
+    async def _least_loaded_proxy_id(
+        self,
+        session: AsyncSession,
+        *,
+        exclude_id: UUID,
+    ) -> UUID | None:
+        agent_load = (
+            select(func.count(TelegramSessionModel.id))
+            .where(TelegramSessionModel.proxy_id == TelegramProxyModel.id)
+            .correlate(TelegramProxyModel)
+            .scalar_subquery()
+        )
+        onboarding_load = (
+            select(func.count(AgentOnboardingSessionModel.id))
+            .where(
+                AgentOnboardingSessionModel.proxy_id == TelegramProxyModel.id,
+                AgentOnboardingSessionModel.completed_agent_id.is_(None),
+            )
+            .correlate(TelegramProxyModel)
+            .scalar_subquery()
+        )
+        return await session.scalar(
+            select(TelegramProxyModel.id)
+            .where(
+                TelegramProxyModel.is_active.is_(True),
+                TelegramProxyModel.id != exclude_id,
+            )
+            .order_by(
+                agent_load + onboarding_load,
+                TelegramProxyModel.created_at,
+                TelegramProxyModel.id,
+            )
+            .limit(1)
+        )
 
     async def assign_agent_proxy(
         self,

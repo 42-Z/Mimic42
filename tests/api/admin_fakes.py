@@ -14,7 +14,6 @@ from mimic42.core.admin import (
     AdminPresetDetail,
     AdminPresetSummary,
     AdminProxyDetail,
-    AdminProxyInUseError,
     AdminProxyNotFoundError,
     AdminProxySummary,
     AdminProxyValidationError,
@@ -419,14 +418,20 @@ class FakeAdminRepository:
         self.proxies[proxy_id] = updated
         return updated
 
-    async def delete_proxy(self, proxy_id: UUID, *, actor_user_id: UUID) -> None:
+    async def delete_proxy(self, proxy_id: UUID, *, actor_user_id: UUID) -> list[UUID]:
         self.proxy_calls.append(("delete", {"proxy_id": proxy_id, "actor_user_id": actor_user_id}))
         proxy = self.proxies.get(proxy_id)
         if proxy is None:
             raise AdminProxyNotFoundError
-        if proxy.agents_total > 0:
-            raise AdminProxyInUseError
+        affected = [
+            agent_id
+            for agent_id, assigned in self.agent_proxies.items()
+            if assigned is not None and assigned.id == proxy_id
+        ]
+        for agent_id in affected:
+            self.agent_proxies[agent_id] = None
         del self.proxies[proxy_id]
+        return affected
 
     async def assign_agent_proxy(
         self,

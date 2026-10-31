@@ -10,7 +10,6 @@ from cryptography.fernet import Fernet
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from mimic42.core.admin import AdminProxyInUseError
 from mimic42.core.agent_runtime import AgentRuntimeState
 from mimic42.core.crypto import FernetSecretCipher
 from mimic42.core.onboarding import OnboardingSession, TelegramLoginStatus
@@ -184,11 +183,12 @@ async def test_proxy_label_is_optional_and_can_be_cleared(
 
 
 @pytest.mark.asyncio
-async def test_assigned_proxy_cannot_be_deleted_and_is_visible_on_the_agent(
+async def test_assigned_proxy_is_reassigned_to_another_active_proxy_on_delete(
     admin_db_factory: async_sessionmaker[Any],
     test_slot: Slot,
 ) -> None:
     cipher = _cipher()
+    await _clear_proxies(admin_db_factory)
     repository = DatabaseAdminRepository(admin_db_factory, cipher=cipher)
     actor_id = test_slot.persona("full").user_id
     owner_id = test_slot.persona("full").user_id
@@ -198,6 +198,18 @@ async def test_assigned_proxy_cannot_be_deleted_and_is_visible_on_the_agent(
             "protocol": "http",
             "host": "proxy.example.test",
             "port": 3128,
+            "username": None,
+            "password": None,
+            "is_active": True,
+        },
+        actor_user_id=actor_id,
+    )
+    replacement = await repository.create_proxy(
+        {
+            "label": "Резервный",
+            "protocol": "socks5",
+            "host": "replacement.example.test",
+            "port": 1080,
             "username": None,
             "password": None,
             "is_active": True,
@@ -214,6 +226,16 @@ async def test_assigned_proxy_cannot_be_deleted_and_is_visible_on_the_agent(
     assert assigned is not None
     assert assigned.id == proxy.id
 
+    affected = await repository.delete_proxy(proxy.id, actor_user_id=actor_id)
+
+    assert affected == [agent_id]
+    async with admin_db_factory() as session:
+        session_row = await session.scalar(
+            select(TelegramSessionModel).where(TelegramSessionModel.agent_id == agent_id)
+        )
+    assert session_row is not None
+    assert session_row.proxy_id == replacement.id
+
     detail = await repository.get_user(
         owner_id,
         page=1,
@@ -222,13 +244,38 @@ async def test_assigned_proxy_cannot_be_deleted_and_is_visible_on_the_agent(
     )
     agent = next(item for item in detail.agents.items if item.agent_id == agent_id)
     assert agent.proxy is not None
-    assert agent.proxy.id == proxy.id
+    assert agent.proxy.id == replacement.id
     assert agent.state is AgentRuntimeState.STOPPED
 
-    with pytest.raises(AdminProxyInUseError):
-        await repository.delete_proxy(proxy.id, actor_user_id=actor_id)
 
-    await repository.assign_agent_proxy(agent_id, None, actor_user_id=actor_id)
+@pytest.mark.asyncio
+async def test_deleting_the_last_proxy_clears_agent_assignment(
+    admin_db_factory: async_sessionmaker[Any],
+    test_slot: Slot,
+) -> None:
+    cipher = _cipher()
+    await _clear_proxies(admin_db_factory)
+    repository = DatabaseAdminRepository(admin_db_factory, cipher=cipher)
+    actor_id = test_slot.persona("full").user_id
+    owner_id = test_slot.persona("full").user_id
+    proxy = await repository.create_proxy(
+        {
+            "label": None,
+            "protocol": "socks5",
+            "host": "last.example.test",
+            "port": 1080,
+            "username": None,
+            "password": None,
+            "is_active": True,
+        },
+        actor_user_id=actor_id,
+    )
+    agent_id = await _agent(admin_db_factory, owner_id)
+    await repository.assign_agent_proxy(agent_id, proxy.id, actor_user_id=actor_id)
+
+    affected = await repository.delete_proxy(proxy.id, actor_user_id=actor_id)
+
+    assert affected == [agent_id]
     async with admin_db_factory() as session:
         session_row = await session.scalar(
             select(TelegramSessionModel).where(TelegramSessionModel.agent_id == agent_id)
@@ -416,12 +463,13 @@ async def test_repeated_finalization_does_not_roll_back_a_manual_proxy_change(
 
 
 @pytest.mark.asyncio
-async def test_proxy_in_a_pending_onboarding_cannot_be_deleted(
+async def test_pending_onboarding_moves_to_a_replacement_proxy_on_delete(
     admin_db_factory: async_sessionmaker[Any],
     test_slot: Slot,
 ) -> None:
     actor_id = test_slot.persona("full").user_id
     owner_id = test_slot.persona("code").user_id
+    await _clear_proxies(admin_db_factory)
     repository = DatabaseAdminRepository(admin_db_factory, cipher=_cipher())
     proxy = await repository.create_proxy(
         {
@@ -435,10 +483,23 @@ async def test_proxy_in_a_pending_onboarding_cannot_be_deleted(
         },
         actor_user_id=actor_id,
     )
+    replacement = await repository.create_proxy(
+        {
+            "label": "Замена",
+            "protocol": "socks5",
+            "host": "replacement.example.test",
+            "port": 1080,
+            "username": None,
+            "password": None,
+            "is_active": True,
+        },
+        actor_user_id=actor_id,
+    )
+    onboarding_id = uuid4()
     async with admin_db_factory() as session, session.begin():
         session.add(
             AgentOnboardingSessionModel(
-                id=uuid4(),
+                id=onboarding_id,
                 owner_id=owner_id,
                 authorization_status="code_requested",
                 proxy_id=proxy.id,
@@ -450,8 +511,21 @@ async def test_proxy_in_a_pending_onboarding_cannot_be_deleted(
     assert listed.agents_total == 0
     assert listed.onboarding_total == 1
 
-    with pytest.raises(AdminProxyInUseError):
-        await repository.delete_proxy(proxy.id, actor_user_id=actor_id)
+    affected = await repository.delete_proxy(proxy.id, actor_user_id=actor_id)
+
+    assert affected == []
+    async with admin_db_factory() as session:
+        onboarding = await session.get(AgentOnboardingSessionModel, onboarding_id)
+    assert onboarding is not None
+    assert onboarding.proxy_id == replacement.id
+
+    affected = await repository.delete_proxy(replacement.id, actor_user_id=actor_id)
+
+    assert affected == []
+    async with admin_db_factory() as session:
+        onboarding = await session.get(AgentOnboardingSessionModel, onboarding_id)
+    assert onboarding is not None
+    assert onboarding.proxy_id is None
 
 
 @pytest.mark.asyncio

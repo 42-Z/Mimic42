@@ -62,12 +62,6 @@ const EMPTY_FORM: FormState = {
   isActive: true,
 };
 
-function errorStatus(error: unknown): number | undefined {
-  if (typeof error !== 'object' || error === null || !('status' in error)) return undefined;
-  const status = (error as Partial<ApiError>).status;
-  return typeof status === 'number' ? status : undefined;
-}
-
 function apiErrorText(error: unknown, fallback: string): string {
   if (typeof error !== 'object' || error === null) return fallback;
   const detail = (error as Partial<ApiError>).detail;
@@ -334,13 +328,9 @@ export function AdminProxies() {
       await actions.deleteProxy(proxy.id);
       setDeleteTarget(null);
       toast('Прокси удалён.', 'success');
-    } catch (error) {
+    } catch {
       setDeleteTarget(null);
-      setActionError(
-        errorStatus(error) === 409
-          ? 'Прокси используют мимики или незавершённый онбординг. Сначала снимите его.'
-          : 'Не удалось удалить прокси. Повторите попытку.',
-      );
+      setActionError('Не удалось удалить прокси. Повторите попытку.');
     } finally {
       setDeleting(false);
     }
@@ -796,7 +786,7 @@ export function AdminProxies() {
 
       <ConfirmDialog
         confirmLabel="Удалить"
-        description="Свободный прокси исчезнет из пула. Занятый прокси удалить нельзя."
+        description="Мимики перейдут на другой активный прокси, а если его нет — на прямое соединение."
         isLoading={deleting}
         isOpen={deleteTarget !== null}
         onClose={() => {

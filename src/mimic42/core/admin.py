@@ -29,10 +29,6 @@ class AdminAgentNotFoundError(AdminNotFoundError):
     """An administrative proxy operation could not find the agent."""
 
 
-class AdminProxyInUseError(Exception):
-    """A proxy is still assigned to agents and cannot be deleted."""
-
-
 class AdminSecretStorageError(Exception):
     """A secret cannot be stored or read because SECRET_KEY is unavailable."""
 
@@ -327,7 +323,7 @@ class AdminRepository(TelegramSettingsStore, Protocol):
         actor_user_id: UUID,
     ) -> AdminProxyDetail: ...
 
-    async def delete_proxy(self, proxy_id: UUID, *, actor_user_id: UUID) -> None: ...
+    async def delete_proxy(self, proxy_id: UUID, *, actor_user_id: UUID) -> list[UUID]: ...
 
     async def assign_agent_proxy(
         self,

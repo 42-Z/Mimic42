@@ -292,11 +292,26 @@ async def test_patch_without_password_keeps_the_old_one_and_password_is_never_re
 
 
 @pytest.mark.asyncio
-async def test_delete_proxy_in_use_returns_conflict() -> None:
+async def test_delete_assigned_proxy_succeeds_and_reloads_agents() -> None:
     admin_id = uuid4()
-    proxy = _proxy_detail(agents_total=2)
-    repository = FakeAdminRepository(admin_ids={admin_id}, proxies=[proxy])
-    app = _app(admin_id, repository)
+    owner_id = uuid4()
+    agent_id = uuid4()
+    proxy = _proxy_detail(agents_total=1)
+    repository = FakeAdminRepository(
+        admin_ids={admin_id},
+        proxies=[proxy],
+        user_details={owner_id: _detail_with_agent(owner_id, agent_id)},
+    )
+    repository.agent_proxies[agent_id] = AdminAgentProxy(
+        id=proxy.id,
+        label=proxy.label,
+        protocol=proxy.protocol,
+        host=proxy.host,
+        port=proxy.port,
+        is_active=proxy.is_active,
+    )
+    manager = FakeAgentManager(default_owner_id=owner_id)
+    app = _app(admin_id, repository, manager)
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.delete(
@@ -304,9 +319,10 @@ async def test_delete_proxy_in_use_returns_conflict() -> None:
             headers=AUTH_HEADERS,
         )
 
-    assert response.status_code == 409
-    assert "незавершённый онбординг" in response.json()["detail"]
-    assert proxy.id in repository.proxies
+    assert response.status_code == 204
+    assert proxy.id not in repository.proxies
+    assert repository.agent_proxies[agent_id] is None
+    assert manager.reloaded == [agent_id]
 
 
 @pytest.mark.asyncio

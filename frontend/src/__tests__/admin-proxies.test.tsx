@@ -266,20 +266,20 @@ describe('AdminProxies', () => {
     expect(createCalls).toEqual([]);
   });
 
-  test('shows the conflict message when deleting an assigned proxy', async () => {
+  test('deletes an assigned proxy without asking to unpin it first', async () => {
     loadProxies = async () => proxyPage([proxySummary({ agents_total: 2 })]);
-    deleteError = { status: 409, message: 'conflict' };
     renderProxies();
 
     fireEvent.click(await screen.findByRole('button', { name: 'Удалить прокси Основной' }));
     const dialog = await screen.findByRole('dialog', { name: 'Удалить «Основной»?' });
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Удалить' }));
-
     expect(
-      await screen.findByText(
-        'Прокси используют мимики или незавершённый онбординг. Сначала снимите его.',
+      within(dialog).getByText(
+        'Мимики перейдут на другой активный прокси, а если его нет — на прямое соединение.',
       ),
     ).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Удалить' }));
+
+    expect(await screen.findByText('Прокси удалён.')).toBeTruthy();
     expect(deleteCalls).toEqual([proxySummary().id]);
   });
 
