@@ -234,7 +234,7 @@ class AgentOnboardingSessionModel(Base):
     soul_prompt: Mapped[str | None] = mapped_column(Text)
     settings: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     completed_agent_id: Mapped[UUID | None] = mapped_column(
-        ForeignKey("agents.id", ondelete="SET NULL"),
+        ForeignKey("agents.id", ondelete="CASCADE"),
         unique=True,
     )
     proxy_id: Mapped[UUID | None] = mapped_column(

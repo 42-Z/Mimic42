@@ -426,10 +426,8 @@ class DatabaseAgentStore:
     async def delete_agent(self, agent_id: UUID) -> None:
         async with self._session_factory() as db_session:
             await lock_proxy_pool(db_session)
-            # Remove leftover onboarding drafts first: the FK is `on delete set null`,
-            # so without this the wizard would pick up an abandoned session.
-            # `id == agent_id` covers the originating session even when the
-            # frontend failed to mark completed_agent_id after finalization.
+            # Копия по id нужна для черновика, который фронтенд не успел
+            # связать через completed_agent_id: каскад её не достанет.
             await db_session.execute(
                 delete(AgentOnboardingSessionModel).where(
                     or_(
