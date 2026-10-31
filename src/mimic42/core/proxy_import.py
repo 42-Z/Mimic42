@@ -122,7 +122,11 @@ def _parse_line(line: str, default_protocol: ProxyProtocol) -> ParsedProxyEntry:
 
 
 def _parse_url(line: str) -> ParsedProxyEntry:
-    parsed = urlsplit(line)
+    try:
+        parsed = urlsplit(line)
+        host = parsed.hostname
+    except ValueError:
+        raise ProxyImportFormatError("Некорректный URL прокси") from None
     scheme = parsed.scheme.casefold()
     if scheme in _SOCKS_SCHEMES:
         protocol: ProxyProtocol = "socks5"
@@ -130,9 +134,13 @@ def _parse_url(line: str) -> ParsedProxyEntry:
         protocol = "http"
     else:
         raise ValueError("Поддерживаются только SOCKS5 и HTTP")
-    if parsed.hostname is None:
+    if host is None:
         raise ValueError("Не указан адрес прокси")
-    port = _parse_port(parsed.port)
+    try:
+        port_value = parsed.port
+    except ValueError:
+        raise ProxyImportFormatError("Некорректный порт прокси") from None
+    port = _parse_port(port_value)
     username = unquote(parsed.username) if parsed.username is not None else None
     if username is not None:
         username = username.strip() or None
@@ -141,7 +149,7 @@ def _parse_url(line: str) -> ParsedProxyEntry:
         raise ValueError("Для пароля укажите логин прокси")
     return ParsedProxyEntry(
         protocol=protocol,
-        host=normalize_proxy_host(parsed.hostname),
+        host=normalize_proxy_host(host),
         port=port,
         username=username,
         password=password,
