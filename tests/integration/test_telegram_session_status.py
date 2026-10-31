@@ -17,6 +17,7 @@ from mimic42.core.agent_runtime import (
 from mimic42.core.onboarding import OnboardingSession, TelegramLoginStatus
 from mimic42.integrations.database_agent_store import DatabaseAgentStore
 from mimic42.integrations.database_models import AgentModel, TelegramSessionModel
+from mimic42.testing import seed_rebind
 from mimic42.testing.slots import Slot
 from mimic42.testing.telegram import FakeTelegramAccount
 
@@ -296,7 +297,8 @@ async def test_old_runtime_cannot_revoke_newly_rebound_session(
         session_factory=db_session_factory,
     )
     store = DatabaseAgentStore(db_session_factory)
-    await store.rebind_telegram_session(
+    await seed_rebind(
+        store,
         agent_id,
         OnboardingSession(
             onboarding_id=agent_id,

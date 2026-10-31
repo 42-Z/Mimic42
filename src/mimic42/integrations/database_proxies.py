@@ -5,7 +5,7 @@ from typing import Literal, cast
 from uuid import UUID
 
 from pydantic import SecretStr
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -24,6 +24,38 @@ from mimic42.integrations.database_models import (
 logger = logging.getLogger("mimic42.telegram_proxies")
 
 
+async def lock_proxy_pool(session: AsyncSession) -> None:
+    await session.execute(text("select public.lock_telegram_proxy_pool()"))
+
+
+async def least_loaded_proxy_id(
+    session: AsyncSession, *, exclude_id: UUID | None = None
+) -> UUID | None:
+    agent_load = (
+        select(func.count(TelegramSessionModel.id))
+        .where(TelegramSessionModel.proxy_id == TelegramProxyModel.id)
+        .correlate(TelegramProxyModel)
+        .scalar_subquery()
+    )
+    onboarding_load = (
+        select(func.count(AgentOnboardingSessionModel.id))
+        .where(
+            AgentOnboardingSessionModel.proxy_id == TelegramProxyModel.id,
+            AgentOnboardingSessionModel.completed_agent_id.is_(None),
+        )
+        .correlate(TelegramProxyModel)
+        .scalar_subquery()
+    )
+    statement = select(TelegramProxyModel.id).where(TelegramProxyModel.is_active.is_(True))
+    if exclude_id is not None:
+        statement = statement.where(TelegramProxyModel.id != exclude_id)
+    return await session.scalar(
+        statement.order_by(
+            agent_load + onboarding_load, TelegramProxyModel.created_at, TelegramProxyModel.id
+        ).limit(1)
+    )
+
+
 class DatabaseTelegramProxyStore:
     """Прокси из пула: автовыдача, чтение конфига и назначение агента."""
 
@@ -37,34 +69,10 @@ class DatabaseTelegramProxyStore:
         self._cipher = cipher
 
     async def allocate(self) -> TelegramProxyAssignment | None:
-        agent_load = (
-            select(func.count(TelegramSessionModel.id))
-            .where(TelegramSessionModel.proxy_id == TelegramProxyModel.id)
-            .correlate(TelegramProxyModel)
-            .scalar_subquery()
-        )
-        onboarding_load = (
-            select(func.count(AgentOnboardingSessionModel.id))
-            .where(
-                AgentOnboardingSessionModel.proxy_id == TelegramProxyModel.id,
-                AgentOnboardingSessionModel.completed_agent_id.is_(None),
-            )
-            .correlate(TelegramProxyModel)
-            .scalar_subquery()
-        )
-        statement = (
-            select(TelegramProxyModel)
-            .where(TelegramProxyModel.is_active.is_(True))
-            .order_by(
-                agent_load + onboarding_load,
-                TelegramProxyModel.created_at,
-                TelegramProxyModel.id,
-            )
-            .limit(1)
-        )
         try:
             async with self._session_factory() as session:
-                model = await session.scalar(statement)
+                proxy_id = await least_loaded_proxy_id(session)
+                model = await session.get(TelegramProxyModel, proxy_id) if proxy_id else None
         except SQLAlchemyError:
             raise TelegramProxyUnavailableError("Хранилище прокси временно недоступно") from None
         if model is None:

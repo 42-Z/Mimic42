@@ -11,6 +11,7 @@ from mimic42.core.agent_runtime import MimicAgentRuntime
 from mimic42.core.manager import AgentManager
 from mimic42.core.onboarding import OnboardingSession, TelegramLoginStatus
 from mimic42.integrations.database_agent_store import DatabaseAgentStore
+from mimic42.testing import seed_agent
 from mimic42.testing.slots import Slot
 from tests.api.auth_helpers import AUTH_HEADERS, FakeAuthVerifier
 from tests.core.test_agent_runtime import FakeLangChainAgent, FakeTelegramClient
@@ -24,7 +25,8 @@ async def test_get_agent_returns_404_after_real_deletion(
     agent_id = uuid4()
 
     store = DatabaseAgentStore(db_session_factory)
-    await store.create_from_onboarding(
+    await seed_agent(
+        store,
         OnboardingSession(
             onboarding_id=agent_id,
             owner_id=owner_id,
@@ -35,7 +37,7 @@ async def test_get_agent_returns_404_after_real_deletion(
             session_secret="encrypted-session",
             name="Mimic",
             soul_prompt="Soul",
-        )
+        ),
     )
 
     manager = AgentManager(

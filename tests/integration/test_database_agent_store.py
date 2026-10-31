@@ -12,7 +12,11 @@ from mimic42.core.agent_runtime import AgentRuntimeState
 from mimic42.core.agent_store import AgentOwnershipError
 from mimic42.core.crypto import FernetSecretCipher
 from mimic42.core.model_catalog import DEFAULT_LLM_MODEL
-from mimic42.core.onboarding import OnboardingSession, TelegramLoginStatus
+from mimic42.core.onboarding import (
+    OnboardingSession,
+    TelegramAuthorizationIncompleteError,
+    TelegramLoginStatus,
+)
 from mimic42.integrations.database_agent_store import DatabaseAgentStore
 from mimic42.integrations.database_models import (
     AgentEventModel,
@@ -21,6 +25,7 @@ from mimic42.integrations.database_models import (
     AgentOnboardingSessionModel,
     TelegramSessionModel,
 )
+from mimic42.testing import seed_agent, seed_rebind
 from mimic42.testing.slots import Slot
 
 
@@ -61,7 +66,7 @@ async def test_get_telegram_rebind_credentials_returns_stored_secret(
     owner_id = clean_slot.persona("full").user_id
     agent_id = uuid4()
     store = DatabaseAgentStore(db_session_factory)
-    await store.create_from_onboarding(_make_session(owner_id, agent_id, "Mimic"))
+    await seed_agent(store, _make_session(owner_id, agent_id, "Mimic"))
 
     credentials = await store.get_telegram_rebind_credentials(agent_id)
 
@@ -79,7 +84,7 @@ async def test_create_from_onboarding_stores_username(
     agent_id = uuid4()
     store = DatabaseAgentStore(db_session_factory)
 
-    await store.create_from_onboarding(_make_session(owner_id, agent_id, "Mimic", "mimic_user"))
+    await seed_agent(store, _make_session(owner_id, agent_id, "Mimic", "mimic_user"))
 
     async with db_session_factory() as db_session:
         row = await db_session.scalar(
@@ -98,9 +103,9 @@ async def test_rebind_telegram_session_updates_username(
     owner_id = clean_slot.persona("full").user_id
     agent_id = uuid4()
     store = DatabaseAgentStore(db_session_factory)
-    await store.create_from_onboarding(_make_session(owner_id, agent_id, "Mimic", "old_user"))
+    await seed_agent(store, _make_session(owner_id, agent_id, "Mimic", "old_user"))
 
-    await store.rebind_telegram_session(agent_id, _make_rebind_session(owner_id, "new_user"))
+    await seed_rebind(store, agent_id, _make_rebind_session(owner_id, "new_user"))
 
     async with db_session_factory() as db_session:
         row = await db_session.scalar(
@@ -119,7 +124,7 @@ async def test_rebind_telegram_session_updates_session_and_keeps_profile(
     agent_id = uuid4()
 
     store = DatabaseAgentStore(db_session_factory)
-    await store.create_from_onboarding(_make_session(owner_id, agent_id, "Mimic"))
+    await seed_agent(store, _make_session(owner_id, agent_id, "Mimic"))
     async with db_session_factory() as session:
         await session.execute(
             update(AgentModel)
@@ -127,7 +132,7 @@ async def test_rebind_telegram_session_updates_session_and_keeps_profile(
             .values(settings={"model": "custom/model"})
         )
         await session.commit()
-    await store.rebind_telegram_session(agent_id, _make_rebind_session(owner_id))
+    await seed_rebind(store, agent_id, _make_rebind_session(owner_id))
 
     config = await store.get_runtime_config(agent_id)
     # Номер и приложение агента не меняются — обновляется только сессия.
@@ -162,7 +167,7 @@ async def test_rebind_telegram_session_clears_revoked_state(
     agent_id = uuid4()
 
     store = DatabaseAgentStore(db_session_factory)
-    await store.create_from_onboarding(_make_session(owner_id, agent_id, "Mimic"))
+    await seed_agent(store, _make_session(owner_id, agent_id, "Mimic"))
     async with db_session_factory() as session:
         await session.execute(
             update(TelegramSessionModel)
@@ -174,7 +179,7 @@ async def test_rebind_telegram_session_clears_revoked_state(
         )
         await session.commit()
 
-    await store.rebind_telegram_session(agent_id, _make_rebind_session(owner_id))
+    await seed_rebind(store, agent_id, _make_rebind_session(owner_id))
 
     async with db_session_factory() as session:
         row = await session.scalar(
@@ -196,12 +201,12 @@ async def test_rebind_accepts_fresh_ciphertexts_for_the_same_account(
     initial = _make_session(owner_id, agent_id, "Mimic")
     initial.api_hash_secret = cipher.encrypt("api-hash")
     initial.session_secret = cipher.encrypt("old-session")
-    await store.create_from_onboarding(initial)
+    await seed_agent(store, initial)
     rebound = _make_rebind_session(owner_id)
     rebound.api_hash_secret = cipher.encrypt("api-hash")
     rebound.session_secret = cipher.encrypt("new-session")
 
-    await store.rebind_telegram_session(agent_id, rebound)
+    await seed_rebind(store, agent_id, rebound)
 
     config = await store.get_runtime_config(agent_id)
     assert config.telegram_api_hash == "api-hash"
@@ -220,13 +225,13 @@ async def test_rebind_telegram_session_rejects_missing_credentials(
     agent_id = uuid4()
 
     store = DatabaseAgentStore(db_session_factory)
-    await store.create_from_onboarding(_make_session(owner_id, agent_id, "Mimic"))
+    await seed_agent(store, _make_session(owner_id, agent_id, "Mimic"))
 
     broken = _make_rebind_session(owner_id)
     setattr(broken, missing_field, None)
 
-    with pytest.raises(ValueError):
-        await store.rebind_telegram_session(agent_id, broken)
+    with pytest.raises(TelegramAuthorizationIncompleteError):
+        await seed_rebind(store, agent_id, broken)
 
     config = await store.get_runtime_config(agent_id)
     assert config.telegram_api_id == 12345
@@ -263,7 +268,8 @@ async def test_database_agent_store_creates_agent_session_and_runtime_config(
     onboarding_id = uuid4()
 
     store = DatabaseAgentStore(db_session_factory)
-    await store.create_from_onboarding(
+    await seed_agent(
+        store,
         OnboardingSession(
             onboarding_id=onboarding_id,
             owner_id=owner_id,
@@ -274,7 +280,7 @@ async def test_database_agent_store_creates_agent_session_and_runtime_config(
             session_secret="encrypted-session",
             name="Mimic",
             soul_prompt="Soul",
-        )
+        ),
     )
 
     agents = await store.list_agents(owner_id=owner_id)
@@ -298,8 +304,8 @@ async def test_create_from_onboarding_twice_creates_two_agents(
     store = DatabaseAgentStore(db_session_factory)
     first_id = uuid4()
     second_id = uuid4()
-    await store.create_from_onboarding(_make_session(owner_id, first_id, "First"))
-    await store.create_from_onboarding(_make_session(owner_id, second_id, "Second"))
+    await seed_agent(store, _make_session(owner_id, first_id, "First"))
+    await seed_agent(store, _make_session(owner_id, second_id, "Second"))
 
     agents = await store.list_agents(owner_id=owner_id)
 
@@ -315,10 +321,10 @@ async def test_create_from_onboarding_keeps_agent_of_another_owner(
     intruder_id = clean_slot.persona("code").user_id
     agent_id = uuid4()
     store = DatabaseAgentStore(db_session_factory)
-    await store.create_from_onboarding(_make_session(owner_id, agent_id, "Легальный агент"))
+    await seed_agent(store, _make_session(owner_id, agent_id, "Легальный агент"))
 
     with pytest.raises(AgentOwnershipError):
-        await store.create_from_onboarding(_make_session(intruder_id, agent_id, "Хакер"))
+        await seed_agent(store, _make_session(intruder_id, agent_id, "Хакер"))
 
     kept = await store.list_agents(owner_id=owner_id)
     assert [(agent.agent_id, agent.name) for agent in kept] == [(agent_id, "Легальный агент")]
@@ -337,12 +343,12 @@ async def test_create_from_onboarding_repeats_for_the_same_owner(
     owner_id = clean_slot.persona("flow").user_id
     agent_id = uuid4()
     store = DatabaseAgentStore(db_session_factory)
-    await store.create_from_onboarding(_make_session(owner_id, agent_id, "Mimic"))
+    await seed_agent(store, _make_session(owner_id, agent_id, "Mimic"))
 
-    await store.create_from_onboarding(_make_session(owner_id, agent_id, "Mimic 2"))
+    await seed_agent(store, _make_session(owner_id, agent_id, "Mimic 2"))
 
     agents = await store.list_agents(owner_id=owner_id)
-    assert [(agent.agent_id, agent.name) for agent in agents] == [(agent_id, "Mimic 2")]
+    assert [(agent.agent_id, agent.name) for agent in agents] == [(agent_id, "Mimic")]
 
 
 async def test_delete_agent_removes_agent_and_onboarding_row_only_for_it(
@@ -354,8 +360,8 @@ async def test_delete_agent_removes_agent_and_onboarding_row_only_for_it(
     store = DatabaseAgentStore(db_session_factory)
     first_id = uuid4()
     second_id = uuid4()
-    await store.create_from_onboarding(_make_session(owner_id, first_id, "First"))
-    await store.create_from_onboarding(_make_session(owner_id, second_id, "Second"))
+    await seed_agent(store, _make_session(owner_id, first_id, "First"))
+    await seed_agent(store, _make_session(owner_id, second_id, "Second"))
 
     async with db_session_factory() as session:
         # The originating onboarding row: id == agent id, finalize marker lost
@@ -424,7 +430,7 @@ async def test_unknown_agent_status_does_not_break_listing(
     not break the whole agent list / startup restore."""
     owner_id = clean_slot.persona("empty").user_id
     store = DatabaseAgentStore(db_session_factory)
-    await store.create_from_onboarding(_make_session(owner_id, uuid4(), "Drafty"))
+    await seed_agent(store, _make_session(owner_id, uuid4(), "Drafty"))
 
     async with db_session_factory() as session:
         await session.execute(
@@ -530,7 +536,7 @@ async def test_runtime_config_carries_the_first_comment_setting(
     agent_id = uuid4()
 
     store = DatabaseAgentStore(db_session_factory)
-    await store.create_from_onboarding(_make_session(owner_id, agent_id, "Mimic"))
+    await seed_agent(store, _make_session(owner_id, agent_id, "Mimic"))
 
     async with db_session_factory() as session:
         await session.execute(
@@ -567,7 +573,7 @@ async def test_runtime_config_defaults_first_comment_to_off(
     agent_id = uuid4()
 
     store = DatabaseAgentStore(db_session_factory)
-    await store.create_from_onboarding(_make_session(owner_id, agent_id, "Mimic"))
+    await seed_agent(store, _make_session(owner_id, agent_id, "Mimic"))
 
     config = await store.get_runtime_config(agent_id)
 
@@ -581,7 +587,7 @@ async def test_get_runtime_config_parses_enabled_tools(
     owner_id = clean_slot.persona("full").user_id
     agent_id = uuid4()
     store = DatabaseAgentStore(db_session_factory)
-    await store.create_from_onboarding(_make_session(owner_id, agent_id, "Mimic"))
+    await seed_agent(store, _make_session(owner_id, agent_id, "Mimic"))
     async with db_session_factory() as db_session:
         await db_session.execute(
             update(AgentModel)
@@ -602,7 +608,7 @@ async def test_get_runtime_config_without_enabled_tools_enables_all(
     owner_id = clean_slot.persona("full").user_id
     agent_id = uuid4()
     store = DatabaseAgentStore(db_session_factory)
-    await store.create_from_onboarding(_make_session(owner_id, agent_id, "Mimic"))
+    await seed_agent(store, _make_session(owner_id, agent_id, "Mimic"))
 
     config = await store.get_runtime_config(agent_id)
 
@@ -616,7 +622,7 @@ async def test_get_runtime_config_parses_disabled_chats(
     owner_id = clean_slot.persona("full").user_id
     agent_id = uuid4()
     store = DatabaseAgentStore(db_session_factory)
-    await store.create_from_onboarding(_make_session(owner_id, agent_id, "Mimic"))
+    await seed_agent(store, _make_session(owner_id, agent_id, "Mimic"))
     async with db_session_factory() as db_session:
         await db_session.execute(
             update(AgentModel)
@@ -637,7 +643,7 @@ async def test_get_runtime_config_without_disabled_chats_disables_nothing(
     owner_id = clean_slot.persona("full").user_id
     agent_id = uuid4()
     store = DatabaseAgentStore(db_session_factory)
-    await store.create_from_onboarding(_make_session(owner_id, agent_id, "Mimic"))
+    await seed_agent(store, _make_session(owner_id, agent_id, "Mimic"))
 
     config = await store.get_runtime_config(agent_id)
 
@@ -654,7 +660,7 @@ async def test_create_from_onboarding_carries_tool_settings(
     session = _make_session(owner_id, agent_id, "Mimic")
     session.settings = {"enabled_tools": ["send_text_message"]}
 
-    await store.create_from_onboarding(session)
+    await seed_agent(store, session)
 
     async with db_session_factory() as db_session:
         settings = await db_session.scalar(
@@ -672,7 +678,7 @@ async def test_repeated_finalization_keeps_existing_agent_settings(
     store = DatabaseAgentStore(db_session_factory)
     session = _make_session(owner_id, agent_id, "Mimic")
     session.settings = {"enabled_tools": ["send_text_message"]}
-    await store.create_from_onboarding(session)
+    await seed_agent(store, session)
     async with db_session_factory() as db_session:
         await db_session.execute(
             update(AgentModel)
@@ -681,7 +687,7 @@ async def test_repeated_finalization_keeps_existing_agent_settings(
         )
         await db_session.commit()
 
-    await store.create_from_onboarding(session)
+    await seed_agent(store, session)
 
     async with db_session_factory() as db_session:
         settings = await db_session.scalar(

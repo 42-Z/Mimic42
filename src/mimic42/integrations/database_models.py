@@ -223,6 +223,9 @@ class AgentOnboardingSessionModel(Base):
     phone_number: Mapped[str | None] = mapped_column(Text)
     phone_code_hash_ciphertext: Mapped[str | None] = mapped_column(Text)
     session_ciphertext: Mapped[str | None] = mapped_column(Text)
+    username: Mapped[str | None] = mapped_column(Text)
+    auth_generation: Mapped[UUID] = mapped_column(server_default=func.gen_random_uuid())
+    applied_auth_generation: Mapped[UUID | None] = mapped_column()
     authorization_status: Mapped[str] = mapped_column(
         TelegramAuthorizationStatus,
         default="not_started",

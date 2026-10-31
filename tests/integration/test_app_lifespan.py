@@ -17,6 +17,7 @@ from mimic42.core.crypto import FernetSecretCipher
 from mimic42.core.onboarding import OnboardingSession, TelegramLoginStatus
 from mimic42.integrations.database_agent_store import DatabaseAgentStore
 from mimic42.integrations.database_models import AgentModel
+from mimic42.testing import seed_agent
 from mimic42.testing.server import build_test_app
 from mimic42.testing.slots import Slot
 
@@ -39,16 +40,18 @@ async def test_running_agent_is_restored_after_restart(
     agent_id = uuid4()
     cipher = _cipher()
     store = DatabaseAgentStore(db_session_factory, cipher=cipher)
-    await store.create_from_onboarding(
+    await seed_agent(
+        store,
         OnboardingSession(
             onboarding_id=agent_id,
             owner_id=owner_id,
             authorization_status=TelegramLoginStatus.AUTHORIZED,
             api_id=1,
             api_hash_secret=cipher.encrypt("test-api-hash"),
+            session_secret=cipher.encrypt("test-session"),
             name="восстановленный",
             soul_prompt="спокойный помощник, отвечает коротко",
-        )
+        ),
     )
     await store.update_status(agent_id, AgentRuntimeState.RUNNING)
 
@@ -75,7 +78,8 @@ async def test_encrypted_telegram_session_is_decrypted_on_start(
     owner_id = clean_slot.persona("empty").user_id
     agent_id = uuid4()
     store = DatabaseAgentStore(db_session_factory, cipher=cipher)
-    await store.create_from_onboarding(
+    await seed_agent(
+        store,
         OnboardingSession(
             onboarding_id=agent_id,
             owner_id=owner_id,
@@ -85,7 +89,7 @@ async def test_encrypted_telegram_session_is_decrypted_on_start(
             session_secret=cipher.encrypt("fake-session:+79990000000"),
             name="с сессией",
             soul_prompt="спокойный помощник, отвечает коротко",
-        )
+        ),
     )
 
     app = build_test_app()
@@ -108,7 +112,8 @@ async def test_restore_skipped_when_disabled(
     owner_id = clean_slot.persona("full").user_id
     agent_id = uuid4()
     store = DatabaseAgentStore(db_session_factory, cipher=cipher)
-    await store.create_from_onboarding(
+    await seed_agent(
+        store,
         OnboardingSession(
             onboarding_id=agent_id,
             owner_id=owner_id,
@@ -118,7 +123,7 @@ async def test_restore_skipped_when_disabled(
             session_secret=cipher.encrypt("fake-session:+79990000000"),
             name="не должен подняться",
             soul_prompt="спокойный помощник, отвечает коротко",
-        )
+        ),
     )
     await store.update_status(agent_id, AgentRuntimeState.RUNNING)
 
@@ -141,7 +146,8 @@ async def test_restore_skipped_for_agent_with_restore_on_start_disabled(
     owner_id = clean_slot.persona("full").user_id
     agent_id = uuid4()
     store = DatabaseAgentStore(db_session_factory, cipher=cipher)
-    await store.create_from_onboarding(
+    await seed_agent(
+        store,
         OnboardingSession(
             onboarding_id=agent_id,
             owner_id=owner_id,
@@ -151,7 +157,7 @@ async def test_restore_skipped_for_agent_with_restore_on_start_disabled(
             session_secret=cipher.encrypt("fake-session:+79990000000"),
             name="не восстанавливается",
             soul_prompt="спокойный помощник, отвечает коротко",
-        )
+        ),
     )
     await store.update_status(agent_id, AgentRuntimeState.RUNNING)
     async with db_session_factory() as session:

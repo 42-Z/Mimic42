@@ -22,6 +22,7 @@ from mimic42.integrations.database_models import (
     TelegramSessionModel,
 )
 from mimic42.integrations.database_proxies import DatabaseTelegramProxyStore
+from mimic42.testing import seed_agent, seed_rebind
 from mimic42.testing.slots import Slot, plain_dsn
 
 
@@ -45,7 +46,8 @@ async def _agent(
     agent_id = uuid4()
     api_hash_secret = cipher.encrypt("hash") if cipher is not None else "encrypted-hash"
     session_secret = cipher.encrypt("session") if cipher is not None else "encrypted-session"
-    await DatabaseAgentStore(factory).create_from_onboarding(
+    await seed_agent(
+        DatabaseAgentStore(factory),
         OnboardingSession(
             onboarding_id=agent_id,
             owner_id=owner_id,
@@ -57,7 +59,7 @@ async def _agent(
             name="Мимик",
             soul_prompt="Характер",
             proxy_id=proxy_id,
-        )
+        ),
     )
     return agent_id
 
@@ -356,7 +358,7 @@ async def test_allocation_prefers_the_least_loaded_active_proxy(
 
 
 @pytest.mark.asyncio
-async def test_rebind_persists_the_proxy_used_for_the_login(
+async def test_rebind_does_not_restore_a_stale_proxy_assignment(
     admin_db_factory: async_sessionmaker[Any],
     test_slot: Slot,
 ) -> None:
@@ -377,7 +379,8 @@ async def test_rebind_persists_the_proxy_used_for_the_login(
     agent_id = await _agent(admin_db_factory, owner_id)
     store = DatabaseAgentStore(admin_db_factory)
 
-    await store.rebind_telegram_session(
+    await seed_rebind(
+        store,
         agent_id,
         OnboardingSession(
             onboarding_id=uuid4(),
@@ -396,7 +399,7 @@ async def test_rebind_persists_the_proxy_used_for_the_login(
             select(TelegramSessionModel).where(TelegramSessionModel.agent_id == agent_id)
         )
     assert telegram_session is not None
-    assert telegram_session.proxy_id == proxy_id
+    assert telegram_session.proxy_id is None
 
 
 @pytest.mark.asyncio
@@ -439,7 +442,8 @@ async def test_repeated_finalization_does_not_roll_back_a_manual_proxy_change(
         actor_user_id=actor_id,
     )
 
-    await DatabaseAgentStore(admin_db_factory, cipher=cipher).create_from_onboarding(
+    await seed_agent(
+        DatabaseAgentStore(admin_db_factory, cipher=cipher),
         OnboardingSession(
             onboarding_id=agent_id,
             owner_id=owner_id,
@@ -451,7 +455,7 @@ async def test_repeated_finalization_does_not_roll_back_a_manual_proxy_change(
             name="Мимик",
             soul_prompt="Характер",
             proxy_id=initial.id,
-        )
+        ),
     )
 
     async with admin_db_factory() as session:

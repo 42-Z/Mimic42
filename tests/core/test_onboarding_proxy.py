@@ -11,6 +11,8 @@ from mimic42.core.onboarding import (
     OnboardingSession,
     TelegramCodeVerification,
     TelegramCredentials,
+    TelegramLoginRouteChangedError,
+    TelegramLoginStaleError,
     TelegramLoginStatus,
 )
 from mimic42.core.telegram_proxy import (
@@ -19,6 +21,7 @@ from mimic42.core.telegram_proxy import (
 )
 from mimic42.testing.telegram import (
     FakeTelegramAccount,
+    FakeTelegramAuthClient,
     FakeTelegramAuthClientFactory,
 )
 
@@ -105,7 +108,7 @@ async def test_new_onboarding_allocates_proxy_and_reuses_it_for_verification() -
 
     assert verified.authorization_status is TelegramLoginStatus.AUTHORIZED
     assert factory.proxies == [config, config]
-    assert store.load_calls == [proxy_id]
+    assert set(store.load_calls) == {proxy_id}
 
 
 @pytest.mark.asyncio
@@ -137,7 +140,7 @@ async def test_existing_draft_keeps_its_proxy_without_new_allocation() -> None:
     )
 
     assert factory.proxies == [config]
-    assert store.load_calls == [proxy_id]
+    assert set(store.load_calls) == {proxy_id}
     assert store.allocate_calls == 0
 
 
@@ -182,8 +185,6 @@ async def test_new_login_reserves_before_network_and_does_not_restore_deleted_pr
     replacement_id = uuid4()
     config = _proxy_config()
     account = FakeTelegramAccount()
-    from mimic42.testing.telegram import FakeTelegramAuthClient
-
     original = FakeTelegramAuthClient.send_code_request
 
     async def delete_during_request(client: FakeTelegramAuthClient, phone: str) -> object:
@@ -213,9 +214,7 @@ async def test_new_login_reserves_before_network_and_does_not_restore_deleted_pr
 
 
 @pytest.mark.asyncio
-async def test_rebind_verification_uses_latest_assignment(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_rebind_verification_uses_latest_assignment() -> None:
     owner_id, agent_id, old_id, new_id = uuid4(), uuid4(), uuid4(), uuid4()
     old_config, new_config = _proxy_config("old.test"), _proxy_config("new.test")
     repository = InMemoryOnboardingRepository()
@@ -284,8 +283,8 @@ async def test_rebind_uses_the_agent_proxy_from_telegram_sessions() -> None:
     await service.start_rebind(agent_id, owner_id=owner_id)
 
     saved = await repository.get(agent_id)
-    assert saved.proxy_id == proxy_id
-    assert store.agent_calls == [agent_id]
+    assert saved.proxy_id is None
+    assert set(store.agent_calls) == {agent_id}
     assert factory.proxies == [config]
 
 
@@ -426,3 +425,137 @@ async def test_rebind_without_agent_proxy_goes_direct() -> None:
     await service.start_rebind(agent_id, owner_id=owner_id)
 
     assert factory.proxies == [None]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["reset", "delete", "newer"])
+async def test_cancelled_code_result_does_not_overwrite_current_draft(
+    monkeypatch: pytest.MonkeyPatch,
+    action: str,
+) -> None:
+    repository = InMemoryOnboardingRepository()
+    owner_id, onboarding_id = uuid4(), uuid4()
+    await repository.save(
+        OnboardingSession(
+            onboarding_id=onboarding_id,
+            owner_id=owner_id,
+            authorization_status=TelegramLoginStatus.NOT_STARTED,
+        )
+    )
+    original = FakeTelegramAuthClient.send_code_request
+    newer = AgentOnboardingService(
+        repository=repository, telegram_factory=FakeTelegramAuthClientFactory(FakeTelegramAccount())
+    )
+    entered = False
+
+    async def cancel(client: FakeTelegramAuthClient, phone: str) -> object:
+        nonlocal entered
+        if not entered:
+            entered = True
+            if action == "reset":
+                await repository.reset_authorization(onboarding_id)
+            elif action == "delete":
+                repository._sessions.pop(onboarding_id)
+            else:
+                await newer.request_telegram_code(
+                    _credentials(owner_id), onboarding_id=onboarding_id
+                )
+        return await original(client, phone)
+
+    monkeypatch.setattr(FakeTelegramAuthClient, "send_code_request", cancel)
+    with pytest.raises(TelegramLoginStaleError):
+        await newer.request_telegram_code(_credentials(owner_id), onboarding_id=onboarding_id)
+    if action == "delete":
+        assert onboarding_id not in repository._sessions
+    else:
+        expected = (
+            TelegramLoginStatus.NOT_STARTED
+            if action == "reset"
+            else TelegramLoginStatus.CODE_REQUESTED
+        )
+        assert (await repository.get(onboarding_id)).authorization_status is expected
+
+
+@pytest.mark.asyncio
+async def test_route_change_after_connect_prevents_next_rpc_without_erasing_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = InMemoryOnboardingRepository()
+    proxy_id = uuid4()
+    config = _proxy_config()
+    account = FakeTelegramAccount()
+    factory = FakeTelegramAuthClientFactory(account)
+    service = AgentOnboardingService(
+        repository=repository,
+        telegram_factory=factory,
+        proxy_store=FakeTelegramProxyStore(
+            allocation=TelegramProxyAssignment(proxy_id=proxy_id, config=config),
+            configs={proxy_id: config},
+        ),
+    )
+    started = await service.request_telegram_code(_credentials(uuid4()))
+    before = await repository.get(started.onboarding_id)
+    original = FakeTelegramAuthClient.connect
+
+    async def unassign(client: FakeTelegramAuthClient) -> None:
+        await original(client)
+        repository._sessions[started.onboarding_id].proxy_id = None
+
+    async def forbidden_sign_in(client: FakeTelegramAuthClient, **kwargs: str | None) -> object:
+        raise AssertionError("old client must not issue another RPC")
+
+    monkeypatch.setattr(FakeTelegramAuthClient, "connect", unassign)
+    monkeypatch.setattr(FakeTelegramAuthClient, "sign_in", forbidden_sign_in)
+    with pytest.raises(TelegramLoginRouteChangedError):
+        await service.verify_telegram_code(
+            started.onboarding_id, TelegramCodeVerification(code="12345")
+        )
+    saved = await repository.get(started.onboarding_id)
+    assert saved.phone_code_hash_secret == before.phone_code_hash_secret
+    assert saved.session_secret == before.session_secret
+    assert saved.proxy_id is None
+
+
+@pytest.mark.asyncio
+async def test_successful_auth_survives_route_change_and_disconnect_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = InMemoryOnboardingRepository()
+    proxy_id = uuid4()
+    config = _proxy_config()
+    service = AgentOnboardingService(
+        repository=repository,
+        telegram_factory=FakeTelegramAuthClientFactory(FakeTelegramAccount()),
+        proxy_store=FakeTelegramProxyStore(
+            allocation=TelegramProxyAssignment(proxy_id=proxy_id, config=config),
+            configs={proxy_id: config},
+        ),
+    )
+    started = await service.request_telegram_code(_credentials(uuid4()))
+    original = FakeTelegramAuthClient.sign_in
+    get_me_calls: list[bool] = []
+
+    async def change_after_sign_in(client: FakeTelegramAuthClient, **kwargs: str | None) -> object:
+        result = await original(client, **kwargs)
+        repository._sessions[started.onboarding_id].proxy_id = None
+        return result
+
+    async def forbidden_get_me(client: FakeTelegramAuthClient) -> object:
+        get_me_calls.append(True)
+        raise AssertionError("optional RPC must not use the previous route")
+
+    async def failed_disconnect(client: FakeTelegramAuthClient) -> None:
+        raise RuntimeError("synthetic disconnect failure")
+
+    monkeypatch.setattr(FakeTelegramAuthClient, "sign_in", change_after_sign_in)
+    monkeypatch.setattr(FakeTelegramAuthClient, "get_me", forbidden_get_me)
+    monkeypatch.setattr(FakeTelegramAuthClient, "disconnect", failed_disconnect)
+    result = await service.verify_telegram_code(
+        started.onboarding_id, TelegramCodeVerification(code="12345")
+    )
+    saved = await repository.get(started.onboarding_id)
+    assert result.authorization_status is TelegramLoginStatus.AUTHORIZED
+    assert saved.authorization_status is TelegramLoginStatus.AUTHORIZED
+    assert saved.session_secret
+    assert saved.proxy_id is None
+    assert get_me_calls == []

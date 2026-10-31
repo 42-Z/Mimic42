@@ -9,7 +9,12 @@ from pydantic import BaseModel, Field
 from mimic42.core.agent_runtime import AgentRuntimeConfig, AgentRuntimeState
 
 if TYPE_CHECKING:
-    from mimic42.core.onboarding import OnboardingSession
+    from mimic42.core.onboarding import (
+        AgentProfileInput,
+        InMemoryOnboardingRepository,
+        OnboardingSession,
+        TelegramAuthorizationRef,
+    )
 
 
 class AgentRecord(BaseModel):
@@ -99,6 +104,12 @@ class ConversationPage(BaseModel):
 
 
 class AgentStore(Protocol):
+    async def finalize_onboarding(
+        self, ref: TelegramAuthorizationRef, profile: AgentProfileInput
+    ) -> AgentRecord: ...
+
+    async def apply_rebind(self, ref: TelegramAuthorizationRef, agent_id: UUID) -> None: ...
+
     async def create_from_onboarding(self, session: OnboardingSession) -> AgentRecord: ...
 
     async def rebind_telegram_session(self, agent_id: UUID, session: OnboardingSession) -> None: ...
@@ -186,6 +197,83 @@ class InMemoryAgentStore:
         self._telegram_usernames: dict[UUID, str | None] = {}
         self._messages = messages or []
         self._activities = activities or []
+        self.onboarding_repository: InMemoryOnboardingRepository | None = None
+
+    async def finalize_onboarding(
+        self, ref: TelegramAuthorizationRef, profile: AgentProfileInput
+    ) -> AgentRecord:
+        from mimic42.core.onboarding import (
+            OnboardingAlreadyCompletedError,
+            TelegramAuthorizationIncompleteError,
+            TelegramLoginStatus,
+        )
+
+        repository = self.onboarding_repository
+        if repository is None:
+            raise RuntimeError("Onboarding repository is not configured")
+        async with repository.lock:
+            session = await repository.get(ref.onboarding_id)
+            current_ref = ref
+            if ref.completed_agent_id is None and session.completed_agent_id == ref.onboarding_id:
+                current_ref = ref.model_copy(update={"completed_agent_id": ref.onboarding_id})
+            current_ref.check(session)
+            if session.completed_agent_id not in (None, ref.onboarding_id):
+                raise OnboardingAlreadyCompletedError(ref.onboarding_id)
+            if session.authorization_status is not TelegramLoginStatus.AUTHORIZED:
+                raise TelegramAuthorizationIncompleteError(ref.onboarding_id)
+            existing = self._agents.get(ref.onboarding_id)
+            if existing is not None:
+                if existing.owner_id != ref.owner_id:
+                    raise AgentOwnershipError(ref.onboarding_id)
+                if session.completed_agent_id is None:
+                    current = repository._sessions[ref.onboarding_id]
+                    current.completed_agent_id = ref.onboarding_id
+                    current.proxy_id = None
+                    current.applied_auth_generation = current.auth_generation
+                return existing
+            attempt = await repository.load_attempt(ref)
+            session.name = profile.name
+            session.soul_prompt = profile.soul_prompt
+            record = await self.create_from_onboarding(session)
+            self._configs[record.agent_id] = self._configs[record.agent_id].model_copy(
+                update={
+                    "telegram_proxy": attempt.assignment.config if attempt.assignment else None,
+                }
+            )
+            session.completed_agent_id = record.agent_id
+            session.proxy_id = None
+            session.applied_auth_generation = session.auth_generation
+            repository._sessions[session.onboarding_id] = session.model_copy(deep=True)
+            return record
+
+    async def apply_rebind(self, ref: TelegramAuthorizationRef, agent_id: UUID) -> None:
+        from mimic42.core.onboarding import (
+            OnboardingOwnershipError,
+            TelegramAuthorizationIncompleteError,
+            TelegramLoginStatus,
+        )
+
+        repository = self.onboarding_repository
+        if repository is None:
+            raise RuntimeError("Onboarding repository is not configured")
+        async with repository.lock:
+            session = await repository.get(ref.onboarding_id)
+            ref.check(session)
+            if session.completed_agent_id != agent_id:
+                raise OnboardingOwnershipError(ref.onboarding_id)
+            agent = self._agents.get(agent_id)
+            if agent is None:
+                raise KeyError(agent_id)
+            if agent.owner_id != ref.owner_id:
+                raise AgentOwnershipError(agent_id)
+            if session.authorization_status is not TelegramLoginStatus.AUTHORIZED:
+                raise TelegramAuthorizationIncompleteError(ref.onboarding_id)
+            if session.applied_auth_generation == session.auth_generation:
+                return
+            await self.rebind_telegram_session(agent_id, session)
+            repository._sessions[
+                ref.onboarding_id
+            ].applied_auth_generation = session.auth_generation
 
     async def create_from_onboarding(self, session: OnboardingSession) -> AgentRecord:
         if (

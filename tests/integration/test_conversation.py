@@ -11,7 +11,7 @@ from mimic42.api.auth import CurrentUser
 from mimic42.core.crypto import FernetSecretCipher
 from mimic42.core.onboarding import OnboardingSession, TelegramLoginStatus
 from mimic42.integrations.database_agent_store import DatabaseAgentStore
-from mimic42.testing import registry
+from mimic42.testing import registry, seed_agent
 from mimic42.testing.llm import Reply
 from mimic42.testing.peer import FakePeer
 from mimic42.testing.server import build_test_app
@@ -43,16 +43,18 @@ async def test_whole_turn_reaches_the_database_and_the_api(
     # а он расшифровывает api_hash этим ключом.
     cipher = FernetSecretCipher(os.environ["SECRET_KEY"])
     store = DatabaseAgentStore(db_session_factory, cipher=cipher)
-    await store.create_from_onboarding(
+    await seed_agent(
+        store,
         OnboardingSession(
             onboarding_id=agent_id,
             owner_id=owner_id,
             authorization_status=TelegramLoginStatus.AUTHORIZED,
             api_id=1,
             api_hash_secret=cipher.encrypt("test-api-hash"),
+            session_secret=cipher.encrypt("test-session"),
             name="собеседник",
             soul_prompt="спокойный помощник, отвечает коротко",
-        )
+        ),
     )
 
     app = build_test_app(auth_verifier=_StubAuthVerifier(owner_id))

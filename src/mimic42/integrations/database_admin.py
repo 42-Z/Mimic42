@@ -57,7 +57,11 @@ from mimic42.integrations.database_models import (
     TelegramProxyModel,
     TelegramSessionModel,
 )
-from mimic42.integrations.database_proxies import telegram_proxy_config
+from mimic42.integrations.database_proxies import (
+    least_loaded_proxy_id,
+    lock_proxy_pool,
+    telegram_proxy_config,
+)
 
 
 class DatabaseAdminRepository:
@@ -746,6 +750,7 @@ class DatabaseAdminRepository:
         )
         try:
             async with self._session_factory() as session, session.begin():
+                await lock_proxy_pool(session)
                 session.add(proxy)
                 await session.flush()
                 await self._append_audit(
@@ -774,6 +779,7 @@ class DatabaseAdminRepository:
     ) -> AdminProxyDetail:
         try:
             async with self._session_factory() as session, session.begin():
+                await lock_proxy_pool(session)
                 proxy = await session.scalar(
                     select(TelegramProxyModel)
                     .where(TelegramProxyModel.id == proxy_id)
@@ -837,6 +843,7 @@ class DatabaseAdminRepository:
     async def delete_proxy(self, proxy_id: UUID, *, actor_user_id: UUID) -> list[UUID]:
         try:
             async with self._session_factory() as session, session.begin():
+                await lock_proxy_pool(session)
                 proxy = await session.scalar(
                     select(TelegramProxyModel)
                     .where(TelegramProxyModel.id == proxy_id)
@@ -860,26 +867,31 @@ class DatabaseAdminRepository:
                         AgentOnboardingSessionModel.completed_agent_id.is_(None),
                     )
                 )
-                # Сначала уводим трафик на другой активный прокси, чтобы
-                # удаление не оставило работающих мимиков без сети.
-                replacement_id = await self._least_loaded_proxy_id(
+                replacement_id = await least_loaded_proxy_id(
                     session,
                     exclude_id=proxy_id,
                 )
-                if replacement_id is not None:
-                    await session.execute(
-                        update(TelegramSessionModel)
-                        .where(TelegramSessionModel.proxy_id == proxy_id)
-                        .values(proxy_id=replacement_id)
+                await session.execute(
+                    update(TelegramSessionModel)
+                    .where(TelegramSessionModel.proxy_id == proxy_id)
+                    .values(proxy_id=replacement_id)
+                )
+                await session.execute(
+                    update(AgentOnboardingSessionModel)
+                    .where(
+                        AgentOnboardingSessionModel.proxy_id == proxy_id,
+                        AgentOnboardingSessionModel.completed_agent_id.is_(None),
                     )
-                    await session.execute(
-                        update(AgentOnboardingSessionModel)
-                        .where(
-                            AgentOnboardingSessionModel.proxy_id == proxy_id,
-                            AgentOnboardingSessionModel.completed_agent_id.is_(None),
-                        )
-                        .values(proxy_id=replacement_id)
+                    .values(proxy_id=replacement_id)
+                )
+                await session.execute(
+                    update(AgentOnboardingSessionModel)
+                    .where(
+                        AgentOnboardingSessionModel.proxy_id == proxy_id,
+                        AgentOnboardingSessionModel.completed_agent_id.is_not(None),
                     )
+                    .values(proxy_id=None)
+                )
 
                 for agent_id in agent_ids:
                     await self._append_audit(
@@ -916,41 +928,6 @@ class DatabaseAdminRepository:
             raise AdminUnavailableError("Administrative storage is unavailable") from None
         return agent_ids
 
-    async def _least_loaded_proxy_id(
-        self,
-        session: AsyncSession,
-        *,
-        exclude_id: UUID,
-    ) -> UUID | None:
-        agent_load = (
-            select(func.count(TelegramSessionModel.id))
-            .where(TelegramSessionModel.proxy_id == TelegramProxyModel.id)
-            .correlate(TelegramProxyModel)
-            .scalar_subquery()
-        )
-        onboarding_load = (
-            select(func.count(AgentOnboardingSessionModel.id))
-            .where(
-                AgentOnboardingSessionModel.proxy_id == TelegramProxyModel.id,
-                AgentOnboardingSessionModel.completed_agent_id.is_(None),
-            )
-            .correlate(TelegramProxyModel)
-            .scalar_subquery()
-        )
-        return await session.scalar(
-            select(TelegramProxyModel.id)
-            .where(
-                TelegramProxyModel.is_active.is_(True),
-                TelegramProxyModel.id != exclude_id,
-            )
-            .order_by(
-                agent_load + onboarding_load,
-                TelegramProxyModel.created_at,
-                TelegramProxyModel.id,
-            )
-            .limit(1)
-        )
-
     async def assign_agent_proxy(
         self,
         agent_id: UUID,
@@ -960,6 +937,7 @@ class DatabaseAdminRepository:
     ) -> AdminAgentProxy | None:
         try:
             async with self._session_factory() as session, session.begin():
+                await lock_proxy_pool(session)
                 agent = await session.get(AgentModel, agent_id)
                 if agent is None:
                     raise AdminAgentNotFoundError
