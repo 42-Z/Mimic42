@@ -79,6 +79,186 @@ async def test_get_agent_after_removal_stays_removed() -> None:
         await manager.get_agent(config.agent_id)
 
 
+@pytest.mark.parametrize("auto_start", [False, True])
+async def test_saved_creation_rejects_removal_during_config_load(auto_start: bool) -> None:
+    config = _config()
+    loaded = asyncio.Event()
+    release = asyncio.Event()
+    clients: list[FakeTelegramClient] = []
+
+    async def load_config(agent_id: UUID) -> AgentRuntimeConfig:
+        assert agent_id == config.agent_id
+        loaded.set()
+        await release.wait()
+        return config
+
+    def runtime_factory(runtime_config: AgentRuntimeConfig) -> MimicAgentRuntime:
+        client = FakeTelegramClient()
+        clients.append(client)
+        return MimicAgentRuntime(
+            config=runtime_config, telegram_client=client, langchain_agent=FakeLangChainAgent()
+        )
+
+    manager = AgentManager(runtime_factory=runtime_factory, config_loader=load_config)
+    creating = asyncio.create_task(
+        manager.create_saved_agent(config.agent_id, owner_id=config.owner_id, start=auto_start)
+    )
+    try:
+        async with asyncio.timeout(5):
+            await loaded.wait()
+            await manager.remove_agent(config.agent_id)
+            release.set()
+            with pytest.raises(AgentNotFoundError):
+                await creating
+
+        assert await manager.list_agents() == []
+        assert clients == []
+        with pytest.raises(AgentNotFoundError):
+            await manager.get_agent(config.agent_id)
+    finally:
+        release.set()
+        creating.cancel()
+        await asyncio.gather(creating, return_exceptions=True)
+        await manager.shutdown()
+
+
+@pytest.mark.parametrize("auto_start", [False, True])
+async def test_saved_creation_rechecks_removal_when_registration_lock_is_released(
+    auto_start: bool,
+) -> None:
+    config = _config()
+    removing_entered = asyncio.Event()
+    loaded = asyncio.Event()
+    clients: list[FakeTelegramClient] = []
+
+    async def load_config(agent_id: UUID) -> AgentRuntimeConfig:
+        assert agent_id == config.agent_id
+        loaded.set()
+        return config
+
+    def runtime_factory(runtime_config: AgentRuntimeConfig) -> MimicAgentRuntime:
+        client = FakeTelegramClient()
+        clients.append(client)
+        return MimicAgentRuntime(
+            config=runtime_config, telegram_client=client, langchain_agent=FakeLangChainAgent()
+        )
+
+    manager = AgentManager(runtime_factory=runtime_factory, config_loader=load_config)
+
+    async def remove_agent() -> None:
+        removing_entered.set()
+        await manager.remove_agent(config.agent_id)
+
+    creating: asyncio.Task[MimicAgentRuntime] | None = None
+    removing: asyncio.Task[None] | None = None
+    try:
+        async with asyncio.timeout(5):
+            async with manager._lock:
+                removing = asyncio.create_task(remove_agent())
+                await removing_entered.wait()
+                creating = asyncio.create_task(
+                    manager.create_saved_agent(
+                        config.agent_id, owner_id=config.owner_id, start=auto_start
+                    )
+                )
+                await loaded.wait()
+            await removing
+            with pytest.raises(AgentNotFoundError):
+                await creating
+
+        assert await manager.list_agents() == []
+        assert clients == []
+        with pytest.raises(AgentNotFoundError):
+            await manager.get_agent(config.agent_id)
+    finally:
+        if creating is not None:
+            creating.cancel()
+            await asyncio.gather(creating, return_exceptions=True)
+        if removing is not None:
+            removing.cancel()
+            await asyncio.gather(removing, return_exceptions=True)
+        await manager.shutdown()
+
+
+@pytest.mark.parametrize("auto_start", [False, True])
+async def test_saved_creation_rejects_removal_while_old_runtime_is_closing(
+    auto_start: bool,
+) -> None:
+    config = _config()
+    closing = asyncio.Event()
+    release = asyncio.Event()
+    clients: list[FakeTelegramClient] = []
+
+    class SlowCloseRuntime(MimicAgentRuntime):
+        async def close(self) -> None:
+            closing.set()
+            await release.wait()
+            await super().close()
+
+    def runtime_factory(runtime_config: AgentRuntimeConfig) -> MimicAgentRuntime:
+        client = FakeTelegramClient()
+        clients.append(client)
+        return SlowCloseRuntime(
+            config=runtime_config, telegram_client=client, langchain_agent=FakeLangChainAgent()
+        )
+
+    manager = AgentManager(runtime_factory=runtime_factory, config_loader=lambda agent_id: config)
+    old_runtime = await manager.create_agent(config, start=True)
+    removing = asyncio.create_task(manager.remove_agent(config.agent_id))
+    try:
+        async with asyncio.timeout(5):
+            await closing.wait()
+            assert old_runtime.state is AgentRuntimeState.RUNNING
+            assert clients[0].connected
+            with pytest.raises(AgentNotFoundError):
+                await manager.create_saved_agent(
+                    config.agent_id, owner_id=config.owner_id, start=auto_start
+                )
+
+            assert not removing.done()
+            assert await manager.list_agents() == []
+            assert len(clients) == 1
+            release.set()
+            await removing
+
+        assert old_runtime.state is AgentRuntimeState.STOPPED
+        assert not clients[0].connected
+        assert await manager.list_agents() == []
+        with pytest.raises(AgentNotFoundError):
+            await manager.get_agent(config.agent_id)
+    finally:
+        release.set()
+        await removing
+        await manager.shutdown()
+
+
+async def test_saved_creation_start_failure_persists_error_status() -> None:
+    config = _config()
+    updates: list[tuple[UUID, AgentRuntimeState]] = []
+
+    class FailingStartClient(FakeTelegramClient):
+        async def connect(self) -> None:
+            raise RuntimeError("connect failed")
+
+    manager = AgentManager(
+        runtime_factory=lambda runtime_config: MimicAgentRuntime(
+            config=runtime_config,
+            telegram_client=FailingStartClient(),
+            langchain_agent=FakeLangChainAgent(),
+        ),
+        config_loader=lambda agent_id: config,
+        status_sink=lambda agent_id, state: updates.append((agent_id, state)),
+    )
+    try:
+        with pytest.raises(RuntimeError, match="connect failed"):
+            await manager.create_saved_agent(config.agent_id, owner_id=config.owner_id, start=True)
+
+        assert updates == [(config.agent_id, AgentRuntimeState.ERROR)]
+        assert (await manager.get_agent(config.agent_id)).state is AgentRuntimeState.ERROR
+    finally:
+        await manager.shutdown()
+
+
 @pytest.mark.parametrize(
     ("pause_at", "auto_start"), [("load", False), ("load", True), ("start", True)]
 )
