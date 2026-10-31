@@ -31,7 +31,6 @@ async def seed_agent(store: DatabaseAgentStore, session: OnboardingSession) -> A
 async def seed_rebind(
     store: DatabaseAgentStore, agent_id: UUID, session: OnboardingSession
 ) -> None:
-    """Persist synthetic authorization before exercising the real apply boundary."""
     current = session.model_copy(update={"completed_agent_id": agent_id})
     repository = DatabaseOnboardingRepository(store._session_factory)
     await repository.create(current)

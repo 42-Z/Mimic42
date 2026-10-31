@@ -20,6 +20,7 @@ from fastapi import (
     status,
 )
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from mimic42.api.admin import get_admin_identity
@@ -67,6 +68,8 @@ from mimic42.core.onboarding import (
     TelegramAuthorizationIncompleteError,
     TelegramCodeVerification,
     TelegramCredentials,
+    TelegramLoginRouteChangedError,
+    TelegramLoginStaleError,
     TelegramPasswordRequiredError,
     TelegramRebindUnavailableError,
 )
@@ -429,7 +432,7 @@ def create_app(
                 app.state.agent_store = database_agent_store
                 if onboarding_service is None:
                     app.state.onboarding_service = AgentOnboardingService(
-                        repository=DatabaseOnboardingRepository(session_factory),
+                        repository=DatabaseOnboardingRepository(session_factory, cipher=cipher),
                         telegram_factory=app_telegram_factory,
                         cipher=cipher,
                         agent_store=database_agent_store,
@@ -523,6 +526,17 @@ def create_app(
                     await database_engine.dispose()
 
     app = FastAPI(title="Mimic42 API", version="0.1.0", lifespan=lifespan)
+
+    @app.exception_handler(TelegramLoginStaleError)
+    @app.exception_handler(TelegramLoginRouteChangedError)
+    async def telegram_login_conflict(
+        _request: Request, exc: TelegramLoginStaleError | TelegramLoginRouteChangedError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={"detail": str(exc)},
+        )
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=app_settings.cors_allow_origins,
@@ -653,8 +667,12 @@ def create_app(
         except HTTPException:
             raise _onboarding_not_found(onboarding_id) from None
         try:
-            result = await _get_onboarding_service(app).verify_telegram_code(onboarding_id, payload)
+            result = await _get_onboarding_service(app).verify_telegram_code(
+                onboarding_id, payload, owner_id=current_user.user_id
+            )
             return result
+        except (OnboardingNotFoundError, OnboardingOwnershipError) as exc:
+            raise _onboarding_not_found(onboarding_id) from exc
         except TelegramPasswordRequiredError as exc:
             raise HTTPException(
                 status_code=status.HTTP_428_PRECONDITION_REQUIRED,
@@ -727,8 +745,12 @@ def create_app(
         except HTTPException:
             raise _onboarding_not_found(onboarding_id) from None
         try:
-            result = await _get_onboarding_service(app).finalize_agent(onboarding_id, payload)
+            result = await _get_onboarding_service(app).finalize_agent(
+                onboarding_id, payload, owner_id=current_user.user_id
+            )
             return result
+        except (OnboardingNotFoundError, OnboardingOwnershipError) as exc:
+            raise _onboarding_not_found(onboarding_id) from exc
         except TelegramAuthorizationIncompleteError as exc:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -1035,12 +1057,12 @@ def create_app(
         except HTTPException:
             raise _onboarding_not_found(payload.onboarding_id) from None
         try:
-            await _get_onboarding_service(app).validate_rebind_to_agent(
+            authorization = await _get_onboarding_service(app).validate_rebind_to_agent(
                 payload.onboarding_id,
                 agent_id,
                 owner_id=current_user.user_id,
             )
-        except OnboardingOwnershipError as exc:
+        except (OnboardingNotFoundError, OnboardingOwnershipError) as exc:
             raise _onboarding_not_found(payload.onboarding_id) from exc
         except TelegramAuthorizationIncompleteError as exc:
             raise HTTPException(
@@ -1066,6 +1088,7 @@ def create_app(
                 payload.onboarding_id,
                 agent_id,
                 owner_id=current_user.user_id,
+                authorization=authorization,
             )
         except OnboardingOwnershipError as exc:
             raise _onboarding_not_found(payload.onboarding_id) from exc

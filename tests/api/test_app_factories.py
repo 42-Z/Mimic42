@@ -279,7 +279,7 @@ async def test_agent_and_admin_services_share_one_engine_and_session_factory(
             raise AssertionError("runtime status is not updated in this test")
 
     class BuiltOnboardingRepository:
-        def __init__(self, factory: object) -> None:
+        def __init__(self, factory: object, **_kwargs: object) -> None:
             service_factories["onboarding"] = factory
 
     class BuiltAdminRepository:

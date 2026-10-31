@@ -354,8 +354,9 @@ class PasswordRequiredOnboardingService(AgentOnboardingService):
         )
 
     async def verify_telegram_code(
-        self, onboarding_id: UUID, verification: object
+        self, onboarding_id: UUID, verification: object, *, owner_id: UUID | None = None
     ) -> OnboardingPublicStatus:
+        assert owner_id == self._owner_id
         raise TelegramPasswordRequiredError
 
 
