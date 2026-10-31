@@ -142,7 +142,7 @@ async def test_existing_draft_keeps_its_proxy_without_new_allocation() -> None:
 
 
 @pytest.mark.asyncio
-async def test_broken_existing_proxy_clears_assignment_and_goes_direct() -> None:
+async def test_broken_existing_proxy_preserves_assignment_and_refuses_network() -> None:
     owner_id = uuid4()
     onboarding_id = uuid4()
     repository = InMemoryOnboardingRepository()
@@ -161,14 +161,93 @@ async def test_broken_existing_proxy_clears_assignment_and_goes_direct() -> None
         proxy_store=FakeTelegramProxyStore(),
     )
 
-    await service.request_telegram_code(
-        _credentials(owner_id),
-        onboarding_id=onboarding_id,
-    )
+    assigned = (await repository.get(onboarding_id)).proxy_id
+    with pytest.raises(TelegramProxyUnavailableError):
+        await service.request_telegram_code(
+            _credentials(owner_id),
+            onboarding_id=onboarding_id,
+        )
 
     saved = await repository.get(onboarding_id)
-    assert saved.proxy_id is None
-    assert factory.proxies == [None]
+    assert saved.proxy_id == assigned
+    assert factory.proxies == []
+
+
+@pytest.mark.asyncio
+async def test_new_login_reserves_before_network_and_does_not_restore_deleted_proxy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = InMemoryOnboardingRepository()
+    proxy_id = uuid4()
+    replacement_id = uuid4()
+    config = _proxy_config()
+    account = FakeTelegramAccount()
+    from mimic42.testing.telegram import FakeTelegramAuthClient
+
+    original = FakeTelegramAuthClient.send_code_request
+
+    async def delete_during_request(client: FakeTelegramAuthClient, phone: str) -> object:
+        assert len(repository._sessions) == 1
+        reserved = next(iter(repository._sessions.values()))
+        assert reserved.proxy_id == proxy_id
+        reserved.proxy_id = replacement_id
+        reserved.name = "Edited during login"
+        return await original(client, phone)
+
+    monkeypatch.setattr(FakeTelegramAuthClient, "send_code_request", delete_during_request)
+    service = AgentOnboardingService(
+        repository=repository,
+        telegram_factory=FakeTelegramAuthClientFactory(account),
+        proxy_store=FakeTelegramProxyStore(
+            allocation=TelegramProxyAssignment(proxy_id=proxy_id, config=config),
+            configs={proxy_id: config},
+        ),
+    )
+
+    result = await service.request_telegram_code(_credentials(uuid4()))
+
+    saved = await repository.get(result.onboarding_id)
+    assert saved.proxy_id == replacement_id
+    assert saved.name == "Edited during login"
+    assert saved.authorization_status is TelegramLoginStatus.CODE_REQUESTED
+
+
+@pytest.mark.asyncio
+async def test_rebind_verification_uses_latest_assignment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    owner_id, agent_id, old_id, new_id = uuid4(), uuid4(), uuid4(), uuid4()
+    old_config, new_config = _proxy_config("old.test"), _proxy_config("new.test")
+    repository = InMemoryOnboardingRepository()
+    await repository.save(
+        OnboardingSession(
+            onboarding_id=agent_id,
+            owner_id=owner_id,
+            api_id=12345,
+            api_hash_secret="hash",
+            phone_number="+79990000000",
+            authorization_status=TelegramLoginStatus.AUTHORIZED,
+            session_secret="old-session",
+            completed_agent_id=agent_id,
+        )
+    )
+    store = FakeTelegramProxyStore(
+        configs={old_id: old_config, new_id: new_config},
+        agent_assignments={agent_id: TelegramProxyAssignment(proxy_id=old_id, config=old_config)},
+    )
+    account = FakeTelegramAccount()
+    account.script_code("12345")
+    factory = FakeTelegramAuthClientFactory(account)
+    service = AgentOnboardingService(
+        repository=repository, telegram_factory=factory, proxy_store=store
+    )
+    await service.start_rebind(agent_id, owner_id=owner_id)
+    store.agent_assignments[agent_id] = TelegramProxyAssignment(proxy_id=new_id, config=new_config)
+
+    result = await service.verify_telegram_code(agent_id, TelegramCodeVerification(code="12345"))
+
+    assert result.authorization_status is TelegramLoginStatus.AUTHORIZED
+    assert factory.proxies == [old_config, new_config]
 
 
 @pytest.mark.asyncio
