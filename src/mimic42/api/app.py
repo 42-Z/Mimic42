@@ -106,6 +106,14 @@ class AgentManagerLike(Protocol):
         start: bool = False,
     ) -> object: ...
 
+    async def create_saved_agent(
+        self,
+        agent_id: UUID,
+        *,
+        owner_id: UUID,
+        start: bool = False,
+    ) -> object: ...
+
     async def get_agent_status(self, agent_id: UUID) -> AgentStatus: ...
 
     async def list_agents(self, *, owner_id: UUID | None = None) -> list[AgentStatus]: ...
@@ -908,19 +916,38 @@ def create_app(
         payload: CreateAgentRequest,
         current_user: CurrentUserDep,
     ) -> AgentStatus:
-        api_id, api_hash = await _resolve_telegram_app(
-            _get_telegram_app_settings(app),
-        )
-        try:
-            manager_for_request = _get_agent_manager(app)
-            await manager_for_request.create_agent(
-                payload.to_runtime_config(
-                    owner_id=current_user.user_id,
-                    api_id=api_id,
-                    api_hash=api_hash,
-                ),
-                start=payload.auto_start,
+        store = _get_agent_store(app)
+        if store is not None:
+            await _ensure_agent_owner(
+                store, agent_id=payload.agent_id, user_id=current_user.user_id
             )
+        manager_for_request = _get_agent_manager(app)
+        try:
+            if store is not None:
+                await manager_for_request.create_saved_agent(
+                    payload.agent_id,
+                    owner_id=current_user.user_id,
+                    start=payload.auto_start,
+                )
+            else:
+                api_id, api_hash = await _resolve_telegram_app(
+                    _get_telegram_app_settings(app),
+                )
+                await manager_for_request.create_agent(
+                    payload.to_runtime_config(
+                        owner_id=current_user.user_id,
+                        api_id=api_id,
+                        api_hash=api_hash,
+                    ),
+                    start=payload.auto_start,
+                )
+        except AgentNotFoundError as exc:
+            raise _not_found(payload.agent_id) from exc
+        except TelegramProxyUnavailableError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Прокси Telegram недоступен.",
+            ) from exc
         except ValueError as exc:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -931,7 +958,7 @@ def create_app(
                 status_code=status.HTTP_428_PRECONDITION_REQUIRED,
                 detail=str(exc),
             ) from exc
-        return await _get_agent_manager(app).get_agent_status(payload.agent_id)
+        return await manager_for_request.get_agent_status(payload.agent_id)
 
     @app.post(
         "/api/v1/agents/{agent_id}/telegram/rebind",

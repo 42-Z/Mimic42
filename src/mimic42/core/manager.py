@@ -156,6 +156,27 @@ class AgentManager:
                 raise
         return runtime
 
+    async def create_saved_agent(
+        self,
+        agent_id: UUID,
+        *,
+        owner_id: UUID,
+        start: bool = False,
+    ) -> MimicAgentRuntime:
+        if self._config_loader is None:
+            raise AgentNotFoundError(agent_id)
+        reload_lock = self._reload_locks.setdefault(agent_id, asyncio.Lock())
+        async with reload_lock:
+            try:
+                config = await _await_result(self._config_loader(agent_id))
+            except KeyError as exc:
+                raise AgentNotFoundError(agent_id) from exc
+            if not isinstance(config, AgentRuntimeConfig):
+                raise TypeError("config_loader must return AgentRuntimeConfig")
+            if config.owner_id != owner_id:
+                raise AgentNotFoundError(agent_id)
+            return await self.create_agent(config, start=start)
+
     def _register_locked(self, config: AgentRuntimeConfig) -> MimicAgentRuntime:
         """Собрать и положить рантайм в реестр. Вызывать только под ``_lock``."""
         if config.agent_id in self._agents:
