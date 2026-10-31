@@ -15,9 +15,19 @@ from mimic42.core.agent_runtime import (
     MimicAgentRuntime,
     TelegramAuthorizationRequired,
 )
-from mimic42.core.onboarding import OnboardingSession, TelegramLoginStatus
+from mimic42.core.onboarding import (
+    AgentProfileInput,
+    OnboardingNotFoundError,
+    OnboardingSession,
+    TelegramLoginStaleError,
+    TelegramLoginStatus,
+)
 from mimic42.integrations.database_agent_store import DatabaseAgentStore
-from mimic42.integrations.database_models import AgentModel, TelegramSessionModel
+from mimic42.integrations.database_models import (
+    AgentModel,
+    TelegramProxyModel,
+    TelegramSessionModel,
+)
 from mimic42.integrations.database_onboarding import DatabaseOnboardingRepository
 from mimic42.integrations.database_proxies import lock_proxy_pool
 from mimic42.testing import seed_rebind
@@ -469,6 +479,86 @@ async def test_parent_delete_waits_for_pool_before_locking_agent(
             await holder.rollback()
             await asyncio.wait_for(deletion, timeout=5)
             await deleting.rollback()
+
+
+@pytest.mark.parametrize("different_onboarding_id", [False, True])
+async def test_owner_delete_cancels_linked_authorization_without_dropping_pending_login(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+    different_onboarding_id: bool,
+) -> None:
+    owner_id = clean_slot.persona("flow").user_id
+    agent_id, proxy_id, pending_id = uuid4(), uuid4(), uuid4()
+    linked_id = uuid4() if different_onboarding_id else agent_id
+    await _seed_agent_with_session(db_session_factory, agent_id=agent_id, owner_id=owner_id)
+    async with db_session_factory() as db, db.begin():
+        db.add(TelegramProxyModel(id=proxy_id, protocol="socks5", host="127.0.0.1", port=1080))
+        await db.flush()
+        await db.execute(
+            update(TelegramSessionModel)
+            .where(TelegramSessionModel.agent_id == agent_id)
+            .values(proxy_id=proxy_id)
+        )
+    repository = DatabaseOnboardingRepository(db_session_factory)
+    linked = OnboardingSession(
+        onboarding_id=linked_id,
+        owner_id=owner_id,
+        completed_agent_id=agent_id,
+        authorization_status=TelegramLoginStatus.AUTHORIZED,
+        api_id=12345,
+        api_hash_secret="new-hash",
+        phone_number="+10000000000",
+        session_secret="old-session",
+        name="Mimic",
+        soul_prompt="soul",
+    )
+    await repository.create(linked)
+    await repository.create(
+        OnboardingSession(
+            onboarding_id=pending_id,
+            owner_id=owner_id,
+            proxy_id=proxy_id,
+            authorization_status=TelegramLoginStatus.CODE_REQUESTED,
+            phone_code_hash_secret="pending-code",
+            session_secret="pending-session",
+        )
+    )
+    async with db_session_factory() as db, db.begin():
+        await db.execute(text("set local role authenticated"))
+        await db.execute(
+            text("select set_config('request.jwt.claim.sub', :owner, true)"),
+            {"owner": str(owner_id)},
+        )
+        assert (
+            await db.execute(
+                text("delete from public.agents where id = :id returning id"), {"id": agent_id}
+            )
+        ).scalar_one() == agent_id
+
+    with pytest.raises(OnboardingNotFoundError):
+        await repository.get(linked_id)
+    with pytest.raises(TelegramLoginStaleError):
+        await DatabaseAgentStore(db_session_factory).finalize_onboarding(
+            linked.authorization_ref(), AgentProfileInput(name="Restored", soul_prompt="soul")
+        )
+    pending = await repository.get(pending_id)
+    assert pending.owner_id == owner_id
+    assert pending.completed_agent_id is None
+    assert pending.authorization_status is TelegramLoginStatus.CODE_REQUESTED
+    assert pending.proxy_id == proxy_id
+    assert pending.phone_code_hash_secret == "pending-code"
+    assert pending.session_secret == "pending-session"
+    async with db_session_factory() as db:
+        assert await db.get(AgentModel, agent_id) is None
+        assert (
+            await db.scalar(
+                select(TelegramSessionModel).where(TelegramSessionModel.agent_id == agent_id)
+            )
+            is None
+        )
+        proxy = await db.get(TelegramProxyModel, proxy_id)
+        assert proxy is not None
+        assert proxy.is_active
 
 
 class BrokenSessionFactory:
