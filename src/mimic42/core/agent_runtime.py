@@ -436,8 +436,10 @@ class MimicAgentRuntime:
             from sqlalchemy.engine import CursorResult
 
             from mimic42.integrations.database_models import AgentModel, TelegramSessionModel
+            from mimic42.integrations.database_proxies import lock_proxy_pool
 
             async with self._session_factory() as db_session:
+                await lock_proxy_pool(db_session)
                 result = await db_session.execute(
                     update(TelegramSessionModel)
                     .where(
