@@ -224,6 +224,27 @@ export interface TelegramSessionRow {
   updated_at: string;
 }
 
+export interface TelegramPasswordState {
+  has_password: boolean;
+}
+
+export interface TelegramUsernameInput {
+  username: string;
+}
+
+export interface TelegramUsernameResponse {
+  username: string;
+}
+
+export interface TelegramPasswordInput {
+  current_password?: string;
+  new_password: string;
+}
+
+export interface TelegramPasswordResponse {
+  changed: boolean;
+}
+
 /**
  * message_threads table row
  */

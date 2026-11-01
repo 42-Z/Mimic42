@@ -15,6 +15,7 @@ from mimic42.core.agent_runtime import (
     AgentTrigger,
     MimicAgentRuntime,
     TelegramAuthorizationRequired,
+    TelegramSessionChangedError,
     TelegramTeardownPendingError,
 )
 from mimic42.core.manager import AgentManager
@@ -1631,9 +1632,12 @@ async def test_slow_mode_error_waits_and_retries_the_reply(
 class _RecordingSession:
     """Сессия БД без базы: фиксирует запросы и терпит служебные вызовы рантайма."""
 
-    def __init__(self, executed: list[object], *, fail_execute: bool = False) -> None:
+    def __init__(
+        self, executed: list[object], *, fail_execute: bool = False, found: bool = True
+    ) -> None:
         self._executed = executed
         self._fail_execute = fail_execute
+        self._found = found
 
     async def __aenter__(self) -> _RecordingSession:
         return self
@@ -1654,7 +1658,19 @@ class _RecordingSession:
         if self._fail_execute:
             raise RuntimeError("database is down")
         self._executed.append(statement)
-        return type("Result", (), {"rowcount": 1})()
+        found = self._found
+
+        def scalar_one_or_none(_result: object) -> object:
+            return object() if found else None
+
+        return type(
+            "Result",
+            (),
+            {
+                "rowcount": 1 if found else 0,
+                "scalar_one_or_none": scalar_one_or_none,
+            },
+        )()
 
     async def scalars(self, statement: object) -> list[object]:
         return []
@@ -1663,12 +1679,13 @@ class _RecordingSession:
 class RecordingSessionFactory:
     """Фабрика сессий: выполненные запросы записываются вместо похода в базу."""
 
-    def __init__(self, *, fail_execute: bool = False) -> None:
+    def __init__(self, *, fail_execute: bool = False, found: bool = True) -> None:
         self.executed: list[object] = []
         self._fail_execute = fail_execute
+        self._found = found
 
     def __call__(self) -> _RecordingSession:
-        return _RecordingSession(self.executed, fail_execute=self._fail_execute)
+        return _RecordingSession(self.executed, fail_execute=self._fail_execute, found=self._found)
 
     def telegram_username_updates(self) -> list[Any]:
         from sqlalchemy.sql.dml import Update
@@ -1768,3 +1785,41 @@ async def test_start_without_session_token_skips_username_write() -> None:
     assert runtime.state is AgentRuntimeState.RUNNING
     assert sessions.telegram_username_updates() == []
     await runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_persist_telegram_username_updates_only_the_current_session() -> None:
+    sessions = RecordingSessionFactory()
+    runtime = MimicAgentRuntime(
+        config=make_config().model_copy(update={"telegram_session_token": "current-token"}),
+        telegram_client=FakeTelegramClient(),
+        langchain_agent=FakeLangChainAgent(),
+        session_factory=cast(Any, sessions),
+    )
+
+    await runtime.persist_telegram_username("new_name")
+
+    updates = sessions.telegram_username_updates()
+    assert len(updates) == 1
+    statement = updates[0]
+    assert statement.compile().params.get("username") == "new_name"
+    sql = str(statement)
+    assert "telegram_sessions.session_ciphertext" in sql
+    assert "RETURNING telegram_sessions.agent_id" in sql
+    assert runtime.telegram_username == "new_name"
+
+
+@pytest.mark.asyncio
+async def test_persist_telegram_username_refuses_a_stale_token() -> None:
+    sessions = RecordingSessionFactory(found=False)
+    runtime = MimicAgentRuntime(
+        config=make_config().model_copy(update={"telegram_session_token": "old-token"}),
+        telegram_client=FakeTelegramClient(),
+        langchain_agent=FakeLangChainAgent(),
+        session_factory=cast(Any, sessions),
+    )
+
+    with pytest.raises(TelegramSessionChangedError):
+        await runtime.persist_telegram_username("new_name")
+
+    assert runtime.telegram_username is None

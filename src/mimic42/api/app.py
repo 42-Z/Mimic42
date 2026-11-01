@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import Annotated, Any, Literal, Protocol, runtime_checkable
+from typing import Annotated, Any, Literal, Protocol, TypeVar, runtime_checkable
 from uuid import UUID, uuid4
 
 from fastapi import (
+    APIRouter,
     Depends,
     FastAPI,
     File,
@@ -19,6 +20,7 @@ from fastapi import (
     UploadFile,
     status,
 )
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -36,6 +38,7 @@ from mimic42.core.agent_runtime import (
     AgentTriggerResult,
     ChatListUnavailableError,
     TelegramAuthorizationRequired,
+    TelegramSessionChangedError,
     TelegramTeardownPendingError,
 )
 from mimic42.core.agent_store import (
@@ -54,6 +57,8 @@ from mimic42.core.manager import (
     AgentNotFoundError,
     LangChainAgentFactory,
     TelegramClientFactory,
+    TelegramRebindSequenceError,
+    TelegramRebindStep,
 )
 from mimic42.core.media import MAX_PHOTO_BYTES, MediaUploader, detect_photo_type
 from mimic42.core.memory import LongTermMemoryLike, RuntimeMemoryService
@@ -74,6 +79,24 @@ from mimic42.core.onboarding import (
     TelegramRebindUnavailableError,
 )
 from mimic42.core.runtime_status import effective_runtime_state
+from mimic42.core.telegram_account import (
+    TelegramAccountError,
+    TelegramAccountFloodWaitError,
+    TelegramAccountUnavailableError,
+    TelegramCurrentPasswordInvalidError,
+    TelegramCurrentPasswordRequiredError,
+    TelegramPasswordChanged,
+    TelegramPasswordEmptyError,
+    TelegramPasswordHintCollisionError,
+    TelegramPasswordState,
+    TelegramPasswordTooFreshError,
+    TelegramPasswordUpdate,
+    TelegramSessionInvalidError,
+    TelegramUsernameChanged,
+    TelegramUsernameInvalidError,
+    TelegramUsernameOccupiedError,
+    TelegramUsernameUpdate,
+)
 from mimic42.core.telegram_app_settings import (
     TelegramAppSettings,
     TelegramAppUnavailableError,
@@ -99,6 +122,8 @@ from mimic42.integrations.tracing import flush_tracing, setup_tracing
 logger = logging.getLogger("mimic42.api.app")
 
 CurrentUserDep = Annotated[CurrentUser, Depends(require_user)]
+
+ResultT = TypeVar("ResultT")
 
 
 class AgentManagerLike(Protocol):
@@ -127,6 +152,12 @@ class AgentManagerLike(Protocol):
 
     async def reload_agent(self, agent_id: UUID) -> None: ...
 
+    async def confirm_telegram_rebind(
+        self,
+        agent_id: UUID,
+        apply: Callable[[], Awaitable[ResultT]],
+    ) -> ResultT: ...
+
     async def remove_agent(self, agent_id: UUID) -> None: ...
 
     async def trigger_message(
@@ -152,6 +183,35 @@ class ChatDirectoryControl(Protocol):
     """Список диалогов агента: есть не у всякого менеджера (подделки в тестах его не имеют)."""
 
     async def list_chats(self, agent_id: UUID) -> list[ChatItem]: ...
+
+
+@runtime_checkable
+class TelegramAccountControl(Protocol):
+    """Публичные данные аккаунта: есть не у всякого менеджера в тестах."""
+
+    async def get_telegram_password_state(self, agent_id: UUID) -> TelegramPasswordState: ...
+
+    async def change_telegram_username(self, agent_id: UUID, username: str) -> str: ...
+
+    async def change_telegram_password(
+        self, agent_id: UUID, change: TelegramPasswordUpdate
+    ) -> None: ...
+
+
+async def _safe_validation_error(_: Request, exc: RequestValidationError) -> JSONResponse:
+    """422 без input, ctx и body: в json_invalid в input лежит всё тело запроса."""
+    detail = [
+        {
+            "loc": list(error.get("loc", ())),
+            "msg": str(error.get("msg", "Некорректное значение")),
+        }
+        for error in exc.errors()
+    ]
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        content={"detail": detail},
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 class WarmupStateResponse(BaseModel):
@@ -537,6 +597,10 @@ def create_app(
             content={"detail": str(exc)},
         )
 
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
+        return await _safe_validation_error(request, exc)
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=app_settings.cors_allow_origins,
@@ -558,6 +622,83 @@ def create_app(
     )
 
     app.include_router(admin_router)
+
+    account_router = APIRouter()
+
+    @account_router.get(
+        "/api/v1/agents/{agent_id}/telegram/password",
+        response_model=TelegramPasswordState,
+    )
+    async def get_telegram_password_state(
+        agent_id: UUID,
+        current_user: CurrentUserDep,
+    ) -> TelegramPasswordState:
+        """Есть ли у аккаунта облачный пароль: читается только при открытии формы."""
+        try:
+            await _ensure_runtime_owner(app, agent_id=agent_id, user_id=current_user.user_id)
+            return await _get_telegram_account_control(app).get_telegram_password_state(agent_id)
+        except AgentNotFoundError as exc:
+            raise _not_found(exc.agent_id) from exc
+        except HTTPException:
+            raise
+        except Exception as exc:
+            translated = _telegram_account_http_error(exc)
+            if translated is not None:
+                raise translated from exc
+            logger.exception("Failed to read Telegram password state of agent %s", agent_id)
+            raise
+
+    @account_router.put(
+        "/api/v1/agents/{agent_id}/telegram/username",
+        response_model=TelegramUsernameChanged,
+    )
+    async def change_telegram_username(
+        agent_id: UUID,
+        payload: TelegramUsernameUpdate,
+        current_user: CurrentUserDep,
+    ) -> TelegramUsernameChanged:
+        try:
+            await _ensure_runtime_owner(app, agent_id=agent_id, user_id=current_user.user_id)
+            username = await _get_telegram_account_control(app).change_telegram_username(
+                agent_id, payload.username
+            )
+        except AgentNotFoundError as exc:
+            raise _not_found(exc.agent_id) from exc
+        except HTTPException:
+            raise
+        except Exception as exc:
+            translated = _telegram_account_http_error(exc)
+            if translated is not None:
+                raise translated from exc
+            logger.exception("Failed to change Telegram username of agent %s", agent_id)
+            raise
+        return TelegramUsernameChanged(username=username)
+
+    @account_router.put(
+        "/api/v1/agents/{agent_id}/telegram/password",
+        response_model=TelegramPasswordChanged,
+    )
+    async def change_telegram_password(
+        agent_id: UUID,
+        payload: TelegramPasswordUpdate,
+        current_user: CurrentUserDep,
+    ) -> TelegramPasswordChanged:
+        try:
+            await _ensure_runtime_owner(app, agent_id=agent_id, user_id=current_user.user_id)
+            await _get_telegram_account_control(app).change_telegram_password(agent_id, payload)
+        except AgentNotFoundError as exc:
+            raise _not_found(exc.agent_id) from exc
+        except HTTPException:
+            raise
+        except Exception as exc:
+            translated = _telegram_account_http_error(exc)
+            if translated is not None:
+                raise translated from exc
+            logger.exception("Failed to change Telegram password of agent %s", agent_id)
+            raise
+        return TelegramPasswordChanged()
+
+    app.include_router(account_router)
 
     @app.get("/health")
     async def health() -> dict[str, str]:
@@ -1075,26 +1216,36 @@ def create_app(
                 detail="Авторизация Telegram не завершена. Введите код подтверждения.",
             ) from exc
         manager = _get_agent_manager(app)
-        # Останавливаем до пересборки: reload_agent перезапускает RUNNING-агента,
-        # а по решению из issue агент остаётся остановленным.
-        try:
-            await manager.stop_agent(agent_id)
-        except Exception as exc:
-            # Не пересобираем поверх живого рантайма: reload_agent вынимает
-            # старый из реестра до close, и новый клиент поднялся бы со свежей
-            # сессией, пока старый ещё держит старую (AuthKeyDuplicated).
-            logger.exception("Failed to stop agent %s before rebind reload", agent_id)
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Не удалось остановить агента перед перепривязкой. Повторите подтверждение.",
-            ) from exc
-        try:
-            result = await _get_onboarding_service(app).rebind_to_agent(
+
+        async def apply_rebind() -> AgentStatus:
+            return await _get_onboarding_service(app).rebind_to_agent(
                 payload.onboarding_id,
                 agent_id,
                 owner_id=current_user.user_id,
                 authorization=authorization,
             )
+
+        try:
+            result = await manager.confirm_telegram_rebind(agent_id, apply_rebind)
+        except TelegramRebindSequenceError as exc:
+            if exc.step is TelegramRebindStep.STOP:
+                detail = (
+                    "Не удалось остановить агента перед перепривязкой. Повторите подтверждение."
+                )
+            else:
+                detail = (
+                    "Не удалось пересобрать агента после перепривязки. Повторите подтверждение."
+                )
+            logger.error(
+                "Rebind sequence failed at %s for agent %s",
+                exc.step,
+                agent_id,
+                exc_info=exc,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=detail,
+            ) from exc
         except OnboardingOwnershipError as exc:
             raise _onboarding_not_found(payload.onboarding_id) from exc
         except TelegramAuthorizationIncompleteError as exc:
@@ -1106,16 +1257,6 @@ def create_app(
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Новая сессия принадлежит другому Telegram-аккаунту.",
-            ) from exc
-        try:
-            await manager.reload_agent(agent_id)
-        except Exception as exc:
-            # Перепривязка уже применена в базе: повторное подтверждение
-            # идемпотентно и доведёт пересборку до конца.
-            logger.exception("Failed to reload agent %s after rebind", agent_id)
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Не удалось пересобрать агента после перепривязки. Повторите подтверждение.",
             ) from exc
         return result
 
@@ -1483,6 +1624,59 @@ def _get_chat_directory_control(app: FastAPI) -> ChatDirectoryControl:
             detail="Список чатов недоступен.",
         )
     return manager
+
+
+def _get_telegram_account_control(app: FastAPI) -> TelegramAccountControl:
+    manager = _get_agent_manager(app)
+    if not isinstance(manager, TelegramAccountControl):
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail="Управление аккаунтом Telegram недоступно.",
+        )
+    return manager
+
+
+def _telegram_account_http_error(exc: Exception) -> HTTPException | None:
+    """Перевести отказ управления аккаунтом в безопасный ответ без секретов."""
+    if isinstance(exc, TelegramProxyUnavailableError):
+        return HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Прокси Telegram недоступен: {exc}",
+        )
+    if isinstance(exc, TelegramSessionInvalidError):
+        return HTTPException(status_code=status.HTTP_428_PRECONDITION_REQUIRED, detail=str(exc))
+    if isinstance(exc, TelegramUsernameInvalidError):
+        return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    if isinstance(exc, TelegramUsernameOccupiedError):
+        return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+    if isinstance(exc, TelegramCurrentPasswordRequiredError):
+        return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    if isinstance(exc, TelegramCurrentPasswordInvalidError):
+        return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    if isinstance(exc, TelegramPasswordEmptyError):
+        return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    if isinstance(exc, TelegramPasswordHintCollisionError):
+        return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    if isinstance(exc, TelegramPasswordTooFreshError):
+        return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    if isinstance(exc, TelegramAccountFloodWaitError):
+        return HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(exc))
+    if isinstance(exc, TelegramAccountUnavailableError):
+        return HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
+    if isinstance(exc, TelegramAuthorizationRequired):
+        return HTTPException(status_code=status.HTTP_428_PRECONDITION_REQUIRED, detail=str(exc))
+    if isinstance(exc, TelegramTeardownPendingError):
+        return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+    if isinstance(exc, TelegramSessionChangedError):
+        return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+    if isinstance(exc, TelegramAccountError):
+        return HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
+    if isinstance(exc, OSError):
+        return HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Не удалось связаться с Telegram. Попробуйте ещё раз.",
+        )
+    return None
 
 
 def _get_long_term_memory(app: FastAPI) -> LongTermMemoryLike | None:

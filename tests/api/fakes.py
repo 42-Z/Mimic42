@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import TypeVar
 from uuid import UUID
 
 from cryptography.fernet import Fernet
@@ -20,8 +23,14 @@ from mimic42.core.agent_runtime import (
     TelegramAuthorizationRequired,
 )
 from mimic42.core.crypto import FernetSecretCipher
-from mimic42.core.manager import AgentNotFoundError
+from mimic42.core.manager import (
+    AgentNotFoundError,
+    TelegramRebindSequenceError,
+    TelegramRebindStep,
+)
 from mimic42.core.telegram_app_settings import TelegramAppSettings
+
+ResultT = TypeVar("ResultT")
 
 
 class FakeTelegramSettingsStore:
@@ -104,6 +113,10 @@ class FakeAgentManager:
         self.triggers: list[tuple[UUID, str, str]] = []
         # Порядок вызовов runtime-методов: reload после stop важен для rebind.
         self.calls: list[tuple[str, UUID]] = []
+        self._agent_locks: dict[UUID, asyncio.Lock] = {}
+
+    def _agent_lock(self, agent_id: UUID) -> asyncio.Lock:
+        return self._agent_locks.setdefault(agent_id, asyncio.Lock())
 
     async def create_agent(
         self,
@@ -152,6 +165,23 @@ class FakeAgentManager:
         if self.reload_error:
             raise RuntimeError("reload boom")
         self.reloaded.append(agent_id)
+
+    async def confirm_telegram_rebind(
+        self,
+        agent_id: UUID,
+        apply: Callable[[], Awaitable[ResultT]],
+    ) -> ResultT:
+        async with self._agent_lock(agent_id):
+            try:
+                await self.stop_agent(agent_id)
+            except Exception as exc:
+                raise TelegramRebindSequenceError(TelegramRebindStep.STOP) from exc
+            result = await apply()
+            try:
+                await self.reload_agent(agent_id)
+            except Exception as exc:
+                raise TelegramRebindSequenceError(TelegramRebindStep.RELOAD) from exc
+            return result
 
     async def get_agent_status(self, agent_id: UUID) -> AgentStatus:
         item = self.created.get(agent_id)

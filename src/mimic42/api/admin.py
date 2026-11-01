@@ -8,11 +8,9 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.exception_handlers import http_exception_handler
-from fastapi.exceptions import RequestValidationError
 from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 from starlette.exceptions import HTTPException as StarletteHTTPException
-from starlette.responses import JSONResponse
 
 from mimic42.api.auth import CurrentUser, require_user
 from mimic42.core.admin import (
@@ -255,12 +253,6 @@ class AdminRoute(APIRoute):
         async def safe_handler(request: Request) -> Response:
             try:
                 response = await handler(request)
-            except RequestValidationError:
-                return JSONResponse(
-                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                    content={"detail": "Проверьте поля запроса"},
-                    headers={"Cache-Control": "no-store"},
-                )
             except StarletteHTTPException as exc:
                 response = await http_exception_handler(request, exc)
             response.headers["Cache-Control"] = "no-store"

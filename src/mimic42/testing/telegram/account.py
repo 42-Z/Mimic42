@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from telethon import types, utils
+from telethon import errors, types, utils
 
 _FAKE_DATE = datetime(2026, 1, 1, tzinfo=UTC)
 
@@ -135,6 +135,7 @@ class FakeTelegramAccount:
         self.authorized = False
         self.expected_code: str | None = None
         self.password: str | None = None
+        self.password_hint: str | None = None
         self.password_satisfied = True
         self.code_requested = False
         self.sent: list[SentMessage] = []
@@ -142,8 +143,35 @@ class FakeTelegramAccount:
         self.read_marks: list[str] = []
         self.dialogs: list[FakeDialog] = []
         self.handlers: list[Callable[[Any], Awaitable[None]]] = []
+        self.occupied_usernames: set[str] = set()
+        self.password_edits: list[tuple[str | None, str, str]] = []
         self._next_message_id = 1000
         self._next_order_value = 0
+
+    @property
+    def has_password(self) -> bool:
+        return self.password is not None
+
+    def set_password(self, password: str, hint: str | None = None) -> None:
+        self.password = password
+        self.password_hint = hint
+        self.password_satisfied = True
+
+    async def apply_password_change(
+        self,
+        current_password: str | None,
+        new_password: str | None,
+        hint: str,
+    ) -> bool:
+        if not new_password:
+            raise AssertionError("Пустой новый пароль не должен доходить до edit_2fa")
+        if self.password is not None and current_password != self.password:
+            raise errors.PasswordHashInvalidError(request=None)
+        self.password = new_password
+        self.password_hint = hint
+        self.password_satisfied = True
+        self.password_edits.append((current_password, new_password, hint))
+        return True
 
     def next_order(self) -> int:
         """Сквозной номер события для хронологии переписки."""

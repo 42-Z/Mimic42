@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from telethon import errors, functions, types
+
 from mimic42.testing.telegram.account import FakeTelegramAccount, SentMessage
+
+_FAKE_USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9_]{5,32}$")
 
 
 def _peer_key(peer: Any) -> str:
@@ -43,10 +48,31 @@ class FakeTelegramClient:
 
     async def __call__(self, request: Any) -> Any:
         self.requests.append(request)
+        if isinstance(request, functions.account.GetPasswordRequest):
+            return types.account.Password(
+                new_algo=types.PasswordKdfAlgoUnknown(),
+                new_secure_algo=types.SecurePasswordKdfAlgoUnknown(),
+                secure_random=b"\0" * 256,
+                has_password=self.account.has_password,
+                hint=self.account.password_hint,
+            )
+        if isinstance(request, functions.account.UpdateUsernameRequest):
+            return self._update_username(request)
         name = type(request).__name__
         if "ReadHistory" in name:
             self.account.read_marks.append(_peer_key(getattr(request, "peer", "")))
         return {}
+
+    def _update_username(self, request: functions.account.UpdateUsernameRequest) -> object:
+        username = request.username
+        if _FAKE_USERNAME_PATTERN.fullmatch(username) is None:
+            raise errors.UsernameInvalidError(request=request)
+        if username == self.account.username:
+            raise errors.UsernameNotModifiedError(request=request)
+        if username in self.account.occupied_usernames:
+            raise errors.UsernameOccupiedError(request=request)
+        self.account.username = username
+        return types.User(id=777, first_name="Fake", username=username)
 
     async def connect(self) -> None:
         self.connect_calls += 1
@@ -65,6 +91,15 @@ class FakeTelegramClient:
         if not self.account.authorized:
             return None
         return type("User", (), {"id": 777, "username": self.account.username})()
+
+    async def edit_2fa(
+        self,
+        current_password: str | None = None,
+        new_password: str | None = None,
+        *,
+        hint: str = "",
+    ) -> bool:
+        return await self.account.apply_password_change(current_password, new_password, hint)
 
     async def send_message(self, entity: str | int, message: str, **kwargs: Any) -> object:
         self.account.sent.append(
