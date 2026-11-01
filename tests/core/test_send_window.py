@@ -101,6 +101,42 @@ def test_left_channel_is_forever_closed() -> None:
     assert window.forever is True
 
 
+def test_left_discussion_group_that_allows_comments_is_open() -> None:
+    window = window_from_chat(channel(left=True, has_link=True, join_to_send=False), NOW)
+    assert window.is_open(NOW)
+
+
+def test_left_discussion_group_that_requires_join_is_closed() -> None:
+    window = window_from_chat(channel(left=True, has_link=True, join_to_send=True), NOW)
+    assert window.reason == "restricted"
+    assert window.forever is True
+
+
+def test_left_supergroup_without_a_linked_channel_stays_closed() -> None:
+    window = window_from_chat(channel(left=True, has_link=False, join_to_send=False), NOW)
+    assert window.reason == "restricted"
+    assert window.forever is True
+
+
+def test_banned_commenter_is_closed_even_when_joining_is_not_required() -> None:
+    window = window_from_chat(
+        channel(
+            left=True,
+            has_link=True,
+            join_to_send=False,
+            banned_rights=banned(send_messages=True),
+        ),
+        NOW,
+    )
+    assert window.reason == "restricted"
+    assert window.forever is True
+
+
+def test_min_channel_does_not_decide_from_unreliable_left() -> None:
+    window = window_from_chat(channel(min=True, left=True), NOW)
+    assert window.needs_entity is True
+
+
 def test_broadcast_without_admin_rights_is_closed() -> None:
     window = window_from_chat(channel(megagroup=None, broadcast=True), NOW)
     assert window.reason == "restricted"
@@ -319,6 +355,13 @@ async def test_min_entity_from_an_event_reuses_a_fresh_cache() -> None:
     for _ in range(3):
         await tracker.check("-100777", chat=channel(min=True))
     assert client.entity_calls == 0
+
+
+async def test_tracker_opens_a_discussion_group_for_a_non_member() -> None:
+    clock = FakeClock()
+    client = FakeClient(entity=channel(left=True, has_link=True, join_to_send=False))
+    tracker = tracker_for(client, clock)
+    assert (await tracker.check("-100777")).is_open(clock.now())
 
 
 async def test_min_entity_refetches_once_the_cache_is_stale() -> None:

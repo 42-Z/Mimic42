@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-from collections.abc import Callable
-from typing import Protocol, cast
+from collections.abc import Awaitable, Callable
+from enum import StrEnum
+from typing import Protocol, TypeVar, cast
 from uuid import UUID
 
 from langchain_core.tools import BaseTool
@@ -17,6 +18,7 @@ from mimic42.core.agent_runtime import (
     AgentTriggerResult,
     LangChainAgentLike,
     MimicAgentRuntime,
+    TelegramAuthorizationRequired,
     TelegramClientLike,
     TelegramTeardownPendingError,
 )
@@ -26,6 +28,15 @@ from mimic42.core.media import MediaUploader
 from mimic42.core.media_download import MediaRefCache
 from mimic42.core.memory import RuntimeMemoryService
 from mimic42.core.send_window import SendWindowTracker
+from mimic42.core.telegram_account import (
+    TelegramAccountClient,
+    TelegramPasswordState,
+    TelegramPasswordUpdate,
+    TelegramSessionInvalidError,
+    apply_password,
+    apply_username,
+    read_password_state,
+)
 from mimic42.core.warmup import WarmupState
 from mimic42.core.warmup_service import (
     PairPolicy,
@@ -47,6 +58,22 @@ class AgentNotFoundError(KeyError):
     def __init__(self, agent_id: UUID) -> None:
         super().__init__(f"Agent {agent_id} does not exist")
         self.agent_id = agent_id
+
+
+class TelegramRebindStep(StrEnum):
+    STOP = "stop"
+    RELOAD = "reload"
+
+
+class TelegramRebindSequenceError(RuntimeError):
+    """Шаг последовательности перепривязки упал: API называет виновный шаг."""
+
+    def __init__(self, step: TelegramRebindStep) -> None:
+        self.step = step
+        super().__init__(step.value)
+
+
+ResultT = TypeVar("ResultT")
 
 
 RuntimeFactory = Callable[[AgentRuntimeConfig], MimicAgentRuntime]
@@ -134,9 +161,10 @@ class AgentManager:
             if warmup_history is not None
             else None
         )
-        # Reload'ы одного агента сериализуются: параллельные вызовы иначе
-        # пересобирают рантайм друг друга (см. reload_agent).
-        self._reload_locks: dict[UUID, asyncio.Lock] = {}
+        self._agent_locks: dict[UUID, asyncio.Lock] = {}
+
+    def _agent_lock(self, agent_id: UUID) -> asyncio.Lock:
+        return self._agent_locks.setdefault(agent_id, asyncio.Lock())
 
     async def create_agent(
         self,
@@ -159,7 +187,7 @@ class AgentManager:
     ) -> MimicAgentRuntime:
         if self._config_loader is None:
             raise AgentNotFoundError(agent_id)
-        reload_lock = self._reload_locks.setdefault(agent_id, asyncio.Lock())
+        reload_lock = self._agent_lock(agent_id)
         async with reload_lock:
             try:
                 config = await _await_result(self._config_loader(agent_id))
@@ -288,33 +316,57 @@ class AgentManager:
         each other's freshly materialised runtime and can leave the agent
         STOPPED while the database still says RUNNING.
         """
-        reload_lock = self._reload_locks.setdefault(agent_id, asyncio.Lock())
-        async with reload_lock:
-            async with self._lock:
-                old_runtime = self._agents.pop(agent_id, None)
-            if old_runtime is None:
-                # Not materialised in this process: the next get_agent/start
-                # already reads the fresh config from the database.
-                return
-            was_active = old_runtime.status.state in (
-                AgentRuntimeState.RUNNING,
-                AgentRuntimeState.STARTING,
-            )
-            await old_runtime.close()
-            runtime = await self.get_agent(agent_id)
-            if was_active:
-                try:
-                    await runtime.start()
-                except TelegramTeardownPendingError:
-                    # Замена не смогла подключиться, пока закрывается прошлое соединение:
-                    # агент остановлен, а не сломан, и в базе должно быть видно именно это.
-                    await self._save_status(agent_id, AgentRuntimeState.STOPPED)
-                    raise
-                except Exception:
-                    # Persist the failure like start_agent does: without this the
-                    # database keeps RUNNING while the rebuilt runtime is ERROR.
-                    await self._save_status(agent_id, AgentRuntimeState.ERROR)
-                    raise
+        async with self._agent_lock(agent_id):
+            await self._reload_agent_locked(agent_id)
+
+    async def _reload_agent_locked(self, agent_id: UUID) -> None:
+        async with self._lock:
+            old_runtime = self._agents.pop(agent_id, None)
+        if old_runtime is None:
+            # Not materialised in this process: the next get_agent/start
+            # already reads the fresh config from the database.
+            return
+        was_active = old_runtime.status.state in (
+            AgentRuntimeState.RUNNING,
+            AgentRuntimeState.STARTING,
+        )
+        await old_runtime.close()
+        runtime = await self.get_agent(agent_id)
+        if was_active:
+            try:
+                await runtime.start()
+            except TelegramTeardownPendingError:
+                # Замена не смогла подключиться, пока закрывается прошлое соединение:
+                # агент остановлен, а не сломан, и в базе должно быть видно именно это.
+                await self._save_status(agent_id, AgentRuntimeState.STOPPED)
+                raise
+            except Exception:
+                # Persist the failure like start_agent does: without this the
+                # database keeps RUNNING while the rebuilt runtime is ERROR.
+                await self._save_status(agent_id, AgentRuntimeState.ERROR)
+                raise
+
+    async def confirm_telegram_rebind(
+        self,
+        agent_id: UUID,
+        apply: Callable[[], Awaitable[ResultT]],
+    ) -> ResultT:
+        """Остановить, применить сессию и пересобрать рантайм под одним замком.
+
+        Операция с аккаунтом не должна попасть в окно между stop и reload:
+        иначе настройки уйдут в рантайм, который сейчас снимут.
+        """
+        async with self._agent_lock(agent_id):
+            try:
+                await self.stop_agent(agent_id)
+            except Exception as exc:
+                raise TelegramRebindSequenceError(TelegramRebindStep.STOP) from exc
+            result = await apply()
+            try:
+                await self._reload_agent_locked(agent_id)
+            except Exception as exc:
+                raise TelegramRebindSequenceError(TelegramRebindStep.RELOAD) from exc
+            return result
 
     async def remove_agent(self, agent_id: UUID) -> None:
         """Unregister the agent runtime and stop it. Missing agents are ignored.
@@ -362,6 +414,42 @@ class AgentManager:
     async def list_chats(self, agent_id: UUID) -> list[ChatItem]:
         """Диалоги аккаунта агента; у остановленного рантайма — ChatListUnavailableError."""
         return await (await self.get_agent(agent_id)).list_chats()
+
+    async def get_telegram_password_state(self, agent_id: UUID) -> TelegramPasswordState:
+        async with self._agent_lock(agent_id):
+            runtime = await self.get_agent(agent_id)
+            return await self._lease_account(runtime, read_password_state)
+
+    async def change_telegram_username(self, agent_id: UUID, username: str) -> str:
+        async with self._agent_lock(agent_id):
+            runtime = await self.get_agent(agent_id)
+            confirmed = await self._lease_account(
+                runtime, lambda client: apply_username(client, username)
+            )
+            await runtime.persist_telegram_username(confirmed)
+            return confirmed
+
+    async def change_telegram_password(
+        self, agent_id: UUID, change: TelegramPasswordUpdate
+    ) -> None:
+        async with self._agent_lock(agent_id):
+            runtime = await self.get_agent(agent_id)
+            await self._lease_account(runtime, lambda client: apply_password(client, change))
+
+    async def _lease_account(
+        self,
+        runtime: MimicAgentRuntime,
+        operation: Callable[[TelegramAccountClient], Awaitable[ResultT]],
+    ) -> ResultT:
+        try:
+            async with runtime.leased_telegram_client() as client:
+                return await operation(cast(TelegramAccountClient, client))
+        except TelegramAuthorizationRequired as exc:
+            await runtime.mark_telegram_session_revoked()
+            raise TelegramSessionInvalidError() from exc
+        except TelegramSessionInvalidError:
+            await runtime.mark_telegram_session_revoked()
+            raise
 
     async def shutdown(self) -> None:
         if self.warmup is not None:

@@ -51,6 +51,7 @@ export const queryKeys = {
   telegram: {
     all: ['telegram'] as const,
     byAgent: (agentId: string) => [...queryKeys.telegram.all, agentId] as const,
+    password: (agentId: string) => [...queryKeys.telegram.all, agentId, 'password'] as const,
   },
 
   // Message threads

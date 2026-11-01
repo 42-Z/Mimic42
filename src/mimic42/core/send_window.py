@@ -13,7 +13,10 @@
   значит личные права у такой сущности недостоверны
   (core.telegram.org/constructor/channel);
 - slowmode_seconds и slowmode_next_send_date живут в ChannelFull и оба
-  опциональны (core.telegram.org/constructor/channelFull).
+  опциональны (core.telegram.org/constructor/channelFull);
+- left значит «вышел или не состоишь», а join_to_send=False разрешает писать
+  в группу обсуждения без вступления, поэтому left у такой группы — не запрет
+  (core.telegram.org/constructor/channel).
 """
 
 from __future__ import annotations
@@ -119,11 +122,8 @@ def window_from_chat(chat: Any, now: datetime) -> SendWindow:
     if not isinstance(chat, types.Channel):
         return OPEN
 
-    if getattr(chat, "left", False):
-        return _FOREVER_CLOSED
-
     if getattr(chat, "min", False):
-        # Админство и личные ограничения у min-сущности применять нельзя —
+        # Админство, личные ограничения и членство у min-сущности применять нельзя —
         # решение без них было бы враньём, поэтому просим полную сущность.
         return SendWindow(needs_entity=True)
 
@@ -137,6 +137,18 @@ def window_from_chat(chat: Any, now: datetime) -> SendWindow:
     default = _from_banned_rights(getattr(chat, "default_banned_rights", None), now)
     if default is not None:
         return default
+
+    if getattr(chat, "left", False):
+        # В группе обсуждения с join_to_send=False пишут и не вступая: комментарий
+        # уходит в неё из-под поста канала. Это не «право отобрали», а нормальное
+        # состояние комментатора (core.telegram.org/constructor/channel).
+        if (
+            getattr(chat, "megagroup", False)
+            and getattr(chat, "has_link", False)
+            and getattr(chat, "join_to_send", None) is False
+        ):
+            return OPEN
+        return _FOREVER_CLOSED
 
     if getattr(chat, "broadcast", False) or getattr(chat, "gigagroup", False):
         # В канал и в гигагруппу пишут только админы, а админом мы здесь уже не являемся.

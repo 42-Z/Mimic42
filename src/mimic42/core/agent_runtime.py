@@ -108,6 +108,15 @@ class TelegramAuthorizationRequired(RuntimeError):
     """Raised when a Telethon user session is connected but not authorized."""
 
 
+class TelegramSessionChangedError(RuntimeError):
+    """Сохранённая сессия сменилась: запись имени в чужую строку недопустима."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "Сохранённая Telegram-сессия изменилась. Перезагрузите агента и повторите."
+        )
+
+
 class ChatListUnavailableError(RuntimeError):
     """Список чатов недоступен: агент не запущен, а клиент Telegram не подключён."""
 
@@ -691,38 +700,68 @@ class MimicAgentRuntime:
             )
             return
         try:
-            from sqlalchemy import update
-            from sqlalchemy.engine import CursorResult
-
-            from mimic42.integrations.database_models import TelegramSessionModel
-
             user = await self._telegram_client.get_me()
             username = read_optional_attr(user, "username")
-            async with self._session_factory() as db_session:
-                result = await db_session.execute(
-                    update(TelegramSessionModel)
-                    .where(
-                        TelegramSessionModel.agent_id == self.config.agent_id,
-                        TelegramSessionModel.session_ciphertext
-                        == self.config.telegram_session_token,
-                    )
-                    .values(username=username)
+            if not await self._write_telegram_username(username):
+                logger.warning(
+                    "Telegram session changed or is missing for agent %s; "
+                    "stale runtime did not store the username",
+                    self.config.agent_id,
                 )
-                # execute() статически возвращает Result, а rowcount есть только
-                # у буферизованного CursorResult, который и приходит для UPDATE.
-                if cast(CursorResult[Any], result).rowcount == 0:
-                    logger.warning(
-                        "Telegram session changed or is missing for agent %s; "
-                        "stale runtime did not store the username",
-                        self.config.agent_id,
-                    )
-                await db_session.commit()
         except Exception:
             logger.warning(
                 "Failed to store Telegram username for agent %s",
                 self.config.agent_id,
                 exc_info=True,
             )
+
+    async def _write_telegram_username(self, username: str | None) -> bool:
+        """Короткий условный UPDATE по текущему токену сессии; False — строки нет."""
+        if self._session_factory is None:
+            return False
+        from sqlalchemy import update
+
+        from mimic42.integrations.database_models import TelegramSessionModel
+
+        async with self._session_factory() as db_session:
+            result = await db_session.execute(
+                update(TelegramSessionModel)
+                .where(
+                    TelegramSessionModel.agent_id == self.config.agent_id,
+                    TelegramSessionModel.session_ciphertext == self.config.telegram_session_token,
+                )
+                .values(username=username)
+                .returning(TelegramSessionModel.agent_id)
+            )
+            stored = result.scalar_one_or_none()
+            await db_session.commit()
+        return stored is not None
+
+    async def persist_telegram_username(self, username: str) -> None:
+        """Записать имя, подтверждённое Telegram, без проглатывания сбоя.
+
+        Строка другой сессии не обновляется: токен рантайма должен совпасть с
+        сохранённым ciphertext. Ошибка записи идёт вызывающему, чтобы успех
+        Telegram не выдавался за успех дашборда.
+        """
+        if self._session_factory is None:
+            self.telegram_username = username
+            return
+        if self.config.telegram_session_token is None:
+            raise TelegramSessionChangedError()
+        if not await self._write_telegram_username(username):
+            raise TelegramSessionChangedError()
+        self.telegram_username = username
+
+    async def mark_telegram_session_revoked(self) -> None:
+        """Пометить сессию мёртвой после отказа операции с аккаунтом.
+
+        Замок жизненного цикла не даёт запуску пройти между отказом Telegram и
+        записью статуса. Клиент здесь не отключается: это отменило бы ход,
+        который мог идти параллельно; перепривязка и остановка закроют его сами.
+        """
+        async with self._lifecycle_lock:
+            await self._revoke_dead_session()
 
     async def _revoke_dead_session(self) -> None:
         """Пометить мёртвую сессию и запретить дальнейшую работу рантайма.
@@ -896,6 +935,61 @@ class MimicAgentRuntime:
                 ),
                 "запись события остановки",
             )
+
+    @asynccontextmanager
+    async def leased_telegram_client(self) -> AsyncIterator[TelegramClientLike]:
+        """Отдать клиент на одну операцию, не меняя жизненный цикл агента.
+
+        Работающий клиент остаётся подключённым: операция идёт на нём и не
+        трогает модель, планировщик и обработчики. Остановленный клиент
+        подключается кратко и отключается в ``finally``; незавершённое
+        отключение запоминается, чтобы следующий запуск не открыл второе
+        соединение той же сессии.
+        """
+        async with self._lifecycle_lock:
+            await _await_telegram_teardown(self.config.agent_id)
+            if self._session_revoked:
+                raise TelegramAuthorizationRequired(REVOKED_SESSION_MESSAGE)
+            if self._state is AgentRuntimeState.RUNNING:
+                yield self._telegram_client
+                return
+
+            logger.info(
+                "Агент %s: краткое подключение для операции с аккаунтом", self.config.agent_id
+            )
+            try:
+                await self._telegram_client.connect()
+            except BaseException:
+                try:
+                    await self._telegram_client.disconnect()
+                except Exception:
+                    logger.exception(
+                        "Failed to disconnect Telegram client after lease connect failure"
+                    )
+                raise
+
+            failure: BaseException | None = None
+            try:
+                if not await self._telegram_client.is_user_authorized():
+                    raise TelegramAuthorizationRequired(UNAUTHORIZED_SESSION_MESSAGE)
+                yield self._telegram_client
+            except BaseException as exc:
+                failure = exc
+                raise
+            finally:
+                try:
+                    unfinished = await self._within_stop_step(
+                        self._telegram_client.disconnect(), "отключение от Telegram"
+                    )
+                except Exception:
+                    if failure is None:
+                        raise
+                    logger.exception(
+                        "Failed to disconnect Telegram client after account operation failure"
+                    )
+                else:
+                    if unfinished is not None:
+                        _hold_telegram_teardown(self.config.agent_id, unfinished)
 
     async def _within_stop_step(
         self, step: Awaitable[Any], name: str
@@ -1508,8 +1602,13 @@ class MimicAgentRuntime:
 
     async def _handle_channel_post(self, event: TelegramEventLike) -> None:
         """Новый пост в канале — мгновенный комментарий без ИИ и задержек."""
+        # Краткое подключение остановленного агента для настроек поднимает этот
+        # обработчик с прежней регистрации: пост не должен уйти комментарием от
+        # рантайма, который не запущен.
+        if self._state is not AgentRuntimeState.RUNNING or self._session_revoked:
+            return
         settings = self.config.first_comment
-        if not settings.is_active or self._session_revoked:
+        if not settings.is_active:
             return
         if not _is_broadcast_post(event):
             return

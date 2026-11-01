@@ -130,3 +130,20 @@ export function useStartWarmupRecovery(agentId: string) {
     },
   });
 }
+
+/**
+ * Наличие облачного пароля. Запрос идёт только когда форма пароля открыта:
+ * просмотр вкладки остановленного агента не должен поднимать Telegram-клиент.
+ */
+export function useTelegramPasswordState(agentId: string, enabled: boolean) {
+  const isValidId = agentIdSchema.safeParse(agentId).success;
+
+  return useQuery({
+    queryKey: queryKeys.telegram.password(agentId),
+    queryFn: () => agentsApi.getTelegramPasswordState(agentId),
+    enabled: isValidId && enabled,
+    staleTime: 0,
+    retry: false,
+    refetchOnWindowFocus: false,
+  });
+}

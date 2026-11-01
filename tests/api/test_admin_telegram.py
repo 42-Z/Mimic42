@@ -154,7 +154,10 @@ async def test_invalid_requests_do_not_echo_hashes_or_log_request_bodies(
 
     assert repository.telegram_write_count == 0
     assert api_hash not in caplog.text
-    assert invalid_id.json() == {"detail": "Проверьте поля запроса"}
+    body = invalid_id.json()
+    assert set(body) == {"detail"}
+    assert body["detail"]
+    assert all(set(item) == {"loc", "msg"} for item in body["detail"])
 
 
 @pytest.mark.asyncio

@@ -20,11 +20,12 @@ import { AgentStatusBadge } from '@/components/agents/AgentStatusBadge';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { Input, Textarea } from '@/components/ui/input';
 import { Card, Skeleton, Spinner, Divider } from '@/components/ui/card';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { ConfirmDialog, Modal } from '@/components/ui/modal';
 import { sanitizeText } from '@/lib/sanitize';
 import { needsRebind } from '@/lib/telegram';
 import { AgentToggleButton } from '@/components/agents/AgentToggleButton';
-import { TelegramSessionDetails } from '@/components/agent/TelegramSessionDetails';
+import { TelegramAccountSettings } from '@/components/agent/TelegramAccountSettings';
 import { WarmupRestrictionNotice } from '@/components/agent/WarmupSettings';
 import { formatTelegramUsername } from '@/components/agents/AgentIdentity';
 import { triggerMessageSchema, type TriggerMessageValues } from '@/lib/validators';
@@ -480,28 +481,27 @@ function TabTelegram({ agentId }: { agentId: string }) {
   );
 
   return (
-    <div className="max-w-xl space-y-4">
+    <div className="max-w-2xl space-y-6">
       <WarmupRestrictionNotice agentId={agentId} />
 
-      <TelegramSessionDetails session={session} />
+      <TelegramAccountSettings session={session} agentId={agentId} />
 
       {needsRebind(session.authorization_status) && (
-        <div className="p-4 rounded-sm bg-amber-950/20 border border-amber-900/50 flex items-center justify-between gap-4">
-          <div>
-            <p className="font-mono text-sm text-amber-400 font-medium">Требуется перепривязка Telegram</p>
-            <p className="font-mono text-xs text-amber-500 mt-0.5">
-              Сессия истекла или была отозвана
-            </p>
-          </div>
-          <Link
-            href={`/agent/${agentId}/rebind`}
-            aria-label="Перепривязать Telegram"
-            className={buttonVariants({ variant: 'outline', size: 'sm' })}
-          >
-            <RefreshCw className="h-3.5 w-3.5" />
-            Перепривязать
-          </Link>
-        </div>
+        <Alert variant="warning" className="gap-y-1 px-4 py-3">
+          <AlertTriangle aria-hidden="true" />
+          <AlertTitle>Требуется перепривязка Telegram</AlertTitle>
+          <AlertDescription className="flex flex-wrap items-center justify-between gap-3">
+            Сессия истекла или была отозвана
+            <Link
+              href={`/agent/${agentId}/rebind`}
+              aria-label="Перепривязать Telegram"
+              className={buttonVariants({ variant: 'outline', size: 'sm' })}
+            >
+              <RefreshCw data-icon="inline-start" />
+              Перепривязать
+            </Link>
+          </AlertDescription>
+        </Alert>
       )}
     </div>
   );

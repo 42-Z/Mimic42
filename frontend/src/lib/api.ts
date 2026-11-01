@@ -84,7 +84,9 @@ apiClient.interceptors.response.use(
         message = (typeof detail === 'string' && detail) || 'Требуется 2FA пароль.';
         break;
       case 429:
-        message = 'Слишком много запросов. Подождите немного.';
+        message =
+          (typeof detail === 'string' && detail) ||
+          'Слишком много запросов. Подождите немного.';
         break;
       case 500:
         message = 'Внутренняя ошибка сервера.';
@@ -133,6 +135,11 @@ import type {
   MemoryHistoryItem,
   UploadedMedia,
   WarmupState,
+  TelegramPasswordInput,
+  TelegramPasswordResponse,
+  TelegramPasswordState,
+  TelegramUsernameInput,
+  TelegramUsernameResponse,
 } from '@/types';
 
 export const agentsApi = {
@@ -166,6 +173,30 @@ export const agentsApi = {
   confirmRebind: (id: string, body: { onboarding_id: string }) =>
     apiClient
       .post<AgentStatus>(`/agents/${id}/telegram/rebind/confirm`, body)
+      .then((r) => r.data),
+
+  /** GET /api/v1/agents/:id/telegram/password — есть ли облачный пароль */
+  getTelegramPasswordState: (id: string) =>
+    apiClient
+      .get<TelegramPasswordState>(`/agents/${id}/telegram/password`)
+      .then((r) => r.data),
+
+  /** PUT /api/v1/agents/:id/telegram/username — установить или сменить @username */
+  changeTelegramUsername: (id: string, body: TelegramUsernameInput) =>
+    apiClient
+      .put<TelegramUsernameResponse>(`/agents/${id}/telegram/username`, body)
+      .then((r) => r.data),
+
+  /**
+   * PUT /api/v1/agents/:id/telegram/password — установить или сменить облачный пароль.
+   * edit_2fa проверяет простые числа и может отвечать долго, поэтому таймаут
+   * увеличен только у этой операции.
+   */
+  changeTelegramPassword: (id: string, body: TelegramPasswordInput) =>
+    apiClient
+      .put<TelegramPasswordResponse>(`/agents/${id}/telegram/password`, body, {
+        timeout: 120_000,
+      })
       .then((r) => r.data),
 
   /** DELETE /api/v1/agents/:id */

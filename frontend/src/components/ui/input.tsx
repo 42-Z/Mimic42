@@ -40,6 +40,7 @@ const Input = React.forwardRef<HTMLInputElement, InputProps>(
               'flex h-9 w-full rounded-sm border border-border bg-background px-3 py-1 text-base sm:text-sm text-foreground',
               'font-mono placeholder:text-muted-foreground',
               'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
+              'aria-invalid:border-crimson-600 aria-invalid:focus-visible:ring-crimson-500',
               'disabled:cursor-not-allowed disabled:opacity-40',
               error && 'border-crimson-600 focus-visible:ring-crimson-500',
               leftElement && 'pl-9',
