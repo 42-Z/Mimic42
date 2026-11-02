@@ -7,13 +7,15 @@ const apiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:800
 
 // Extract hostname from supabase URL for CSP
 const supabaseHostname = supabaseUrl ? new URL(supabaseUrl).hostname : '*.supabase.co';
+const supabaseOrigin = supabaseUrl ? new URL(supabaseUrl).origin : 'https://*.supabase.co';
 
 const ContentSecurityPolicy = `
   default-src 'self';
   script-src 'self' ${isDev ? "'unsafe-eval' 'unsafe-inline'" : "'unsafe-inline'"};
   style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
   font-src 'self' https://fonts.gstatic.com data:;
-  img-src 'self' data: blob: https://*.supabase.co;
+  img-src 'self' data: blob: ${supabaseOrigin};
+  media-src 'self' ${supabaseOrigin};
   connect-src 'self' ${supabaseUrl} https://${supabaseHostname} wss://${supabaseHostname} ${apiBaseUrl} ${isDev ? 'ws://localhost:* http://localhost:*' : ''};
   frame-ancestors 'none';
   base-uri 'self';

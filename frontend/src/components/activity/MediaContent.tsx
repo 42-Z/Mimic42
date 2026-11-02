@@ -2,22 +2,32 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { File, ImageOff, ChevronLeft, ChevronRight } from 'lucide-react';
+import { useMediaLink } from '@/hooks/useMediaLink';
 import { useMediaUrl } from '@/hooks/useMediaUrl';
 import { Badge } from '@/components/ui/badge';
 import { Modal } from '@/components/ui/modal';
 import { cn } from '@/lib/utils';
 import type { MediaItem } from '@/types';
 
+type MediaShape = 'image' | 'video' | 'audio' | 'file';
+
 function mediaMime(item: MediaItem): string {
   return item.mime_type.split(';')[0]?.trim().toLowerCase() ?? '';
 }
 
-function isImageMedia(item: MediaItem): boolean {
-  return item.kind === 'photo' || (item.kind === 'sticker' && mediaMime(item) === 'image/webp');
-}
-
-function isVideoSticker(item: MediaItem): boolean {
-  return item.kind === 'sticker' && mediaMime(item) === 'video/webm';
+function mediaShape(item: MediaItem): MediaShape {
+  const mime = mediaMime(item);
+  if (item.kind === 'photo') return 'image';
+  if (item.kind === 'sticker') {
+    if (mime === 'image/webp') return 'image';
+    if (mime === 'video/webm') return 'video';
+    return 'file';
+  }
+  if (item.kind === 'round') return 'video';
+  if (item.kind === 'voice') return 'audio';
+  if (mime.startsWith('video/')) return 'video';
+  if (mime.startsWith('audio/')) return 'audio';
+  return 'file';
 }
 
 function MediaFallback({
@@ -47,10 +57,13 @@ function MediaView({
   compact?: boolean;
 }) {
   // TGS и испорченные записи браузер не покажет: вместо бессмысленной загрузки
-  // ради битой иконки — чип с именем. Хук всё равно вызывается безусловно,
-  // поэтому путь для них глушится через null.
-  const unsupportedSticker = item.kind === 'sticker' && !isImageMedia(item) && !isVideoSticker(item);
-  const { url, status } = useMediaUrl(agentId, unsupportedSticker ? null : item.storage_path);
+  // ради битой иконки — чип с именем.
+  const shape = mediaShape(item);
+  const stream = shape === 'video' || shape === 'audio';
+  const unsupportedSticker = item.kind === 'sticker' && shape === 'file';
+  const blob = useMediaUrl(agentId, stream || unsupportedSticker ? null : item.storage_path);
+  const link = useMediaLink(agentId, stream ? item.storage_path : null);
+  const { url, status } = stream ? link : blob;
   const [failedUrl, setFailedUrl] = useState<string | null>(null);
 
   if (!item.storage_path) {
@@ -73,7 +86,7 @@ function MediaView({
     return <span className="font-mono text-[10px] text-muted-foreground">Загрузка медиа…</span>;
   }
 
-  if (isImageMedia(item)) {
+  if (shape === 'image') {
     return (
       // eslint-disable-next-line @next/next/no-img-element
       <img
@@ -90,25 +103,35 @@ function MediaView({
       />
     );
   }
-  if (isVideoSticker(item)) {
+  if (shape === 'video') {
+    const sticker = item.kind === 'sticker';
     return (
       <video
         src={url}
-        aria-label={`Стикер ${item.name}`}
+        aria-label={sticker ? `Стикер ${item.name}` : item.name}
         controls
-        loop
-        muted
+        loop={sticker}
+        muted={sticker}
         playsInline
         onError={() => setFailedUrl(url)}
-        className="max-h-40 max-w-56 rounded-sm border border-border object-contain"
+        className={cn(
+          'rounded-sm border border-border',
+          sticker && 'max-h-40 max-w-56 object-contain',
+          item.kind === 'round' && 'max-w-40',
+          !sticker && item.kind !== 'round' && 'max-h-40 max-w-56',
+        )}
       />
     );
   }
-  if (item.kind === 'voice') {
-    return <audio controls src={url} className="h-9 max-w-full" />;
-  }
-  if (item.kind === 'round') {
-    return <video controls src={url} className="max-w-40 rounded-sm border border-border" />;
+  if (shape === 'audio') {
+    return (
+      <audio
+        src={url}
+        controls
+        onError={() => setFailedUrl(url)}
+        className="h-9 max-w-full"
+      />
+    );
   }
   return (
     <a
@@ -148,7 +171,7 @@ export function MediaContent({ agentId, items }: { agentId: string; items: Media
   // меняются, и поиск по идентичности ломает навигацию лайтбокса.
   const [previewIndex, setPreviewIndex] = useState<number | null>(null);
 
-  const images = items?.filter(isImageMedia) ?? [];
+  const images = items?.filter((item) => mediaShape(item) === 'image') ?? [];
   const preview = previewIndex !== null ? (images[previewIndex] ?? null) : null;
 
   // Стрелки листают галерею; порядок — как в ряду превью.
@@ -174,7 +197,7 @@ export function MediaContent({ agentId, items }: { agentId: string; items: Media
 
   if (!items?.length) return null;
 
-  const others = items.filter((item) => !isImageMedia(item));
+  const others = items.filter((item) => mediaShape(item) !== 'image');
   const gallery = images.length > 1;
 
   return (

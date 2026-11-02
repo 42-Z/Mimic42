@@ -1,4 +1,5 @@
 import axios, { type AxiosError, type InternalAxiosRequestConfig } from 'axios';
+import { encodeMediaPath } from '@/lib/mediaPath';
 import { getSupabaseClient } from '@/lib/supabase/client';
 import type { ApiError, ConversationTurn } from '@/types';
 
@@ -133,6 +134,7 @@ import type {
   TriggerMessageResponse,
   AgentMemory,
   MemoryHistoryItem,
+  MediaLink,
   UploadedMedia,
   WarmupState,
   TelegramPasswordInput,
@@ -251,6 +253,12 @@ export const agentsApi = {
       })
       .then((r) => r.data);
   },
+
+  /** GET /api/v1/agents/:id/media-link/:path — подписанная ссылка на объект Storage */
+  signMediaLink: (id: string, storagePath: string) =>
+    apiClient
+      .get<MediaLink>(`/agents/${id}/media-link/${encodeMediaPath(storagePath)}`)
+      .then((r) => r.data),
 };
 
 export const onboardingApi = {

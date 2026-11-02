@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from 'bun:test';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import {
   act,
   cleanup,
@@ -8,9 +9,37 @@ import {
   waitFor,
   within,
 } from '@testing-library/react';
+import type { ReactElement } from 'react';
 import { MediaContent } from '@/components/activity/MediaContent';
 import { apiClient } from '@/lib/api';
 import type { MediaItem } from '@/types';
+
+let queryClient: QueryClient;
+
+beforeEach(() => {
+  queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+});
+
+function renderMedia(ui: ReactElement) {
+  return render(ui, {
+    wrapper: ({ children }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    ),
+  });
+}
+
+function mockMediaApi() {
+  return spyOn(apiClient, 'get').mockImplementation(
+    async (url: string) =>
+      ({
+        data: url.includes('/media-link/')
+          ? { url: `https://storage.test/${url.split('/media-link/')[1]}` }
+          : new Blob(['test-media']),
+      }) as never,
+  );
+}
 
 function item(kind: MediaItem['kind'], name: string): MediaItem {
   return {
@@ -24,7 +53,7 @@ function item(kind: MediaItem['kind'], name: string): MediaItem {
 
 describe('MediaContent', () => {
   test('несколько картинок идут в ряд в отдельной галерее', () => {
-    render(
+    renderMedia(
       <MediaContent
         agentId="a1"
         items={[item('photo', '1.jpeg'), item('photo', '2.jpeg'), item('photo', '3.jpeg')]}
@@ -35,13 +64,13 @@ describe('MediaContent', () => {
   });
 
   test('одна картинка рендерится как раньше, без галереи', () => {
-    render(<MediaContent agentId="a1" items={[item('photo', 'solo.jpeg')]} />);
+    renderMedia(<MediaContent agentId="a1" items={[item('photo', 'solo.jpeg')]} />);
     expect(screen.queryByTestId('media-gallery')).toBeNull();
     expect(screen.getAllByRole('button')).toHaveLength(1);
   });
 
   test('не-картинки не попадают в галерею', () => {
-    render(
+    renderMedia(
       <MediaContent
         agentId="a1"
         items={[item('photo', '1.jpeg'), item('photo', '2.jpeg'), item('doc', 'report.pdf')]}
@@ -53,7 +82,7 @@ describe('MediaContent', () => {
   });
 
   test('стрелки клавиатуры листают галерею в ту же сторону, что и кнопки', () => {
-    render(
+    renderMedia(
       <MediaContent
         agentId="a1"
         items={[item('photo', '1.jpeg'), item('photo', '2.jpeg'), item('photo', '3.jpeg')]}
@@ -101,7 +130,7 @@ describe('MediaContent: стикеры', () => {
       writable: true,
       value: mock((_url: string) => {}),
     });
-    spyOn(apiClient, 'get').mockResolvedValue({ data: new Blob(['test-media']) });
+    mockMediaApi();
   });
 
   afterEach(() => {
@@ -121,7 +150,7 @@ describe('MediaContent: стикеры', () => {
 
   test('WebP остаётся изображением и открывается в лайтбоксе', async () => {
     const sticker = storedSticker('image/webp', 'static.webp');
-    render(<MediaContent agentId="a1" items={[sticker]} />);
+    renderMedia(<MediaContent agentId="a1" items={[sticker]} />);
     expect(await screen.findByRole('img', { name: sticker.name })).toBeTruthy();
     expect(apiClient.get).toHaveBeenCalledWith(
       '/agents/a1/media/a1/archive/static.webp',
@@ -134,7 +163,7 @@ describe('MediaContent: стикеры', () => {
 
   test('WebM отображается видео с контролами, не картинкой', async () => {
     const sticker = storedSticker('video/webm', 'video.webm');
-    render(<MediaContent agentId="a1" items={[sticker]} />);
+    renderMedia(<MediaContent agentId="a1" items={[sticker]} />);
     const video = await screen.findByLabelText(`Стикер ${sticker.name}`);
     expect(video.tagName).toBe('VIDEO');
     expect(video.hasAttribute('controls')).toBe(true);
@@ -142,6 +171,9 @@ describe('MediaContent: стикеры', () => {
     expect(video.hasAttribute('playsinline')).toBe(true);
     expect((video as HTMLVideoElement).muted).toBe(true);
     expect(video.hasAttribute('autoplay')).toBe(false);
+    expect(video.getAttribute('src')).toBe('https://storage.test/a1/archive/video.webm');
+    expect(apiClient.get).toHaveBeenCalledWith('/agents/a1/media-link/a1/archive/video.webm');
+    expect(URL.createObjectURL).not.toHaveBeenCalled();
     expect(screen.queryByRole('img')).toBeNull();
     expect(screen.queryByTestId('media-gallery')).toBeNull();
     expect(screen.queryByRole('dialog')).toBeNull();
@@ -149,7 +181,7 @@ describe('MediaContent: стикеры', () => {
 
   test('TGS сразу показывает плашку без скачивания', () => {
     const sticker = storedSticker('application/x-tgsticker', 'animation.tgs');
-    render(<MediaContent agentId="a1" items={[sticker]} />);
+    renderMedia(<MediaContent agentId="a1" items={[sticker]} />);
     expect(screen.getByText('animation.tgs (анимированный стикер)')).toBeTruthy();
     expect(screen.queryByRole('img')).toBeNull();
     expect(screen.queryByRole('button')).toBeNull();
@@ -159,14 +191,14 @@ describe('MediaContent: стикеры', () => {
 
   test('неизвестный MIME стикера не создаёт сломанный img', () => {
     const sticker = storedSticker('application/octet-stream', 'legacy.sticker');
-    render(<MediaContent agentId="a1" items={[sticker]} />);
+    renderMedia(<MediaContent agentId="a1" items={[sticker]} />);
     expect(screen.getByText('legacy.sticker (предпросмотр недоступен)')).toBeTruthy();
     expect(screen.queryByRole('img')).toBeNull();
     expect(apiClient.get).not.toHaveBeenCalled();
   });
 
   test('пустой MIME стикера безопасно заменяется плашкой', () => {
-    render(<MediaContent agentId="a1" items={[storedSticker('', 'legacy.sticker')]} />);
+    renderMedia(<MediaContent agentId="a1" items={[storedSticker('', 'legacy.sticker')]} />);
     expect(screen.getByText('legacy.sticker (предпросмотр недоступен)')).toBeTruthy();
     expect(screen.queryByRole('img')).toBeNull();
     expect(apiClient.get).not.toHaveBeenCalled();
@@ -178,7 +210,7 @@ describe('MediaContent: стикеры', () => {
       storage_path: 'a1/archive/photo.jpeg',
     };
     const webp = storedSticker('image/webp', 'static.webp');
-    render(
+    renderMedia(
       <MediaContent
         agentId="a1"
         items={[
@@ -206,7 +238,7 @@ describe('MediaContent: стикеры', () => {
 
   test('ошибка декодирования старого WebP заменяет img плашкой', async () => {
     const sticker = storedSticker('image/webp', 'legacy.webp');
-    render(<MediaContent agentId="a1" items={[sticker]} />);
+    renderMedia(<MediaContent agentId="a1" items={[sticker]} />);
     fireEvent.error(await screen.findByRole('img', { name: sticker.name }));
     expect(screen.queryByRole('img')).toBeNull();
     expect(screen.getByText('legacy.webp (недоступно)')).toBeTruthy();
@@ -214,7 +246,7 @@ describe('MediaContent: стикеры', () => {
 
   test('ошибка декодирования WebM заменяет video плашкой', async () => {
     const sticker = storedSticker('video/webm', 'broken.webm');
-    render(<MediaContent agentId="a1" items={[sticker]} />);
+    renderMedia(<MediaContent agentId="a1" items={[sticker]} />);
     fireEvent.error(await screen.findByLabelText(`Стикер ${sticker.name}`));
     expect(screen.queryByLabelText(`Стикер ${sticker.name}`)).toBeNull();
     expect(screen.getByText('broken.webm (недоступно)')).toBeTruthy();
@@ -223,7 +255,7 @@ describe('MediaContent: стикеры', () => {
   test('ошибка лайтбокса не переносится на следующее изображение', async () => {
     const first = storedSticker('image/webp', 'first.webp');
     const second = storedSticker('image/webp', 'second.webp');
-    render(<MediaContent agentId="a1" items={[first, second]} />);
+    renderMedia(<MediaContent agentId="a1" items={[first, second]} />);
     await screen.findByRole('img', { name: first.name });
     fireEvent.click(screen.getByRole('button', { name: first.name }));
     const dialog = screen.getByRole('dialog');
@@ -244,7 +276,7 @@ describe('MediaContent: стикеры', () => {
 
   test('после смены storage_path превью восстанавливается', async () => {
     const sticker = storedSticker('image/webp', 'static.webp');
-    const { rerender } = render(<MediaContent agentId="a1" items={[sticker]} />);
+    const { rerender } = renderMedia(<MediaContent agentId="a1" items={[sticker]} />);
     fireEvent.error(await screen.findByRole('img', { name: sticker.name }));
     rerender(
       <MediaContent
@@ -259,23 +291,99 @@ describe('MediaContent: стикеры', () => {
   test('HTTP-ошибка оставляет понятную плашку', async () => {
     spyOn(apiClient, 'get').mockRejectedValue(new Error('missing archive'));
     const sticker = storedSticker('image/webp', 'missing.webp');
-    render(<MediaContent agentId="a1" items={[sticker]} />);
+    renderMedia(<MediaContent agentId="a1" items={[sticker]} />);
     expect(await screen.findByText('missing.webp (недоступно)')).toBeTruthy();
     expect(screen.queryByRole('img')).toBeNull();
   });
 
   test('MIME с параметрами классифицируется как WebP', async () => {
     const sticker = storedSticker(' IMAGE/WEBP ; charset=binary', 'static.webp');
-    render(<MediaContent agentId="a1" items={[sticker]} />);
+    renderMedia(<MediaContent agentId="a1" items={[sticker]} />);
     expect(await screen.findByRole('img', { name: sticker.name })).toBeTruthy();
   });
 
-  test('object URL освобождается при размонтировании', async () => {
-    const sticker = storedSticker('video/webm', 'video.webm');
-    const { unmount } = render(<MediaContent agentId="a1" items={[sticker]} />);
-    const video = await screen.findByLabelText(`Стикер ${sticker.name}`);
-    const url = video.getAttribute('src');
+  test('object URL картинки освобождается при размонтировании', async () => {
+    const sticker = storedSticker('image/webp', 'static.webp');
+    const { unmount } = renderMedia(<MediaContent agentId="a1" items={[sticker]} />);
+    const image = await screen.findByRole('img', { name: sticker.name });
+    const url = image.getAttribute('src');
     unmount();
     expect(URL.revokeObjectURL).toHaveBeenCalledWith(url);
+  });
+
+  test('кружок из Telegram играет как видео', async () => {
+    const round: MediaItem = {
+      kind: 'round',
+      name: 'round.mp4',
+      mime_type: 'video/mp4',
+      size: 2048,
+      storage_path: 'a1/archive/round.mp4',
+    };
+    renderMedia(<MediaContent agentId="a1" items={[round]} />);
+    const video = await screen.findByLabelText(round.name);
+    expect(video.tagName).toBe('VIDEO');
+    expect(video.hasAttribute('loop')).toBe(false);
+    expect(video.getAttribute('src')).toBe('https://storage.test/a1/archive/round.mp4');
+    expect(apiClient.get).toHaveBeenCalledWith('/agents/a1/media-link/a1/archive/round.mp4');
+    expect(URL.createObjectURL).not.toHaveBeenCalled();
+  });
+
+  test('голосовое играет как аудио', async () => {
+    const voice: MediaItem = {
+      kind: 'voice',
+      name: 'voice.ogg',
+      mime_type: 'audio/ogg',
+      size: 2048,
+      storage_path: 'a1/archive/voice.ogg',
+    };
+    const { container } = renderMedia(<MediaContent agentId="a1" items={[voice]} />);
+    await waitFor(() => {
+      expect(container.querySelector('audio')?.getAttribute('src')).toBe(
+        'https://storage.test/a1/archive/voice.ogg',
+      );
+    });
+    expect(container.querySelector('audio')?.hasAttribute('controls')).toBe(true);
+    expect(apiClient.get).toHaveBeenCalledWith('/agents/a1/media-link/a1/archive/voice.ogg');
+  });
+
+  test('обычное видео из Telegram (doc + video/mp4) играет как видео', async () => {
+    const clip: MediaItem = {
+      kind: 'doc',
+      name: 'clip.mp4',
+      mime_type: 'video/mp4',
+      size: 2048,
+      storage_path: 'a1/archive/clip.mp4',
+    };
+    renderMedia(<MediaContent agentId="a1" items={[clip]} />);
+    const video = await screen.findByLabelText(clip.name);
+    expect(video.tagName).toBe('VIDEO');
+    expect(video.getAttribute('src')).toBe('https://storage.test/a1/archive/clip.mp4');
+    expect(apiClient.get).toHaveBeenCalledWith('/agents/a1/media-link/a1/archive/clip.mp4');
+    expect(screen.queryByRole('link', { name: /clip\.mp4/ })).toBeNull();
+  });
+
+  test('документ с PDF остаётся ссылкой на скачивание', async () => {
+    const doc: MediaItem = {
+      kind: 'doc',
+      name: 'report.pdf',
+      mime_type: 'application/pdf',
+      size: 2048,
+      storage_path: 'a1/archive/report.pdf',
+    };
+    renderMedia(<MediaContent agentId="a1" items={[doc]} />);
+    const link = await screen.findByRole('link', { name: /report\.pdf/ });
+    expect(link.getAttribute('href')).toBe('blob:media-1');
+    expect(apiClient.get).toHaveBeenCalledWith('/agents/a1/media/a1/archive/report.pdf', {
+      responseType: 'blob',
+    });
+    expect(apiClient.get).toHaveBeenCalledTimes(1);
+  });
+
+  test('ошибка подписи ссылки показывает плашку «недоступно»', async () => {
+    spyOn(apiClient, 'get').mockRejectedValue(new Error('sign failed'));
+    const sticker = storedSticker('video/webm', 'broken.webm');
+    renderMedia(<MediaContent agentId="a1" items={[sticker]} />);
+    expect(await screen.findByText('broken.webm (недоступно)')).toBeTruthy();
+    expect(screen.queryByLabelText(`Стикер ${sticker.name}`)).toBeNull();
   });
 });
