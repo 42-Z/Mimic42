@@ -60,7 +60,13 @@ from mimic42.core.manager import (
     TelegramRebindSequenceError,
     TelegramRebindStep,
 )
-from mimic42.core.media import MAX_PHOTO_BYTES, MediaUploader, detect_photo_type
+from mimic42.core.media import (
+    MAX_PHOTO_BYTES,
+    MEDIA_LINK_TTL,
+    MediaLinkSigner,
+    MediaUploader,
+    detect_photo_type,
+)
 from mimic42.core.memory import LongTermMemoryLike, RuntimeMemoryService
 from mimic42.core.onboarding import (
     AgentOnboardingService,
@@ -278,6 +284,10 @@ class UploadedMedia(BaseModel):
     name: str
     mime_type: str
     size: int
+
+
+class MediaLinkResponse(BaseModel):
+    url: str
 
 
 def _image_filename(filename: str | None, extension: str) -> str:
@@ -614,6 +624,9 @@ def create_app(
     app.state.admin_repository = admin_repository
     app.state.telegram_app_settings = app_telegram_app_settings
     app.state.media_uploader = app_media_storage
+    app.state.media_link_signer = (
+        app_media_storage if isinstance(app_media_storage, MediaLinkSigner) else None
+    )
     app.state.long_term_memory = None
     app.state.auth_verifier = auth_verifier or (
         SupabaseJWTVerifier(supabase_url=app_settings.supabase_url)
@@ -1022,21 +1035,17 @@ def create_app(
         current_user: CurrentUserDep,
         request: Request,
     ) -> Response:
+        """Байты объекта одним ответом.
+
+        Объект буферизуется целиком и не годится для воспроизведения: плеер
+        ходит по подписанной ссылке из ``media-link``.
+        """
         store = _get_agent_store(app)
         media_storage: MediaUploader | None = getattr(app.state, "media_uploader", None)
         if store is None or media_storage is None:
             raise HTTPException(status_code=404, detail="Медиа недоступно")
         await _ensure_agent_owner(store, agent_id=agent_id, user_id=current_user.user_id)
-        # Объект обязан лежать внутри папки агента — иначе доступ к чужому
-        # файлу. `..`-сегменты отклоняются: URL-нормализация внутри storage-клиента
-        # иначе увела бы запрос в чужую папку ({agent_id}/../{other}/file).
-        path_segments = [segment for segment in media_path.split("/") if segment]
-        if (
-            not media_path.startswith(f"{agent_id}/")
-            or ".." in path_segments
-            or media_path.startswith("/")
-        ):
-            raise HTTPException(status_code=403, detail="Нет доступа к этому файлу")
+        _ensure_media_path(agent_id, media_path)
         data = await media_storage.open(media_path)
         if data is None:
             raise HTTPException(status_code=404, detail="Файл не найден")
@@ -1074,6 +1083,28 @@ def create_app(
                 },
             )
         return Response(content=data, media_type=media_type, headers=cache_headers)
+
+    @app.get(
+        "/api/v1/agents/{agent_id}/media-link/{media_path:path}",
+        response_model=MediaLinkResponse,
+    )
+    async def get_agent_media_link(
+        agent_id: UUID,
+        media_path: str,
+        current_user: CurrentUserDep,
+        response: Response,
+    ) -> MediaLinkResponse:
+        store = _get_agent_store(app)
+        signer: MediaLinkSigner | None = getattr(app.state, "media_link_signer", None)
+        if store is None or signer is None:
+            raise HTTPException(status_code=404, detail="Медиа недоступно")
+        await _ensure_agent_owner(store, agent_id=agent_id, user_id=current_user.user_id)
+        _ensure_media_path(agent_id, media_path)
+        url = await signer.sign_link(media_path, ttl=MEDIA_LINK_TTL)
+        if url is None:
+            raise HTTPException(status_code=404, detail="Файл не найден")
+        response.headers["Cache-Control"] = "no-store"
+        return MediaLinkResponse(url=url)
 
     @app.post(
         "/api/v1/agents",
@@ -1689,6 +1720,21 @@ def _ensure_owner(owner_id: UUID, user_id: UUID) -> None:
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Агент не принадлежит этому пользователю",
         )
+
+
+def _ensure_media_path(agent_id: UUID, media_path: str) -> None:
+    """Объект обязан лежать внутри папки агента — иначе доступ к чужому файлу.
+
+    `..`-сегменты отклоняются: URL-нормализация внутри storage-клиента иначе
+    увела бы запрос в чужую папку (``{agent_id}/../{other}/file``).
+    """
+    path_segments = [segment for segment in media_path.split("/") if segment]
+    if (
+        not media_path.startswith(f"{agent_id}/")
+        or ".." in path_segments
+        or media_path.startswith("/")
+    ):
+        raise HTTPException(status_code=403, detail="Нет доступа к этому файлу")
 
 
 async def _ensure_agent_owner(store: AgentStore, *, agent_id: UUID, user_id: UUID) -> None:

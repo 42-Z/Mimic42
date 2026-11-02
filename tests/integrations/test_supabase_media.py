@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import builtins
 import warnings
+from datetime import timedelta
 from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
@@ -24,6 +25,7 @@ class FakeBucket:
     def __init__(self, store: dict[str, bytes]) -> None:
         self._store = store
         self.removed: list[str] = []
+        self.signed: list[tuple[str, int]] = []
 
     def upload(self, *, file: bytes, path: str, file_options: dict[str, str] | None = None) -> None:
         self._store[path] = bytes(file)
@@ -32,6 +34,12 @@ class FakeBucket:
         if path not in self._store:
             raise KeyError(path)
         return self._store[path]
+
+    def create_signed_url(self, path: str, expires_in: int) -> dict[str, str]:
+        if path not in self._store:
+            raise KeyError(path)
+        self.signed.append((path, expires_in))
+        return {"signedURL": f"https://storage.test/{path}"}
 
     def list(
         self, prefix: str | None = None, options: dict[str, int] | None = None
@@ -61,8 +69,12 @@ class FakeBucket:
             self._store.pop(path)
 
 
-def build_storage(monkeypatch: pytest.MonkeyPatch, store: dict[str, bytes]) -> SupabaseMediaStorage:
-    bucket = FakeBucket(store)
+def build_storage(
+    monkeypatch: pytest.MonkeyPatch,
+    store: dict[str, bytes],
+    bucket: FakeBucket | None = None,
+) -> SupabaseMediaStorage:
+    bucket = bucket or FakeBucket(store)
     fake = SimpleNamespace(storage=SimpleNamespace(from_=lambda _name: bucket))
     monkeypatch.setattr("supabase.create_client", lambda *a, **k: fake)
     return SupabaseMediaStorage(
@@ -148,6 +160,40 @@ async def test_open_and_remove_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
     assert await storage.open(f"{agent_id}/missing.txt") is None
     await storage.remove_prefix(agent_id)
     assert store == {}
+
+
+async def test_sign_link_returns_storage_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    store: dict[str, bytes] = {f"{uuid4()}/1/clip.mp4": b"video"}
+    bucket = FakeBucket(store)
+    storage = build_storage(monkeypatch, store, bucket)
+    (path,) = store
+
+    ttl = timedelta(hours=12)
+    url = await storage.sign_link(path, ttl=ttl)
+
+    assert url == f"https://storage.test/{path}"
+    assert bucket.signed == [(path, int(ttl.total_seconds()))]
+
+
+async def test_sign_link_returns_none_for_missing_object(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = build_storage(monkeypatch, {})
+    assert await storage.sign_link("missing/clip.mp4", ttl=timedelta(hours=12)) is None
+
+
+async def test_sign_link_returns_none_when_storage_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FailingBucket(FakeBucket):
+        def create_signed_url(self, path: str, expires_in: int) -> dict[str, str]:
+            raise RuntimeError("storage unavailable")
+
+    store: dict[str, bytes] = {f"{uuid4()}/1/clip.mp4": b"video"}
+    bucket = FailingBucket(store)
+    storage = build_storage(monkeypatch, store, bucket)
+
+    assert await storage.sign_link(next(iter(store)), ttl=timedelta(hours=12)) is None
 
 
 async def test_remove_prefix_deletes_nested_files_only(monkeypatch: pytest.MonkeyPatch) -> None:
