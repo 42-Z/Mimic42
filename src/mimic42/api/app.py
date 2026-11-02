@@ -1037,8 +1037,8 @@ def create_app(
     ) -> Response:
         """Байты объекта одним ответом.
 
-        Объект буферизуется целиком и не годится для воспроизведения: плеер
-        ходит по подписанной ссылке из ``media-link``.
+        Объект буферизуется целиком, а Range режется уже в памяти: для
+        воспроизведения плеер ходит по подписанной ссылке из ``media-link``.
         """
         store = _get_agent_store(app)
         media_storage: MediaUploader | None = getattr(app.state, "media_uploader", None)

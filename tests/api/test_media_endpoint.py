@@ -48,8 +48,6 @@ class FakeMediaStorage:
 
 
 class FakeStorageWithoutLinks:
-    """Хранилище умеет отдавать байты, но не подписывать ссылки."""
-
     def __init__(self, files: dict[str, bytes]) -> None:
         self.files = files
 

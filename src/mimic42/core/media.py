@@ -11,7 +11,7 @@ from mimic42.core.media_download import MediaRef
 MAX_MEDIA_BYTES = 20 * 1024 * 1024
 # Предел Telegram для фото: больше уйдёт только документом, а не картинкой.
 MAX_PHOTO_BYTES = 10 * 1024 * 1024
-# Ссылка живёт дольше любой сессии дашборда; она привязана к одному объекту.
+# Подпись живёт 12 часов и привязана к одному объекту; отозвать её нельзя.
 MEDIA_LINK_TTL = timedelta(hours=12)
 
 # Форматы, которые Telethon шлёт фотографией (`telethon.utils.is_image`
