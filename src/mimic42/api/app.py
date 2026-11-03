@@ -458,6 +458,7 @@ def create_app(
         telegram_client_factory=telegram_client_factory,
         langchain_agent_factory=langchain_agent_factory,
         media_uploader=app_media_storage,
+        proxy_direct_fallback=app_settings.telegram_proxy_direct_fallback,
     )
     app_onboarding_service = onboarding_service or AgentOnboardingService(
         telegram_factory=app_telegram_factory,
@@ -525,6 +526,7 @@ def create_app(
                         warmup_history=DatabaseWarmupHistory(session_factory),
                         warmup_state_store=DatabaseWarmupStateStore(session_factory),
                         warmup_pair_policy=pair_policy_for(app_settings.warmup_partners),
+                        proxy_direct_fallback=app_settings.telegram_proxy_direct_fallback,
                     )
 
             if build_admin_repository:
