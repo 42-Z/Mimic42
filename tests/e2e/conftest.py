@@ -7,27 +7,20 @@
 
 from __future__ import annotations
 
-import asyncio
-import concurrent.futures
 import json
 import os
 import subprocess
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Callable, Coroutine, Iterator
+from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
-from typing import Any, cast
 
 import httpx
 import pytest
 from playwright.sync_api import Browser, BrowserContext, Page, expect
 
-from mimic42.testing.cleanup import (
-    restore_platform_telegram_settings,
-    seed_platform_telegram_settings,
-)
 from mimic42.testing.env import load_test_env
 from mimic42.testing.slots import assert_test_project
 
@@ -60,16 +53,6 @@ NAVIGATION_TIMEOUT_MS = 60_000
 # Как у Playwright APIRequestContext: первый старт агента может тянуть
 # холодные импорты LangChain, поэтому дефолтных 5 секунд httpx мало.
 HTTP_TIMEOUT_SECONDS = 30.0
-
-
-def _run_async[T](coro: Coroutine[Any, Any, T]) -> T:
-    """Выполнить корутину вне event loop, в котором живёт sync-фикстура.
-
-    pytest-playwright поднимает sync-фикстуры внутри собственного цикла:
-    `asyncio.run` там падает с «cannot be called from a running event loop».
-    """
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        return cast("T", pool.submit(asyncio.run, coro).result(timeout=60))
 
 
 def _new_context(browser: Browser, *, storage_state: str | None = None) -> BrowserContext:
@@ -150,54 +133,36 @@ def servers() -> Iterator[None]:
     app_port = int(os.environ.get("E2E_APP_PORT", "3000"))
     env["CORS_ALLOW_ORIGINS"] = f"http://127.0.0.1:{app_port},http://localhost:{app_port}"
     assert_test_project(env["SUPABASE_URL"], env["DATABASE_CONNECTION_STRING"])
-    previous_telegram_settings = _run_async(
-        seed_platform_telegram_settings(
-            env["DATABASE_CONNECTION_STRING"],
-            secret_key=env["SECRET_KEY"],
-            api_id=int(env["TELEGRAM_API_ID"]),
-            api_hash=env["TELEGRAM_API_HASH"],
-        )
+    api_proc = spawn(
+        ["uv", "run", "uvicorn", "mimic42.testing.server:app", "--port", str(API_PORT)],
+        cwd=ROOT,
+        env=env,
     )
     try:
-        api_proc = spawn(
-            ["uv", "run", "uvicorn", "mimic42.testing.server:app", "--port", str(API_PORT)],
-            cwd=ROOT,
-            env=env,
-        )
-        try:
-            _wait_for(f"{API_URL}/health", timeout=60)
+        _wait_for(f"{API_URL}/health", timeout=60)
 
-            front_env = {
-                **env,
-                "NEXT_PUBLIC_SUPABASE_URL": env["SUPABASE_URL"],
-                "NEXT_PUBLIC_SUPABASE_ANON_KEY": _anon_key(env),
-                "NEXT_PUBLIC_API_BASE_URL": API_URL,
-                "PORT": str(int(os.environ.get("E2E_APP_PORT", "3000"))),
-            }
-            if os.environ.get("CI"):
-                build = subprocess.run(
-                    ["bun", "run", "build"], cwd=ROOT / "frontend", env=front_env
-                )
-                if build.returncode != 0:
-                    raise RuntimeError("bun run build упал")
-                app_command = ["bun", "run", "start"]
-            else:
-                app_command = ["bun", "run", "dev"]
-            web_proc = spawn(app_command, cwd=ROOT / "frontend", env=front_env)
-            try:
-                _wait_for(APP_URL, timeout=180)
-                yield
-            finally:
-                terminate(web_proc)
+        front_env = {
+            **env,
+            "NEXT_PUBLIC_SUPABASE_URL": env["SUPABASE_URL"],
+            "NEXT_PUBLIC_SUPABASE_ANON_KEY": _anon_key(env),
+            "NEXT_PUBLIC_API_BASE_URL": API_URL,
+            "PORT": str(int(os.environ.get("E2E_APP_PORT", "3000"))),
+        }
+        if os.environ.get("CI"):
+            build = subprocess.run(["bun", "run", "build"], cwd=ROOT / "frontend", env=front_env)
+            if build.returncode != 0:
+                raise RuntimeError("bun run build упал")
+            app_command = ["bun", "run", "start"]
+        else:
+            app_command = ["bun", "run", "dev"]
+        web_proc = spawn(app_command, cwd=ROOT / "frontend", env=front_env)
+        try:
+            _wait_for(APP_URL, timeout=180)
+            yield
         finally:
-            terminate(api_proc)
+            terminate(web_proc)
     finally:
-        _run_async(
-            restore_platform_telegram_settings(
-                env["DATABASE_CONNECTION_STRING"],
-                previous_telegram_settings,
-            )
-        )
+        terminate(api_proc)
 
 
 @pytest.fixture(scope="session")
