@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import logging
 from collections.abc import Awaitable, Callable
 from enum import StrEnum
 from typing import Protocol, TypeVar, cast
@@ -11,6 +12,7 @@ from langchain_core.tools import BaseTool
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mimic42.core.agent_runtime import (
+    PROXY_CONNECT_ERRORS,
     AgentRuntimeConfig,
     AgentRuntimeState,
     AgentStatus,
@@ -52,6 +54,8 @@ from mimic42.integrations.telegram_tools import (
     build_telegram_langchain_tools,
 )
 from mimic42.integrations.telethon_client import build_telegram_client
+
+logger = logging.getLogger("mimic42.agent_manager")
 
 
 class AgentNotFoundError(KeyError):
@@ -131,6 +135,7 @@ class AgentManager:
         warmup_history: WarmupHistory | None = None,
         warmup_state_store: WarmupStateStore | None = None,
         warmup_pair_policy: PairPolicy = allow_everyone,
+        proxy_direct_fallback: bool = False,
     ) -> None:
         self._runtime_factory = runtime_factory or _build_runtime
         self._memory_service_factory = memory_service_factory
@@ -138,6 +143,7 @@ class AgentManager:
         self._status_sink = status_sink
         self.session_factory = session_factory
         self.media_uploader = media_uploader
+        self._proxy_direct_fallback = proxy_direct_fallback
         self._telegram_client_factory: TelegramClientFactory = telegram_client_factory or (
             lambda config: cast(TelegramClientLike, build_telegram_client(config))
         )
@@ -175,7 +181,7 @@ class AgentManager:
         async with self._lock:
             runtime = self._register_locked(config)
         if start:
-            await self._start_created_runtime(runtime)
+            runtime = await self._start_created_runtime(runtime)
         return runtime
 
     async def create_saved_agent(
@@ -202,20 +208,54 @@ class AgentManager:
                     raise AgentNotFoundError(agent_id)
                 runtime = self._register_locked(config)
             if start:
-                await self._start_created_runtime(runtime)
+                runtime = await self._start_created_runtime(runtime)
             return runtime
 
-    async def _start_created_runtime(self, runtime: MimicAgentRuntime) -> None:
+    async def _start_created_runtime(self, runtime: MimicAgentRuntime) -> MimicAgentRuntime:
         try:
-            await runtime.start()
+            return await self._start_runtime(runtime)
         except Exception:
             await self._save_status(runtime.config.agent_id, AgentRuntimeState.ERROR)
             raise
+
+    async def _start_runtime(self, runtime: MimicAgentRuntime) -> MimicAgentRuntime:
+        """Запустить рантайм; при сбое прокси повторить без него, если это разрешено.
+
+        Настройка ``proxy_direct_fallback`` принадлежит агенту: по умолчанию сбой
+        прокси остаётся фатальным, чтобы IP машины не уходил в Telegram без согласия.
+        """
+        try:
+            await runtime.start()
+        except PROXY_CONNECT_ERRORS as exc:
+            config = runtime.config
+            if config.telegram_proxy is None or not config.proxy_direct_fallback:
+                raise
+            logger.warning(
+                "Proxy %s:%s failed for agent %s (%s); retrying with a direct connection",
+                config.telegram_proxy.host,
+                config.telegram_proxy.port,
+                config.agent_id,
+                exc,
+            )
+            return await self._start_without_proxy(runtime)
+        return runtime
+
+    async def _start_without_proxy(self, runtime: MimicAgentRuntime) -> MimicAgentRuntime:
+        config = runtime.config.model_copy(update={"telegram_proxy": None})
+        async with self._lock:
+            replacement = self._build_runtime_for(config)
+            if self.warmup is not None:
+                replacement.set_warmup_gate(self.warmup)
+            self._agents[config.agent_id] = replacement
+        await replacement.start()
+        return replacement
 
     def _register_locked(self, config: AgentRuntimeConfig) -> MimicAgentRuntime:
         """Собрать и положить рантайм в реестр. Вызывать только под ``_lock``."""
         if config.agent_id in self._agents:
             raise ValueError("Агент с этим ID уже существует")
+        # Политика отката общая для приложения, а не настройка агента из базы.
+        config = config.model_copy(update={"proxy_direct_fallback": self._proxy_direct_fallback})
         runtime = self._build_runtime_for(config)
         if self.warmup is not None:
             runtime.set_warmup_gate(self.warmup)
@@ -286,7 +326,7 @@ class AgentManager:
 
     async def start_agent(self, agent_id: UUID) -> None:
         try:
-            await (await self.get_agent(agent_id)).start()
+            await self._start_runtime(await self.get_agent(agent_id))
         except TelegramTeardownPendingError:
             # Запуск лишь отложен, пока закрывается прошлое соединение: агент не в ошибке,
             # и статус в базе остаётся прежним.
@@ -334,7 +374,7 @@ class AgentManager:
         runtime = await self.get_agent(agent_id)
         if was_active:
             try:
-                await runtime.start()
+                await self._start_runtime(runtime)
             except TelegramTeardownPendingError:
                 # Замена не смогла подключиться, пока закрывается прошлое соединение:
                 # агент остановлен, а не сломан, и в базе должно быть видно именно это.

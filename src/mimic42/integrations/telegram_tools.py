@@ -194,6 +194,8 @@ class SendRefusedRecently(RuntimeError):
 # повторяет её по кругу, а лишние неудачные запросы аккаунту не на пользу.
 _HARD_REFUSALS: tuple[type[Exception], ...] = (errors.UserBannedInChannelError,)
 _REFUSAL_TTL_SECONDS = 300.0
+# Telegram разрешает не больше десяти сообщений в одном альбоме.
+_ALBUM_MAX_ITEMS = 10
 # Бот-верификатор встречает новичка за секунду-две. После вступления инструмент
 # сам осматривает группу: иначе модель, получив «вступил», сразу пишет туда, где ей
 # ещё нельзя, и узнаёт про капчу только из отказа.
@@ -280,6 +282,7 @@ class _SendSlot:
 
     spent = True
     entity: Any = None
+    comment_to: int | None = None
 
 
 # Что значит ошибка Telegram и что делать дальше. Сырой текст вроде «You're banned from
@@ -869,6 +872,36 @@ class TelegramToolbox:
             (f for f in filters if isinstance(f, types.DialogFilter) and f.id == folder_id), None
         )
 
+    async def _comment_target(self, entity: Any, message_id: int | None) -> int | None:
+        """Первый пост альбома: только к нему Telegram привязывает обсуждение."""
+        if message_id is None:
+            return None
+        try:
+            message = await self._client.get_messages(entity, ids=message_id)
+            if isinstance(message, list):
+                message = message[0] if message else None
+            if message is None:
+                return message_id
+            grouped_id = getattr(message, "grouped_id", None)
+            if not isinstance(grouped_id, int):
+                return message_id
+            window = list(range(max(1, message_id - (_ALBUM_MAX_ITEMS - 1)), message_id + 1))
+            album = await self._client.get_messages(entity, ids=window)
+            album_ids = []
+            for item in album or []:
+                item_id = getattr(item, "id", None)
+                item_grouped = getattr(item, "grouped_id", None)
+                if (
+                    isinstance(item_id, int)
+                    and isinstance(item_grouped, int)
+                    and item_grouped == grouped_id
+                ):
+                    album_ids.append(item_id)
+            return min(album_ids) if album_ids else message_id
+        except (errors.RPCError, OSError):
+            logger.debug("Не удалось определить первый пост альбома", exc_info=True)
+            return message_id
+
     @asynccontextmanager
     async def _sending(
         self, peer: str, *, comment_to_msg_id: int | None = None
@@ -892,6 +925,7 @@ class TelegramToolbox:
         self._raise_if_recently_refused(refusal_key)
         slot = _SendSlot()
         slot.entity = entity
+        slot.comment_to = await self._comment_target(entity, comment_to_msg_id)
         try:
             # Комментарий уходит в связанную группу, а не в peer: окно канала к нему
             # не относится, а права и кд группы мы здесь не знаем.
@@ -1002,7 +1036,7 @@ class TelegramToolbox:
                     entity,
                     message,
                     reply_to=reply_to_msg_id,
-                    comment_to=comment_to_msg_id,
+                    comment_to=slot.comment_to,
                     parse_mode=CustomMarkdown(),
                 )
                 self._last_send_text_message[peer] = now
@@ -1380,7 +1414,7 @@ class TelegramToolbox:
                         file_source,
                         caption=caption,
                         reply_to=reply_to_msg_id,
-                        comment_to=comment_to_msg_id,
+                        comment_to=slot.comment_to,
                     )
                     return {"success": True, "message_id": msg.id}
 
@@ -1409,7 +1443,7 @@ class TelegramToolbox:
                     file_input,
                     caption=caption,
                     reply_to=reply_to_msg_id,
-                    comment_to=comment_to_msg_id,
+                    comment_to=slot.comment_to,
                 )
                 return {"success": True, "message_id": msg.id}
         except MediaUnavailableError as e:
@@ -1659,7 +1693,7 @@ class TelegramToolbox:
                         file_source,
                         voice_note=True,
                         reply_to=reply_to_msg_id,
-                        comment_to=comment_to_msg_id,
+                        comment_to=slot.comment_to,
                     )
                     return {"success": True, "message_id": msg.id}
 
@@ -1680,7 +1714,7 @@ class TelegramToolbox:
                     file_input,
                     voice_note=True,
                     reply_to=reply_to_msg_id,
-                    comment_to=comment_to_msg_id,
+                    comment_to=slot.comment_to,
                 )
                 return {"success": True, "message_id": msg.id}
         except MediaUnavailableError as e:
@@ -1706,7 +1740,7 @@ class TelegramToolbox:
                         file_source,
                         video_note=True,
                         reply_to=reply_to_msg_id,
-                        comment_to=comment_to_msg_id,
+                        comment_to=slot.comment_to,
                     )
                     return {"success": True, "message_id": msg.id}
 
@@ -1727,7 +1761,7 @@ class TelegramToolbox:
                     file_input,
                     video_note=True,
                     reply_to=reply_to_msg_id,
-                    comment_to=comment_to_msg_id,
+                    comment_to=slot.comment_to,
                 )
                 return {"success": True, "message_id": msg.id}
         except MediaUnavailableError as e:
@@ -1938,7 +1972,7 @@ class TelegramToolbox:
                     obj_id,
                     sticker_input,
                     reply_to=reply_to_msg_id,
-                    comment_to=comment_to_msg_id,
+                    comment_to=slot.comment_to,
                 )
                 return {"success": True, "message_id": msg.id}
         except MediaUnavailableError as e:

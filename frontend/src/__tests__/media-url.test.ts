@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { encodeMediaPath } from '@/hooks/useMediaUrl';
+import { encodeMediaPath } from '@/lib/mediaPath';
 
 describe('encodeMediaPath', () => {
   test('обычный путь не меняется', () => {

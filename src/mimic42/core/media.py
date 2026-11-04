@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Any, Protocol
+from datetime import timedelta
+from typing import Any, Protocol, runtime_checkable
 from uuid import UUID
 
 from mimic42.core.media_download import MediaRef
@@ -10,6 +11,8 @@ from mimic42.core.media_download import MediaRef
 MAX_MEDIA_BYTES = 20 * 1024 * 1024
 # Предел Telegram для фото: больше уйдёт только документом, а не картинкой.
 MAX_PHOTO_BYTES = 10 * 1024 * 1024
+# Подпись живёт 12 часов и привязана к одному объекту; отозвать её нельзя.
+MEDIA_LINK_TTL = timedelta(hours=12)
 
 # Форматы, которые Telethon шлёт фотографией (`telethon.utils.is_image`
 # смотрит на расширение): Pillow-формат → (mime, расширение).
@@ -99,3 +102,14 @@ class MediaUploader(Protocol):
     async def open(self, path: str) -> bytes | None: ...
 
     async def remove_prefix(self, agent_id: UUID) -> None: ...
+
+
+@runtime_checkable
+class MediaLinkSigner(Protocol):
+    """Подписать ссылку на объект Storage.
+
+    ``None`` — объекта нет или Storage не ответил; вызывающая граница
+    превращает это в 404.
+    """
+
+    async def sign_link(self, path: str, *, ttl: timedelta) -> str | None: ...

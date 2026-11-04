@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
@@ -103,6 +104,16 @@ class SupabaseMediaStorage:
             logger.warning("Failed to download media %s", path, exc_info=True)
             return None
         return bytes(blob) if isinstance(blob, (bytes, bytearray)) else None
+
+    async def sign_link(self, path: str, *, ttl: timedelta) -> str | None:
+        try:
+            signed = await asyncio.to_thread(
+                lambda: self._bucket().create_signed_url(path, int(ttl.total_seconds()))
+            )
+        except Exception:
+            logger.warning("Failed to sign media link %s", path, exc_info=True)
+            return None
+        return signed["signedURL"]
 
     async def _list_folder(self, prefix: str) -> list[dict[str, Any]]:
         entries: list[dict[str, Any]] = []

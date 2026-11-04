@@ -5,6 +5,7 @@ import base64
 import json
 from datetime import UTC, datetime, timedelta
 from io import BytesIO
+from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
@@ -2900,6 +2901,48 @@ async def test_send_text_message_as_comment() -> None:
     assert send_calls[0][1]["kwargs"]["reply_to"] is None
 
 
+class FakeAlbumClient(FakeTelethonClient):
+    def __init__(self, grouped_id: int | None = 9001) -> None:
+        super().__init__()
+        self._album = {
+            message_id: SimpleNamespace(id=message_id, grouped_id=grouped_id)
+            for message_id in (108, 109, 110)
+        }
+
+    async def get_messages(self, entity: Any, **kwargs: Any) -> Any:
+        self.calls.append(("get_messages", {"entity": entity, "kwargs": kwargs}))
+        ids = kwargs.get("ids")
+        if isinstance(ids, list):
+            return [self._album.get(message_id) for message_id in ids]
+        if isinstance(ids, int):
+            return self._album.get(ids)
+        return None
+
+
+@pytest.mark.asyncio
+async def test_send_text_message_comment_targets_first_album_post() -> None:
+    client = FakeAlbumClient()
+    toolbox = TelegramToolbox(client)
+
+    result = await toolbox.send_text_message("channel", "Nice", comment_to_msg_id=109)
+
+    assert result["success"] is True
+    send_calls = [c for c in client.calls if c[0] == "send_message"]
+    assert send_calls[0][1]["kwargs"]["comment_to"] == 108
+
+
+@pytest.mark.asyncio
+async def test_send_text_message_comment_keeps_a_single_post_id() -> None:
+    client = FakeAlbumClient(grouped_id=None)
+    toolbox = TelegramToolbox(client)
+
+    result = await toolbox.send_text_message("channel", "Nice", comment_to_msg_id=109)
+
+    assert result["success"] is True
+    send_calls = [c for c in client.calls if c[0] == "send_message"]
+    assert send_calls[0][1]["kwargs"]["comment_to"] == 109
+
+
 @pytest.mark.asyncio
 async def test_send_text_message_without_comment() -> None:
     client = FakeTelethonClient()
@@ -2960,6 +3003,18 @@ async def test_send_media_as_comment() -> None:
     send_file_calls = [c for c in client.calls if c[0] == "send_file"]
     assert len(send_file_calls) == 5
     assert all(call[1]["kwargs"]["comment_to"] == 42 for call in send_file_calls)
+
+
+@pytest.mark.asyncio
+async def test_send_file_comment_targets_first_album_post() -> None:
+    client = FakeAlbumClient()
+    toolbox = TelegramToolbox(client)
+
+    result = await toolbox.send_file("channel", "photo:123:456:0102:2", comment_to_msg_id=109)
+
+    assert result["success"] is True
+    send_file_calls = [c for c in client.calls if c[0] == "send_file"]
+    assert send_file_calls[0][1]["kwargs"]["comment_to"] == 108
 
 
 @pytest.mark.asyncio

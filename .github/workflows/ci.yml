@@ -76,8 +76,6 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SECRET_KEY: ${{ secrets.SECRET_KEY }}
           TEST_USER_PASSWORD: ${{ secrets.TEST_USER_PASSWORD }}
-          TELEGRAM_API_ID: '1'
-          TELEGRAM_API_HASH: test-api-hash
 
   frontend:
     name: frontend
@@ -170,8 +168,6 @@ jobs:
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
           SECRET_KEY: ${{ secrets.SECRET_KEY }}
           TEST_USER_PASSWORD: ${{ secrets.TEST_USER_PASSWORD }}
-          TELEGRAM_API_ID: '1'
-          TELEGRAM_API_HASH: test-api-hash
 
       - name: Upload Playwright artifacts
         if: failure()

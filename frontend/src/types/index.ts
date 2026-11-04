@@ -64,6 +64,10 @@ export interface MediaItem {
   storage_path: string | null;
 }
 
+export interface MediaLink {
+  url: string;
+}
+
 export interface ConversationTurn {
   id: string;
   agent_id: string;

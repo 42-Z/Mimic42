@@ -41,6 +41,13 @@ export const queryKeys = {
     byAgent: (agentId: string) => [...queryKeys.conversation.all, agentId] as const,
   },
 
+  // Signed Storage links for streamable media
+  media: {
+    all: ['media'] as const,
+    link: (agentId: string, storagePath: string) =>
+      [...queryKeys.media.all, agentId, storagePath] as const,
+  },
+
   // Onboarding session
   onboarding: {
     all: ['onboarding'] as const,

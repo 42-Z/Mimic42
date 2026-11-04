@@ -13,6 +13,7 @@ from typing import Any, Literal, Protocol, cast
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field, SecretStr
+from python_socks import ProxyConnectionError, ProxyError, ProxyTimeoutError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from telethon import errors
 
@@ -174,6 +175,10 @@ class TelegramProxyConfig(BaseModel):
     password: SecretStr | None = Field(default=None, repr=False)
 
 
+# Ошибки подключения через SOCKS/HTTP-прокси: авторизация, соединение, таймаут.
+PROXY_CONNECT_ERRORS = (ProxyError, ProxyConnectionError, ProxyTimeoutError)
+
+
 class AgentRuntimeConfig(BaseModel):
     agent_id: UUID
     owner_id: UUID
@@ -181,6 +186,9 @@ class AgentRuntimeConfig(BaseModel):
     telegram_api_hash: str = Field(min_length=1)
     telegram_session_string: str | None = Field(default=None, min_length=1)
     telegram_proxy: TelegramProxyConfig | None = Field(default=None, exclude=True)
+    # Глобальная политика приложения: при сбое прокси разрешить прямое
+    # подключение вместо падения старта. Выставляет менеджер, не агент.
+    proxy_direct_fallback: bool = False
     # Opaque identity of the persisted session ciphertext. It is deliberately
     # separate from the decrypted Telethon string and must never be serialized.
     telegram_session_token: str | None = Field(default=None, exclude=True, repr=False)
@@ -852,6 +860,16 @@ class MimicAgentRuntime:
                 self._state = AgentRuntimeState.ERROR
                 dead_session = _is_dead_session_error(e)
                 reason = "unauthorized" if dead_session else "exception"
+                proxy_fallback = (
+                    isinstance(e, PROXY_CONNECT_ERRORS) and self.config.proxy_direct_fallback
+                )
+                if proxy_fallback:
+                    # Менеджер повторит подключение без прокси. Технический текст
+                    # остаётся в серверном логе, а не в ленте пользователя.
+                    logger.warning(
+                        "Agent %s will retry without its proxy after a proxy connection failure",
+                        self.config.agent_id,
+                    )
                 if dead_session:
                     self._session_revoked = True
                     await self._mark_telegram_session_revoked(error=REVOKED_SESSION_MESSAGE)
@@ -861,14 +879,15 @@ class MimicAgentRuntime:
                     await self._telegram_client.disconnect()
                 except Exception:
                     logger.exception("Failed to disconnect Telegram client after start failure")
-                await self._record_event(
-                    event_type="agent.start_failed",
-                    status="failed",
-                    payload={"reason": reason, "error_code": type(e).__name__},
-                    error=REVOKED_SESSION_MESSAGE if dead_session else str(e),
-                    started_at=datetime.now(UTC),
-                    completed_at=datetime.now(UTC),
-                )
+                if not proxy_fallback:
+                    await self._record_event(
+                        event_type="agent.start_failed",
+                        status="failed",
+                        payload={"reason": reason, "error_code": type(e).__name__},
+                        error=REVOKED_SESSION_MESSAGE if dead_session else str(e),
+                        started_at=datetime.now(UTC),
+                        completed_at=datetime.now(UTC),
+                    )
                 if dead_session and not isinstance(e, TelegramAuthorizationRequired):
                     # Унифицируем для вызывающего слоя: API отдаёт 428 с понятным
                     # русским текстом вместо 500. Исходное исключение остаётся

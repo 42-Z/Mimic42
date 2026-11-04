@@ -34,6 +34,11 @@ class Settings(BaseSettings):
     warmup_partners: Literal["all", "own"] = Field(
         default="all", validation_alias="WARMUP_PARTNERS"
     )
+    # Общая политика приложения: если прокси отклонил соединение, агент
+    # подключается напрямую. Пользователь прокси не настраивает.
+    telegram_proxy_direct_fallback: bool = Field(
+        default=False, validation_alias="TELEGRAM_PROXY_DIRECT_FALLBACK"
+    )
     cors_allow_origins: Annotated[list[str], NoDecode] = Field(
         default=["http://localhost:3000", "http://127.0.0.1:3000"],
         validation_alias="CORS_ALLOW_ORIGINS",
@@ -54,6 +59,13 @@ class Settings(BaseSettings):
     def _empty_braintrust_project_is_unset(cls, value: object) -> object:
         if value == "":
             return "Mimic42"
+        return value
+
+    @field_validator("telegram_proxy_direct_fallback", mode="before")
+    @classmethod
+    def _empty_proxy_direct_fallback_is_false(cls, value: object) -> object:
+        if value == "":
+            return False
         return value
 
     @field_validator("cors_allow_origins", mode="before")

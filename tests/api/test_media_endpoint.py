@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import timedelta
 from uuid import UUID, uuid4
 
 import pytest
@@ -9,7 +10,7 @@ from mimic42.api.app import create_app
 from mimic42.config import Settings
 from mimic42.core.agent_runtime import AgentRuntimeState
 from mimic42.core.agent_store import AgentRecord, InMemoryAgentStore
-from mimic42.core.media import MediaFile
+from mimic42.core.media import MEDIA_LINK_TTL, MediaFile
 from tests.api.auth_helpers import AUTH_HEADERS, FakeAuthVerifier
 
 
@@ -18,6 +19,35 @@ def _settings_without_supabase() -> Settings:
 
 
 class FakeMediaStorage:
+    def __init__(self, files: dict[str, bytes]) -> None:
+        self.files = files
+        self.signed: list[tuple[str, timedelta]] = []
+
+    async def upload(
+        self,
+        *,
+        agent_id: UUID,
+        filename: str,
+        data: bytes,
+        mime_type: str,
+        kind: str = "doc",
+    ) -> MediaFile | None:
+        return None
+
+    async def open(self, path: str) -> bytes | None:
+        return self.files.get(path)
+
+    async def sign_link(self, path: str, *, ttl: timedelta) -> str | None:
+        self.signed.append((path, ttl))
+        if path not in self.files:
+            return None
+        return f"https://storage.test/{path}"
+
+    async def remove_prefix(self, agent_id: UUID) -> None:
+        self.files.clear()
+
+
+class FakeStorageWithoutLinks:
     def __init__(self, files: dict[str, bytes]) -> None:
         self.files = files
 
@@ -243,6 +273,158 @@ async def test_media_rejects_path_traversal() -> None:
 
     assert resp.status_code == 403
     assert resp.content != b"SECRET"
+
+
+@pytest.mark.asyncio
+async def test_media_link_returns_signed_url_for_owner() -> None:
+    owner_id = uuid4()
+    agent_id = uuid4()
+    path = f"{agent_id}/{uuid4()}/clip.mp4"
+    app = create_app(
+        agent_store=_store_with_agent(owner_id, agent_id),
+        auth_verifier=FakeAuthVerifier(owner_id),
+        media_uploader=FakeMediaStorage({path: b"0123456789"}),
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        resp = await client.get(
+            f"/api/v1/agents/{agent_id}/media-link/{path}", headers=AUTH_HEADERS
+        )
+
+    assert resp.status_code == 200
+    assert resp.json() == {"url": f"https://storage.test/{path}"}
+    assert resp.headers["cache-control"] == "no-store"
+
+
+@pytest.mark.asyncio
+async def test_media_link_uses_shared_ttl() -> None:
+    owner_id = uuid4()
+    agent_id = uuid4()
+    path = f"{agent_id}/{uuid4()}/clip.mp4"
+    storage = FakeMediaStorage({path: b"0123456789"})
+    app = create_app(
+        agent_store=_store_with_agent(owner_id, agent_id),
+        auth_verifier=FakeAuthVerifier(owner_id),
+        media_uploader=storage,
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        resp = await client.get(
+            f"/api/v1/agents/{agent_id}/media-link/{path}", headers=AUTH_HEADERS
+        )
+
+    assert resp.status_code == 200
+    assert storage.signed == [(path, MEDIA_LINK_TTL)]
+
+
+@pytest.mark.asyncio
+async def test_media_link_rejects_path_of_other_agent() -> None:
+    owner_id = uuid4()
+    agent_id = uuid4()
+    other_path = f"{uuid4()}/1/clip.mp4"
+    app = create_app(
+        agent_store=_store_with_agent(owner_id, agent_id),
+        auth_verifier=FakeAuthVerifier(owner_id),
+        media_uploader=FakeMediaStorage({other_path: b"X"}),
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        resp = await client.get(
+            f"/api/v1/agents/{agent_id}/media-link/{other_path}", headers=AUTH_HEADERS
+        )
+
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_media_link_rejects_path_traversal() -> None:
+    owner_id = uuid4()
+    agent_id = uuid4()
+    other_agent_id = uuid4()
+    other_path = f"{other_agent_id}/1/secret.mp4"
+    app = create_app(
+        agent_store=_store_with_agent(owner_id, agent_id),
+        auth_verifier=FakeAuthVerifier(owner_id),
+        media_uploader=FakeMediaStorage({other_path: b"SECRET"}),
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        resp = await client.get(
+            f"/api/v1/agents/{agent_id}/media-link/{agent_id}/%2e%2e/{other_agent_id}/1/secret.mp4",
+            headers=AUTH_HEADERS,
+        )
+
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_media_link_404_when_file_missing() -> None:
+    owner_id = uuid4()
+    agent_id = uuid4()
+    app = create_app(
+        agent_store=_store_with_agent(owner_id, agent_id),
+        auth_verifier=FakeAuthVerifier(owner_id),
+        media_uploader=FakeMediaStorage({}),
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        resp = await client.get(
+            f"/api/v1/agents/{agent_id}/media-link/{agent_id}/nowhere.mp4", headers=AUTH_HEADERS
+        )
+
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_media_link_404_when_storage_cannot_sign() -> None:
+    owner_id = uuid4()
+    agent_id = uuid4()
+    path = f"{agent_id}/{uuid4()}/clip.mp4"
+    app = create_app(
+        agent_store=_store_with_agent(owner_id, agent_id),
+        auth_verifier=FakeAuthVerifier(owner_id),
+        media_uploader=FakeStorageWithoutLinks({path: b"0123456789"}),
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        resp = await client.get(
+            f"/api/v1/agents/{agent_id}/media-link/{path}", headers=AUTH_HEADERS
+        )
+
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_media_link_404_when_storage_not_configured() -> None:
+    owner_id = uuid4()
+    agent_id = uuid4()
+    app = create_app(
+        agent_store=_store_with_agent(owner_id, agent_id),
+        auth_verifier=FakeAuthVerifier(owner_id),
+        media_uploader=None,
+        settings=_settings_without_supabase(),
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        resp = await client.get(
+            f"/api/v1/agents/{agent_id}/media-link/{agent_id}/nowhere.mp4", headers=AUTH_HEADERS
+        )
+
+    assert resp.status_code == 404
 
 
 @pytest.mark.asyncio
