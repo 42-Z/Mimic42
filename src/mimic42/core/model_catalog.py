@@ -1,4 +1,8 @@
-"""Catalog of the model switcher menu (issue #46)."""
+"""Catalog of the model switcher menu (issue #46).
+
+Every model of the menu accepts images: the agent sends pictures from tools
+such as ``view_image``, and a text-only model would answer as if nothing came.
+"""
 
 from __future__ import annotations
 
@@ -30,7 +34,7 @@ MODEL_CATALOG: dict[str, ModelSpec] = {
             # at every check, so it stays out until it takes an image in a user message.
             ignored_providers=("morph", "deepinfra", "inceptron"),
         ),
-        ModelSpec(slug="deepseek/deepseek-v4-flash-0731", name="DeepSeek V4 Flash 0731"),
+        ModelSpec(slug="deepseek/deepseek-v4.1-flash", name="DeepSeek V4.1 Flash"),
         ModelSpec(
             slug="inclusionai/ling-3.0-flash-vl",
             name="Ling 3.0 Flash VL",
@@ -39,10 +43,10 @@ MODEL_CATALOG: dict[str, ModelSpec] = {
             # по 429 (2026-10-14). Бесплатной моделью для real_tg теперь Nemotron.
         ),
         ModelSpec(
-            slug="nvidia/nemotron-3.5-lightning",
-            name="Nemotron 3.5 Lightning",
+            slug="nvidia/nemotron-3.5-super-vl",
+            name="Nemotron 3.5 Super VL",
             # Живой :free вариант с tools и reasoning на миллион токенов контекста.
-            free_slug="nvidia/nemotron-3.5-lightning:free",
+            free_slug="nvidia/nemotron-3.5-super-vl:free",
             # DeepInfra does not support a required tool choice, which the
             # agent's structured response relies on (2026-09-21).
             ignored_providers=("deepinfra",),

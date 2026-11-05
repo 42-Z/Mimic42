@@ -5,9 +5,9 @@ export interface ModelOption {
 
 export const MODEL_OPTIONS: ModelOption[] = [
   { value: 'z-ai/glm-5.3-flash', label: 'GLM 5.3 Flash' },
-  { value: 'deepseek/deepseek-v4-flash-0731', label: 'DeepSeek V4 Flash 0731' },
+  { value: 'deepseek/deepseek-v4.1-flash', label: 'DeepSeek V4.1 Flash' },
   { value: 'inclusionai/ling-3.0-flash-vl', label: 'Ling 3.0 Flash VL' },
-  { value: 'nvidia/nemotron-3.5-lightning', label: 'Nemotron 3.5 Lightning' },
+  { value: 'nvidia/nemotron-3.5-super-vl', label: 'Nemotron 3.5 Super VL' },
 ];
 
 const MODEL_VALUES = MODEL_OPTIONS.map((m) => m.value) as [string, ...string[]];

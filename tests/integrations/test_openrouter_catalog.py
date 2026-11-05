@@ -26,7 +26,7 @@ async def test_reasoning_map_extracts_catalog_models_only(monkeypatch: pytest.Mo
         return {
             "data": [
                 {"id": "z-ai/glm-5.3-flash", "reasoning": {"supported_efforts": ["max"]}},
-                {"id": "deepseek/deepseek-v4-flash-0731", "reasoning": {"mandatory": False}},
+                {"id": "deepseek/deepseek-v4.1-flash", "reasoning": {"mandatory": False}},
                 {"id": "some/other-gateway-model", "reasoning": {"supported_efforts": ["high"]}},
                 {"id": "another/one"},
             ]
@@ -39,12 +39,12 @@ async def test_reasoning_map_extracts_catalog_models_only(monkeypatch: pytest.Mo
     # Только модели из каталога меню: остальной гейтвей не нужен дашборду.
     assert set(result) == {
         "z-ai/glm-5.3-flash",
-        "deepseek/deepseek-v4-flash-0731",
+        "deepseek/deepseek-v4.1-flash",
         "inclusionai/ling-3.0-flash-vl",
-        "nvidia/nemotron-3.5-lightning",
+        "nvidia/nemotron-3.5-super-vl",
     }
     assert result["z-ai/glm-5.3-flash"] == {"supported_efforts": ["max"]}
-    assert result["nvidia/nemotron-3.5-lightning"] is None
+    assert result["nvidia/nemotron-3.5-super-vl"] is None
 
 
 @pytest.mark.asyncio

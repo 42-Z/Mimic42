@@ -22,7 +22,7 @@ async def test_reasoning_endpoint_returns_slim_model_map(
             "default_effort": "max",
             "mandatory": True,
         },
-        "nvidia/nemotron-3.5-lightning": {"mandatory": False},
+        "nvidia/nemotron-3.5-super-vl": {"mandatory": False},
     }
     monkeypatch.setattr(openrouter_catalog, "fetch_reasoning_by_model", lambda: _async(fake_map))
 
