@@ -41,7 +41,8 @@ export function reasoningLabel(effort: string): string {
  * - `reasoning` present without `supported_efforts` → the same;
  * - `supported_efforts: null` → every gateway effort value is accepted;
  * - array → those values, in descending effort order; `none` is appended
- *   unless `mandatory` (a mandatory model rejects `effort: "none"`).
+ *   unless `mandatory` (a mandatory model rejects `effort: "none"`) or the
+ *   gateway already lists it.
  */
 export function reasoningOptionValues(
   meta: ModelReasoningMeta | undefined | null
@@ -49,7 +50,7 @@ export function reasoningOptionValues(
   if (!meta || meta.supported_efforts === undefined) return null;
   if (meta.supported_efforts === null) return GATEWAY_EFFORTS;
   const options = [...meta.supported_efforts];
-  if (meta.mandatory !== true) options.push('none');
+  if (meta.mandatory !== true && !options.includes('none')) options.push('none');
   return options;
 }
 

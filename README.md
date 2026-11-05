@@ -66,10 +66,12 @@ uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_
 ```
 
 Each agent picks its model from the catalog in `src/mimic42/core/model_catalog.py` (mirrored in
-`frontend/src/lib/models.ts`): GLM 5.3 Flash (default), DeepSeek V4 Flash, Ling 3.0 Flash VL and
-Nemotron 3.5 Lightning, all through OpenRouter. A catalog model must support tool calling with a
+`frontend/src/lib/models.ts`): GLM 5.3 Flash (default), DeepSeek V4.1 Flash, Ling 3.0 Flash VL and
+Nemotron 3.5 Super VL, all through OpenRouter. A catalog model must support tool calling with a
 required tool choice: the agent's structured reply is returned through a tool call, and a model
-that cannot be forced to call it answers in plain text and never finishes the turn.
+that cannot be forced to call it answers in plain text and never finishes the turn. It must also
+accept images: the agent reads pictures from tools such as `view_image`, and a text-only model
+answers as if nothing arrived.
 
 ## Administration
 

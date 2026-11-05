@@ -28,6 +28,15 @@ describe('reasoningOptionValues', () => {
     ).toEqual(['max', 'high', 'low']);
   });
 
+  it('does not duplicate none when the model already lists it', () => {
+    expect(
+      reasoningOptionValues({
+        supported_efforts: ['max', 'high', 'low', 'none'],
+        mandatory: false,
+      })
+    ).toEqual(['max', 'high', 'low', 'none']);
+  });
+
   it('returns the full gateway set when supported_efforts is null', () => {
     expect(reasoningOptionValues({ supported_efforts: null })).toEqual(GATEWAY_EFFORTS);
   });

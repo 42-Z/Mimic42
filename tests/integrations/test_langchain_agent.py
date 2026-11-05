@@ -61,28 +61,28 @@ def recorded(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
 
 
 def test_model_with_free_variant_builds_fallback_chain(recorded: list[dict[str, Any]]) -> None:
-    build_chat_model(_config("nvidia/nemotron-3.5-lightning"))
+    build_chat_model(_config("nvidia/nemotron-3.5-super-vl"))
 
     assert recorded == [
         {
-            "model": "nvidia/nemotron-3.5-lightning:free",
+            "model": "nvidia/nemotron-3.5-super-vl:free",
             "api_key": None,
             "timeout": REQUEST_TIMEOUT_MS,
             "reasoning": {"effort": "high"},
             "model_kwargs": {
-                "models": ["nvidia/nemotron-3.5-lightning:free", "nvidia/nemotron-3.5-lightning"]
+                "models": ["nvidia/nemotron-3.5-super-vl:free", "nvidia/nemotron-3.5-super-vl"]
             },
-            "openrouter_provider": {"ignore": ignored_providers("nvidia/nemotron-3.5-lightning")},
+            "openrouter_provider": {"ignore": ignored_providers("nvidia/nemotron-3.5-super-vl")},
         }
     ]
 
 
 def test_paid_only_model_gets_single_slug(recorded: list[dict[str, Any]]) -> None:
-    build_chat_model(_config("deepseek/deepseek-v4-flash-0731"))
+    build_chat_model(_config("deepseek/deepseek-v4.1-flash-1017"))
 
     assert recorded == [
         {
-            "model": "deepseek/deepseek-v4-flash-0731",
+            "model": "deepseek/deepseek-v4.1-flash-1017",
             "api_key": None,
             "timeout": REQUEST_TIMEOUT_MS,
             "reasoning": {"effort": "high"},
