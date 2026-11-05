@@ -60,12 +60,12 @@ async def test_reload_rebuilds_running_runtime_with_fresh_config() -> None:
     configs = {agent_id: _build_config(agent_id)}
     manager = _build_manager(configs)
     await manager.create_agent(configs[agent_id], start=True)
-    configs[agent_id] = _build_config(agent_id, llm_model="deepseek/deepseek-v4.1-flash")
+    configs[agent_id] = _build_config(agent_id, llm_model="deepseek/deepseek-v4.1-flash-1017")
 
     await manager.reload_agent(agent_id)
 
     rebuilt = manager._agents[agent_id]
-    assert rebuilt.config.llm_model == "deepseek/deepseek-v4.1-flash"
+    assert rebuilt.config.llm_model == "deepseek/deepseek-v4.1-flash-1017"
     assert rebuilt.status.state is AgentRuntimeState.RUNNING
 
 
@@ -75,12 +75,12 @@ async def test_reload_keeps_stopped_agent_stopped() -> None:
     configs = {agent_id: _build_config(agent_id)}
     manager = _build_manager(configs)
     await manager.create_agent(configs[agent_id])
-    configs[agent_id] = _build_config(agent_id, llm_model="deepseek/deepseek-v4.1-flash")
+    configs[agent_id] = _build_config(agent_id, llm_model="deepseek/deepseek-v4.1-flash-1017")
 
     await manager.reload_agent(agent_id)
 
     rebuilt = manager._agents[agent_id]
-    assert rebuilt.config.llm_model == "deepseek/deepseek-v4.1-flash"
+    assert rebuilt.config.llm_model == "deepseek/deepseek-v4.1-flash-1017"
     assert rebuilt.status.state is AgentRuntimeState.STOPPED
 
 

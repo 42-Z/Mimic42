@@ -26,7 +26,7 @@ async def test_reasoning_map_extracts_catalog_models_only(monkeypatch: pytest.Mo
         return {
             "data": [
                 {"id": "z-ai/glm-5.3-flash", "reasoning": {"supported_efforts": ["max"]}},
-                {"id": "deepseek/deepseek-v4.1-flash", "reasoning": {"mandatory": False}},
+                {"id": "deepseek/deepseek-v4.1-flash-1017", "reasoning": {"mandatory": False}},
                 {"id": "some/other-gateway-model", "reasoning": {"supported_efforts": ["high"]}},
                 {"id": "another/one"},
             ]
@@ -39,7 +39,7 @@ async def test_reasoning_map_extracts_catalog_models_only(monkeypatch: pytest.Mo
     # Только модели из каталога меню: остальной гейтвей не нужен дашборду.
     assert set(result) == {
         "z-ai/glm-5.3-flash",
-        "deepseek/deepseek-v4.1-flash",
+        "deepseek/deepseek-v4.1-flash-1017",
         "inclusionai/ling-3.0-flash-vl",
         "nvidia/nemotron-3.5-super-vl",
     }

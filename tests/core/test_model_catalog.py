@@ -11,7 +11,7 @@ from mimic42.core.model_catalog import (
 def test_catalog_contains_exactly_menu_models() -> None:
     assert set(MODEL_CATALOG) == {
         "z-ai/glm-5.3-flash",
-        "deepseek/deepseek-v4.1-flash",
+        "deepseek/deepseek-v4.1-flash-1017",
         "inclusionai/ling-3.0-flash-vl",
         "nvidia/nemotron-3.5-super-vl",
     }
@@ -35,7 +35,9 @@ def test_retired_free_variant_resolves_to_a_single_slug() -> None:
 
 def test_models_without_free_variant_resolve_to_single_slug() -> None:
     assert resolve_model_chain("z-ai/glm-5.3-flash") == ["z-ai/glm-5.3-flash"]
-    assert resolve_model_chain("deepseek/deepseek-v4.1-flash") == ["deepseek/deepseek-v4.1-flash"]
+    assert resolve_model_chain("deepseek/deepseek-v4.1-flash-1017") == [
+        "deepseek/deepseek-v4.1-flash-1017"
+    ]
 
 
 def test_unknown_slug_passes_through() -> None:
@@ -45,5 +47,5 @@ def test_unknown_slug_passes_through() -> None:
 def test_ignored_providers_come_from_the_catalog() -> None:
     assert ignored_providers("z-ai/glm-5.3-flash") == ["morph", "deepinfra", "inceptron"]
     assert ignored_providers("nvidia/nemotron-3.5-super-vl") == ["deepinfra"]
-    assert ignored_providers("deepseek/deepseek-v4.1-flash") == []
+    assert ignored_providers("deepseek/deepseek-v4.1-flash-1017") == []
     assert ignored_providers("google/gemini-3.1-flash-lite") == []

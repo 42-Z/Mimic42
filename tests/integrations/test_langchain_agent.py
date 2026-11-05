@@ -78,11 +78,11 @@ def test_model_with_free_variant_builds_fallback_chain(recorded: list[dict[str, 
 
 
 def test_paid_only_model_gets_single_slug(recorded: list[dict[str, Any]]) -> None:
-    build_chat_model(_config("deepseek/deepseek-v4.1-flash"))
+    build_chat_model(_config("deepseek/deepseek-v4.1-flash-1017"))
 
     assert recorded == [
         {
-            "model": "deepseek/deepseek-v4.1-flash",
+            "model": "deepseek/deepseek-v4.1-flash-1017",
             "api_key": None,
             "timeout": REQUEST_TIMEOUT_MS,
             "reasoning": {"effort": "high"},

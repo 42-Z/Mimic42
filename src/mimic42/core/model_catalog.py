@@ -34,7 +34,10 @@ MODEL_CATALOG: dict[str, ModelSpec] = {
             # at every check, so it stays out until it takes an image in a user message.
             ignored_providers=("morph", "deepinfra", "inceptron"),
         ),
-        ModelSpec(slug="deepseek/deepseek-v4.1-flash", name="DeepSeek V4.1 Flash"),
+        ModelSpec(
+            slug="deepseek/deepseek-v4.1-flash-1017",
+            name="DeepSeek V4.1 Flash 1017",
+        ),
         ModelSpec(
             slug="inclusionai/ling-3.0-flash-vl",
             name="Ling 3.0 Flash VL",
