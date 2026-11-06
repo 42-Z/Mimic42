@@ -113,8 +113,18 @@ async def test_admin_proxy_crud_encrypts_password_and_audits(
         {"label": "Резервный", "password": "new-password"},
         actor_user_id=actor_id,
     )
-    assert updated.label == "Резервный"
-    assert updated.has_password is True
+    assert updated.proxy.label == "Резервный"
+    assert updated.proxy.has_password is True
+    assert updated.affected_agent_ids == ()
+
+    agent_id = await _agent(admin_db_factory, actor_id, proxy_id=created.id, cipher=cipher)
+    unchanged = await repository.update_proxy(
+        created.id,
+        {"label": "Резервный"},
+        actor_user_id=actor_id,
+    )
+    assert unchanged.affected_agent_ids == (agent_id,)
+    assert unchanged.proxy.agents_total == 1
 
     reader = await repository.read_proxy_config(created.id)
     assert reader.username == "mimic"
@@ -174,14 +184,14 @@ async def test_proxy_label_is_optional_and_can_be_cleared(
         {"label": "Рабочий"},
         actor_user_id=actor_id,
     )
-    assert named.label == "Рабочий"
+    assert named.proxy.label == "Рабочий"
 
     cleared = await repository.update_proxy(
         created.id,
         {"label": None},
         actor_user_id=actor_id,
     )
-    assert cleared.label is None
+    assert cleared.proxy.label is None
 
 
 @pytest.mark.asyncio

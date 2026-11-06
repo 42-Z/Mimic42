@@ -34,6 +34,7 @@ from mimic42.core.admin import (
     PresetPatchValues,
     ProxyCreateValues,
     ProxyPatchValues,
+    ProxyUpdateResult,
     PublicTelegramSettings,
     StoredTelegramSettings,
     statistics_window,
@@ -776,7 +777,7 @@ class DatabaseAdminRepository:
         values: ProxyPatchValues,
         *,
         actor_user_id: UUID,
-    ) -> AdminProxyDetail:
+    ) -> ProxyUpdateResult:
         try:
             async with self._session_factory() as session, session.begin():
                 await lock_proxy_pool(session)
@@ -818,10 +819,12 @@ class DatabaseAdminRepository:
                     )
                     await session.refresh(proxy)
 
-                agents_total = await session.scalar(
-                    select(func.count())
-                    .select_from(TelegramSessionModel)
-                    .where(TelegramSessionModel.proxy_id == proxy_id)
+                affected_agent_ids = tuple(
+                    await session.scalars(
+                        select(TelegramSessionModel.agent_id).where(
+                            TelegramSessionModel.proxy_id == proxy_id
+                        )
+                    )
                 )
                 onboarding_total = await session.scalar(
                     select(func.count())
@@ -831,10 +834,13 @@ class DatabaseAdminRepository:
                         AgentOnboardingSessionModel.completed_agent_id.is_(None),
                     )
                 )
-                result = self._proxy_detail(
-                    proxy,
-                    agents_total=agents_total or 0,
-                    onboarding_total=onboarding_total or 0,
+                result = ProxyUpdateResult(
+                    proxy=self._proxy_detail(
+                        proxy,
+                        agents_total=len(affected_agent_ids),
+                        onboarding_total=onboarding_total or 0,
+                    ),
+                    affected_agent_ids=affected_agent_ids,
                 )
         except SQLAlchemyError:
             raise AdminUnavailableError("Administrative storage is unavailable") from None

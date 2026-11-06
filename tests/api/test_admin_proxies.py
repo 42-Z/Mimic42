@@ -350,7 +350,20 @@ async def test_patch_without_password_keeps_the_old_one_and_password_is_never_re
 
 
 @pytest.mark.asyncio
-async def test_patch_proxy_rebuilds_all_dependent_runtimes_and_preserves_states() -> None:
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("host", "updated-proxy.example.test"),
+        ("port", 3128),
+        ("protocol", "http"),
+        ("username", "updated-user"),
+        ("password", "updated-password"),
+    ],
+)
+async def test_patch_proxy_rebuilds_all_dependent_runtimes_and_preserves_states(
+    field: str,
+    value: str | int,
+) -> None:
     admin_id = uuid4()
     owner_id = uuid4()
     running_id, stopped_id, unrelated_id = uuid4(), uuid4(), uuid4()
@@ -359,6 +372,16 @@ async def test_patch_proxy_rebuilds_all_dependent_runtimes_and_preserves_states(
     repository = FakeAdminRepository(
         admin_ids={admin_id},
         proxies=[proxy, other_proxy],
+        proxy_configs={
+            assigned.id: TelegramProxyConfig(
+                protocol=assigned.protocol,
+                host=assigned.host,
+                port=assigned.port,
+                username=assigned.username,
+                password=SecretStr("original-password"),
+            )
+            for assigned in (proxy, other_proxy)
+        },
         agent_proxies={
             agent_id: AdminAgentProxy.model_validate(assigned.model_dump())
             for agent_id, assigned in (
@@ -368,22 +391,20 @@ async def test_patch_proxy_rebuilds_all_dependent_runtimes_and_preserves_states(
             )
         },
     )
+    expected_config = repository.proxy_configs[proxy.id].model_copy(
+        update={field: SecretStr(str(value)) if field == "password" else value}
+    )
 
     async def load_config(agent_id: UUID) -> AgentRuntimeConfig:
         assigned = repository.agent_proxies[agent_id]
         assert assigned is not None
-        current = repository.proxies[assigned.id]
         return AgentRuntimeConfig(
             agent_id=agent_id,
             owner_id=owner_id,
             telegram_api_id=12345,
             telegram_api_hash="hash",
             telegram_session_string="session",
-            telegram_proxy=TelegramProxyConfig(
-                protocol=current.protocol,
-                host=current.host,
-                port=current.port,
-            ),
+            telegram_proxy=repository.proxy_configs[assigned.id],
             system_prompt="system",
             soul_prompt="soul",
         )
@@ -406,18 +427,20 @@ async def test_patch_proxy_rebuilds_all_dependent_runtimes_and_preserves_states(
             response = await client.patch(
                 f"/api/v1/admin/proxies/{proxy.id}",
                 headers=AUTH_HEADERS,
-                json={"host": "updated-proxy.example.test"},
+                json={field: value},
             )
 
         assert response.status_code == 200
-        assert response.json()["host"] == "updated-proxy.example.test"
+        assert response.json()["id"] == str(proxy.id)
+        assert "affected_agent_ids" not in response.json()
+        assert "original-password" not in response.text
+        assert "updated-password" not in response.text
         for agent_id, expected_state in (
             (running_id, AgentRuntimeState.RUNNING),
             (stopped_id, AgentRuntimeState.STOPPED),
         ):
             runtime = await manager.get_agent(agent_id)
-            assert runtime.config.telegram_proxy is not None
-            assert runtime.config.telegram_proxy.host == "updated-proxy.example.test"
+            assert runtime.config.telegram_proxy == expected_config
             assert runtime.status.state is expected_state
         assert await manager.get_agent(unrelated_id) is unrelated
     finally:
@@ -447,12 +470,94 @@ async def test_patch_proxy_reports_reload_failures_and_attempts_every_dependent(
         )
 
     assert response.status_code == 503
-    assert response.json()["detail"]
+    assert "сохранены" in response.json()["detail"]
+    assert "Повторите запрос" in response.json()["detail"]
     assert "reload boom" not in response.text
     assert repository.proxies[proxy.id].host == "updated-proxy.example.test"
     assert {agent_id for operation, agent_id in manager.calls if operation == "reload"} == set(
         agent_ids
     )
+
+
+@pytest.mark.asyncio
+async def test_patch_proxy_retries_reload_after_settings_were_saved() -> None:
+    admin_id = uuid4()
+    agent_id = uuid4()
+    proxy = _proxy_detail(agents_total=1)
+    repository = FakeAdminRepository(
+        admin_ids={admin_id},
+        proxies=[proxy],
+        agent_proxies={agent_id: AdminAgentProxy.model_validate(proxy.model_dump())},
+    )
+    manager = FakeAgentManager(reload_error=True)
+    app = _app(admin_id, repository, manager)
+    patch = {"host": "updated-proxy.example.test"}
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        failed = await client.patch(
+            f"/api/v1/admin/proxies/{proxy.id}", headers=AUTH_HEADERS, json=patch
+        )
+        assert failed.status_code == 503
+        assert repository.proxies[proxy.id].host == patch["host"]
+        manager.reload_error = False
+        retried = await client.patch(
+            f"/api/v1/admin/proxies/{proxy.id}", headers=AUTH_HEADERS, json=patch
+        )
+
+    assert retried.status_code == 200
+    assert manager.calls.count(("reload", agent_id)) == 2
+    assert manager.reloaded == [agent_id]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("patch", [{"label": "Новое имя"}, {"is_active": False}, {}])
+async def test_patch_proxy_without_network_fields_does_not_reload(
+    patch: dict[str, str | bool],
+) -> None:
+    admin_id = uuid4()
+    agent_id = uuid4()
+    proxy = _proxy_detail(agents_total=1)
+    repository = FakeAdminRepository(
+        admin_ids={admin_id},
+        proxies=[proxy],
+        agent_proxies={agent_id: AdminAgentProxy.model_validate(proxy.model_dump())},
+    )
+    manager = FakeAgentManager(reload_error=True)
+    app = _app(admin_id, repository, manager)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.patch(
+            f"/api/v1/admin/proxies/{proxy.id}", headers=AUTH_HEADERS, json=patch
+        )
+
+    assert response.status_code == (200 if patch else 422)
+    assert manager.calls == []
+
+
+@pytest.mark.asyncio
+async def test_patch_proxy_reports_saved_settings_when_manager_is_unavailable() -> None:
+    admin_id = uuid4()
+    agent_id = uuid4()
+    proxy = _proxy_detail(agents_total=1)
+    repository = FakeAdminRepository(
+        admin_ids={admin_id},
+        proxies=[proxy],
+        agent_proxies={agent_id: AdminAgentProxy.model_validate(proxy.model_dump())},
+    )
+    app = _app(admin_id, repository)
+    app.state.agent_manager = None
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.patch(
+            f"/api/v1/admin/proxies/{proxy.id}",
+            headers=AUTH_HEADERS,
+            json={"host": "updated-proxy.example.test"},
+        )
+
+    assert response.status_code == 503
+    assert "сохранены" in response.json()["detail"]
+    assert "Повторите запрос" in response.json()["detail"]
+    assert repository.proxies[proxy.id].host == "updated-proxy.example.test"
 
 
 @pytest.mark.asyncio

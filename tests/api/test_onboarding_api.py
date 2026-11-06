@@ -426,6 +426,7 @@ async def test_verify_code_repeated_after_authorization_returns_conflict_without
         (TelegramLoginStatus.PASSWORD_REQUIRED, None),
         (TelegramLoginStatus.ERROR, None),
         (TelegramLoginStatus.CODE_REQUESTED, "2fa-secret"),
+        (TelegramLoginStatus.AUTHORIZED, None),
         (TelegramLoginStatus.AUTHORIZED, "2fa-secret"),
     ],
 )

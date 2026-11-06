@@ -830,6 +830,11 @@ def create_app(
             return result
         except (OnboardingNotFoundError, OnboardingOwnershipError) as exc:
             raise _onboarding_not_found(onboarding_id) from exc
+        except TelegramAuthorizationIncompleteError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(exc),
+            ) from exc
         except TelegramPasswordRequiredError as exc:
             raise HTTPException(
                 status_code=status.HTTP_428_PRECONDITION_REQUIRED,

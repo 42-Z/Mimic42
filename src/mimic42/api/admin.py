@@ -530,13 +530,42 @@ async def update_proxy(
     patch_values = cast(ProxyPatchValues, values.model_dump(exclude_unset=True))
     if values.password is not None:
         patch_values["password"] = values.password.get_secret_value()
-    return await _admin_result(
+    result = await _admin_result(
         repository.update_proxy(
             proxy_id,
             patch_values,
             actor_user_id=current_user.user_id,
         )
     )
+    if result.affected_agent_ids and {
+        "protocol",
+        "host",
+        "port",
+        "username",
+        "password",
+    }.intersection(patch_values):
+        manager = getattr(request.app.state, "agent_manager", None)
+        failed = manager is None
+        if manager is not None:
+            for agent_id in result.affected_agent_ids:
+                try:
+                    await manager.reload_agent(agent_id)
+                except Exception as exc:
+                    logger.warning(
+                        "Не удалось пересобрать агента %s после обновления прокси (%s)",
+                        agent_id,
+                        type(exc).__name__,
+                    )
+                    failed = True
+        if failed:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=(
+                    "Настройки прокси сохранены, но часть мимиков не пересобралась. "
+                    "Повторите запрос."
+                ),
+            )
+    return result.proxy
 
 
 @router.delete("/proxies/{proxy_id}", status_code=status.HTTP_204_NO_CONTENT)
