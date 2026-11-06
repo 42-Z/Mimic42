@@ -11,6 +11,7 @@ from httpx import ASGITransport, AsyncClient
 
 from mimic42.api.app import create_app
 from mimic42.core.agent_runtime import (
+    AgentLifecycleChangedError,
     AgentRuntimeConfig,
     AgentRuntimeState,
     AgentTrigger,
@@ -96,23 +97,24 @@ def _create_runtime(config: AgentRuntimeConfig) -> MimicAgentRuntime:
 
 
 @pytest.mark.parametrize("action", ["start", "reload", "messages/trigger"])
-async def test_pending_teardown_returns_conflict_for_lifecycle_requests(
-    saved_agent_config: AgentRuntimeConfig, action: str
+@pytest.mark.parametrize("error_type", [TelegramTeardownPendingError, AgentLifecycleChangedError])
+async def test_lifecycle_state_changes_return_conflict(
+    saved_agent_config: AgentRuntimeConfig, action: str, error_type: type[RuntimeError]
 ) -> None:
-    class PendingTeardownManager(FakeAgentManager):
+    class ConflictingManager(FakeAgentManager):
         async def start_agent(self, agent_id: UUID) -> None:
-            raise TelegramTeardownPendingError()
+            raise error_type()
 
         async def reload_agent(self, agent_id: UUID) -> None:
-            raise TelegramTeardownPendingError()
+            raise error_type()
 
         async def trigger_message(
             self, agent_id: UUID, trigger: AgentTrigger
         ) -> AgentTriggerResult:
-            raise TelegramTeardownPendingError()
+            raise error_type()
 
     app = create_test_app(
-        manager=PendingTeardownManager(default_owner_id=saved_agent_config.owner_id),
+        manager=ConflictingManager(default_owner_id=saved_agent_config.owner_id),
         auth_verifier=FakeAuthVerifier(saved_agent_config.owner_id),
     )
     async with AsyncClient(
@@ -125,7 +127,7 @@ async def test_pending_teardown_returns_conflict_for_lifecycle_requests(
         )
 
     assert response.status_code == 409
-    assert response.json()["detail"] == str(TelegramTeardownPendingError())
+    assert response.json()["detail"] == str(error_type())
 
 
 @pytest.mark.parametrize("auto_start", [False, True])

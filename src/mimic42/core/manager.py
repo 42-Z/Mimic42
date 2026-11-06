@@ -13,6 +13,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mimic42.core.agent_runtime import (
     PROXY_CONNECT_ERRORS,
+    REVOKED_SESSION_MESSAGE,
+    AgentLifecycleChangedError,
     AgentRuntimeConfig,
     AgentRuntimeState,
     AgentStatus,
@@ -23,6 +25,7 @@ from mimic42.core.agent_runtime import (
     TelegramAuthorizationRequired,
     TelegramClientLike,
     TelegramTeardownPendingError,
+    retry_previous_telegram_teardown,
 )
 from mimic42.core.chat_access import ChatAccess
 from mimic42.core.chat_directory import ChatItem
@@ -154,6 +157,7 @@ class AgentManager:
         )
         self._agents: dict[UUID, MimicAgentRuntime] = {}
         self._removed: set[UUID] = set()
+        self._removal_tasks: dict[UUID, asyncio.Task[None]] = {}
         self._lock = asyncio.Lock()
         # Прогрев нужен только с постоянным хранилищем: без него нечем помнить, что уже
         # отправлено, и после рестарта агенты начали бы диалоги заново.
@@ -172,17 +176,28 @@ class AgentManager:
     def _agent_lock(self, agent_id: UUID) -> asyncio.Lock:
         return self._agent_locks.setdefault(agent_id, asyncio.Lock())
 
+    def _check_removed(self, agent_id: UUID) -> None:
+        if agent_id in self._removed:
+            raise AgentNotFoundError(agent_id)
+
     async def create_agent(
         self,
         config: AgentRuntimeConfig,
         *,
         start: bool = False,
     ) -> MimicAgentRuntime:
-        async with self._lock:
-            runtime = self._register_locked(config)
-        if start:
-            runtime = await self._start_created_runtime(runtime)
-        return runtime
+        if config.agent_id in self._removal_tasks:
+            raise AgentNotFoundError(config.agent_id)
+        async with self._agent_lock(config.agent_id):
+            async with self._lock:
+                if config.agent_id in self._removal_tasks:
+                    raise AgentNotFoundError(config.agent_id)
+                self._removed.discard(config.agent_id)
+                runtime = self._register_locked(config)
+            if start:
+                runtime = await self._start_created_runtime(runtime)
+            self._check_removed(config.agent_id)
+            return runtime
 
     async def create_saved_agent(
         self,
@@ -191,10 +206,12 @@ class AgentManager:
         owner_id: UUID,
         start: bool = False,
     ) -> MimicAgentRuntime:
+        self._check_removed(agent_id)
         if self._config_loader is None:
             raise AgentNotFoundError(agent_id)
         reload_lock = self._agent_lock(agent_id)
         async with reload_lock:
+            self._check_removed(agent_id)
             try:
                 config = await _await_result(self._config_loader(agent_id))
             except KeyError as exc:
@@ -209,11 +226,14 @@ class AgentManager:
                 runtime = self._register_locked(config)
             if start:
                 runtime = await self._start_created_runtime(runtime)
+            self._check_removed(agent_id)
             return runtime
 
     async def _start_created_runtime(self, runtime: MimicAgentRuntime) -> MimicAgentRuntime:
         try:
             return await self._start_runtime(runtime)
+        except (TelegramTeardownPendingError, AgentNotFoundError, AgentLifecycleChangedError):
+            raise
         except Exception:
             await self._save_status(runtime.config.agent_id, AgentRuntimeState.ERROR)
             raise
@@ -221,9 +241,11 @@ class AgentManager:
     async def _start_runtime(self, runtime: MimicAgentRuntime) -> MimicAgentRuntime:
         """Запустить рантайм; при сбое прокси повторить без него, если это разрешено.
 
-        Настройка ``proxy_direct_fallback`` принадлежит агенту: по умолчанию сбой
+        Политика ``proxy_direct_fallback`` задаётся приложением: по умолчанию сбой
         прокси остаётся фатальным, чтобы IP машины не уходил в Telegram без согласия.
         """
+        self._check_removed(runtime.config.agent_id)
+        await retry_previous_telegram_teardown(runtime)
         try:
             await runtime.start()
         except PROXY_CONNECT_ERRORS as exc:
@@ -238,20 +260,24 @@ class AgentManager:
                 exc,
             )
             return await self._start_without_proxy(runtime)
+        self._check_removed(runtime.config.agent_id)
         return runtime
 
     async def _start_without_proxy(self, runtime: MimicAgentRuntime) -> MimicAgentRuntime:
         config = runtime.config.model_copy(update={"telegram_proxy": None})
+        await runtime.close()
         async with self._lock:
+            self._check_removed(config.agent_id)
             replacement = self._build_runtime_for(config)
             if self.warmup is not None:
                 replacement.set_warmup_gate(self.warmup)
             self._agents[config.agent_id] = replacement
         await replacement.start()
+        self._check_removed(config.agent_id)
         return replacement
 
     def _register_locked(self, config: AgentRuntimeConfig) -> MimicAgentRuntime:
-        """Собрать и положить рантайм в реестр. Вызывать только под ``_lock``."""
+        self._check_removed(config.agent_id)
         if config.agent_id in self._agents:
             raise ValueError("Агент с этим ID уже существует")
         # Политика отката общая для приложения, а не настройка агента из базы.
@@ -260,7 +286,6 @@ class AgentManager:
         if self.warmup is not None:
             runtime.set_warmup_gate(self.warmup)
         self._agents[config.agent_id] = runtime
-        self._removed.discard(config.agent_id)
         return runtime
 
     def _build_runtime_for(self, config: AgentRuntimeConfig) -> MimicAgentRuntime:
@@ -288,10 +313,12 @@ class AgentManager:
         return self._runtime_factory(config)
 
     async def get_agent(self, agent_id: UUID) -> MimicAgentRuntime:
-        if agent_id in self._removed:
-            # The agent was deleted during this process lifetime: never
-            # re-materialise it from the persistent config.
-            raise AgentNotFoundError(agent_id)
+        self._check_removed(agent_id)
+        async with self._agent_lock(agent_id):
+            return await self._get_agent_locked(agent_id)
+
+    async def _get_agent_locked(self, agent_id: UUID) -> MimicAgentRuntime:
+        self._check_removed(agent_id)
         agent = self._agents.get(agent_id)
         if agent is not None:
             return agent
@@ -325,11 +352,15 @@ class AgentManager:
         return [agent.status for agent in agents]
 
     async def start_agent(self, agent_id: UUID) -> None:
+        self._check_removed(agent_id)
+        async with self._agent_lock(agent_id):
+            await self._start_agent_locked(agent_id)
+
+    async def _start_agent_locked(self, agent_id: UUID) -> MimicAgentRuntime:
+        runtime = await self._get_agent_locked(agent_id)
         try:
-            await self._start_runtime(await self.get_agent(agent_id))
-        except TelegramTeardownPendingError:
-            # Запуск лишь отложен, пока закрывается прошлое соединение: агент не в ошибке,
-            # и статус в базе остаётся прежним.
+            runtime = await self._start_runtime(runtime)
+        except (TelegramTeardownPendingError, AgentNotFoundError, AgentLifecycleChangedError):
             raise
         except Exception:
             # Persist the failure: without this the database keeps the stale
@@ -337,31 +368,41 @@ class AgentManager:
             await self._save_status(agent_id, AgentRuntimeState.ERROR)
             raise
         await self._save_status(agent_id, AgentRuntimeState.RUNNING)
+        self._check_removed(agent_id)
+        return runtime
 
     async def stop_agent(self, agent_id: UUID) -> None:
-        await (await self.get_agent(agent_id)).stop()
+        self._check_removed(agent_id)
+        async with self._agent_lock(agent_id):
+            await self._stop_agent_locked(agent_id)
+
+    async def _stop_agent_locked(self, agent_id: UUID) -> None:
+        runtime = await self._get_agent_locked(agent_id)
+        try:
+            await retry_previous_telegram_teardown(runtime, wait=False)
+            await runtime.stop()
+        except (AgentNotFoundError, AgentLifecycleChangedError):
+            raise
+        except BaseException:
+            await self._save_status_after_failure(runtime)
+            raise
+        self._check_removed(agent_id)
         await self._save_status(agent_id, AgentRuntimeState.STOPPED)
 
     async def reload_agent(self, agent_id: UUID) -> None:
-        """Rebuild the runtime from the persistent config.
+        """Пересобрать конфигурацию, сохраняя владельца до завершения close.
 
-        The runtime is built once and never hot-reloads its config, so
-        settings changes (model, prompts) require a rebuild: stop the old
-        runtime, drop it from the registry and re-materialise from the
-        config loader. No tombstone is set — the agent still exists in the
-        database. A runtime that was active (RUNNING or STARTING) is started
-        again.
-
-        Reloads of one agent are serialised: parallel reloads otherwise pop
-        each other's freshly materialised runtime and can leave the agent
-        STOPPED while the database still says RUNNING.
+        RUNNING/STARTING запускаются заново; STOPPED остаётся остановленным.
+        Нематериализованный агент прочитает свежую конфигурацию при следующем get.
         """
+        self._check_removed(agent_id)
         async with self._agent_lock(agent_id):
             await self._reload_agent_locked(agent_id)
 
     async def _reload_agent_locked(self, agent_id: UUID) -> None:
+        self._check_removed(agent_id)
         async with self._lock:
-            old_runtime = self._agents.pop(agent_id, None)
+            old_runtime = self._agents.get(agent_id)
         if old_runtime is None:
             # Not materialised in this process: the next get_agent/start
             # already reads the fresh config from the database.
@@ -370,21 +411,21 @@ class AgentManager:
             AgentRuntimeState.RUNNING,
             AgentRuntimeState.STARTING,
         )
-        await old_runtime.close()
-        runtime = await self.get_agent(agent_id)
-        if was_active:
-            try:
-                await self._start_runtime(runtime)
-            except TelegramTeardownPendingError:
-                # Замена не смогла подключиться, пока закрывается прошлое соединение:
-                # агент остановлен, а не сломан, и в базе должно быть видно именно это.
-                await self._save_status(agent_id, AgentRuntimeState.STOPPED)
-                raise
-            except Exception:
-                # Persist the failure like start_agent does: without this the
-                # database keeps RUNNING while the rebuilt runtime is ERROR.
-                await self._save_status(agent_id, AgentRuntimeState.ERROR)
-                raise
+        runtime = old_runtime
+        try:
+            await retry_previous_telegram_teardown(old_runtime)
+            await old_runtime.close()
+            async with self._lock:
+                self._check_removed(agent_id)
+                del self._agents[agent_id]
+            runtime = await self._get_agent_locked(agent_id)
+            if was_active:
+                runtime = await self._start_runtime(runtime)
+        except BaseException:
+            if agent_id not in self._removed:
+                await self._save_status_after_failure(self._agents.get(agent_id, runtime))
+            raise
+        await self._save_status(agent_id, runtime.state)
 
     async def confirm_telegram_rebind(
         self,
@@ -396,12 +437,15 @@ class AgentManager:
         Операция с аккаунтом не должна попасть в окно между stop и reload:
         иначе настройки уйдут в рантайм, который сейчас снимут.
         """
+        self._check_removed(agent_id)
         async with self._agent_lock(agent_id):
             try:
-                await self.stop_agent(agent_id)
+                await self._stop_agent_locked(agent_id)
             except Exception as exc:
                 raise TelegramRebindSequenceError(TelegramRebindStep.STOP) from exc
+            self._check_removed(agent_id)
             result = await apply()
+            self._check_removed(agent_id)
             try:
                 await self._reload_agent_locked(agent_id)
             except Exception as exc:
@@ -409,33 +453,51 @@ class AgentManager:
             return result
 
     async def remove_agent(self, agent_id: UUID) -> None:
-        """Unregister the agent runtime and stop it. Missing agents are ignored.
-
-        Failures of ``stop`` propagate to the caller so the deletion flow can
-        abort before removing the database rows. On failure the tombstone is
-        lifted: the agent row is still in the database, so the next
-        ``get_agent`` re-creates the runtime from scratch (a fresh object).
-        """
+        """Сразу скрыть агента и дождаться сериализованного закрытия его владельца."""
         async with self._lock:
-            # Tombstone and pop must happen under one lock: a concurrent
-            # get_agent landing in the window between them would re-materialise
-            # the runtime from the persistent config and leak it.
-            self._removed.add(agent_id)
-            runtime = self._agents.pop(agent_id, None)
-        try:
-            if runtime is not None:
+            cleanup = self._removal_tasks.get(agent_id)
+            if cleanup is None:
+                self._removed.add(agent_id)
+                runtime = self._agents.pop(agent_id, None)
+                if runtime is None:
+                    return
+                cleanup = asyncio.create_task(self._finish_removal(agent_id, runtime))
+                self._removal_tasks[agent_id] = cleanup
+                cleanup.add_done_callback(self._removal_finished)
+        await asyncio.shield(cleanup)
+
+    @staticmethod
+    def _removal_finished(task: asyncio.Task[None]) -> None:
+        if not task.cancelled() and (error := task.exception()) is not None:
+            logger.error("Agent removal cleanup failed", exc_info=error)
+
+    async def _finish_removal(self, agent_id: UUID, runtime: MimicAgentRuntime) -> None:
+        async with self._agent_lock(agent_id):
+            try:
+                await retry_previous_telegram_teardown(runtime, wait=False)
                 await runtime.close()
-        except Exception:
-            async with self._lock:
-                self._removed.discard(agent_id)
-            raise
+            except BaseException:
+                async with self._lock:
+                    self._agents[agent_id] = runtime
+                    self._removed.discard(agent_id)
+                await self._save_status_after_failure(runtime)
+                raise
+            finally:
+                self._removal_tasks.pop(agent_id, None)
 
     async def trigger_message(
         self,
         agent_id: UUID,
         trigger: AgentTrigger,
     ) -> AgentTriggerResult:
-        return await (await self.get_agent(agent_id)).trigger_message(trigger)
+        self._check_removed(agent_id)
+        async with self._agent_lock(agent_id):
+            runtime = await self._get_agent_locked(agent_id)
+            if runtime.session_revoked:
+                raise TelegramAuthorizationRequired(REVOKED_SESSION_MESSAGE)
+            if runtime.state is not AgentRuntimeState.RUNNING:
+                runtime = await self._start_agent_locked(agent_id)
+        return await runtime._trigger_running_message(trigger)
 
     async def get_warmup_state(self, agent_id: UUID) -> WarmupState:
         """Ограничение аккаунта и режим восстановления: то, по чему агент работает сейчас."""
@@ -456,13 +518,15 @@ class AgentManager:
         return await (await self.get_agent(agent_id)).list_chats()
 
     async def get_telegram_password_state(self, agent_id: UUID) -> TelegramPasswordState:
+        self._check_removed(agent_id)
         async with self._agent_lock(agent_id):
-            runtime = await self.get_agent(agent_id)
+            runtime = await self._get_agent_locked(agent_id)
             return await self._lease_account(runtime, read_password_state)
 
     async def change_telegram_username(self, agent_id: UUID, username: str) -> str:
+        self._check_removed(agent_id)
         async with self._agent_lock(agent_id):
-            runtime = await self.get_agent(agent_id)
+            runtime = await self._get_agent_locked(agent_id)
             confirmed = await self._lease_account(
                 runtime, lambda client: apply_username(client, username)
             )
@@ -472,8 +536,9 @@ class AgentManager:
     async def change_telegram_password(
         self, agent_id: UUID, change: TelegramPasswordUpdate
     ) -> None:
+        self._check_removed(agent_id)
         async with self._agent_lock(agent_id):
-            runtime = await self.get_agent(agent_id)
+            runtime = await self._get_agent_locked(agent_id)
             await self._lease_account(runtime, lambda client: apply_password(client, change))
 
     async def _lease_account(
@@ -494,8 +559,18 @@ class AgentManager:
     async def shutdown(self) -> None:
         if self.warmup is not None:
             await self.warmup.stop()
-        agents = list(self._agents.values())
-        await asyncio.gather(*(agent.close() for agent in agents), return_exceptions=True)
+        await asyncio.gather(
+            *(self._close_agent(agent_id) for agent_id in list(self._agents)),
+            *(asyncio.shield(task) for task in list(self._removal_tasks.values())),
+            return_exceptions=True,
+        )
+
+    async def _close_agent(self, agent_id: UUID) -> None:
+        async with self._agent_lock(agent_id):
+            runtime = self._agents.get(agent_id)
+            if runtime is not None:
+                await retry_previous_telegram_teardown(runtime, wait=False)
+                await runtime.close()
 
     def _build_runtime_with_memory(self, config: AgentRuntimeConfig) -> MimicAgentRuntime:
         telegram_client = self._telegram_client_factory(config)
@@ -532,6 +607,14 @@ class AgentManager:
             chat_access=chat_access,
             chat_directory=directory,
         )
+
+    async def _save_status_after_failure(self, runtime: MimicAgentRuntime) -> None:
+        try:
+            await self._save_status(runtime.config.agent_id, runtime.state)
+        except Exception:
+            logger.exception(
+                "Failed to persist state after agent %s lifecycle failure", runtime.config.agent_id
+            )
 
     async def _save_status(self, agent_id: UUID, state: AgentRuntimeState) -> None:
         if self._status_sink is None:

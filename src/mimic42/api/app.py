@@ -31,6 +31,7 @@ from mimic42.api.auth import AuthVerifier, CurrentUser, SupabaseJWTVerifier, req
 from mimic42.config import Settings
 from mimic42.core.admin import AdminIdentity, AdminRepository
 from mimic42.core.agent_runtime import (
+    AgentLifecycleChangedError,
     AgentRuntimeConfig,
     AgentRuntimeState,
     AgentStatus,
@@ -603,11 +604,13 @@ def create_app(
     @app.exception_handler(TelegramLoginStaleError)
     @app.exception_handler(TelegramLoginRouteChangedError)
     @app.exception_handler(TelegramTeardownPendingError)
+    @app.exception_handler(AgentLifecycleChangedError)
     async def telegram_state_conflict(
         _request: Request,
         exc: TelegramLoginStaleError
         | TelegramLoginRouteChangedError
-        | TelegramTeardownPendingError,
+        | TelegramTeardownPendingError
+        | AgentLifecycleChangedError,
     ) -> JSONResponse:
         return JSONResponse(
             status_code=status.HTTP_409_CONFLICT,
@@ -1708,7 +1711,7 @@ def _telegram_account_http_error(exc: Exception) -> HTTPException | None:
         return HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
     if isinstance(exc, TelegramAuthorizationRequired):
         return HTTPException(status_code=status.HTTP_428_PRECONDITION_REQUIRED, detail=str(exc))
-    if isinstance(exc, TelegramTeardownPendingError):
+    if isinstance(exc, (TelegramTeardownPendingError, AgentLifecycleChangedError)):
         return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
     if isinstance(exc, TelegramSessionChangedError):
         return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))

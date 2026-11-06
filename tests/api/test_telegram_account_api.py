@@ -13,6 +13,7 @@ from telethon import errors, functions
 
 from mimic42.api.app import create_app
 from mimic42.core.agent_runtime import (
+    AgentLifecycleChangedError,
     AgentRuntimeConfig,
     AgentRuntimeState,
     MimicAgentRuntime,
@@ -87,6 +88,29 @@ async def _account_app(
 
 def _url(runtime: MimicAgentRuntime, suffix: str) -> str:
     return f"/api/v1/agents/{runtime.config.agent_id}/telegram/{suffix}"
+
+
+@pytest.mark.parametrize(
+    ("method", "suffix", "payload"),
+    [
+        ("GET", "password", None),
+        ("PUT", "username", {"username": "new_name"}),
+        ("PUT", "password", {"new_password": "new_secret"}),
+    ],
+)
+async def test_retired_runtime_account_requests_return_conflict_without_connecting(
+    method: str, suffix: str, payload: dict[str, str] | None
+) -> None:
+    async with _account_app() as (app, _manager, runtime, client, _account):
+        await runtime.close()
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as api:
+            response = await api.request(
+                method, _url(runtime, suffix), headers=AUTH_HEADERS, json=payload
+            )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == str(AgentLifecycleChangedError())
+    assert client.connect_calls == 0
 
 
 @pytest.mark.asyncio

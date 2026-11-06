@@ -85,10 +85,14 @@ STOP_STEP_TIMEOUT_SECONDS = 5.0
 # и отзывает ключ — «с того же или другого IP», так что перекрытия допускать нельзя.
 TELEGRAM_TEARDOWN_WAIT_SECONDS = 30.0
 
-# Не уложившиеся в срок отключения от Telegram, по агентам: рантайм после перезагрузки
-# конфигурации — новый объект, и «не подключаться, пока старый не отключился» должно
-# знать не оно, а процесс.
-_PENDING_TELEGRAM_TEARDOWNS: dict[UUID, asyncio.Future[Any]] = {}
+
+@dataclass(frozen=True)
+class _TelegramTeardown:
+    owner: MimicAgentRuntime
+    task: asyncio.Future[Any]
+
+
+_PENDING_TELEGRAM_TEARDOWNS: dict[UUID, _TelegramTeardown] = {}
 
 
 class OpenerTargetMismatch(RuntimeError):
@@ -103,6 +107,13 @@ class TelegramTeardownPendingError(RuntimeError):
             "Предыдущее соединение с Telegram ещё закрывается. Два соединения одной "
             "сессии Telegram отзывает, поэтому запуск отложен. Повторите через минуту."
         )
+
+
+class AgentLifecycleChangedError(RuntimeError):
+    """Рантайм закрыт или остановлен до допуска запрошенной операции."""
+
+    def __init__(self) -> None:
+        super().__init__("Состояние агента изменилось. Повторите запрос.")
 
 
 class TelegramAuthorizationRequired(RuntimeError):
@@ -376,6 +387,10 @@ class MimicAgentRuntime:
         self._chat_access = chat_access
         self._chat_directory = chat_directory
         self._state = AgentRuntimeState.STOPPED
+        self._retired = False
+        self._telegram_teardown: asyncio.Future[Any] | None = None
+        self._direct_turns: set[asyncio.Task[Any]] = set()
+        self._stop_generation = 0
         self._lifecycle_lock = asyncio.Lock()
         self._trigger_lock = asyncio.Lock()
         # Проверка окна и ход по ней — одна операция: иначе сообщения, пришедшие во время
@@ -787,7 +802,7 @@ class MimicAgentRuntime:
     async def _disconnect_revoked_client(self) -> None:
         """Отключить клиент уже после завершения активного хода."""
         try:
-            await self._telegram_client.disconnect()
+            await self._disconnect_telegram()
         except Exception:
             logger.exception(
                 "Failed to disconnect revoked Telegram client for agent %s",
@@ -808,6 +823,10 @@ class MimicAgentRuntime:
         return self._state
 
     @property
+    def session_revoked(self) -> bool:
+        return self._session_revoked
+
+    @property
     def status(self) -> AgentStatus:
         return AgentStatus(
             agent_id=self.config.agent_id,
@@ -823,6 +842,10 @@ class MimicAgentRuntime:
 
     async def start(self) -> None:
         async with self._lifecycle_lock:
+            if self._retired:
+                raise AgentLifecycleChangedError()
+            if self._session_revoked:
+                raise TelegramAuthorizationRequired(REVOKED_SESSION_MESSAGE)
             if self._state is AgentRuntimeState.RUNNING:
                 logger.debug(f"Agent {self.config.agent_id} already running")
                 return
@@ -839,6 +862,7 @@ class MimicAgentRuntime:
                 raise
 
             logger.info(f"Starting agent {self.config.agent_id}")
+            self._telegram_teardown = None
             try:
                 logger.debug("Connecting to Telegram...")
                 await self._telegram_client.connect()
@@ -855,9 +879,35 @@ class MimicAgentRuntime:
                 logger.debug("Authorized. Registering message handler...")
                 self._register_message_handler()
                 logger.info("Message handler registered")
-            except Exception as e:
+
+                self._state = AgentRuntimeState.RUNNING
+                if self._session_factory is not None:
+                    self._scheduler_task = asyncio.create_task(self._run_scheduler_loop())
+                import httpx
+
+                self._http_client = httpx.AsyncClient(timeout=30.0)
+                await self._record_event(
+                    event_type="agent.started",
+                    status="succeeded",
+                    started_at=datetime.now(UTC),
+                    completed_at=datetime.now(UTC),
+                )
+                logger.info(f"Agent {self.config.agent_id} started successfully")
+            except BaseException as e:
+                self._state = AgentRuntimeState.STOPPING
+                try:
+                    await self._stop_resources()
+                except Exception:
+                    logger.exception("Failed to clean up Telegram client after start failure")
+                finally:
+                    self._state = (
+                        AgentRuntimeState.ERROR
+                        if isinstance(e, Exception)
+                        else AgentRuntimeState.STOPPED
+                    )
+                if not isinstance(e, Exception):
+                    raise
                 logger.error(f"Failed to start agent {self.config.agent_id}: {e}", exc_info=True)
-                self._state = AgentRuntimeState.ERROR
                 dead_session = _is_dead_session_error(e)
                 reason = "unauthorized" if dead_session else "exception"
                 proxy_fallback = (
@@ -873,12 +923,6 @@ class MimicAgentRuntime:
                 if dead_session:
                     self._session_revoked = True
                     await self._mark_telegram_session_revoked(error=REVOKED_SESSION_MESSAGE)
-                # connect() мог пройти до падения: не оставляем полуживое
-                # соединение висеть до следующего старта.
-                try:
-                    await self._telegram_client.disconnect()
-                except Exception:
-                    logger.exception("Failed to disconnect Telegram client after start failure")
                 if not proxy_fallback:
                     await self._record_event(
                         event_type="agent.start_failed",
@@ -895,55 +939,19 @@ class MimicAgentRuntime:
                     raise TelegramAuthorizationRequired(REVOKED_SESSION_MESSAGE) from e
                 raise
 
-            self._state = AgentRuntimeState.RUNNING
-            if self._session_factory is not None:
-                self._scheduler_task = asyncio.create_task(self._run_scheduler_loop())
-            import httpx
-
-            self._http_client = httpx.AsyncClient(timeout=30.0)
-            await self._record_event(
-                event_type="agent.started",
-                status="succeeded",
-                started_at=datetime.now(UTC),
-                completed_at=datetime.now(UTC),
-            )
-            logger.info(f"Agent {self.config.agent_id} started successfully")
-
     async def stop(self) -> None:
         async with self._lifecycle_lock:
             if self._state is AgentRuntimeState.STOPPED:
+                if self._telegram_teardown is not None:
+                    await self._disconnect_telegram(retry_failed=True)
                 return
 
+            self._stop_generation += 1
             self._state = AgentRuntimeState.STOPPING
             try:
-                if self._scheduler_task is not None:
-                    scheduler_task = self._scheduler_task
-                    scheduler_task.cancel()
-                    # Планировщик ходит в базу: мёртвое соединение держит его
-                    # закрытие сессии под щитом SQLAlchemy, и отмена не помогает.
-                    await self._within_stop_step(scheduler_task, "планировщик таймеров")
-                    self._scheduler_task = None
-
-                await self._within_stop_step(self._album_grouper.close(), "буфер альбомов")
-                await self._within_stop_step(self._deferred_inbox.close(), "отложенные входящие")
-
-                if self._http_client is not None:
-                    try:
-                        await self._within_stop_step(self._http_client.aclose(), "HTTP-клиент")
-                    finally:
-                        self._http_client = None
+                await self._stop_resources()
             finally:
-                # The Telegram client must be disconnected even if a previous
-                # step failed — otherwise the userbot keeps answering messages
-                # for a runtime nobody can reach anymore.
-                try:
-                    unfinished = await self._within_stop_step(
-                        self._telegram_client.disconnect(), "отключение от Telegram"
-                    )
-                    if unfinished is not None:
-                        _hold_telegram_teardown(self.config.agent_id, unfinished)
-                finally:
-                    self._state = AgentRuntimeState.STOPPED
+                self._state = AgentRuntimeState.STOPPED
 
             await self._within_stop_step(
                 self._record_event(
@@ -954,6 +962,35 @@ class MimicAgentRuntime:
                 ),
                 "запись события остановки",
             )
+
+    async def _stop_resources(self) -> None:
+        try:
+            if self._scheduler_task is not None:
+                scheduler_task = self._scheduler_task
+                scheduler_task.cancel()
+                await self._within_stop_step(scheduler_task, "планировщик таймеров")
+                self._scheduler_task = None
+            await self._within_stop_step(self._album_grouper.close(), "буфер альбомов")
+            await self._within_stop_step(self._deferred_inbox.close(), "отложенные входящие")
+            if self._http_client is not None:
+                try:
+                    await self._within_stop_step(self._http_client.aclose(), "HTTP-клиент")
+                finally:
+                    self._http_client = None
+        finally:
+            await self._disconnect_telegram(retry_failed=True)
+
+    async def _disconnect_telegram(self, *, retry_failed: bool = False) -> None:
+        teardown = self._telegram_teardown
+        if teardown is None or (
+            retry_failed and teardown.done() and not _teardown_succeeded(teardown)
+        ):
+            teardown = asyncio.ensure_future(self._telegram_client.disconnect())
+            self._telegram_teardown = teardown
+            _hold_telegram_teardown(self, teardown)
+        await self._within_stop_step(teardown, "отключение от Telegram")
+        if teardown.done():
+            teardown.result()
 
     @asynccontextmanager
     async def leased_telegram_client(self) -> AsyncIterator[TelegramClientLike]:
@@ -966,6 +1003,8 @@ class MimicAgentRuntime:
         соединение той же сессии.
         """
         async with self._lifecycle_lock:
+            if self._retired:
+                raise AgentLifecycleChangedError()
             await _await_telegram_teardown(self.config.agent_id)
             if self._session_revoked:
                 raise TelegramAuthorizationRequired(REVOKED_SESSION_MESSAGE)
@@ -976,11 +1015,12 @@ class MimicAgentRuntime:
             logger.info(
                 "Агент %s: краткое подключение для операции с аккаунтом", self.config.agent_id
             )
+            self._telegram_teardown = None
             try:
                 await self._telegram_client.connect()
             except BaseException:
                 try:
-                    await self._telegram_client.disconnect()
+                    await self._disconnect_telegram()
                 except Exception:
                     logger.exception(
                         "Failed to disconnect Telegram client after lease connect failure"
@@ -997,18 +1037,13 @@ class MimicAgentRuntime:
                 raise
             finally:
                 try:
-                    unfinished = await self._within_stop_step(
-                        self._telegram_client.disconnect(), "отключение от Telegram"
-                    )
+                    await self._disconnect_telegram()
                 except Exception:
                     if failure is None:
                         raise
                     logger.exception(
                         "Failed to disconnect Telegram client after account operation failure"
                     )
-                else:
-                    if unfinished is not None:
-                        _hold_telegram_teardown(self.config.agent_id, unfinished)
 
     async def _within_stop_step(
         self, step: Awaitable[Any], name: str
@@ -1046,6 +1081,7 @@ class MimicAgentRuntime:
         The manager calls this when it drops the runtime (removal, reload,
         shutdown); a plain stop keeps the agent's HTTP client for a restart.
         """
+        self._retired = True
         await self.stop()
         await self._settle_in_flight()
         close_agent = getattr(self._langchain_agent, "aclose", None)
@@ -1057,7 +1093,9 @@ class MimicAgentRuntime:
 
         stop() их не обрывает: ответ мог уже уйти, и запись хода не должна
         потеряться. Но после close() рантайм больше никто не закроет."""
-        in_flight = self._album_grouper.in_flight | self._deferred_inbox.in_flight
+        in_flight = (
+            self._album_grouper.in_flight | self._deferred_inbox.in_flight | self._direct_turns
+        ) - {asyncio.current_task()}
         if not in_flight:
             return
         _, pending = await asyncio.wait(in_flight, timeout=CLOSE_GRACE_SECONDS)
@@ -1274,10 +1312,26 @@ class MimicAgentRuntime:
             logger.info(f"Agent not running (state={self._state}), starting...")
             await self.start()
 
-        # Контексты выходят в обратном порядке: сначала снимается trigger lock,
-        # затем finally отключает revoked-клиент даже при ошибке сохранения хода.
-        async with self._disconnect_revoked_client_after_turn(), self._trigger_lock:
-            return await self._take_turn(trigger)
+        return await self._trigger_running_message(trigger)
+
+    async def _trigger_running_message(self, trigger: AgentTrigger) -> AgentTriggerResult:
+        admitted_generation = self._stop_generation
+        task = asyncio.current_task()
+        assert task is not None
+        self._direct_turns.add(task)
+        try:
+            async with self._disconnect_revoked_client_after_turn(), self._trigger_lock:
+                if self._session_revoked:
+                    raise TelegramAuthorizationRequired(REVOKED_SESSION_MESSAGE)
+                if (
+                    self._retired
+                    or self._state is not AgentRuntimeState.RUNNING
+                    or admitted_generation != self._stop_generation
+                ):
+                    raise AgentLifecycleChangedError()
+                return await self._take_turn(trigger)
+        finally:
+            self._direct_turns.discard(task)
 
     async def _take_turn(self, trigger: AgentTrigger) -> AgentTriggerResult:
         """Ход целиком под корневым спаном трейсинга (issue #92)."""
@@ -2307,7 +2361,7 @@ class MimicAgentRuntime:
         if self._state is AgentRuntimeState.STARTING:
             async with self._lifecycle_lock:
                 pass
-        return self._state is AgentRuntimeState.RUNNING
+        return not self._retired and self._state is AgentRuntimeState.RUNNING
 
     async def _gate_and_process(
         self, event: TelegramEventLike, events: list[TelegramEventLike], peer: str
@@ -2578,7 +2632,7 @@ class MimicAgentRuntime:
                     trigger_text = f"[Отложенное событие] Сработал таймер: {timer.description}"
                     # Ход идёт в проверенный чат, а не в исходное имя: пока модель
                     # думает, имя может стать чужим. По ID ту же переписку найдёт и память.
-                    await self.trigger_message(
+                    await self._trigger_running_message(
                         AgentTrigger(
                             peer=timer.peer if checked_id is None else str(checked_id),
                             text=trigger_text,
@@ -2619,15 +2673,42 @@ class MimicAgentRuntime:
                     await update_session.commit()
 
 
-def _hold_telegram_teardown(agent_id: UUID, teardown: asyncio.Future[Any]) -> None:
+async def retry_previous_telegram_teardown(
+    runtime: MimicAgentRuntime, *, wait: bool = True
+) -> None:
+    """Менеджер явно повторяет очистку клиента, пережившего замену рантайма."""
+    previous = _PENDING_TELEGRAM_TEARDOWNS.get(runtime.config.agent_id)
+    if previous is None or previous.owner is runtime:
+        return
+    if previous.task.done() and not _teardown_succeeded(previous.task):
+        async with previous.owner._lifecycle_lock:
+            await previous.owner._disconnect_telegram(retry_failed=True)
+    if wait:
+        await _await_telegram_teardown(runtime.config.agent_id)
+
+
+def _hold_telegram_teardown(owner: MimicAgentRuntime, teardown: asyncio.Future[Any]) -> None:
     """Запомнить недоотключившийся клиент агента: запуск подождёт, пока он закроется."""
-    _PENDING_TELEGRAM_TEARDOWNS[agent_id] = teardown
+    agent_id = owner.config.agent_id
+    previous = _PENDING_TELEGRAM_TEARDOWNS.get(agent_id)
+    if (
+        previous is not None
+        and previous.owner is not owner
+        and not _teardown_succeeded(previous.task)
+    ):
+        return
+    pending = _TelegramTeardown(owner, teardown)
+    _PENDING_TELEGRAM_TEARDOWNS[agent_id] = pending
 
     def release(finished: asyncio.Future[Any]) -> None:
-        if _PENDING_TELEGRAM_TEARDOWNS.get(agent_id) is finished:
+        if _teardown_succeeded(finished) and _PENDING_TELEGRAM_TEARDOWNS.get(agent_id) is pending:
             del _PENDING_TELEGRAM_TEARDOWNS[agent_id]
 
     teardown.add_done_callback(release)
+
+
+def _teardown_succeeded(teardown: asyncio.Future[Any]) -> bool:
+    return teardown.done() and not teardown.cancelled() and teardown.exception() is None
 
 
 async def _await_telegram_teardown(agent_id: UUID) -> None:
@@ -2637,12 +2718,14 @@ async def _await_telegram_teardown(agent_id: UUID) -> None:
     отклоняется (``TelegramTeardownPendingError``), а не получает второе соединение.
     Таймаут ``asyncio.wait`` отключение не отменяет: оно продолжает закрываться.
     """
-    pending = _PENDING_TELEGRAM_TEARDOWNS.get(agent_id)
-    if pending is None or pending.done():
+    teardown = _PENDING_TELEGRAM_TEARDOWNS.get(agent_id)
+    if teardown is None or _teardown_succeeded(teardown.task):
         return
+    pending = teardown.task
     logger.info("Агент %s: жду, пока закроется прошлое соединение с Telegram", agent_id)
-    await asyncio.wait({pending}, timeout=TELEGRAM_TEARDOWN_WAIT_SECONDS)
     if not pending.done():
+        await asyncio.wait({pending}, timeout=TELEGRAM_TEARDOWN_WAIT_SECONDS)
+    if not _teardown_succeeded(pending):
         raise TelegramTeardownPendingError()
 
 
