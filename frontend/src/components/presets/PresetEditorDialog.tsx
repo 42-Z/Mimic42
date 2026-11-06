@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 import { Modal } from '@/components/ui/modal';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -17,44 +17,56 @@ export interface PresetEditorInitial {
   settings: Record<string, unknown> | null;
 }
 
-/**
- * Создание и правка своего пресета. Сохранение отдаётся странице через
- * `onSave` (внутри — `mutateAsync`), компонент только валидирует и ждёт.
- */
-export function PresetEditorDialog({
-  isOpen,
-  onClose,
-  initial,
-  onSave,
-}: {
+interface PresetEditorDialogProps {
   isOpen: boolean;
   onClose: () => void;
   initial?: PresetEditorInitial | null;
   onSave: (draft: PresetDraft) => Promise<void>;
-}) {
-  const [title, setTitle] = useState('');
-  const [summary, setSummary] = useState('');
-  const [body, setBody] = useState('');
-  const [settings, setSettings] = useState<Record<string, unknown> | null>(null);
+}
+
+/**
+ * Создание и правка своего пресета. Сохранение отдаётся странице через
+ * `onSave` (внутри — `mutateAsync`), компонент только валидирует и ждёт.
+ */
+export function PresetEditorDialog({ isOpen, ...props }: PresetEditorDialogProps) {
+  if (!isOpen) return null;
+
+  return <PresetEditorForm key={props.initial?.id ?? 'new'} {...props} />;
+}
+
+function PresetEditorForm({
+  onClose,
+  initial,
+  onSave,
+}: Omit<PresetEditorDialogProps, 'isOpen'>) {
+  const [title, setTitle] = useState(initial?.title ?? '');
+  const [summary, setSummary] = useState(initial?.summary ?? '');
+  const [body, setBody] = useState(initial?.body ?? '');
+  const [settings, setSettings] = useState<Record<string, unknown> | null>(
+    initial?.settings ?? null,
+  );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const savingRef = useRef(false);
+  const activeRef = useRef(true);
 
-  useEffect(() => {
-    if (isOpen) {
-      setTitle(initial?.title ?? '');
-      setSummary(initial?.summary ?? '');
-      setBody(initial?.body ?? '');
-      setSettings(initial?.settings ?? null);
-      setError(null);
-      setSaving(false);
-    }
-  }, [isOpen, initial]);
+  useLayoutEffect(() => {
+    activeRef.current = true;
+    return () => {
+      activeRef.current = false;
+    };
+  }, []);
 
   const enabledTools = readEnabledTools(settings);
   const canSave = title.trim().length > 0 && body.trim().length > 0;
 
+  const handleClose = () => {
+    if (!savingRef.current) onClose();
+  };
+
   const handleSave = async () => {
-    if (!canSave || saving) return;
+    if (!canSave || savingRef.current) return;
+    savingRef.current = true;
     setSaving(true);
     setError(null);
     try {
@@ -64,18 +76,21 @@ export function PresetEditorDialog({
         body: body,
         settings: settings,
       });
-      onClose();
+      if (activeRef.current) onClose();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Не удалось сохранить пресет');
+      if (activeRef.current) {
+        setError(cause instanceof Error ? cause.message : 'Не удалось сохранить пресет');
+      }
     } finally {
-      setSaving(false);
+      savingRef.current = false;
+      if (activeRef.current) setSaving(false);
     }
   };
 
   return (
     <Modal
-      isOpen={isOpen}
-      onClose={onClose}
+      isOpen
+      onClose={handleClose}
       title={initial ? 'Правка пресета' : 'Новый пресет'}
       size="lg"
       className="max-h-[85vh] overflow-y-auto"
@@ -142,7 +157,7 @@ export function PresetEditorDialog({
         )}
 
         <div className="flex items-center justify-end gap-3">
-          <Button type="button" variant="ghost" size="sm" onClick={onClose}>
+          <Button type="button" variant="ghost" size="sm" onClick={handleClose} disabled={saving}>
             Отмена
           </Button>
           <Button
