@@ -1,32 +1,49 @@
 'use client';
 
+import { useCallback } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import type { MediaUrlResult } from '@/hooks/useMediaUrl';
 import { agentsApi } from '@/lib/api';
 import { queryKeys } from '@/lib/queryClient';
 
-/**
- * Ссылка на объект Storage без Authorization: браузер сам шлёт Range.
- * React Query держит ссылку, пока компонент смонтирован, и подписывает
- * заново после 30 минут без монтирования.
- */
+export interface MediaLinkResult extends MediaUrlResult {
+  refresh: () => Promise<string | null>;
+}
+
+/** Ссылка без Authorization для Range-запросов; обновляется до истечения TTL. */
 export function useMediaLink(
   agentId: string,
   storagePath: string | null | undefined,
-): MediaUrlResult {
+): MediaLinkResult {
   const path = storagePath ?? '';
-  const { data, isError } = useQuery({
+  const { data, isError, refetch } = useQuery({
     queryKey: queryKeys.media.link(agentId, path),
-    queryFn: () => agentsApi.signMediaLink(agentId, path),
+    queryFn: async () => {
+      const requestedAt = Date.now();
+      const link = await agentsApi.signMediaLink(agentId, path);
+      return { ...link, renewAt: requestedAt + link.expires_in * 1000 * 0.9 };
+    },
     enabled: Boolean(agentId && path),
-    staleTime: Infinity,
+    staleTime: (query) => Math.max(0, (query.state.data?.renewAt ?? 0) - query.state.dataUpdatedAt),
     gcTime: 30 * 60_000,
-    refetchOnWindowFocus: false,
+    refetchInterval: (query) =>
+      query.state.status === 'error' || query.state.fetchStatus !== 'idle' || !query.state.data
+        ? false
+        : Math.max(1, query.state.data.renewAt - Date.now()),
+    refetchIntervalInBackground: true,
+    refetchOnWindowFocus: true,
+    refetchOnReconnect: true,
     retry: false,
   });
 
-  if (!agentId || !path) return { url: null, status: 'idle' };
-  if (isError) return { url: null, status: 'error' };
-  if (data) return { url: data.url, status: 'ready' };
-  return { url: null, status: 'loading' };
+  const refresh = useCallback(async () => {
+    if (!agentId || !path) return null;
+    const result = await refetch({ cancelRefetch: false });
+    return result.isError ? null : (result.data?.url ?? null);
+  }, [agentId, path, refetch]);
+
+  if (!agentId || !path) return { url: null, status: 'idle', refresh };
+  if (data) return { url: data.url, status: 'ready', refresh };
+  if (isError) return { url: null, status: 'error', refresh };
+  return { url: null, status: 'loading', refresh };
 }

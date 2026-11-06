@@ -66,6 +66,7 @@ export interface MediaItem {
 
 export interface MediaLink {
   url: string;
+  expires_in: number;
 }
 
 export interface ConversationTurn {

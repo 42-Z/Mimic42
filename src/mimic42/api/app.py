@@ -288,6 +288,7 @@ class UploadedMedia(BaseModel):
 
 class MediaLinkResponse(BaseModel):
     url: str
+    expires_in: int
 
 
 def _image_filename(filename: str | None, extension: str) -> str:
@@ -1106,7 +1107,7 @@ def create_app(
         if url is None:
             raise HTTPException(status_code=404, detail="Файл не найден")
         response.headers["Cache-Control"] = "no-store"
-        return MediaLinkResponse(url=url)
+        return MediaLinkResponse(url=url, expires_in=int(MEDIA_LINK_TTL.total_seconds()))
 
     @app.post(
         "/api/v1/agents",
