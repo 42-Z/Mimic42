@@ -341,8 +341,8 @@ async def test_old_runtime_cannot_revoke_newly_rebound_session(
 
 async def _wait_for_blocker(session: AsyncSession, pid: int, blocker: int) -> None:
     async with asyncio.timeout(5):
-        while blocker not in await session.scalar(
-            text("select pg_blocking_pids(:pid)"), {"pid": pid}
+        while not await session.scalar(
+            text("select :blocker = any(pg_blocking_pids(:pid))"), {"pid": pid, "blocker": blocker}
         ):
             pass
 
