@@ -602,8 +602,12 @@ def create_app(
 
     @app.exception_handler(TelegramLoginStaleError)
     @app.exception_handler(TelegramLoginRouteChangedError)
-    async def telegram_login_conflict(
-        _request: Request, exc: TelegramLoginStaleError | TelegramLoginRouteChangedError
+    @app.exception_handler(TelegramTeardownPendingError)
+    async def telegram_state_conflict(
+        _request: Request,
+        exc: TelegramLoginStaleError
+        | TelegramLoginRouteChangedError
+        | TelegramTeardownPendingError,
     ) -> JSONResponse:
         return JSONResponse(
             status_code=status.HTTP_409_CONFLICT,
