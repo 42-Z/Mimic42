@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from 'bun:test';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { focusManager, onlineManager, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import {
   act,
   cleanup,
@@ -12,6 +12,7 @@ import {
 import type { ReactElement } from 'react';
 import { MediaContent } from '@/components/activity/MediaContent';
 import { apiClient } from '@/lib/api';
+import { queryKeys } from '@/lib/queryClient';
 import type { MediaItem } from '@/types';
 
 let queryClient: QueryClient;
@@ -20,6 +21,12 @@ beforeEach(() => {
   queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
+});
+
+afterEach(() => {
+  queryClient.clear();
+  focusManager.setFocused(undefined);
+  onlineManager.setOnline(true);
 });
 
 function renderMedia(ui: ReactElement) {
@@ -35,7 +42,7 @@ function mockMediaApi() {
     async (url: string) =>
       ({
         data: url.includes('/media-link/')
-          ? { url: `https://storage.test/${url.split('/media-link/')[1]}` }
+          ? { url: `https://storage.test/${url.split('/media-link/')[1]}`, expires_in: 43200 }
           : new Blob(['test-media']),
       }) as never,
   );
@@ -49,6 +56,20 @@ function item(kind: MediaItem['kind'], name: string): MediaItem {
     size: 1024,
     storage_path: null,
   };
+}
+
+function mediaError(media: HTMLElement, code: number | null) {
+  Object.defineProperty(media, 'error', {
+    configurable: true,
+    value: code === null ? null : { code },
+  });
+  fireEvent.error(media);
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
 }
 
 describe('MediaContent', () => {
@@ -247,9 +268,309 @@ describe('MediaContent: стикеры', () => {
   test('ошибка декодирования WebM заменяет video плашкой', async () => {
     const sticker = storedSticker('video/webm', 'broken.webm');
     renderMedia(<MediaContent agentId="a1" items={[sticker]} />);
-    fireEvent.error(await screen.findByLabelText(`Стикер ${sticker.name}`));
+    const video = await screen.findByLabelText(`Стикер ${sticker.name}`);
+    Object.defineProperty(video, 'error', { value: { code: 3 } });
+    fireEvent.error(video);
     expect(screen.queryByLabelText(`Стикер ${sticker.name}`)).toBeNull();
     expect(screen.getByText('broken.webm (недоступно)')).toBeTruthy();
+    expect(apiClient.get).toHaveBeenCalledTimes(1);
+  });
+
+  test('смонтированное медиа обновляет подпись до истечения срока', async () => {
+    let signatures = 0;
+    spyOn(apiClient, 'get').mockImplementation(async () => ({
+      data: { url: `https://storage.test/clip-${++signatures}.webm`, expires_in: 0.2 },
+    }) as never);
+    const sticker = storedSticker('video/webm', 'long-open.webm');
+    renderMedia(<MediaContent agentId="a1" items={[sticker]} />);
+    await waitFor(() => expect(screen.getByLabelText(`Стикер ${sticker.name}`).getAttribute('src'))
+      .toBe('https://storage.test/clip-1.webm'));
+    await waitFor(() => expect(screen.getByLabelText(`Стикер ${sticker.name}`).getAttribute('src'))
+      .toBe('https://storage.test/clip-2.webm'));
+  });
+
+  test('после ошибки доступа медиа получает новую ссылку, повторный отказ ограничен', async () => {
+    let signatures = 0;
+    spyOn(apiClient, 'get').mockImplementation(async () => ({
+      data: { url: `https://storage.test/clip-${++signatures}.webm`, expires_in: 43200 },
+    }) as never);
+    const sticker = storedSticker('video/webm', 'expired.webm');
+    renderMedia(<MediaContent agentId="a1" items={[sticker]} />);
+    const video = await screen.findByLabelText(`Стикер ${sticker.name}`);
+    Object.defineProperty(video, 'error', { configurable: true, value: { code: 4 } });
+    fireEvent.error(video);
+    await waitFor(() => expect(screen.getByLabelText(`Стикер ${sticker.name}`).getAttribute('src'))
+      .toBe('https://storage.test/clip-2.webm'));
+    fireEvent.error(screen.getByLabelText(`Стикер ${sticker.name}`));
+    expect(await screen.findByText('expired.webm (недоступно)')).toBeTruthy();
+    expect(apiClient.get).toHaveBeenCalledTimes(2);
+  });
+
+  test('повторная подпись с тем же URL явно перезагружает плеер и возвращает позицию', async () => {
+    const sticker = storedSticker('video/webm', 'same-url.webm');
+    renderMedia(<MediaContent agentId="a1" items={[sticker]} />);
+    const video = await screen.findByLabelText(`Стикер ${sticker.name}`) as HTMLVideoElement;
+    video.currentTime = 12;
+    Object.defineProperty(video, 'duration', { configurable: true, value: 60 });
+    const load = spyOn(video, 'load').mockImplementation(() => { video.currentTime = 0; });
+    const play = spyOn(video, 'play').mockResolvedValue(undefined);
+    fireEvent.play(video);
+    mediaError(video, 2);
+    await waitFor(() => expect(load.mock.calls.length).toBe(1));
+    expect(video.getAttribute('src')).toBe('https://storage.test/a1/archive/same-url.webm');
+    expect(video.currentTime).toBe(0);
+    fireEvent.loadedMetadata(video);
+    expect(video.currentTime).toBe(12);
+    expect(play.mock.calls.length).toBe(1);
+    expect(apiClient.get).toHaveBeenCalledTimes(2);
+  });
+
+  test('дублирующиеся ошибки во время подписи не запускают параллельные запросы', async () => {
+    const next = deferred<string>();
+    const get = spyOn(apiClient, 'get').mockImplementation(async () => ({
+      data: { url: await next.promise, expires_in: 43200 },
+    }) as never);
+    get.mockResolvedValueOnce({ data: { url: 'https://storage.test/first', expires_in: 43200 } } as never);
+    const sticker = storedSticker('video/webm', 'repeat.webm');
+    renderMedia(<MediaContent agentId="a1" items={[sticker]} />);
+    const video = await screen.findByLabelText(`Стикер ${sticker.name}`);
+    mediaError(video, null);
+    mediaError(video, null);
+    expect(get.mock.calls.length).toBe(2);
+    await act(async () => { next.resolve('https://storage.test/next'); });
+    await waitFor(() => expect(video.getAttribute('src')).toBe('https://storage.test/next'));
+    mediaError(video, 4);
+    expect(Boolean(screen.queryByText('repeat.webm (недоступно)'))).toBe(true);
+    expect(get.mock.calls.length).toBe(2);
+  });
+
+  test('успешное воспроизведение разрешает восстановить следующую истёкшую подпись', async () => {
+    const sticker = storedSticker('video/webm', 'played.webm');
+    renderMedia(<MediaContent agentId="a1" items={[sticker]} />);
+    const video = await screen.findByLabelText(`Стикер ${sticker.name}`);
+    const load = spyOn(video as HTMLVideoElement, 'load').mockImplementation(() => {});
+    mediaError(video, 4);
+    await waitFor(() => expect(load.mock.calls.length).toBe(1));
+    fireEvent.loadedMetadata(video);
+    fireEvent.playing(video);
+    mediaError(video, 2);
+    await waitFor(() => expect(load.mock.calls.length).toBe(2));
+    expect(apiClient.get).toHaveBeenCalledTimes(3);
+  });
+
+  test('отмена пользователем не запрашивает подпись повторно', async () => {
+    const sticker = storedSticker('video/webm', 'aborted.webm');
+    renderMedia(<MediaContent agentId="a1" items={[sticker]} />);
+    const video = await screen.findByLabelText(`Стикер ${sticker.name}`);
+    mediaError(video, 1);
+    await act(async () => {});
+    expect(apiClient.get).toHaveBeenCalledTimes(1);
+    expect(Boolean(screen.queryByLabelText(`Стикер ${sticker.name}`))).toBe(true);
+  });
+
+  test('ошибка autoplay после восстановления не вызывает повторную подпись', async () => {
+    const sticker = storedSticker('video/webm', 'autoplay.webm');
+    renderMedia(<MediaContent agentId="a1" items={[sticker]} />);
+    const video = await screen.findByLabelText(`Стикер ${sticker.name}`) as HTMLVideoElement;
+    const load = spyOn(video, 'load').mockImplementation(() => {});
+    spyOn(video, 'play').mockRejectedValue(new DOMException('blocked', 'NotAllowedError'));
+    fireEvent.play(video);
+    mediaError(video, 4);
+    await waitFor(() => expect(load.mock.calls.length).toBe(1));
+    fireEvent.loadedMetadata(video);
+    await act(async () => {});
+    expect(apiClient.get).toHaveBeenCalledTimes(2);
+    expect(Boolean(screen.queryByText('autoplay.webm (недоступно)'))).toBe(false);
+  });
+
+  test('обновление кеша не прерывает проигрывание, новая ссылка применяется на паузе', async () => {
+    let signatures = 0;
+    spyOn(apiClient, 'get').mockImplementation(async () => ({
+      data: { url: `https://storage.test/clip-${++signatures}`, expires_in: 43200 },
+    }) as never);
+    const sticker = storedSticker('video/webm', 'playing.webm');
+    renderMedia(<MediaContent agentId="a1" items={[sticker]} />);
+    const video = await screen.findByLabelText(`Стикер ${sticker.name}`) as HTMLVideoElement;
+    video.currentTime = 8;
+    Object.defineProperty(video, 'duration', { configurable: true, value: 60 });
+    const load = spyOn(video, 'load').mockImplementation(() => { video.currentTime = 0; });
+    fireEvent.play(video);
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: queryKeys.media.all });
+    });
+    await waitFor(() => expect(signatures).toBe(2));
+    expect(video.getAttribute('src')).toBe('https://storage.test/clip-1');
+    expect(video.currentTime).toBe(8);
+    expect(load.mock.calls.length).toBe(0);
+    fireEvent.pause(video);
+    await waitFor(() => expect(video.getAttribute('src')).toBe('https://storage.test/clip-2'));
+    fireEvent.loadedMetadata(video);
+    expect(video.currentTime).toBe(8);
+  });
+
+  test('два плеера делят запрос восстановления и не прерывают здорового соседа', async () => {
+    const next = deferred<string>();
+    const get = spyOn(apiClient, 'get').mockImplementation(async () => ({
+      data: { url: await next.promise, expires_in: 43200 },
+    }) as never);
+    get.mockResolvedValueOnce({ data: { url: 'https://storage.test/first', expires_in: 43200 } } as never);
+    const sticker = storedSticker('video/webm', 'shared.webm');
+    renderMedia(<>
+      <MediaContent agentId="a1" items={[sticker]} />
+      <MediaContent agentId="a1" items={[sticker]} />
+      <MediaContent agentId="a1" items={[sticker]} />
+    </>);
+    await waitFor(() => expect(screen.queryAllByLabelText(`Стикер ${sticker.name}`).length).toBe(3));
+    const [first, second, healthy] = screen.getAllByLabelText(`Стикер ${sticker.name}`) as HTMLVideoElement[];
+    const healthyLoad = spyOn(healthy!, 'load').mockImplementation(() => {});
+    fireEvent.play(healthy!);
+    mediaError(first!, 4);
+    mediaError(second!, 2);
+    expect(get.mock.calls.length).toBe(2);
+    await act(async () => { next.resolve('https://storage.test/next'); });
+    await waitFor(() => expect(first!.getAttribute('src')).toBe('https://storage.test/next'));
+    expect(second!.getAttribute('src')).toBe('https://storage.test/next');
+    expect(healthy!.getAttribute('src')).toBe('https://storage.test/first');
+    expect(healthyLoad.mock.calls.length).toBe(0);
+    expect(get.mock.calls.length).toBe(2);
+  });
+
+  test('позднее восстановление не трогает новый путь и размонтированный плеер', async () => {
+    const next = deferred<string>();
+    const get = spyOn(apiClient, 'get').mockImplementation(async () => ({
+      data: { url: await next.promise, expires_in: 43200 },
+    }) as never);
+    get.mockResolvedValueOnce({ data: { url: 'https://storage.test/first', expires_in: 43200 } } as never);
+    const sticker = storedSticker('video/webm', 'changed.webm');
+    const { rerender } = renderMedia(<MediaContent agentId="a1" items={[sticker]} />);
+    const old = await screen.findByLabelText(`Стикер ${sticker.name}`) as HTMLVideoElement;
+    const load = spyOn(old, 'load').mockImplementation(() => {});
+    mediaError(old, 4);
+    get.mockResolvedValueOnce({ data: { url: 'https://storage.test/new-path', expires_in: 43200 } } as never);
+    rerender(<MediaContent agentId="a1" items={[{ ...sticker, storage_path: 'new/path' }]} />);
+    await waitFor(() => expect(screen.queryByLabelText(`Стикер ${sticker.name}`)?.getAttribute('src'))
+      .toBe('https://storage.test/new-path'));
+    await act(async () => { next.resolve('https://storage.test/stale'); });
+    expect(load.mock.calls.length).toBe(0);
+    expect(screen.getByLabelText(`Стикер ${sticker.name}`).getAttribute('src')).toBe('https://storage.test/new-path');
+  });
+
+  test('ошибка декодирования остаётся окончательной при обновлении кеша', async () => {
+    const sticker = storedSticker('video/webm', 'terminal.webm');
+    renderMedia(<MediaContent agentId="a1" items={[sticker]} />);
+    const video = await screen.findByLabelText(`Стикер ${sticker.name}`);
+    mediaError(video, 3);
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: queryKeys.media.all });
+    });
+    expect(Boolean(screen.queryByText('terminal.webm (недоступно)'))).toBe(true);
+    expect(Boolean(screen.queryByLabelText(`Стикер ${sticker.name}`))).toBe(false);
+  });
+
+  test('неудачное фоновое обновление сохраняет плеер и останавливает таймер повторов', async () => {
+    const get = spyOn(apiClient, 'get').mockRejectedValue(new Error('offline'));
+    get.mockResolvedValueOnce({ data: { url: 'https://storage.test/cached', expires_in: 0.2 } } as never);
+    const sticker = storedSticker('video/webm', 'offline.webm');
+    renderMedia(<MediaContent agentId="a1" items={[sticker]} />);
+    const video = await screen.findByLabelText(`Стикер ${sticker.name}`);
+    fireEvent.play(video);
+    await waitFor(() => expect(get.mock.calls.length).toBe(2));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 250)); });
+    expect(get.mock.calls.length).toBe(2);
+    expect(video.getAttribute('src')).toBe('https://storage.test/cached');
+    expect(Boolean(screen.queryByText('offline.webm (недоступно)'))).toBe(false);
+    mediaError(video, 4);
+    await waitFor(() => expect(Boolean(screen.queryByText('offline.webm (недоступно)'))).toBe(true));
+    expect(get.mock.calls.length).toBe(3);
+  });
+
+  test('после сна вкладки истёкшая ссылка обновляется при фокусе и восстановлении сети', async () => {
+    let now = Date.now();
+    spyOn(Date, 'now').mockImplementation(() => now);
+    let signatures = 0;
+    spyOn(apiClient, 'get').mockImplementation(async () => ({
+      data: { url: `https://storage.test/clip-${++signatures}`, expires_in: 60 },
+    }) as never);
+    queryClient.setDefaultOptions({ queries: { refetchOnReconnect: false } });
+    const sticker = storedSticker('video/webm', 'sleep.webm');
+    renderMedia(<MediaContent agentId="a1" items={[sticker]} />);
+    await screen.findByLabelText(`Стикер ${sticker.name}`);
+    focusManager.setFocused(false);
+    now += 61_000;
+    await act(async () => { focusManager.setFocused(true); });
+    await waitFor(() => expect(signatures).toBe(2));
+    onlineManager.setOnline(false);
+    now += 61_000;
+    await act(async () => { onlineManager.setOnline(true); });
+    await waitFor(() => expect(signatures).toBe(3));
+  });
+
+  test('обновление подписи работает и в фоновой вкладке', async () => {
+    focusManager.setFocused(false);
+    let signatures = 0;
+    spyOn(apiClient, 'get').mockImplementation(async () => ({
+      data: { url: `https://storage.test/clip-${++signatures}`, expires_in: 0.2 },
+    }) as never);
+    const sticker = storedSticker('video/webm', 'background.webm');
+    renderMedia(<MediaContent agentId="a1" items={[sticker]} />);
+    await screen.findByLabelText(`Стикер ${sticker.name}`);
+    await waitFor(() => expect(signatures).toBe(2));
+  });
+
+  test('TTL отсчитывается с начала запроса, а не с получения ответа', async () => {
+    let now = Date.now();
+    const requestedAt = now;
+    spyOn(Date, 'now').mockImplementation(() => now);
+    const response = deferred<string>();
+    spyOn(apiClient, 'get').mockImplementation(async () => ({
+      data: { url: await response.promise, expires_in: 60 },
+    }) as never);
+    const sticker = storedSticker('video/webm', 'slow-sign.webm');
+    renderMedia(<MediaContent agentId="a1" items={[sticker]} />);
+    now += 30_000;
+    await act(async () => { response.resolve('https://storage.test/slow'); });
+    await screen.findByLabelText(`Стикер ${sticker.name}`);
+    const cached = queryClient.getQueryData<{ renewAt: number }>(
+      queryKeys.media.link('a1', sticker.storage_path!),
+    );
+    expect(cached?.renewAt).toBe(requestedAt + 54_000);
+  });
+
+  test('повторное монтирование использует свежий кеш, но обновляет просроченную подпись', async () => {
+    let now = Date.now();
+    spyOn(Date, 'now').mockImplementation(() => now);
+    let signatures = 0;
+    spyOn(apiClient, 'get').mockImplementation(async () => ({
+      data: { url: `https://storage.test/clip-${++signatures}`, expires_in: 60 },
+    }) as never);
+    const sticker = storedSticker('video/webm', 'remount.webm');
+    const first = renderMedia(<MediaContent agentId="a1" items={[sticker]} />);
+    await screen.findByLabelText(`Стикер ${sticker.name}`);
+    first.unmount();
+    const fresh = renderMedia(<MediaContent agentId="a1" items={[sticker]} />);
+    await act(async () => {});
+    expect(signatures).toBe(1);
+    fresh.unmount();
+    now += 61_000;
+    renderMedia(<MediaContent agentId="a1" items={[sticker]} />);
+    await waitFor(() => expect(signatures).toBe(2));
+  });
+
+  test('декодирование, сломавшееся во время подписи, не оживает после её получения', async () => {
+    const next = deferred<string>();
+    const get = spyOn(apiClient, 'get').mockImplementation(async () => ({
+      data: { url: await next.promise, expires_in: 43200 },
+    }) as never);
+    get.mockResolvedValueOnce({ data: { url: 'https://storage.test/first', expires_in: 43200 } } as never);
+    const sticker = storedSticker('video/webm', 'late-decode.webm');
+    renderMedia(<MediaContent agentId="a1" items={[sticker]} />);
+    const video = await screen.findByLabelText(`Стикер ${sticker.name}`) as HTMLVideoElement;
+    const load = spyOn(video, 'load').mockImplementation(() => {});
+    mediaError(video, 2);
+    mediaError(video, 3);
+    await act(async () => { next.resolve('https://storage.test/late'); });
+    expect(Boolean(screen.queryByText('late-decode.webm (недоступно)'))).toBe(true);
+    expect(load.mock.calls.length).toBe(0);
   });
 
   test('ошибка лайтбокса не переносится на следующее изображение', async () => {
