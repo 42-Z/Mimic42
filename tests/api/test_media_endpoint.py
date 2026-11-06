@@ -294,7 +294,10 @@ async def test_media_link_returns_signed_url_for_owner() -> None:
         )
 
     assert resp.status_code == 200
-    assert resp.json() == {"url": f"https://storage.test/{path}"}
+    assert resp.json() == {
+        "url": f"https://storage.test/{path}",
+        "expires_in": int(MEDIA_LINK_TTL.total_seconds()),
+    }
     assert resp.headers["cache-control"] == "no-store"
 
 
@@ -319,6 +322,7 @@ async def test_media_link_uses_shared_ttl() -> None:
 
     assert resp.status_code == 200
     assert storage.signed == [(path, MEDIA_LINK_TTL)]
+    assert resp.json()["expires_in"] == int(storage.signed[0][1].total_seconds())
 
 
 @pytest.mark.asyncio
