@@ -20,12 +20,19 @@ from mimic42.core.admin import (
     AdminUserDetail,
     AdminUserSummary,
 )
-from mimic42.core.agent_runtime import AgentRuntimeState, TelegramProxyConfig
+from mimic42.core.agent_runtime import (
+    AgentRuntimeConfig,
+    AgentRuntimeState,
+    MimicAgentRuntime,
+    TelegramProxyConfig,
+)
+from mimic42.core.manager import AgentManager
 from mimic42.core.model_catalog import DEFAULT_LLM_MODEL
 from mimic42.core.telegram_proxy import TelegramProxyCheckResult
 from tests.api.admin_fakes import FakeAdminRepository
 from tests.api.auth_helpers import AUTH_HEADERS, FakeAuthVerifier
 from tests.api.fakes import FakeAgentManager
+from tests.core.test_agent_runtime import FakeLangChainAgent, FakeTelegramClient
 
 
 def _settings() -> Settings:
@@ -67,7 +74,7 @@ def _proxy_detail(
 def _app(
     admin_id: UUID,
     repository: FakeAdminRepository,
-    manager: FakeAgentManager | None = None,
+    manager: FakeAgentManager | AgentManager | None = None,
 ) -> FastAPI:
     return create_app(
         manager=manager or FakeAgentManager(),
@@ -340,6 +347,112 @@ async def test_patch_without_password_keeps_the_old_one_and_password_is_never_re
     assert '"password"' not in response.text
     recorded = repository.proxy_calls[0][1]["values"]
     assert recorded.get("password") is None
+
+
+@pytest.mark.asyncio
+async def test_patch_proxy_rebuilds_all_dependent_runtimes_and_preserves_states() -> None:
+    admin_id = uuid4()
+    owner_id = uuid4()
+    running_id, stopped_id, unrelated_id = uuid4(), uuid4(), uuid4()
+    proxy = _proxy_detail(agents_total=2)
+    other_proxy = _proxy_detail(label="Другой")
+    repository = FakeAdminRepository(
+        admin_ids={admin_id},
+        proxies=[proxy, other_proxy],
+        agent_proxies={
+            agent_id: AdminAgentProxy.model_validate(assigned.model_dump())
+            for agent_id, assigned in (
+                (running_id, proxy),
+                (stopped_id, proxy),
+                (unrelated_id, other_proxy),
+            )
+        },
+    )
+
+    async def load_config(agent_id: UUID) -> AgentRuntimeConfig:
+        assigned = repository.agent_proxies[agent_id]
+        assert assigned is not None
+        current = repository.proxies[assigned.id]
+        return AgentRuntimeConfig(
+            agent_id=agent_id,
+            owner_id=owner_id,
+            telegram_api_id=12345,
+            telegram_api_hash="hash",
+            telegram_session_string="session",
+            telegram_proxy=TelegramProxyConfig(
+                protocol=current.protocol,
+                host=current.host,
+                port=current.port,
+            ),
+            system_prompt="system",
+            soul_prompt="soul",
+        )
+
+    manager = AgentManager(
+        config_loader=load_config,
+        runtime_factory=lambda config: MimicAgentRuntime(
+            config=config,
+            telegram_client=FakeTelegramClient(),
+            langchain_agent=FakeLangChainAgent(),
+        ),
+    )
+    try:
+        await manager.get_agent(stopped_id)
+        unrelated = await manager.get_agent(unrelated_id)
+        await manager.start_agent(running_id)
+        app = _app(admin_id, repository, manager)
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.patch(
+                f"/api/v1/admin/proxies/{proxy.id}",
+                headers=AUTH_HEADERS,
+                json={"host": "updated-proxy.example.test"},
+            )
+
+        assert response.status_code == 200
+        assert response.json()["host"] == "updated-proxy.example.test"
+        for agent_id, expected_state in (
+            (running_id, AgentRuntimeState.RUNNING),
+            (stopped_id, AgentRuntimeState.STOPPED),
+        ):
+            runtime = await manager.get_agent(agent_id)
+            assert runtime.config.telegram_proxy is not None
+            assert runtime.config.telegram_proxy.host == "updated-proxy.example.test"
+            assert runtime.status.state is expected_state
+        assert await manager.get_agent(unrelated_id) is unrelated
+    finally:
+        await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_patch_proxy_reports_reload_failures_and_attempts_every_dependent() -> None:
+    admin_id = uuid4()
+    agent_ids = [uuid4(), uuid4()]
+    proxy = _proxy_detail(agents_total=2)
+    repository = FakeAdminRepository(
+        admin_ids={admin_id},
+        proxies=[proxy],
+        agent_proxies={
+            agent_id: AdminAgentProxy.model_validate(proxy.model_dump()) for agent_id in agent_ids
+        },
+    )
+    manager = FakeAgentManager(reload_error=True)
+    app = _app(admin_id, repository, manager)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.patch(
+            f"/api/v1/admin/proxies/{proxy.id}",
+            headers=AUTH_HEADERS,
+            json={"host": "updated-proxy.example.test"},
+        )
+
+    assert response.status_code == 503
+    assert response.json()["detail"]
+    assert "reload boom" not in response.text
+    assert repository.proxies[proxy.id].host == "updated-proxy.example.test"
+    assert {agent_id for operation, agent_id in manager.calls if operation == "reload"} == set(
+        agent_ids
+    )
 
 
 @pytest.mark.asyncio

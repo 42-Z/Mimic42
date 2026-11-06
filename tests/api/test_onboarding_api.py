@@ -363,6 +363,126 @@ class PasswordRequiredOnboardingService(AgentOnboardingService):
 
 
 @pytest.mark.asyncio
+async def test_verify_code_repeated_after_authorization_returns_conflict_without_changing_session() -> (
+    None
+):
+    owner_id = uuid4()
+    repository = InMemoryOnboardingRepository()
+    factory = FakeTelegramAuthClientFactory(FakeTelegramAccount())
+    service = AgentOnboardingService(repository=repository, telegram_factory=factory)
+    app = create_app(
+        manager=FakeAgentManager(),
+        onboarding_service=service,
+        auth_verifier=FakeAuthVerifier(owner_id),
+        telegram_app_settings=configured_telegram_app(),
+        settings=Settings(
+            database_connection_string=None,
+            mem0_api_key=None,
+            braintrust_api_key=None,
+            supabase_url=None,
+            supabase_service_key=None,
+            secret_key=None,
+        ),
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app, raise_app_exceptions=False),
+        base_url="http://testserver",
+    ) as client:
+        start_response = await client.post(
+            "/api/v1/onboarding/telegram",
+            headers=AUTH_HEADERS,
+            json={"phone_number": "+79990000000"},
+        )
+        assert start_response.status_code == 201
+        onboarding_id = UUID(start_response.json()["onboarding_id"])
+        first = await client.post(
+            f"/api/v1/onboarding/{onboarding_id}/telegram/code",
+            headers=AUTH_HEADERS,
+            json={"code": "12345"},
+        )
+        assert first.status_code == 200
+        assert first.json()["authorization_status"] == "authorized"
+        authorized = await repository.get(onboarding_id)
+        clients_built = len(factory.proxies)
+
+        repeated = await client.post(
+            f"/api/v1/onboarding/{onboarding_id}/telegram/code",
+            headers=AUTH_HEADERS,
+            json={"code": "12345"},
+        )
+
+    assert repeated.status_code == 409
+    assert repeated.json()["detail"]
+    assert await repository.get(onboarding_id) == authorized
+    assert len(factory.proxies) == clients_built
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("authorization_status", "password"),
+    [
+        (TelegramLoginStatus.NOT_STARTED, None),
+        (TelegramLoginStatus.PASSWORD_REQUIRED, None),
+        (TelegramLoginStatus.ERROR, None),
+        (TelegramLoginStatus.CODE_REQUESTED, "2fa-secret"),
+        (TelegramLoginStatus.AUTHORIZED, "2fa-secret"),
+    ],
+)
+async def test_verify_code_at_wrong_step_returns_conflict_without_contacting_telegram(
+    authorization_status: TelegramLoginStatus,
+    password: str | None,
+) -> None:
+    owner_id = uuid4()
+    onboarding_id = uuid4()
+    session = OnboardingSession(
+        onboarding_id=onboarding_id,
+        owner_id=owner_id,
+        authorization_status=authorization_status,
+        api_id=12345,
+        api_hash_secret="api-hash",
+        phone_number="+79990000000",
+        phone_code_hash_secret="phone-code-hash",
+        session_secret="telegram-session",
+    )
+    repository = InMemoryOnboardingRepository()
+    await repository.save(session)
+    factory = FakeTelegramAuthClientFactory(FakeTelegramAccount())
+    service = AgentOnboardingService(repository=repository, telegram_factory=factory)
+    app = create_app(
+        manager=FakeAgentManager(),
+        onboarding_service=service,
+        auth_verifier=FakeAuthVerifier(owner_id),
+        settings=Settings(
+            database_connection_string=None,
+            mem0_api_key=None,
+            braintrust_api_key=None,
+            supabase_url=None,
+            supabase_service_key=None,
+            secret_key=None,
+        ),
+    )
+    payload = {"code": "12345"}
+    if password is not None:
+        payload["password"] = password
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app, raise_app_exceptions=False),
+        base_url="http://testserver",
+    ) as client:
+        response = await client.post(
+            f"/api/v1/onboarding/{onboarding_id}/telegram/code",
+            headers=AUTH_HEADERS,
+            json=payload,
+        )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]
+    assert await repository.get(onboarding_id) == session
+    assert factory.built_with is None
+
+
+@pytest.mark.asyncio
 async def test_finalize_reports_linked_onboarding_as_conflict() -> None:
     owner_id = uuid4()
     onboarding_id = uuid4()
