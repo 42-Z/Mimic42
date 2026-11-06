@@ -122,6 +122,220 @@ async def test_saved_creation_rejects_removal_during_config_load(auto_start: boo
         await manager.shutdown()
 
 
+@pytest.mark.parametrize("operation", ["get", "start", "stop"])
+async def test_reload_blocks_lifecycle_requests_until_old_runtime_is_closed(
+    operation: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _config()
+    disconnecting = asyncio.Event()
+    release = asyncio.Event()
+    requested = asyncio.Event()
+    clients: list[FakeTelegramClient] = []
+    runtimes: list[MimicAgentRuntime] = []
+    monkeypatch.setattr("mimic42.core.agent_runtime.STOP_STEP_TIMEOUT_SECONDS", 30)
+
+    class GatedDisconnectClient(FakeTelegramClient):
+        async def disconnect(self) -> None:
+            disconnecting.set()
+            await release.wait()
+            await super().disconnect()
+
+    def runtime_factory(runtime_config: AgentRuntimeConfig) -> MimicAgentRuntime:
+        client = GatedDisconnectClient() if not clients else FakeTelegramClient()
+        clients.append(client)
+        runtime = MimicAgentRuntime(
+            config=runtime_config, telegram_client=client, langchain_agent=FakeLangChainAgent()
+        )
+        runtimes.append(runtime)
+        return runtime
+
+    manager = AgentManager(runtime_factory=runtime_factory, config_loader=lambda agent_id: config)
+    old_runtime = await manager.create_agent(config, start=True)
+
+    async def request() -> MimicAgentRuntime | None:
+        requested.set()
+        if operation == "get":
+            return await manager.get_agent(config.agent_id)
+        if operation == "start":
+            await manager.start_agent(config.agent_id)
+        else:
+            await manager.stop_agent(config.agent_id)
+        return None
+
+    reloading = asyncio.create_task(manager.reload_agent(config.agent_id))
+    requesting: asyncio.Task[MimicAgentRuntime | None] | None = None
+    try:
+        async with asyncio.timeout(5):
+            await disconnecting.wait()
+            requesting = asyncio.create_task(request())
+            await requested.wait()
+
+            assert clients[0].connected
+            assert len(clients) == 1, "replacement materialized before old runtime closed"
+            assert not requesting.done(), "lifecycle request completed during reload teardown"
+
+            release.set()
+            await asyncio.gather(reloading, requesting)
+
+        replacement = await manager.get_agent(config.agent_id)
+        assert replacement is not old_runtime
+        assert len(clients) == 2
+        assert old_runtime.state is AgentRuntimeState.STOPPED
+        assert not clients[0].connected
+        assert clients[0].connect_calls == 1
+        assert replacement.state is (
+            AgentRuntimeState.STOPPED if operation == "stop" else AgentRuntimeState.RUNNING
+        )
+        assert clients[1].connected is (operation != "stop")
+        if operation == "get":
+            assert requesting.result() is replacement
+    finally:
+        release.set()
+        tasks: list[asyncio.Task[object]] = [reloading]
+        if requesting is not None:
+            tasks.append(requesting)
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await asyncio.gather(*(runtime.close() for runtime in runtimes))
+
+
+async def test_reload_waits_for_start_before_connect_and_does_not_restart_closed_runtime() -> None:
+    config = _config()
+    connecting = asyncio.Event()
+    release = asyncio.Event()
+    reload_requested = asyncio.Event()
+    clients: list[FakeTelegramClient] = []
+    models: list[FakeLangChainAgent] = []
+    runtimes: list[MimicAgentRuntime] = []
+
+    class GatedConnectClient(FakeTelegramClient):
+        async def connect(self) -> None:
+            connecting.set()
+            await release.wait()
+            await super().connect()
+
+    def runtime_factory(runtime_config: AgentRuntimeConfig) -> MimicAgentRuntime:
+        client = GatedConnectClient() if not clients else FakeTelegramClient()
+        model = FakeLangChainAgent()
+        clients.append(client)
+        models.append(model)
+        runtime = MimicAgentRuntime(
+            config=runtime_config, telegram_client=client, langchain_agent=model
+        )
+        runtimes.append(runtime)
+        return runtime
+
+    manager = AgentManager(runtime_factory=runtime_factory, config_loader=lambda agent_id: config)
+    old_runtime = await manager.create_agent(config)
+
+    async def reload() -> None:
+        reload_requested.set()
+        await manager.reload_agent(config.agent_id)
+
+    starting = asyncio.create_task(manager.start_agent(config.agent_id))
+    reloading: asyncio.Task[None] | None = None
+    try:
+        async with asyncio.timeout(5):
+            await connecting.wait()
+            reloading = asyncio.create_task(reload())
+            await reload_requested.wait()
+
+            assert not reloading.done()
+            assert len(clients) == 1
+            assert not clients[0].connected
+            release.set()
+            await asyncio.gather(starting, reloading)
+
+        replacement = await manager.get_agent(config.agent_id)
+        assert replacement is not old_runtime
+        assert len(clients) == 2
+        assert old_runtime.state is AgentRuntimeState.STOPPED
+        assert models[0].closed
+        assert not clients[0].connected
+        assert clients[0].connect_calls == 1
+        assert clients[0].disconnect_calls == 1
+        assert replacement.state is AgentRuntimeState.RUNNING
+        assert clients[1].connected
+        assert clients[1].connect_calls == 1
+        assert not models[1].closed
+    finally:
+        release.set()
+        tasks: list[asyncio.Task[object]] = [starting]
+        if reloading is not None:
+            tasks.append(reloading)
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await asyncio.gather(*(runtime.close() for runtime in runtimes))
+
+
+async def test_start_during_rebind_waits_for_the_new_telegram_session() -> None:
+    config = _config()
+    applying = asyncio.Event()
+    release = asyncio.Event()
+    start_requested = asyncio.Event()
+    clients: list[FakeTelegramClient] = []
+    runtimes: list[MimicAgentRuntime] = []
+    connected_sessions: list[str | None] = []
+
+    def runtime_factory(runtime_config: AgentRuntimeConfig) -> MimicAgentRuntime:
+        class Client(FakeTelegramClient):
+            async def connect(self) -> None:
+                connected_sessions.append(runtime_config.telegram_session_string)
+                await super().connect()
+
+        client = Client()
+        clients.append(client)
+        runtime = MimicAgentRuntime(
+            config=runtime_config, telegram_client=client, langchain_agent=FakeLangChainAgent()
+        )
+        runtimes.append(runtime)
+        return runtime
+
+    manager = AgentManager(runtime_factory=runtime_factory, config_loader=lambda agent_id: config)
+    old_runtime = await manager.create_agent(config, start=True)
+
+    async def apply() -> str:
+        nonlocal config
+        applying.set()
+        await release.wait()
+        config = config.model_copy(update={"telegram_session_string": "new-session"})
+        return "confirmed"
+
+    async def start() -> None:
+        start_requested.set()
+        await manager.start_agent(config.agent_id)
+
+    confirming = asyncio.create_task(manager.confirm_telegram_rebind(config.agent_id, apply))
+    starting: asyncio.Task[None] | None = None
+    try:
+        async with asyncio.timeout(5):
+            await applying.wait()
+            starting = asyncio.create_task(start())
+            await start_requested.wait()
+
+            assert connected_sessions == ["session"], "start reconnected the session being replaced"
+            assert not clients[0].connected
+            assert not starting.done()
+            release.set()
+            result, _ = await asyncio.gather(confirming, starting)
+
+        replacement = await manager.get_agent(config.agent_id)
+        assert result == "confirmed"
+        assert replacement is not old_runtime
+        assert old_runtime.state is AgentRuntimeState.STOPPED
+        assert not clients[0].connected
+        assert replacement.config.telegram_session_string == "new-session"
+        assert replacement.state is AgentRuntimeState.RUNNING
+        assert connected_sessions == ["session", "new-session"]
+        assert len(clients) == 2
+        assert clients[1].connected
+    finally:
+        release.set()
+        tasks: list[asyncio.Task[object]] = [confirming]
+        if starting is not None:
+            tasks.append(starting)
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await asyncio.gather(*(runtime.close() for runtime in runtimes))
+
+
 @pytest.mark.parametrize("auto_start", [False, True])
 async def test_saved_creation_rechecks_removal_when_registration_lock_is_released(
     auto_start: bool,
