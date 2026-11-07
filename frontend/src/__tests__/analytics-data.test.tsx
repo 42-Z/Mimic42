@@ -51,6 +51,19 @@ function splitFilters(value: string): string[] {
   return parts;
 }
 
+function compareTimestamps(left: string, right: string): number {
+  function microseconds(value: string): bigint {
+    const match = /^(.*T\d{2}:\d{2}:\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:\d{2})$/.exec(value);
+    if (!match) throw new Error(`Invalid timestamp: ${value}`);
+    return BigInt(Date.parse(`${match[1]}${match[3]}`)) * BigInt(1000)
+      + BigInt((match[2] ?? '').padEnd(6, '0').slice(0, 6));
+  }
+
+  const a = microseconds(left);
+  const b = microseconds(right);
+  return a === b ? 0 : a < b ? -1 : 1;
+}
+
 function matchesFilter(record: AnalyticsRow, expression: string): boolean {
   for (const operator of ['and', 'or']) {
     if (expression.startsWith(`${operator}(`)) {
@@ -64,17 +77,20 @@ function matchesFilter(record: AnalyticsRow, expression: string): boolean {
   const value = parts.join('.');
   const actual = record[column as keyof AnalyticsRow];
   if (actual === undefined) throw new Error(`Unsupported test filter: ${expression}`);
+  const comparison = column === 'created_at'
+    ? compareTimestamps(actual, value)
+    : actual === value ? 0 : actual < value ? -1 : 1;
   switch (operator) {
     case 'eq':
-      return actual === value;
+      return comparison === 0;
     case 'gt':
-      return actual > value;
+      return comparison > 0;
     case 'gte':
-      return actual >= value;
+      return comparison >= 0;
     case 'lt':
-      return actual < value;
+      return comparison < 0;
     case 'lte':
-      return actual <= value;
+      return comparison <= 0;
     case 'in':
       return value.slice(1, -1).split(',').includes(actual);
     case 'like':
@@ -86,9 +102,14 @@ function matchesFilter(record: AnalyticsRow, expression: string): boolean {
 
 function installDatabase(
   database: AnalyticsDatabase,
-  { serverCap = 1000, failedRow }: { serverCap?: number; failedRow?: AnalyticsRow } = {},
+  { serverCap = 1000, failedRow, pendingTable }: {
+    serverCap?: number;
+    failedRow?: AnalyticsRow;
+    pendingTable?: AnalyticsTable;
+  } = {},
 ) {
   const requests = { agent_messages: 0, agent_events: 0 };
+  const abortedTables: AnalyticsTable[] = [];
   const client = createClient<Database>('https://analytics.example.test', 'test-key', {
     auth: {
       persistSession: false,
@@ -105,6 +126,16 @@ function installDatabase(
         const table = url.pathname.split('/').at(-1) as AnalyticsTable;
         if (!(table in database)) throw new Error(`Unexpected analytics request: ${url}`);
         requests[table] += 1;
+        if (table === pendingTable) {
+          await new Promise<never>((_, reject) => {
+            const abort = () => {
+              abortedTables.push(table);
+              reject(init?.signal?.reason);
+            };
+            if (init?.signal?.aborted) abort();
+            else init?.signal?.addEventListener('abort', abort, { once: true });
+          });
+        }
 
         const filters = [...url.searchParams].filter(([key]) =>
           !['select', 'order', 'limit', 'offset'].includes(key),
@@ -121,7 +152,10 @@ function installDatabase(
             const [column, direction] = order.split('.');
             const a = left[column as keyof AnalyticsRow] ?? '';
             const b = right[column as keyof AnalyticsRow] ?? '';
-            if (a !== b) return (a < b ? -1 : 1) * (direction === 'desc' ? -1 : 1);
+            const comparison = column === 'created_at'
+              ? compareTimestamps(a, b)
+              : a === b ? 0 : a < b ? -1 : 1;
+            if (comparison !== 0) return comparison * (direction === 'desc' ? -1 : 1);
           }
           // SQL does not promise a consistent order within timestamp ties.
           return left.id.localeCompare(right.id) * (requests[table] % 2 === 1 ? 1 : -1);
@@ -155,6 +189,7 @@ function installDatabase(
   });
   const spy = spyOn(supabaseClient, 'getSupabaseClient').mockReturnValue(client);
   restoreClient = () => spy.mockRestore();
+  return { abortedTables };
 }
 
 async function loadAnalytics(days: 7 | 30 = 7) {
@@ -185,6 +220,44 @@ afterEach(() => {
 });
 
 describe('useAnalyticsData', () => {
+  test('preserves microsecond cursors and equivalent timezone offsets across pages', async () => {
+    const timestamps = [
+      '2026-11-05T12:00:00.123456+00:00',
+      '2026-11-05T12:00:00.123457+00:00',
+      '2026-11-05T07:00:00.123456-05:00',
+      '2026-11-05T12:00:00.123455Z',
+      '2026-11-05T12:00:00.123458Z',
+    ];
+    installDatabase({
+      agent_messages: timestamps.map((created_at, index) => row(index, {
+        created_at, direction: 'incoming',
+      })),
+      agent_events: timestamps.map((created_at, index) => row(index, {
+        created_at, event_type: 'tool.failed', status: 'failed',
+      })),
+    }, { serverCap: 2 });
+
+    const result = await loadAnalytics();
+
+    expect(result.error).toBeNull();
+    expect(result.data?.find((day) => day.date === '2026-11-05')).toEqual({
+      date: '2026-11-05', messages: 5, actions: 5, errors: 5,
+    });
+  });
+
+  test('a read failure cancels the other table without replacing the original error', async () => {
+    const failedRow = row(0, { direction: 'incoming' });
+    const { abortedTables } = installDatabase({
+      agent_messages: [failedRow], agent_events: [],
+    }, { failedRow, pendingTable: 'agent_events' });
+
+    const result = await loadAnalytics();
+
+    expect(result.error).toMatchObject({ message: 'analytics page unavailable' });
+    expect(result.data).toBeUndefined();
+    await waitFor(() => expect(abortedTables).toEqual(['agent_events']));
+  });
+
   test.each([1000, 37])('counts all tied rows with a server cap of %i', async (serverCap) => {
     const messages = Array.from({ length: 1251 }, (_, index) => row(index, {
       direction: index % 2 === 0 ? 'incoming' : 'agent_response',
@@ -239,6 +312,7 @@ describe('useAnalyticsData', () => {
       `${firstDate}T00:00:00.000Z`,
       '2026-11-06T23:59:59.999Z',
       '2026-11-07T00:00:00.000Z',
+      '2026-11-07T00:29:59.999Z',
       '2026-11-07T23:59:59.999Z',
       '2026-11-08T00:00:00.000Z',
     ];
