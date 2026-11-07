@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { CircleAlert, RefreshCw } from 'lucide-react';
 import {
   AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
   ResponsiveContainer,
@@ -8,6 +9,7 @@ import {
 import { useAnalyticsData } from '@/hooks/useTelegramSession';
 import { Card, Skeleton } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { TokenUsageCard } from '@/components/agent/TokenUsageCard';
 import { formatDayLabel, formatDayFull } from '@/lib/format';
 import { cn } from '@/lib/utils';
@@ -26,7 +28,7 @@ const TICK_STYLE = { fontSize: 10, fontFamily: 'Space Mono', fill: '#9090a0' };
 
 export function TabAnalytics({ agentId }: { agentId: string }) {
   const [days, setDays] = useState<7 | 30>(7);
-  const { data, isLoading } = useAnalyticsData(agentId, days);
+  const { data, isLoading, isError, isFetching, refetch } = useAnalyticsData(agentId, days);
 
   return (
     <div className="space-y-6">
@@ -57,6 +59,23 @@ export function TabAnalytics({ agentId }: { agentId: string }) {
           <Skeleton className="h-64" />
           <Skeleton className="h-64" />
         </div>
+      ) : isError ? (
+        <Alert variant="destructive">
+          <CircleAlert aria-hidden="true" />
+          <AlertTitle>Не удалось загрузить статистику</AlertTitle>
+          <AlertDescription>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={isFetching}
+              onClick={() => void refetch()}
+            >
+              <RefreshCw data-icon="inline-start" aria-hidden="true" />
+              Повторить
+            </Button>
+          </AlertDescription>
+        </Alert>
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <Card variant="glass" padding="md">

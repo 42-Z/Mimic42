@@ -243,50 +243,102 @@ export function useAnalyticsData(agentId: string, days: 7 | 30) {
 
   return useQuery({
     queryKey: queryKeys.analytics.byAgent(agentId, days),
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const supabase = getSupabaseClient();
-      const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
-
-      const [messagesResult, eventsResult] = await Promise.all([
-        supabase
-          .from('agent_messages')
-          .select('created_at, direction')
-          .eq('agent_id', agentId)
-          .in('direction', ['incoming', 'agent_response'])
-          .gte('created_at', since)
-          .order('created_at', { ascending: true }),
-
-        supabase
-          .from('agent_events')
-          .select('created_at, status, event_type')
-          .eq('agent_id', agentId)
-          .gte('created_at', since)
-          .order('created_at', { ascending: true }),
-      ]);
-
-      // Group by day
+      const now = new Date();
+      const until = now.toISOString();
+      const firstDay = new Date(now);
+      firstDay.setUTCHours(0, 0, 0, 0);
+      firstDay.setUTCDate(firstDay.getUTCDate() - days + 1);
+      const since = firstDay.toISOString();
+      type AnalyticsCursor = { created_at: string; id: string };
       const dayMap = new Map<string, { messages: number; actions: number; errors: number }>();
 
-      // Initialize all days
       for (let i = 0; i < days; i++) {
-        const d = new Date(Date.now() - (days - 1 - i) * 24 * 60 * 60 * 1000);
+        const d = new Date(firstDay.getTime() + i * 24 * 60 * 60 * 1000);
         const key = d.toISOString().slice(0, 10);
         dayMap.set(key, { messages: 0, actions: 0, errors: 0 });
       }
 
-      (messagesResult.data ?? []).forEach((m) => {
-        const key = m.created_at.slice(0, 10);
-        const day = dayMap.get(key);
-        if (day) day.messages++;
-      });
+      const pending = new AbortController();
+      const cancel = () => pending.abort(signal.reason);
+      signal.addEventListener('abort', cancel, { once: true });
+      if (signal.aborted) cancel();
 
-      (eventsResult.data ?? []).forEach((e) => {
-        const key = e.created_at.slice(0, 10);
-        const day = dayMap.get(key);
-        if (!day) return;
-        if (typeof e.event_type === 'string' && e.event_type.startsWith('tool.')) day.actions++;
-        if (e.status === 'failed') day.errors++;
-      });
+      try {
+        await Promise.all([
+          (async () => {
+            let cursor: AnalyticsCursor | null = null;
+            while (true) {
+              let query = supabase
+                .from('agent_messages')
+                .select('id, created_at, direction')
+                .eq('agent_id', agentId)
+                .in('direction', ['incoming', 'agent_response'])
+                .gte('created_at', since)
+                .lt('created_at', until);
+              if (cursor) {
+                query = query.or(
+                  `created_at.gt.${cursor.created_at},and(created_at.eq.${cursor.created_at},id.gt.${cursor.id})`,
+                );
+              }
+              const { data, error } = await query
+                .order('created_at', { ascending: true })
+                .order('id', { ascending: true })
+                .limit(500)
+                .abortSignal(pending.signal);
+              if (error) throw error;
+              const rows = data ?? [];
+              const last = rows.at(-1);
+              if (!last) break;
+              for (const message of rows) {
+                const key = new Date(message.created_at).toISOString().slice(0, 10);
+                const day = dayMap.get(key);
+                if (day) day.messages++;
+              }
+              cursor = last;
+            }
+          })(),
+          (async () => {
+            let cursor: AnalyticsCursor | null = null;
+            while (true) {
+              let query = supabase
+                .from('agent_events')
+                .select('id, created_at, status, event_type')
+                .eq('agent_id', agentId)
+                .gte('created_at', since)
+                .lt('created_at', until);
+              if (cursor) {
+                query = query.or(
+                  `created_at.gt.${cursor.created_at},and(created_at.eq.${cursor.created_at},id.gt.${cursor.id})`,
+                );
+              }
+              const { data, error } = await query
+                .order('created_at', { ascending: true })
+                .order('id', { ascending: true })
+                .limit(500)
+                .abortSignal(pending.signal);
+              if (error) throw error;
+              const rows = data ?? [];
+              const last = rows.at(-1);
+              if (!last) break;
+              for (const event of rows) {
+                const key = new Date(event.created_at).toISOString().slice(0, 10);
+                const day = dayMap.get(key);
+                if (!day) continue;
+                if (event.event_type.startsWith('tool.')) day.actions++;
+                if (event.status === 'failed') day.errors++;
+              }
+              cursor = last;
+            }
+          })(),
+        ]);
+      } catch (error) {
+        pending.abort();
+        throw error;
+      } finally {
+        signal.removeEventListener('abort', cancel);
+      }
 
       return Array.from(dayMap.entries()).map(([date, counts]) => ({
         date,
