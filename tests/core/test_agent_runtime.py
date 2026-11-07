@@ -18,6 +18,7 @@ from mimic42.core.agent_runtime import (
     TelegramSessionChangedError,
     TelegramTeardownPendingError,
 )
+from mimic42.core.memory import TurnInput
 from mimic42.core.manager import AgentManager
 from mimic42.core.media_download import MediaRefCache
 from mimic42.testing.telegram import (
@@ -70,6 +71,7 @@ class FakeLangChainAgent:
 
 class FakeRuntimeMemoryService:
     def __init__(self) -> None:
+        self.saved_inputs: list[TurnInput] = []
         self.saved_messages: list[
             tuple[
                 UUID,
@@ -80,14 +82,9 @@ class FakeRuntimeMemoryService:
             ]
         ] = []
 
-    async def build_messages(
-        self,
-        *,
-        agent_id: UUID,
-        peer: str,
-        user_text: str,
-    ) -> list[dict[str, Any]]:
-        return [{"role": "user", "content": user_text}]
+    async def prepare_turn(self, incoming: TurnInput) -> list[dict[str, Any]]:
+        self.saved_inputs.append(incoming)
+        return [{"role": "user", "content": incoming.text}]
 
     async def save_messages(
         self,
@@ -99,11 +96,8 @@ class FakeRuntimeMemoryService:
         structured_response: dict[str, Any] | None = None,
         peer_name: str = "",
         agent_name: str = "",
-        raw_user_text: str = "",
         turn_id: str | None = None,
         thread_id: UUID | None = None,
-        media: list[dict[str, Any]] | None = None,
-        reply: dict[str, Any] | None = None,
     ) -> None:
         self.saved_messages.append(
             (agent_id, peer, input_messages, output_messages, structured_response)
@@ -558,14 +552,11 @@ async def test_failed_turn_still_persists_incoming_message() -> None:
     with pytest.raises(RuntimeError):
         await runtime.trigger_message(AgentTrigger(peer="chat", text="hello there"))
 
-    # The incoming message survives the crash so the dashboard card shows
-    # what was asked; no response rows are written.
-    assert len(memory.saved_messages) == 1
-    saved = memory.saved_messages[0]
-    assert saved[1] == "chat"
-    assert any(m["role"] == "user" and m["content"] == "hello there" for m in saved[2])
-    assert saved[3] == []
-    assert memory.saved_turn_ids[-1] is not None
+    assert memory.saved_messages == []
+    assert len(memory.saved_inputs) == 1
+    assert memory.saved_inputs[0].peer == "chat"
+    assert memory.saved_inputs[0].text == "hello there"
+    assert memory.saved_inputs[0].turn_id
 
 
 @pytest.mark.asyncio

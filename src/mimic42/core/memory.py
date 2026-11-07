@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+import asyncio
+import logging
+from collections.abc import Callable, Coroutine
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Any, Protocol
@@ -10,6 +13,42 @@ from pydantic import BaseModel, Field
 
 DEFAULT_SHORT_TERM_TTL = timedelta(hours=3)
 DEFAULT_MAX_CONTEXT_TOKENS = 65_536
+logger = logging.getLogger("mimic42.memory")
+
+
+@dataclass(frozen=True, kw_only=True)
+class TurnInput:
+    agent_id: UUID
+    turn_id: str
+    peer: str
+    text: str
+    raw_text: str
+    created_at: datetime
+    peer_name: str = ""
+    agent_name: str = ""
+    thread_id: UUID | None = None
+    media: list[dict[str, Any]] = field(default_factory=list)
+    reply: dict[str, Any] | None = None
+
+
+async def settle_persistence(operation: Coroutine[Any, Any, None]) -> None:
+    """Finish a finite persistence operation before propagating waiter cancellation."""
+    task = asyncio.create_task(operation)
+    cancellation: asyncio.CancelledError | None = None
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as exc:
+            if cancellation is None:
+                cancellation = exc
+        except Exception:
+            if cancellation is None:
+                raise
+    if cancellation is not None:
+        if not task.cancelled() and task.exception() is not None:
+            logger.warning("Persistence failed during cancellation", exc_info=task.exception())
+        raise cancellation
+    task.result()
 
 
 class MemoryRole(StrEnum):
@@ -28,12 +67,15 @@ class MemoryMessage(BaseModel):
 
 
 class ShortTermMemoryStore(Protocol):
+    async def save_input(self, incoming: TurnInput) -> None: ...
+
     async def load_recent_messages(
         self,
         *,
         agent_id: UUID,
         peer: str,
         since: datetime,
+        exclude_turn_id: str | None = None,
     ) -> list[dict[str, Any]]: ...
 
     async def save_messages(
@@ -45,11 +87,8 @@ class ShortTermMemoryStore(Protocol):
         structured_response: dict[str, Any] | None = None,
         peer_name: str = "",
         agent_name: str = "",
-        raw_user_text: str = "",
         turn_id: str | None = None,
         thread_id: UUID | None = None,
-        media: list[dict[str, Any]] | None = None,
-        reply: dict[str, Any] | None = None,
     ) -> None: ...
 
 
@@ -80,13 +119,7 @@ class LongTermMemoryLike(LongTermMemoryStore, Protocol):
 
 
 class MemoryServiceLike(Protocol):
-    async def build_messages(
-        self,
-        *,
-        agent_id: UUID,
-        peer: str,
-        user_text: str,
-    ) -> list[dict[str, Any]]: ...
+    async def prepare_turn(self, incoming: TurnInput) -> list[dict[str, Any]]: ...
 
     async def save_messages(
         self,
@@ -98,11 +131,8 @@ class MemoryServiceLike(Protocol):
         structured_response: dict[str, Any] | None = None,
         peer_name: str = "",
         agent_name: str = "",
-        raw_user_text: str = "",
         turn_id: str | None = None,
         thread_id: UUID | None = None,
-        media: list[dict[str, Any]] | None = None,
-        reply: dict[str, Any] | None = None,
     ) -> None: ...
 
 
@@ -124,12 +154,34 @@ class RuntimeMemoryService:
         self._token_counter = token_counter or _estimate_tokens
         self._now = now or (lambda: datetime.now(UTC))
 
+    async def prepare_turn(self, incoming: TurnInput) -> list[dict[str, Any]]:
+        if self._short_term is not None:
+            await settle_persistence(self._save_input(incoming))
+        return await self.build_messages(
+            agent_id=incoming.agent_id,
+            peer=incoming.peer,
+            user_text=incoming.text,
+            exclude_turn_id=incoming.turn_id,
+        )
+
+    async def _save_input(self, incoming: TurnInput) -> None:
+        assert self._short_term is not None
+        try:
+            await self._short_term.save_input(incoming)
+        except Exception:
+            logger.exception(
+                "Failed to save incoming message (agent_id=%s, peer=%s)",
+                incoming.agent_id,
+                incoming.peer,
+            )
+
     async def build_messages(
         self,
         *,
         agent_id: UUID,
         peer: str,
         user_text: str,
+        exclude_turn_id: str | None = None,
     ) -> list[dict[str, Any]]:
         messages: list[dict[str, Any]] = []
         long_term_context = await self._load_long_term_context(agent_id=agent_id, query=user_text)
@@ -143,7 +195,9 @@ class RuntimeMemoryService:
                 }
             )
 
-        short_term_messages = await self._load_short_term_context(agent_id=agent_id, peer=peer)
+        short_term_messages = await self._load_short_term_context(
+            agent_id=agent_id, peer=peer, exclude_turn_id=exclude_turn_id
+        )
         messages.extend(short_term_messages)
 
         # OpenRouter / Mistral fix: Mistral rejects requests where 'human' directly follows 'tool'.
@@ -176,24 +230,16 @@ class RuntimeMemoryService:
         structured_response: dict[str, Any] | None = None,
         peer_name: str = "",
         agent_name: str = "",
-        raw_user_text: str = "",
         turn_id: str | None = None,
         thread_id: UUID | None = None,
-        media: list[dict[str, Any]] | None = None,
-        reply: dict[str, Any] | None = None,
     ) -> None:
-        new_messages = _extract_new_messages(input_messages, output_messages)
+        new_messages = [
+            message
+            for message in _extract_new_messages(input_messages, output_messages)
+            if message.get("type", message.get("role", "")) not in ("human", "user")
+        ]
 
-        # The transcript must contain the incoming message. When the raw
-        # telegram text is available the DB layer persists it (deduped
-        # against the list below); otherwise persist the processed human
-        # turn explicitly so dashboard triggers stay visible.
-        if not raw_user_text:
-            incoming = _extract_last_human_message(input_messages)
-            if incoming is not None:
-                new_messages = [incoming, *new_messages]
-
-        if self._short_term is not None and new_messages:
+        if self._short_term is not None and (new_messages or structured_response is not None):
             try:
                 await self._short_term.save_messages(
                     agent_id=agent_id,
@@ -202,19 +248,10 @@ class RuntimeMemoryService:
                     structured_response=structured_response,
                     peer_name=peer_name,
                     agent_name=agent_name,
-                    raw_user_text=raw_user_text,
                     turn_id=turn_id,
                     thread_id=thread_id,
-                    media=media,
-                    reply=reply,
                 )
             except Exception:
-                # Fail-open like long-term memory: auxiliary persistence must
-                # never break the agent turn. The error is logged with context
-                # for alerting; the turn itself proceeds.
-                import logging
-
-                logger = logging.getLogger("mimic42.memory")
                 logger.exception(
                     "Failed to save messages to short-term store (agent_id=%s, peer=%s, count=%d)",
                     agent_id,
@@ -223,8 +260,8 @@ class RuntimeMemoryService:
                 )
 
         if self._long_term is not None:
-            user_text = _extract_last_user_text(output_messages)
-            assistant_text = _extract_last_assistant_text(output_messages)
+            user_text = _extract_last_user_text(input_messages)
+            assistant_text = _extract_last_assistant_text(new_messages)
             # With structured output the final AIMessage has empty content;
             # fall back to the structured response text so long-term memory
             # still captures the assistant reply.
@@ -238,9 +275,6 @@ class RuntimeMemoryService:
                         assistant_text=assistant_text,
                     )
                 except Exception:
-                    import logging
-
-                    logger = logging.getLogger("mimic42.memory")
                     logger.warning(
                         "Failed to save turn to long-term memory (agent_id=%s)",
                         agent_id,
@@ -252,6 +286,7 @@ class RuntimeMemoryService:
         *,
         agent_id: UUID,
         peer: str,
+        exclude_turn_id: str | None = None,
     ) -> list[dict[str, Any]]:
         if self._short_term is None:
             return []
@@ -260,6 +295,7 @@ class RuntimeMemoryService:
             agent_id=agent_id,
             peer=peer,
             since=since,
+            exclude_turn_id=exclude_turn_id,
         )
 
     async def _load_long_term_context(self, *, agent_id: UUID, query: str) -> list[str]:
@@ -268,9 +304,6 @@ class RuntimeMemoryService:
         try:
             return await self._long_term.search(agent_id=agent_id, query=query)
         except Exception:
-            import logging
-
-            logger = logging.getLogger("mimic42.memory")
             logger.warning("Failed to search long-term memory", exc_info=True)
             return []
 
@@ -327,15 +360,6 @@ def _extract_last_user_text(messages: list[dict[str, Any]]) -> str:
         if role in ("human", "user"):
             return msg.get("content", "")
     return ""
-
-
-def _extract_last_human_message(messages: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """Return the latest user message dict (the current turn's input)."""
-    for msg in reversed(messages):
-        role = msg.get("type", msg.get("role", ""))
-        if role in ("human", "user"):
-            return msg
-    return None
 
 
 def _extract_last_assistant_text(messages: list[dict[str, Any]]) -> str:

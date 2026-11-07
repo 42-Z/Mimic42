@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from telethon import types, utils
 
-from mimic42.core.agent_runtime import MimicAgentRuntime
+from mimic42.core.agent_runtime import AgentRuntimeState, MimicAgentRuntime
 from mimic42.core.chat_access import ChatAccess
 from mimic42.integrations.database_models import AgentModel, AgentTimerModel
 from mimic42.integrations.telegram_tools import TelegramToolbox
@@ -58,6 +58,7 @@ async def test_set_wakeup_timer_tool_and_scheduler(
         assert db_timers[0].description == "Process analytics"
 
     # Call scheduler trigger manually (without start() loop to avoid dual trigger race condition)
+    runtime._state = AgentRuntimeState.RUNNING
     await runtime._check_and_trigger_timers()
 
     async with db_session_factory() as session:

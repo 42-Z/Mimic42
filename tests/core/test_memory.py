@@ -10,6 +10,7 @@ from mimic42.core.memory import (
     MemoryMessage,
     MemoryRole,
     RuntimeMemoryService,
+    TurnInput,
 )
 
 
@@ -17,6 +18,10 @@ class FakeShortTermMemory:
     def __init__(self, messages: list[MemoryMessage]) -> None:
         self._messages = messages
         self.saved_messages: list[list[dict[str, Any]]] = []
+        self.saved_inputs: list[TurnInput] = []
+
+    async def save_input(self, incoming: TurnInput) -> None:
+        self.saved_inputs.append(incoming)
 
     async def load_recent_messages(
         self,
@@ -24,6 +29,7 @@ class FakeShortTermMemory:
         agent_id: UUID,
         peer: str,
         since: datetime,
+        exclude_turn_id: str | None = None,
     ) -> list[dict[str, Any]]:
         return [
             {
@@ -44,11 +50,8 @@ class FakeShortTermMemory:
         structured_response: dict[str, Any] | None = None,
         peer_name: str = "",
         agent_name: str = "",
-        raw_user_text: str = "",
         turn_id: str | None = None,
         thread_id: UUID | None = None,
-        media: list[dict[str, Any]] | None = None,
-        reply: dict[str, Any] | None = None,
     ) -> None:
         self.saved_messages.append(messages)
 
@@ -159,6 +162,16 @@ async def test_memory_service_saves_turn_to_short_and_long_term() -> None:
     service = RuntimeMemoryService(short_term=short_term, long_term=long_term)
 
     input_msgs = [{"role": "user", "content": "hello"}]
+    await service.prepare_turn(
+        TurnInput(
+            agent_id=agent_id,
+            turn_id=str(uuid4()),
+            peer="chat",
+            text="hello",
+            raw_text="hello",
+            created_at=datetime.now(UTC),
+        )
+    )
     output_msgs = [
         {"role": "user", "content": "hello"},
         {"role": "assistant", "content": "hi"},
@@ -170,11 +183,9 @@ async def test_memory_service_saves_turn_to_short_and_long_term() -> None:
         output_messages=output_msgs,
     )
 
-    # The incoming user message is persisted explicitly; the assistant
-    # reply comes from the new-messages diff.
+    assert [incoming.raw_text for incoming in short_term.saved_inputs] == ["hello"]
     assert len(short_term.saved_messages) == 1
     assert short_term.saved_messages[0] == [
-        {"role": "user", "content": "hello"},
         {"role": "assistant", "content": "hi"},
     ]
     assert long_term.saved == [(str(agent_id), "hello", "hi")]
@@ -211,3 +222,76 @@ async def test_memory_service_gracefully_handles_long_term_error() -> None:
     )
 
     assert len(short_term.saved_messages) == 1
+
+
+@pytest.mark.parametrize("output_includes_input", [False, True])
+async def test_prepare_turn_does_not_write_long_term_until_final_result(
+    output_includes_input: bool,
+) -> None:
+    agent_id = uuid4()
+    short_term = FakeShortTermMemory([])
+
+    class OrderedLongTermMemory(FakeLongTermMemory):
+        async def search(self, *, agent_id: UUID, query: str) -> list[str]:
+            assert len(short_term.saved_inputs) == 1
+            return []
+
+    long_term = OrderedLongTermMemory()
+    service = RuntimeMemoryService(short_term=short_term, long_term=long_term)
+    incoming = TurnInput(
+        agent_id=agent_id,
+        turn_id=str(uuid4()),
+        peer="chat",
+        text="current enriched prompt",
+        raw_text="current",
+        created_at=datetime.now(UTC),
+    )
+    messages = await service.prepare_turn(incoming)
+    assert short_term.saved_messages == []
+    assert long_term.saved == []
+    output = [*messages] if output_includes_input else []
+    output.extend(
+        [
+            {"role": "user", "content": "unexpected echoed user"},
+            {"role": "assistant", "content": ""},
+        ]
+    )
+    await service.save_messages(
+        agent_id=agent_id,
+        peer="chat",
+        input_messages=messages,
+        output_messages=output,
+        structured_response={"text": "structured reply"},
+        turn_id=incoming.turn_id,
+    )
+    assert long_term.saved == [(str(agent_id), "current enriched prompt", "structured reply")]
+    assert len(short_term.saved_inputs) == 1
+    assert short_term.saved_messages == [[{"role": "assistant", "content": ""}]]
+
+
+async def test_input_write_failure_is_fail_open_without_retry_on_final_save() -> None:
+    class FailingShortTerm(FakeShortTermMemory):
+        async def save_input(self, incoming: TurnInput) -> None:
+            self.saved_inputs.append(incoming)
+            raise RuntimeError("database unavailable")
+
+    short_term = FailingShortTerm([])
+    service = RuntimeMemoryService(short_term=short_term)
+    incoming = TurnInput(
+        agent_id=uuid4(),
+        turn_id=str(uuid4()),
+        peer="chat",
+        text="current",
+        raw_text="raw current",
+        created_at=datetime.now(UTC),
+    )
+    messages = await service.prepare_turn(incoming)
+    assert messages == [{"type": "human", "role": "user", "content": "current"}]
+    await service.save_messages(
+        agent_id=incoming.agent_id,
+        peer=incoming.peer,
+        input_messages=messages,
+        output_messages=[*messages, {"role": "assistant", "content": "reply"}],
+    )
+    assert short_term.saved_inputs == [incoming]
+    assert short_term.saved_messages == [[{"role": "assistant", "content": "reply"}]]
