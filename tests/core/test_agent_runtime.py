@@ -18,9 +18,9 @@ from mimic42.core.agent_runtime import (
     TelegramSessionChangedError,
     TelegramTeardownPendingError,
 )
-from mimic42.core.memory import TurnInput
 from mimic42.core.manager import AgentManager
 from mimic42.core.media_download import MediaRefCache
+from mimic42.core.memory import TurnInput
 from mimic42.testing.telegram import (
     FakeIncomingEvent,
     FakeTelegramAccount,

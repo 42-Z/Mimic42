@@ -93,7 +93,7 @@ class MimicTelegramClient(TelegramClient):
                 else:
                     failures[index] = None
             if any(failure is not None for failure in failures):
-                raise errors.MultiError(failures, results, batch.requests)
+                raise errors.MultiError(failures, results, batch.requests) from error
             return results
 
     async def _retry_rpc_once(

@@ -3,8 +3,8 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
-from typing import Any, cast
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 

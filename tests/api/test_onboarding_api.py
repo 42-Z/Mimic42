@@ -363,9 +363,7 @@ class PasswordRequiredOnboardingService(AgentOnboardingService):
 
 
 @pytest.mark.asyncio
-async def test_verify_code_repeated_after_authorization_returns_conflict_without_changing_session() -> (
-    None
-):
+async def test_repeated_authorized_code_returns_conflict_and_keeps_session() -> None:
     owner_id = uuid4()
     repository = InMemoryOnboardingRepository()
     factory = FakeTelegramAuthClientFactory(FakeTelegramAccount())

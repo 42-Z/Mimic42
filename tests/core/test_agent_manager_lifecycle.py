@@ -274,10 +274,12 @@ async def test_trigger_does_not_restart_runtime_changed_after_manager_admission(
     clients: list[FakeTelegramClient] = []
 
     class Runtime(MimicAgentRuntime):
-        async def _trigger_running_message(self, trigger: AgentTrigger) -> AgentTriggerResult:
+        async def _trigger_running_message(
+            self, trigger: AgentTrigger, *, timer: Any = None
+        ) -> AgentTriggerResult:
             admitted.set()
             await release.wait()
-            return await super()._trigger_running_message(trigger)
+            return await super()._trigger_running_message(trigger, timer=timer)
 
     def factory(saved: AgentRuntimeConfig) -> MimicAgentRuntime:
         client = FakeTelegramClient()
