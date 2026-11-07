@@ -53,10 +53,13 @@ function splitFilters(value: string): string[] {
 
 function compareTimestamps(left: string, right: string): number {
   function microseconds(value: string): bigint {
-    const match = /^(.*T\d{2}:\d{2}:\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:\d{2})$/.exec(value);
-    if (!match) throw new Error(`Invalid timestamp: ${value}`);
-    return BigInt(Date.parse(`${match[1]}${match[3]}`)) * BigInt(1000)
-      + BigInt((match[2] ?? '').padEnd(6, '0').slice(0, 6));
+    const zoneStart = value.endsWith('Z')
+      ? value.length - 1
+      : Math.max(value.indexOf('+', 19), value.indexOf('-', 19));
+    const seconds = value.slice(0, 19) + value.slice(zoneStart);
+    const fraction = value.charAt(19) === '.' ? value.slice(20, zoneStart) : '';
+    return BigInt(Date.parse(seconds)) * BigInt(1000)
+      + BigInt(fraction.padEnd(6, '0').slice(0, 6));
   }
 
   const a = microseconds(left);
