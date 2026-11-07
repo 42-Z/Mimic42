@@ -1,14 +1,17 @@
 'use client';
 
 import { useQuery } from '@tanstack/react-query';
-import { agentMemoryApi } from '@/lib/api';
-import { queryKeys, HISTORICAL_STALE_TIME } from '@/lib/queryClient';
+import { useAccountApi } from '@/hooks/useAccountApi';
+import { HISTORICAL_STALE_TIME } from '@/lib/queryClient';
+import { useAccountQueryKeys } from '@/hooks/useAccount';
 import { agentIdSchema } from '@/lib/validators';
 
 /**
  * Fetch agent memories (supports query string for semantic search).
  */
 export function useAgentMemories(agentId: string, query?: string) {
+  const { memory: agentMemoryApi } = useAccountApi();
+  const queryKeys = useAccountQueryKeys();
   const isValidId = agentIdSchema.safeParse(agentId).success;
 
   return useQuery({
@@ -23,6 +26,8 @@ export function useAgentMemories(agentId: string, query?: string) {
  * Fetch history for a specific memory item.
  */
 export function useAgentMemoryHistory(agentId: string, memoryId: string, enabled = true) {
+  const { memory: agentMemoryApi } = useAccountApi();
+  const queryKeys = useAccountQueryKeys();
   const isValidId = agentIdSchema.safeParse(agentId).success;
 
   return useQuery({

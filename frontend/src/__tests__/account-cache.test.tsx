@@ -173,3 +173,16 @@ test.each(['/login', '/register', '/reset-password'])('anonymous visitors can us
   render(<Providers><span>public form</span></Providers>);
   await waitFor(() => expect(screen.queryByText('public form')).not.toBeNull());
 });
+
+test('a pending or failed session lookup does not block the login form', async () => {
+  navigationMock.pathname = '/login';
+  const initial = deferred<Awaited<typeof bootstrap>>();
+  bootstrap = initial.promise;
+  render(<Providers><input aria-label="login email" /></Providers>);
+  expect(screen.queryByLabelText('login email')).not.toBeNull();
+  fireEvent.change(screen.getByLabelText('login email'), { target: { value: 'user@example.com' } });
+  await act(async () => {
+    initial.resolve({ data: { session: null }, error: new Error('Session lookup failed') });
+  });
+  expect((screen.getByLabelText('login email') as HTMLInputElement).value).toBe('user@example.com');
+});

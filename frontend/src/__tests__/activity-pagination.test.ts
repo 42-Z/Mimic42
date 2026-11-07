@@ -71,7 +71,7 @@ function installApi(calls: RecordedCall[]) {
 
 function pageRecords(qc: QueryClient): ConversationPage[] {
   const data = qc.getQueryData<{ pages: ConversationPage[] }>(
-    queryKeys.conversation.byAgent('agent-1'),
+    queryKeys.forUser(null).conversation.byAgent('agent-1'),
   );
   return data?.pages ?? [];
 }
@@ -89,12 +89,33 @@ afterEach(() => {
 });
 
 describe('пагинация ленты активности', () => {
+  test('head refreshes for the same agent are independent across account clients', async () => {
+    const a = new QueryClient();
+    const b = new QueryClient();
+    const key = queryKeys.forUser(null).conversation.byAgent('agent-1');
+    const seed = { pages: [{ turns: [turn('seed', '2026-09-17T10:00:00Z')], next_before: null, next_before_id: null }], pageParams: [null] };
+    a.setQueryData(key, seed);
+    b.setQueryData(key, seed);
+    let resolveA!: (page: ConversationPage) => void;
+    const fetch = spyOn(agentsApi, 'getConversation')
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveA = resolve; }))
+      .mockResolvedValueOnce({ turns: [turn('B', '2026-09-17T11:00:00Z')], next_before: null, next_before_id: null });
+    const pendingA = refreshActivityFeedHead(a, null, 'agent-1');
+    const pendingB = refreshActivityFeedHead(b, null, 'agent-1');
+    expect(fetch).toHaveBeenCalledTimes(2);
+    await pendingB;
+    expect(loadedIds(b)).toEqual(['B', 'seed']);
+    resolveA({ turns: [], next_before: null, next_before_id: null });
+    await pendingA;
+    expect(loadedIds(b)).toEqual(['B', 'seed']);
+    a.clear(); b.clear();
+  });
   test('курсор (before, id) реального клиента не теряет и не дублирует ходы', async () => {
     const qc = new QueryClient();
     const calls: RecordedCall[] = [];
     installApi(calls);
 
-    await qc.fetchInfiniteQuery({ ...activityFeedQueryOptions('agent-1', 2), pages: 3 });
+    await qc.fetchInfiniteQuery({ ...activityFeedQueryOptions(null, 'agent-1', 2), pages: 3 });
 
     // Второй и третий запросы обязаны нести курсор последнего хода страницы.
     expect(calls).toEqual([
@@ -110,12 +131,12 @@ describe('пагинация ленты активности', () => {
     const calls: RecordedCall[] = [];
     installApi(calls);
 
-    await qc.fetchInfiniteQuery({ ...activityFeedQueryOptions('agent-1', 2), pages: 2 });
+    await qc.fetchInfiniteQuery({ ...activityFeedQueryOptions(null, 'agent-1', 2), pages: 2 });
     expect(loadedIds(qc)).toEqual(['c', 'b', 'a', 'z']);
 
     calls.length = 0;
     DB.unshift({ id: 'n', created_at: '2026-09-17T11:00:00Z' });
-    await refreshActivityFeedHead(qc, 'agent-1', 2);
+    await refreshActivityFeedHead(qc, null, 'agent-1', 2);
 
     // Ровно один запрос — за головой. Глубокие страницы не перезапрашивались.
     expect(calls).toEqual([{ agentId: 'agent-1', limit: 2, before: null, beforeId: null }]);
@@ -129,11 +150,11 @@ describe('пагинация ленты активности', () => {
     const calls: RecordedCall[] = [];
     installApi(calls);
 
-    await qc.fetchInfiniteQuery({ ...activityFeedQueryOptions('agent-1', 2), pages: 3 });
+    await qc.fetchInfiniteQuery({ ...activityFeedQueryOptions(null, 'agent-1', 2), pages: 3 });
     DB.unshift({ id: 'n', created_at: '2026-09-17T11:00:00Z' });
-    await refreshActivityFeedHead(qc, 'agent-1', 2);
+    await refreshActivityFeedHead(qc, null, 'agent-1', 2);
 
-    await qc.refetchQueries({ queryKey: queryKeys.conversation.byAgent('agent-1'), type: 'all' });
+    await qc.refetchQueries({ queryKey: queryKeys.forUser(null).conversation.byAgent('agent-1'), type: 'all' });
 
     expect(loadedIds(qc)).toEqual(['n', 'c', 'b', 'a', 'z', 'y']);
   });
@@ -143,7 +164,7 @@ describe('пагинация ленты активности', () => {
     const calls: RecordedCall[] = [];
     installApi(calls);
 
-    await qc.fetchInfiniteQuery({ ...activityFeedQueryOptions('agent-1', 2), pages: 2 });
+    await qc.fetchInfiniteQuery({ ...activityFeedQueryOptions(null, 'agent-1', 2), pages: 2 });
     expect(loadedIds(qc)).toEqual(['c', 'b', 'a', 'z']);
 
     calls.length = 0;
@@ -152,7 +173,7 @@ describe('пагинация ленты активности', () => {
       { id: 'n2', created_at: '2026-09-17T11:20:00Z' },
       { id: 'n1', created_at: '2026-09-17T11:10:00Z' },
     );
-    await refreshActivityFeedHead(qc, 'agent-1', 2);
+    await refreshActivityFeedHead(qc, null, 'agent-1', 2);
 
     // Догнали вторую страницу: n1 не провалился в зазор.
     expect(calls).toEqual([
@@ -168,12 +189,12 @@ describe('пагинация ленты активности', () => {
     const calls: RecordedCall[] = [];
     installApi(calls);
 
-    await qc.fetchInfiniteQuery({ ...activityFeedQueryOptions('agent-1', 2), pages: 2 });
+    await qc.fetchInfiniteQuery({ ...activityFeedQueryOptions(null, 'agent-1', 2), pages: 2 });
     expect(loadedIds(qc)).toEqual(['c', 'b', 'a', 'z']);
 
     for (let i = 0; i < 5; i += 1) {
       DB.unshift({ id: `m${i}`, created_at: `2026-09-17T12:0${i}:00Z` });
-      await refreshActivityFeedHead(qc, 'agent-1', 2);
+      await refreshActivityFeedHead(qc, null, 'agent-1', 2);
     }
 
     const pages = pageRecords(qc);
@@ -188,14 +209,14 @@ describe('пагинация ленты активности', () => {
   test('сбой запроса головы не портит кэш', async () => {
     const qc = new QueryClient();
     installApi([]);
-    await qc.fetchInfiniteQuery({ ...activityFeedQueryOptions('agent-1', 2), pages: 2 });
+    await qc.fetchInfiniteQuery({ ...activityFeedQueryOptions(null, 'agent-1', 2), pages: 2 });
     const before = loadedIds(qc);
 
     spyOn(agentsApi, 'getConversation').mockImplementation(async () => {
       throw new Error('boom');
     });
 
-    await expect(refreshActivityFeedHead(qc, 'agent-1', 2)).rejects.toThrow('boom');
+    await expect(refreshActivityFeedHead(qc, null, 'agent-1', 2)).rejects.toThrow('boom');
     expect(loadedIds(qc)).toEqual(before);
   });
 

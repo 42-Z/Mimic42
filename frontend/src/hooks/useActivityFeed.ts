@@ -2,11 +2,13 @@
 
 import { useInfiniteQuery, type InfiniteData, type QueryClient } from '@tanstack/react-query';
 import {
-  agentsApi,
+  createAccountApi,
+  type ApiAccountScope,
   type ConversationCursor,
   type ConversationPage,
 } from '@/lib/api';
 import { queryKeys, HISTORICAL_STALE_TIME } from '@/lib/queryClient';
+import { useAccount } from '@/hooks/useAccount';
 import { agentIdSchema } from '@/lib/validators';
 import type { ConversationTurn } from '@/types';
 
@@ -25,11 +27,11 @@ export type ActivityFeedPages = InfiniteData<ConversationPage, ConversationCurso
  * Опции курсорной ленты ходов. Экспортированы, чтобы тесты прогоняли реальный
  * `getNextPageParam` и клиент `getConversation`, а не их копию.
  */
-export function activityFeedQueryOptions(agentId: string, pageSize = PAGE_SIZE) {
+export function activityFeedQueryOptions(userId: string | null, agentId: string, pageSize = PAGE_SIZE, scope?: ApiAccountScope) {
   return {
-    queryKey: queryKeys.conversation.byAgent(agentId),
+    queryKey: queryKeys.forUser(userId).conversation.byAgent(agentId),
     queryFn: ({ pageParam }: { pageParam: ConversationCursor | null }) =>
-      agentsApi.getConversation(
+      createAccountApi(scope).agents.getConversation(
         agentId,
         pageSize,
         pageParam?.before ?? null,
@@ -110,7 +112,7 @@ interface HeadRefreshState {
 // гонятся наперегонки и не могут применить устаревший снимок поверх свежего.
 // Вспышка, пришедшая во время рефреша, ставит в очередь ещё один проход,
 // чтобы её собственный ход не выпал из кэша.
-const headRefreshes = new Map<string, HeadRefreshState>();
+const headRefreshes = new WeakMap<QueryClient, Map<string, HeadRefreshState>>();
 
 /**
  * Live-tail: с keyset-курсором глубокие страницы неизменяемы, поэтому на
@@ -122,11 +124,15 @@ const headRefreshes = new Map<string, HeadRefreshState>();
  */
 export function refreshActivityFeedHead(
   queryClient: QueryClient,
+  userId: string | null,
   agentId: string,
   pageSize = PAGE_SIZE,
+  scope?: ApiAccountScope,
 ): Promise<void> {
-  const state = headRefreshes.get(agentId) ?? { running: null, queued: false };
-  headRefreshes.set(agentId, state);
+  const refreshes = headRefreshes.get(queryClient) ?? new Map<string, HeadRefreshState>();
+  headRefreshes.set(queryClient, refreshes);
+  const state = refreshes.get(agentId) ?? { running: null, queued: false };
+  refreshes.set(agentId, state);
 
   if (state.running) {
     state.queued = true;
@@ -136,23 +142,25 @@ export function refreshActivityFeedHead(
   const run = (async () => {
     do {
       state.queued = false;
-      await runHeadRefresh(queryClient, agentId, pageSize);
+      await runHeadRefresh(queryClient, userId, agentId, pageSize, scope);
     } while (state.queued);
   })();
 
   state.running = run.finally(() => {
     state.running = null;
-    headRefreshes.delete(agentId);
+    refreshes.delete(agentId);
   });
   return state.running;
 }
 
 async function runHeadRefresh(
   queryClient: QueryClient,
+  userId: string | null,
   agentId: string,
   pageSize: number,
+  scope?: ApiAccountScope,
 ): Promise<void> {
-  const key = queryKeys.conversation.byAgent(agentId);
+  const key = queryKeys.forUser(userId).conversation.byAgent(agentId);
   const cached = queryClient.getQueryData<ActivityFeedPages>(key);
   if (!cached || cached.pages.length === 0) return;
 
@@ -164,7 +172,8 @@ async function runHeadRefresh(
   let covered = false;
 
   for (let page = 0; page < MAX_CATCH_UP_PAGES; page += 1) {
-    const result = await agentsApi.getConversation(
+    scope?.signal.throwIfAborted();
+    const result = await createAccountApi(scope).agents.getConversation(
       agentId,
       pageSize,
       cursor?.before ?? null,
@@ -200,10 +209,14 @@ async function runHeadRefresh(
  * хода страницы: равные `created_at` не теряют и не дублируют ходы на стыках.
  */
 export function useActivityFeed(agentId: string) {
+  const account = useAccount();
   const isValidId = agentIdSchema.safeParse(agentId).success;
 
   return useInfiniteQuery({
-    ...activityFeedQueryOptions(agentId),
+    ...activityFeedQueryOptions(account?.userId ?? null, agentId, PAGE_SIZE, account ? {
+      userId: account.userId,
+      signal: account.controller.signal,
+    } : undefined),
     enabled: isValidId,
     staleTime: HISTORICAL_STALE_TIME,
   });

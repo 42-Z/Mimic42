@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useRef } from 'react';
+import { useAccount } from '@/hooks/useAccount';
 import { useQuery, useQueryClient, type QueryKey } from '@tanstack/react-query';
 import { adminApi } from '@/lib/adminApi';
 import { queryKeys } from '@/lib/queryClient';
@@ -148,6 +149,7 @@ export function useAdminStatistics(days: 7 | 30) {
 }
 
 export function useAdminActions() {
+  const account = useAccount();
   const { userId, isAdmin } = useAdminAccess();
   const queryClient = useQueryClient();
   const currentAccess = useRef({ userId, isAdmin });
@@ -159,12 +161,14 @@ export function useAdminActions() {
       afterSuccess?: (initiatingUserId: string) => Promise<void>,
     ): Promise<Result> => {
       const initiatingUserId = userId;
+      account?.controller.signal.throwIfAborted();
       if (initiatingUserId === null || !isAdmin) {
         throw new Error('Admin access is not confirmed');
       }
 
       try {
         const result = await operation();
+        account?.controller.signal.throwIfAborted();
         if (
           currentAccess.current.userId !== initiatingUserId ||
           !currentAccess.current.isAdmin
@@ -173,6 +177,7 @@ export function useAdminActions() {
         }
         if (afterSuccess) {
           await afterSuccess(initiatingUserId);
+          account?.controller.signal.throwIfAborted();
           if (
             currentAccess.current.userId !== initiatingUserId ||
             !currentAccess.current.isAdmin
@@ -192,7 +197,7 @@ export function useAdminActions() {
         throw error;
       }
     },
-    [isAdmin, queryClient, userId],
+    [isAdmin, queryClient, userId, account],
   );
 
   return {
@@ -200,21 +205,21 @@ export function useAdminActions() {
       execute(() => adminApi.createPreset(values), async (ownerId) => {
         await Promise.all([
           queryClient.invalidateQueries({ queryKey: queryKeys.admin.scope(ownerId) }),
-          queryClient.invalidateQueries({ queryKey: queryKeys.presets.all }),
+          queryClient.invalidateQueries({ queryKey: queryKeys.forUser(userId).presets.all }),
         ]);
       }),
     updatePreset: (presetId: string, values: UpdateAdminPreset) =>
       execute(() => adminApi.updatePreset(presetId, values), async (ownerId) => {
         await Promise.all([
           queryClient.invalidateQueries({ queryKey: queryKeys.admin.scope(ownerId) }),
-          queryClient.invalidateQueries({ queryKey: queryKeys.presets.all }),
+          queryClient.invalidateQueries({ queryKey: queryKeys.forUser(userId).presets.all }),
         ]);
       }),
     setPresetVisibility: (presetId: string, isActive: boolean) =>
       execute(() => adminApi.setPresetVisibility(presetId, isActive), async (ownerId) => {
         await Promise.all([
           queryClient.invalidateQueries({ queryKey: queryKeys.admin.scope(ownerId) }),
-          queryClient.invalidateQueries({ queryKey: queryKeys.presets.all }),
+          queryClient.invalidateQueries({ queryKey: queryKeys.forUser(userId).presets.all }),
         ]);
       }),
     saveTelegramSettings: (values: SaveTelegramSettings) =>

@@ -4,7 +4,7 @@ export function getLoginRedirect(value: string | null): string {
     return fallback;
   }
 
-  const pathname = value.split(/[?#]/, 1)[0];
+  const [pathname = ''] = value.split(/[?#]/, 1);
   if (/%(?:2f|5c|0[0-9a-f]|1[0-9a-f]|7f|25)/i.test(pathname)) {
     return fallback;
   }

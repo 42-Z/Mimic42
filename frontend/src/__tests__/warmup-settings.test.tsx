@@ -89,7 +89,7 @@ describe('WarmupRestrictionNotice', () => {
     });
     renderNotice();
 
-    await waitFor(() => expect(get).toHaveBeenCalledWith(AGENT_ID));
+    await waitFor(() => expect(get).toHaveBeenCalledWith(AGENT_ID, { accountScope: undefined }));
     expect(screen.queryByText('Аккаунт в спам-блоке Telegram')).toBeNull();
   });
 
@@ -112,7 +112,7 @@ describe('WarmupRestrictionNotice', () => {
 
     await userEvent.click(await screen.findByRole('button', { name: 'Восстановить перепиской' }));
 
-    await waitFor(() => expect(start).toHaveBeenCalledWith(AGENT_ID));
+    await waitFor(() => expect(start).toHaveBeenCalledWith(AGENT_ID, { accountScope: undefined }));
     expect(await screen.findByText(/Режим восстановления включён:/)).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Восстановить перепиской' })).toBeNull();
     expect(settingsWrite).not.toHaveBeenCalled();

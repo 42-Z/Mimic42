@@ -2,8 +2,8 @@
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { getSupabaseClient } from '@/lib/supabase/client';
-import { onboardingApi } from '@/lib/api';
-import { queryKeys } from '@/lib/queryClient';
+import { useAccountApi } from '@/hooks/useAccountApi';
+import { useAccount, useAccountQueryKeys } from '@/hooks/useAccount';
 import type {
   OnboardingSessionRow,
   OnboardingStep,
@@ -40,11 +40,15 @@ export function deriveOnboardingStep(session: OnboardingSessionRow | null | unde
  * Returns null if no draft exists yet.
  */
 export function useOnboardingSession() {
+  const account = useAccount();
+  const queryKeys = useAccountQueryKeys();
   return useQuery({
     queryKey: queryKeys.onboarding.session(),
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const supabase = getSupabaseClient();
       const { data: { user } } = await supabase.auth.getUser();
+      signal.throwIfAborted();
+      account?.controller.signal.throwIfAborted();
       if (!user) throw new Error('Not authenticated');
 
       const { data, error } = await supabase
@@ -54,6 +58,7 @@ export function useOnboardingSession() {
         .is('completed_agent_id', null)
         .order('created_at', { ascending: false })
         .limit(1)
+        .abortSignal(signal)
         .maybeSingle();
 
       if (error) throw error;
@@ -69,6 +74,8 @@ export function useOnboardingSession() {
  * otherwise updates the existing draft.
  */
 export function useSaveOnboardingStep() {
+  const account = useAccount();
+  const queryKeys = useAccountQueryKeys();
   const qc = useQueryClient();
 
   return useMutation({
@@ -81,6 +88,7 @@ export function useSaveOnboardingStep() {
     }) => {
       const supabase = getSupabaseClient();
       const { data: { user } } = await supabase.auth.getUser();
+      account?.controller.signal.throwIfAborted();
       if (!user) throw new Error('Not authenticated');
 
       const { settings, ...rest } = update;
@@ -100,14 +108,12 @@ export function useSaveOnboardingStep() {
             .update(payload)
             .eq('id', sessionId)
             .select()
-            .single()
         : supabase
             .from('agent_onboarding_sessions')
             .insert(payload)
-            .select()
-            .single();
+            .select();
 
-      const { data, error } = await query;
+      const { data, error } = await (account ? query.abortSignal(account.controller.signal) : query).single();
       if (error) throw error;
       return data as OnboardingSessionRow;
     },
@@ -164,6 +170,8 @@ export function useSaveSoulPrompt() {
  * Step 4a: Start Telegram authorization for the current draft
  */
 export function useStartTelegramAuth() {
+  const { onboarding: onboardingApi } = useAccountApi();
+  const queryKeys = useAccountQueryKeys();
   const qc = useQueryClient();
 
   return useMutation({
@@ -191,6 +199,8 @@ export function useStartTelegramAuth() {
  * Step 4b: Submit Telegram code (and optionally 2FA password)
  */
 export function useSubmitTelegramCode() {
+  const { onboarding: onboardingApi } = useAccountApi();
+  const queryKeys = useAccountQueryKeys();
   const qc = useQueryClient();
 
   return useMutation({
@@ -210,10 +220,7 @@ export function useSubmitTelegramCode() {
 
       return result;
     },
-    onSuccess: (result) => {
-      if (result.authorization_status === 'authorized' && typeof window !== 'undefined') {
-        sessionStorage.removeItem('_m42_tc_state');
-      }
+    onSuccess: () => {
       qc.invalidateQueries({ queryKey: queryKeys.onboarding.session() });
     },
   });
@@ -223,6 +230,8 @@ export function useSubmitTelegramCode() {
  * Step 5: Finalize agent creation
  */
 export function useFinalizeAgent() {
+  const { onboarding: onboardingApi } = useAccountApi();
+  const account = useAccount();
   return useMutation({
     mutationFn: async ({
       onboardingId,
@@ -239,6 +248,7 @@ export function useFinalizeAgent() {
       });
     },
     onSuccess: () => {
+      if (account?.controller.signal.aborted) return;
       // Полная навигация вместо router.push: клиентский Router Cache мог
       // сохранить префетч /dashboard → /onboarding (сделанный, пока агента
       // ещё не было), и push вернул бы на онбординг без запроса к серверу.
@@ -251,15 +261,19 @@ export function useFinalizeAgent() {
  * Deletes the current onboarding draft (for the "Start over" action)
  */
 export function useDiscardOnboardingDraft() {
+  const account = useAccount();
+  const queryKeys = useAccountQueryKeys();
   const qc = useQueryClient();
 
   return useMutation({
     mutationFn: async (sessionId: string) => {
       const supabase = getSupabaseClient();
-      const { error } = await supabase
+      account?.controller.signal.throwIfAborted();
+      const request = supabase
         .from('agent_onboarding_sessions')
         .delete()
         .eq('id', sessionId);
+      const { error } = await (account ? request.abortSignal(account.controller.signal) : request);
       if (error) throw error;
     },
     onSuccess: () => {

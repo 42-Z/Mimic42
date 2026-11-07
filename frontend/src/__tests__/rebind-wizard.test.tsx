@@ -56,9 +56,9 @@ describe('RebindWizard', () => {
     await user.click(screen.getByRole('button', { name: 'Подтвердить →' }));
 
     expect(await screen.findByText('Telegram перепривязан')).toBeTruthy();
-    expect(rebind).toHaveBeenCalledWith(AGENT_ID);
-    expect(submitCode).toHaveBeenCalledWith(ONBOARDING_ID, { code: '12345' });
-    expect(confirm).toHaveBeenCalledWith(AGENT_ID, { onboarding_id: ONBOARDING_ID });
+    expect(rebind).toHaveBeenCalledWith(AGENT_ID, { accountScope: undefined });
+    expect(submitCode).toHaveBeenCalledWith(ONBOARDING_ID, { code: '12345' }, { accountScope: undefined });
+    expect(confirm).toHaveBeenCalledWith(AGENT_ID, { onboarding_id: ONBOARDING_ID }, { accountScope: undefined });
     expect(onInvalidate).toHaveBeenCalledTimes(1);
   });
 

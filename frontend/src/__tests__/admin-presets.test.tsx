@@ -246,9 +246,9 @@ describe('AdminPresets', () => {
     const { queryClient } = renderPresets();
     await screen.findByText('Пресет автора');
     const catalogKeys = [
-      queryKeys.presets.list(),
-      queryKeys.presets.favorites(),
-      queryKeys.presets.authors(),
+      queryKeys.forUser(adminId).presets.list(),
+      queryKeys.forUser(adminId).presets.favorites(),
+      queryKeys.forUser(adminId).presets.authors(),
     ];
     for (const key of catalogKeys) queryClient.setQueryData(key, []);
 

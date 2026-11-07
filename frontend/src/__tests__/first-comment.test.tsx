@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test';
 import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
@@ -12,6 +12,7 @@ import {
   type FirstCommentDraftVariant,
 } from '@/components/agent/FirstCommentSettings';
 import { agentsApi, apiClient } from '@/lib/api';
+import * as supabaseClient from '@/lib/supabase/client';
 import { firstCommentSchema, agentSettingsSchema } from '@/lib/validators';
 import type { FirstCommentVariant, UploadedMedia } from '@/types';
 
@@ -335,6 +336,9 @@ describe('FirstCommentSettingsSection', () => {
 
 describe('agentsApi.uploadMedia', () => {
   test('картинка уходит формой, а не JSON-строкой', async () => {
+    const auth = spyOn(supabaseClient, 'getSupabaseClient').mockReturnValue({
+      auth: { getSession: async () => ({ data: { session: null }, error: null }) },
+    } as unknown as supabaseClient.SupabaseBrowserClient);
     let seen: { data: unknown; contentType: unknown } | null = null;
 
     apiClient.defaults.adapter = async (config) => {
@@ -350,6 +354,7 @@ describe('agentsApi.uploadMedia', () => {
 
     const file = new File([new Uint8Array([1, 2, 3])], 'pic.png', { type: 'image/png' });
     const result = await agentsApi.uploadMedia(AGENT_ID, file);
+    auth.mockRestore();
 
     expect(result.storage_path).toBe('a/pic.jpg');
     // JSON-заголовок инстанса обязан быть снят до transformRequest: с ним

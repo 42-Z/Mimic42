@@ -3,25 +3,17 @@
 import {
   createContext,
   createElement,
-  useCallback,
   useContext,
   useEffect,
   useRef,
-  useState,
   type ReactNode,
 } from 'react';
 import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { adminApi } from '@/lib/adminApi';
 import { queryKeys } from '@/lib/queryClient';
-import { getSupabaseClient } from '@/lib/supabase/client';
+import { useAccount } from '@/hooks/useAccount';
 import type { ApiError } from '@/types';
 import type { AdminIdentity } from '@/types/admin';
-
-interface AuthSnapshot {
-  ready: boolean;
-  userId: string | null;
-  error: unknown | null;
-}
 
 export interface AdminAccess {
   userId: string | null;
@@ -68,122 +60,22 @@ export async function revokeAdminAccess(
 
 export function AdminAccessProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
-  const [auth, setAuth] = useState<AuthSnapshot>({ ready: false, userId: null, error: null });
-  const authRef = useRef(auth);
-  const userIdRef = useRef<string | null>(null);
-  const mountedRef = useRef(false);
-  const transitionRef = useRef(0);
-  const cleanupQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const account = useAccount();
+  const userId = account?.userId ?? null;
   const clearedAdminUsersRef = useRef(new Set<string>());
 
-  const updateAuth = useCallback((value: AuthSnapshot) => {
-    authRef.current = value;
-    setAuth(value);
-  }, []);
-
-  const acceptUserId = useCallback(
-    (nextUserId: string | null) => {
-      const previousUserId = userIdRef.current;
-      if (
-        previousUserId === nextUserId &&
-        authRef.current.ready &&
-        authRef.current.error === null
-      ) {
-        return;
-      }
-
-      userIdRef.current = nextUserId;
-      const transition = ++transitionRef.current;
-      updateAuth({ ready: false, userId: null, error: null });
-
-      const cleanup = cleanupQueueRef.current.then(async () => {
-        if (previousUserId === null) return;
-        await clearAdminData(queryClient, previousUserId);
-        await queryClient.cancelQueries({ queryKey: queryKeys.identity(previousUserId) });
-        queryClient.removeQueries({ queryKey: queryKeys.identity(previousUserId) });
-        clearedAdminUsersRef.current.delete(previousUserId);
-      });
-      cleanupQueueRef.current = cleanup.catch(() => undefined);
-
-      void cleanup
-        .then(() => {
-          if (
-            !mountedRef.current ||
-            transitionRef.current !== transition ||
-            userIdRef.current !== nextUserId
-          ) {
-            return;
-          }
-          updateAuth({ ready: true, userId: nextUserId, error: null });
-        })
-        .catch((error: unknown) => {
-          if (!mountedRef.current || transitionRef.current !== transition) return;
-          userIdRef.current = null;
-          updateAuth({ ready: true, userId: null, error });
-        });
-    },
-    [queryClient, updateAuth],
-  );
-
-  useEffect(() => {
-    mountedRef.current = true;
-    let active = true;
-    let eventSequence = 0;
-    let supabase: ReturnType<typeof getSupabaseClient>;
-
-    try {
-      supabase = getSupabaseClient();
-    } catch (error) {
-      updateAuth({ ready: true, userId: null, error });
-      return () => {
-        active = false;
-        mountedRef.current = false;
-      };
-    }
-
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
-      eventSequence += 1;
-      acceptUserId(session?.user.id ?? null);
-    });
-    const initialEventSequence = eventSequence;
-
-    void supabase.auth
-      .getSession()
-      .then(({ data, error }) => {
-        if (!active || eventSequence !== initialEventSequence) return;
-        if (error) {
-          updateAuth({ ready: true, userId: null, error });
-          return;
-        }
-        acceptUserId(data.session?.user.id ?? null);
-      })
-      .catch((error: unknown) => {
-        if (!active || eventSequence !== initialEventSequence) return;
-        updateAuth({ ready: true, userId: null, error });
-      });
-
-    return () => {
-      active = false;
-      mountedRef.current = false;
-      subscription.unsubscribe();
-    };
-  }, [acceptUserId, updateAuth]);
-
   const identityQuery = useQuery({
-    queryKey: queryKeys.identity(auth.userId ?? 'anonymous'),
+    queryKey: queryKeys.identity(userId ?? 'anonymous'),
     queryFn: ({ signal }) => adminApi.me({ signal }),
-    enabled: auth.ready && auth.userId !== null,
+    enabled: userId !== null,
     staleTime: 0,
-    refetchInterval: auth.userId === null ? false : 30_000,
+    refetchInterval: userId === null ? false : 30_000,
     refetchOnWindowFocus: true,
     refetchOnReconnect: true,
     retry: retryAdminQuery,
   });
 
   useEffect(() => {
-    const userId = auth.userId;
     if (userId === null) return;
 
     const identity = identityQuery.data;
@@ -209,31 +101,28 @@ export function AdminAccessProvider({ children }: { children: ReactNode }) {
       clearedAdminUsersRef.current.add(userId);
       void clearAdminData(queryClient, userId).catch(() => undefined);
     }
-  }, [auth.userId, identityQuery.data, identityQuery.error, queryClient]);
+  }, [userId, identityQuery.data, identityQuery.error, queryClient]);
 
   const access: AdminAccess = {
-    userId: auth.ready ? auth.userId : null,
+    userId,
     isLoading:
-      !auth.ready ||
-      (auth.userId !== null && !identityQuery.isFetchedAfterMount && !identityQuery.isError),
+      userId !== null && !identityQuery.isFetchedAfterMount && !identityQuery.isError,
     isAdmin:
-      auth.ready &&
-      auth.userId !== null &&
+      userId !== null &&
       identityQuery.isFetchedAfterMount &&
       !identityQuery.isError &&
-      identityQuery.data?.user_id === auth.userId &&
+      identityQuery.data?.user_id === userId &&
       identityQuery.data.is_admin,
     isDenied:
-      auth.ready &&
-      ((auth.userId === null && auth.error === null) ||
-        (auth.userId !== null &&
+      userId === null ||
+        (userId !== null &&
           ((identityQuery.isFetchedAfterMount &&
-            identityQuery.data?.user_id === auth.userId &&
+            identityQuery.data?.user_id === userId &&
             !identityQuery.data.is_admin) ||
-            errorStatus(identityQuery.error) === 403))),
-    error: auth.error ?? (identityQuery.isError ? identityQuery.error : null),
+            errorStatus(identityQuery.error) === 403)),
+    error: identityQuery.isError ? identityQuery.error : null,
     retry: () => {
-      if (auth.userId !== null) void identityQuery.refetch();
+      if (userId !== null) void identityQuery.refetch();
     },
   };
 

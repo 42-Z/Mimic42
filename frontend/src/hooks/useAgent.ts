@@ -1,9 +1,10 @@
 'use client';
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { agentsApi } from '@/lib/api';
+import { useAccountApi } from '@/hooks/useAccountApi';
 import { getSupabaseClient } from '@/lib/supabase/client';
-import { queryKeys, STATUS_STALE_TIME } from '@/lib/queryClient';
+import { STATUS_STALE_TIME } from '@/lib/queryClient';
+import { useAccount, useAccountQueryKeys } from '@/hooks/useAccount';
 import { agentIdSchema } from '@/lib/validators';
 import type { AgentRow, AgentSettingsForm } from '@/types';
 import type { Json } from '@/types/supabase';
@@ -12,6 +13,8 @@ import type { Json } from '@/types/supabase';
  * Fetch single agent status from FastAPI backend.
  */
 export function useAgentStatus(agentId: string) {
+  const { agents: agentsApi } = useAccountApi();
+  const queryKeys = useAccountQueryKeys();
   const isValidId = agentIdSchema.safeParse(agentId).success;
 
   return useQuery({
@@ -34,16 +37,18 @@ export function useAgentStatus(agentId: string) {
  * Fetch full agent row from Supabase (includes soul_prompt, system_prompt, settings).
  */
 export function useAgentDetails(agentId: string) {
+  const queryKeys = useAccountQueryKeys();
   const isValidId = agentIdSchema.safeParse(agentId).success;
 
   return useQuery({
     queryKey: [...queryKeys.agents.detail(agentId), 'full'],
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const supabase = getSupabaseClient();
       const { data, error } = await supabase
         .from('agents')
         .select('*')
         .eq('id', agentId)
+        .abortSignal(signal)
         .single();
 
       if (error) throw error;
@@ -58,12 +63,15 @@ export function useAgentDetails(agentId: string) {
  * RLS ensures user can only update their own agents.
  */
 export function useUpdateAgentSettings(agentId: string) {
+  const account = useAccount();
+  const queryKeys = useAccountQueryKeys();
   const qc = useQueryClient();
 
   return useMutation({
     mutationFn: async (values: Partial<AgentSettingsForm>) => {
       const supabase = getSupabaseClient();
-      const { data, error } = await supabase
+      account?.controller.signal.throwIfAborted();
+      const request = supabase
         .from('agents')
         .update({
           name: values.name,
@@ -72,8 +80,8 @@ export function useUpdateAgentSettings(agentId: string) {
           updated_at: new Date().toISOString(),
         })
         .eq('id', agentId)
-        .select()
-        .single();
+        .select();
+      const { data, error } = await (account ? request.abortSignal(account.controller.signal) : request).single();
 
       if (error) throw error;
       return data;
@@ -90,6 +98,8 @@ export function useUpdateAgentSettings(agentId: string) {
  * читается отдельно от настроек и обновляется опросом, пока агент работает.
  */
 export function useWarmupState(agentId: string) {
+  const { agents: agentsApi } = useAccountApi();
+  const queryKeys = useAccountQueryKeys();
   const isValidId = agentIdSchema.safeParse(agentId).success;
 
   return useQuery({
@@ -107,6 +117,8 @@ export function useWarmupState(agentId: string) {
  * и остановка агента сбрасывают список вместе со всем `agents`.
  */
 export function useAgentChats(agentId: string) {
+  const { agents: agentsApi } = useAccountApi();
+  const queryKeys = useAccountQueryKeys();
   const isValidId = agentIdSchema.safeParse(agentId).success;
 
   return useQuery({
@@ -121,6 +133,8 @@ export function useAgentChats(agentId: string) {
 
 /** Включить восстановление: сервер сам записывает выбор, форма настроек не участвует. */
 export function useStartWarmupRecovery(agentId: string) {
+  const { agents: agentsApi } = useAccountApi();
+  const queryKeys = useAccountQueryKeys();
   const qc = useQueryClient();
 
   return useMutation({
@@ -136,6 +150,8 @@ export function useStartWarmupRecovery(agentId: string) {
  * просмотр вкладки остановленного агента не должен поднимать Telegram-клиент.
  */
 export function useTelegramPasswordState(agentId: string, enabled: boolean) {
+  const { agents: agentsApi } = useAccountApi();
+  const queryKeys = useAccountQueryKeys();
   const isValidId = agentIdSchema.safeParse(agentId).success;
 
   return useQuery({

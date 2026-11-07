@@ -2,7 +2,7 @@
 
 import { useQuery } from '@tanstack/react-query';
 import { getSupabaseClient } from '@/lib/supabase/client';
-import { queryKeys } from '@/lib/queryClient';
+import { useAccountQueryKeys } from '@/hooks/useAccount';
 import { agentIdSchema } from '@/lib/validators';
 import type {
   TelegramAuthorizationStatus,
@@ -14,11 +14,12 @@ import type {
  * Fetch Telegram session for an agent directly from Supabase.
  */
 export function useTelegramSession(agentId: string) {
+  const queryKeys = useAccountQueryKeys();
   const isValidId = agentIdSchema.safeParse(agentId).success;
 
   return useQuery({
     queryKey: queryKeys.telegram.byAgent(agentId),
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const supabase = getSupabaseClient();
       const { data, error } = await supabase
         .from('telegram_sessions')
@@ -28,6 +29,7 @@ export function useTelegramSession(agentId: string) {
           'id, agent_id, username, phone_number, authorization_status, last_authorized_at, last_error, created_at, updated_at',
         )
         .eq('agent_id', agentId)
+        .abortSignal(signal)
         .maybeSingle();
 
       if (error) throw error;
@@ -42,15 +44,17 @@ export function useTelegramSession(agentId: string) {
  * Fetch all message threads for an agent from Supabase.
  */
 export function useMessageThreads(agentId: string) {
+  const queryKeys = useAccountQueryKeys();
   const isValidId = agentIdSchema.safeParse(agentId).success;
 
   return useQuery({
     queryKey: queryKeys.threads.byAgent(agentId),
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const supabase = getSupabaseClient();
       const { data, error } = await supabase
         .from('message_threads')
         .select('*')
+        .abortSignal(signal)
         .eq('agent_id', agentId)
         .order('last_message_at', { ascending: false });
 
@@ -67,11 +71,12 @@ export function useMessageThreads(agentId: string) {
  * visible conversation rows, actions and errors from agent_events.
  */
 export function useDashboardKPIs(agentId: string) {
+  const queryKeys = useAccountQueryKeys();
   const isValidId = agentIdSchema.safeParse(agentId).success;
 
   return useQuery({
     queryKey: queryKeys.analytics.kpis(agentId),
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const supabase = getSupabaseClient();
       const today = new Date();
       today.setHours(0, 0, 0, 0);
@@ -82,6 +87,7 @@ export function useDashboardKPIs(agentId: string) {
         supabase
           .from('message_threads')
           .select('id', { count: 'exact', head: true })
+          .abortSignal(signal)
           .eq('agent_id', agentId)
           .gte('last_message_at', todayISO),
 
@@ -89,6 +95,7 @@ export function useDashboardKPIs(agentId: string) {
         supabase
           .from('agent_messages')
           .select('id', { count: 'exact', head: true })
+          .abortSignal(signal)
           .eq('agent_id', agentId)
           .in('direction', ['incoming', 'agent_response'])
           .gte('created_at', todayISO),
@@ -97,6 +104,7 @@ export function useDashboardKPIs(agentId: string) {
         supabase
           .from('agent_events')
           .select('id', { count: 'exact', head: true })
+          .abortSignal(signal)
           .eq('agent_id', agentId)
           .like('event_type', 'tool.%')
           .gte('created_at', todayISO),
@@ -105,6 +113,7 @@ export function useDashboardKPIs(agentId: string) {
         supabase
           .from('agent_events')
           .select('id', { count: 'exact', head: true })
+          .abortSignal(signal)
           .eq('agent_id', agentId)
           .eq('status', 'failed')
           .gte('created_at', todayISO),
@@ -127,11 +136,12 @@ export function useDashboardKPIs(agentId: string) {
  * Fetch dashboard KPI metrics across all agents of the user from Supabase.
  */
 export function useAllAgentsKPIs(agentIds: string[]) {
+  const queryKeys = useAccountQueryKeys();
   const isValid = agentIds.length > 0;
 
   return useQuery({
     queryKey: queryKeys.analytics.kpisAll(agentIds),
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const supabase = getSupabaseClient();
       const today = new Date();
       today.setHours(0, 0, 0, 0);
@@ -141,12 +151,14 @@ export function useAllAgentsKPIs(agentIds: string[]) {
         supabase
           .from('message_threads')
           .select('id', { count: 'exact', head: true })
+          .abortSignal(signal)
           .in('agent_id', agentIds)
           .gte('last_message_at', todayISO),
 
         supabase
           .from('agent_messages')
           .select('id', { count: 'exact', head: true })
+          .abortSignal(signal)
           .in('agent_id', agentIds)
           .in('direction', ['incoming', 'agent_response'])
           .gte('created_at', todayISO),
@@ -154,6 +166,7 @@ export function useAllAgentsKPIs(agentIds: string[]) {
         supabase
           .from('agent_events')
           .select('id', { count: 'exact', head: true })
+          .abortSignal(signal)
           .in('agent_id', agentIds)
           .like('event_type', 'tool.%')
           .gte('created_at', todayISO),
@@ -161,6 +174,7 @@ export function useAllAgentsKPIs(agentIds: string[]) {
         supabase
           .from('agent_events')
           .select('id', { count: 'exact', head: true })
+          .abortSignal(signal)
           .in('agent_id', agentIds)
           .eq('status', 'failed')
           .gte('created_at', todayISO),
@@ -191,20 +205,23 @@ export interface AgentDetails {
  * start times for several agents.
  */
 export function useAgentsDetails(agentIds: string[]) {
+  const queryKeys = useAccountQueryKeys();
   const isValid = agentIds.length > 0;
 
   return useQuery({
     queryKey: queryKeys.agents.detailsAll(agentIds),
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const supabase = getSupabaseClient();
       const [sessionsResult, agentsResult] = await Promise.all([
         supabase
           .from('telegram_sessions')
           .select('agent_id, username, phone_number, authorization_status')
+          .abortSignal(signal)
           .in('agent_id', agentIds),
         supabase
           .from('agents')
           .select('id, last_started_at')
+          .abortSignal(signal)
           .in('id', agentIds),
       ]);
 
@@ -239,6 +256,7 @@ export function useAgentsDetails(agentIds: string[]) {
  * Fetch analytics data for charts: messages, tool actions and errors per day.
  */
 export function useAnalyticsData(agentId: string, days: 7 | 30) {
+  const queryKeys = useAccountQueryKeys();
   const isValidId = agentIdSchema.safeParse(agentId).success;
 
   return useQuery({
@@ -355,15 +373,17 @@ export function useAnalyticsData(agentId: string, days: 7 | 30) {
  * Counters always accumulate; the hook is independent of the day range.
  */
 export function useTokenUsage(agentId: string) {
+  const queryKeys = useAccountQueryKeys();
   const isValidId = agentIdSchema.safeParse(agentId).success;
 
   return useQuery({
     queryKey: queryKeys.analytics.usage(agentId),
-    queryFn: async () => {
+    queryFn: async ({ signal }) => {
       const supabase = getSupabaseClient();
       const { data, error } = await supabase
         .from('agent_token_usage')
         .select('input_tokens, output_tokens')
+        .abortSignal(signal)
         .eq('agent_id', agentId)
         .maybeSingle();
 

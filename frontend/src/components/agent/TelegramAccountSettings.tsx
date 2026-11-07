@@ -7,8 +7,8 @@ import { ru } from 'date-fns/locale';
 import { useQueryClient } from '@tanstack/react-query';
 
 import { useTelegramPasswordState } from '@/hooks/useAgent';
-import { agentsApi } from '@/lib/api';
-import { queryKeys } from '@/lib/queryClient';
+import { useAccountApi } from '@/hooks/useAccountApi';
+import { useAccountQueryKeys } from '@/hooks/useAccount';
 import { Badge } from '@/components/ui/card';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -110,6 +110,8 @@ export function TelegramAccountSettings({
 }
 
 function UsernameField({ agentId, username }: { agentId: string; username: string | null }) {
+  const { agents: agentsApi } = useAccountApi();
+  const queryKeys = useAccountQueryKeys();
   const queryClient = useQueryClient();
   const [value, setValue] = useState(username ?? '');
   const [dirty, setDirty] = useState(false);
@@ -197,6 +199,8 @@ function UsernameField({ agentId, username }: { agentId: string; username: strin
 }
 
 function PasswordField({ agentId }: { agentId: string }) {
+  const { agents: agentsApi } = useAccountApi();
+  const queryKeys = useAccountQueryKeys();
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const { data, error: stateError, isLoading, refetch } = useTelegramPasswordState(agentId, open);

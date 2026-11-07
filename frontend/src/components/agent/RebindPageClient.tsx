@@ -5,8 +5,8 @@ import { useParams, useRouter } from 'next/navigation';
 import { useQueryClient } from '@tanstack/react-query';
 import { agentIdSchema } from '@/lib/validators';
 import { useTelegramSession } from '@/hooks/useTelegramSession';
-import { agentsApi, onboardingApi } from '@/lib/api';
-import { queryKeys } from '@/lib/queryClient';
+import { useAccountApi } from '@/hooks/useAccountApi';
+import { useAccountQueryKeys } from '@/hooks/useAccount';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardHeader, CardContent, CardFooter, Spinner } from '@/components/ui/card';
@@ -30,6 +30,7 @@ export default function RebindPage() {
 }
 
 function RebindPageContent({ agentId }: { agentId: string }) {
+  const queryKeys = useAccountQueryKeys();
   const router = useRouter();
   const qc = useQueryClient();
   const { toast } = useToast();
@@ -66,6 +67,7 @@ export function RebindWizard({
   onInvalidate,
   onToast,
 }: RebindWizardProps) {
+  const { agents: agentsApi, onboarding: onboardingApi } = useAccountApi();
   const [step, setStep] = useState<RebindStep>('starting');
   const [code, setCode] = useState('');
   const [password, setPassword] = useState('');
