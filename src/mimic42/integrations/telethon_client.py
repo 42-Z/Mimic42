@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from typing import Any, cast
@@ -14,6 +15,22 @@ from mimic42.core.agent_runtime import (
 )
 
 logger = logging.getLogger("mimic42.telethon_client")
+SHORT_WAIT_SECONDS = 4
+SHORT_WAIT_RETRIED_NOTE = "Mimic42 already retried this short Telegram wait."
+WAIT_ERRORS = (
+    errors.FloodWaitError,
+    errors.FloodPremiumWaitError,
+    errors.SlowModeWaitError,
+    errors.FloodTestPhoneWaitError,
+)
+
+
+def _can_retry_short_wait(error: BaseException | None) -> bool:
+    return (
+        isinstance(error, WAIT_ERRORS)
+        and 0 <= error.seconds <= SHORT_WAIT_SECONDS
+        and SHORT_WAIT_RETRIED_NOTE not in getattr(error, "__notes__", ())
+    )
 
 
 class MimicTelegramClient(TelegramClient):
@@ -31,6 +48,73 @@ class MimicTelegramClient(TelegramClient):
     # проверь @SpamBot». Причина может быть и в одном чате, поэтому это лишь подозрение,
     # которое проверяет сам @SpamBot, а не метка ограничения.
     spam_limit_suspect_handler: Callable[[], Awaitable[None]] | None = None
+
+    async def _call(
+        self,
+        sender: Any,
+        request: Any,
+        ordered: bool = False,
+        flood_sleep_threshold: Any = None,
+    ) -> Any:
+        """Retry rejected RPCs once after a four-second wait, retaining batch successes."""
+        try:
+            return await super()._call(
+                sender, request, ordered=ordered, flood_sleep_threshold=flood_sleep_threshold
+            )
+        except WAIT_ERRORS as error:
+            if not _can_retry_short_wait(error):
+                raise
+            await asyncio.sleep(SHORT_WAIT_SECONDS)
+            return await self._retry_rpc_once(
+                sender, request, ordered=ordered, flood_sleep_threshold=flood_sleep_threshold
+            )
+        except errors.MultiError as error:
+            batch = cast(Any, error)
+            retry_indices = [
+                index
+                for index, failure in enumerate(batch.exceptions)
+                if _can_retry_short_wait(failure)
+            ]
+            if not retry_indices:
+                raise
+            await asyncio.sleep(SHORT_WAIT_SECONDS)
+            results = list(batch.results)
+            failures = list(batch.exceptions)
+            for index in retry_indices:
+                try:
+                    results[index] = await self._retry_rpc_once(
+                        sender,
+                        batch.requests[index],
+                        ordered=ordered,
+                        flood_sleep_threshold=flood_sleep_threshold,
+                    )
+                except Exception as failure:
+                    failures[index] = failure
+                else:
+                    failures[index] = None
+            if any(failure is not None for failure in failures):
+                raise errors.MultiError(failures, results, batch.requests)
+            return results
+
+    async def _retry_rpc_once(
+        self,
+        sender: Any,
+        request: Any,
+        ordered: bool,
+        flood_sleep_threshold: Any,
+    ) -> Any:
+        try:
+            return await super()._call(
+                sender, request, ordered=ordered, flood_sleep_threshold=flood_sleep_threshold
+            )
+        except (*WAIT_ERRORS, errors.MultiError) as error:
+            failures = (
+                cast(Any, error).exceptions if isinstance(error, errors.MultiError) else [error]
+            )
+            for failure in failures:
+                if _can_retry_short_wait(failure):
+                    failure.add_note(SHORT_WAIT_RETRIED_NOTE)
+            raise
 
     async def __call__(
         self, request: Any, ordered: bool = False, flood_sleep_threshold: Any = None
@@ -79,10 +163,6 @@ def build_telegram_client(config: AgentRuntimeConfig) -> TelegramClient:
         )
     proxy_argument = build_proxy_argument(config.telegram_proxy)
     session = StringSession(config.telegram_session_string)
-    # По умолчанию порог 60: Telethon сам засыпает на флуд-ошибках короче
-    # порога, а SlowModeWaitError — флуд-ошибка. Такой сон прошёл бы внутри
-    # send_message под trigger_lock и вернул бы отставание, ради устранения
-    # которого сделано окно отправки.
     if proxy_argument is None:
         client = MimicTelegramClient(
             session,

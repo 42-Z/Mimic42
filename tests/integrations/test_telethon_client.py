@@ -144,9 +144,7 @@ def test_client_passes_proxy_argument_to_telethon(monkeypatch: pytest.MonkeyPatc
 
 
 def test_flood_waits_are_not_slept_through_by_telethon() -> None:
-    """По умолчанию Telethon сам засыпает на флуд-ошибках короче 60 с, а
-    SlowModeWaitError — флуд-ошибка. Такой сон прошёл бы внутри send_message
-    под trigger_lock: ждать или нет решает окно отправки, а не библиотека."""
+    """Длинные ожидания не должны скрываться внутри trigger_lock силами Telethon."""
     client = build_telegram_client(_config(_valid_session_string()))
     assert client.flood_sleep_threshold == 0
 
