@@ -36,6 +36,7 @@ export interface ActivityAction {
   hint: string | null;
   args: Record<string, unknown> | null;
   result: Record<string, unknown> | null;
+  createdAt?: string;
   startedAt: string | null;
   completedAt: string | null;
   traceUrl: string | null;
@@ -77,12 +78,6 @@ function turnIdOf(payload: Record<string, unknown> | null | undefined): string |
   return typeof value === 'string' && value.length > 0 ? value : null;
 }
 
-/**
- * Non-empty http(s) URL out of a raw payload value — anything else (empty
- * strings, whitespace, `javascript:` and friends) becomes null. The value is
- * rendered straight into `href` in a multi-tenant dashboard, so the scheme
- * check is the single validation point.
- */
 function urlOf(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const url = value.trim();
@@ -129,6 +124,7 @@ function toAction(event: EventLike): ActivityAction {
           : null,
     args: isTool && payload ? (payload.args as Record<string, unknown> | undefined) ?? null : null,
     result: event.result ?? null,
+    createdAt: event.created_at,
     startedAt: event.started_at ?? null,
     completedAt: event.completed_at ?? null,
     traceUrl,
@@ -388,7 +384,9 @@ export function turnToActivityItem(turn: ConversationTurn): ActivityItem {
   // renders as one compact line — same shape and id as the realtime feed, so
   // the two sources deduplicate instead of showing the event twice.
   if (
+    !turn.turn_id &&
     !turn.incoming &&
+    !turn.incoming_media?.length &&
     !turn.outgoing &&
     actions.length === 1 &&
     firstAction !== undefined &&
@@ -422,7 +420,7 @@ export function turnToActivityItem(turn: ConversationTurn): ActivityItem {
     createdAt,
     endedAt: null,
     failed: actions.some((a) => a.status === 'failed'),
-    incoming: turn.incoming
+    incoming: turn.incoming || turn.incoming_media?.length
       ? {
           id: turn.id,
           content: turn.incoming,
@@ -439,6 +437,97 @@ export function turnToActivityItem(turn: ConversationTurn): ActivityItem {
     responseReplyTo: turn.outgoing_reply_id ?? null,
     actions,
   };
+}
+
+function mergeMessageParts(
+  canonical: ActivityMessagePart | null,
+  live: ActivityMessagePart | null,
+): ActivityMessagePart | null {
+  if (!canonical) return live;
+  if (!live) return canonical;
+  return {
+    ...live,
+    ...canonical,
+    content: canonical.content.trim() ? canonical.content : live.content,
+    media: canonical.media?.length ? canonical.media : live.media,
+    reply: canonical.reply && canonical.reply.message_id === live.reply?.message_id
+      ? { ...canonical.reply, preview: canonical.reply.preview ?? live.reply?.preview }
+      : canonical.reply ?? live.reply,
+  };
+}
+
+const TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'cancelled']);
+
+function mergeActions(canonical: ActivityAction[], live: ActivityAction[]): ActivityAction[] {
+  const actions = new Map<string, ActivityAction>();
+  for (const action of [...canonical, ...live]) {
+    const previous = actions.get(action.id);
+    if (!previous) {
+      actions.set(action.id, action);
+      continue;
+    }
+    const preferred = !TERMINAL_STATUSES.has(previous.status) && TERMINAL_STATUSES.has(action.status)
+      ? action
+      : previous;
+    const fallback = preferred === action ? previous : action;
+    actions.set(action.id, {
+      ...fallback,
+      ...preferred,
+      hint: preferred.hint ?? fallback.hint,
+      args: preferred.args || fallback.args ? { ...fallback.args, ...preferred.args } : null,
+      result: preferred.result || fallback.result ? { ...fallback.result, ...preferred.result } : null,
+      createdAt: preferred.createdAt ?? fallback.createdAt,
+      startedAt: preferred.startedAt ?? fallback.startedAt,
+      completedAt: preferred.completedAt ?? fallback.completedAt,
+      traceUrl: preferred.traceUrl ?? fallback.traceUrl,
+    });
+  }
+  const timestamp = (action: ActivityAction) =>
+    new Date(action.createdAt ?? action.startedAt ?? action.completedAt ?? 0).getTime();
+  return [...actions.values()].sort(
+    (a, b) => timestamp(a) - timestamp(b) || a.id.localeCompare(b.id),
+  );
+}
+
+/** Reconcile partial snapshots without losing live rows or canonical message metadata. */
+export function mergeActivityItems(
+  historical: ActivityItem[],
+  realtime: ActivityItem[],
+): ActivityItem[] {
+  const items = new Map<string, ActivityItem>();
+  for (const item of [...historical, ...realtime]) {
+    const previous = items.get(item.id);
+    const actions = mergeActions(previous?.actions ?? [], item.actions);
+    if (!previous) {
+      items.set(item.id, { ...item, actions });
+      continue;
+    }
+    const incoming = mergeMessageParts(previous.incoming, item.incoming);
+    items.set(item.id, {
+      ...item,
+      ...previous,
+      agentId: previous.agentId ?? item.agentId,
+      peer: previous.peer || item.peer,
+      peerTitle: previous.peerTitle || item.peerTitle,
+      createdAt: new Date(previous.createdAt).getTime() <= new Date(item.createdAt).getTime()
+        ? previous.createdAt
+        : item.createdAt,
+      endedAt: previous.endedAt ?? item.endedAt,
+      failed: previous.failed || item.failed || actions.some((action) => action.status === 'failed'),
+      incoming,
+      response: mergeMessageParts(previous.response, item.response),
+      trigger: mergeMessageParts(previous.trigger, item.trigger),
+      incomingMedia: incoming?.media?.length
+        ? incoming.media
+        : previous.incomingMedia?.length ? previous.incomingMedia : item.incomingMedia,
+      responseReplyTo: previous.responseReplyTo ?? item.responseReplyTo,
+      actions,
+    });
+  }
+  return [...items.values()].sort(
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+      || b.id.localeCompare(a.id),
+  );
 }
 
 /** Extract the human-readable part of the wrapped incoming message prompt. */

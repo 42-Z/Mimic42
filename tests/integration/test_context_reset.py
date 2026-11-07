@@ -9,6 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mimic42.core.agent_runtime import AgentRuntimeState
+from mimic42.core.memory import TurnInput
 from mimic42.integrations.database_agent_store import DatabaseAgentStore
 from mimic42.integrations.database_memory import DatabaseShortTermMemory
 from mimic42.integrations.database_models import AgentEventModel, AgentMessageModel, AgentModel
@@ -36,17 +37,26 @@ async def _create_agent(
 
 
 async def _save_turn(memory: DatabaseShortTermMemory, agent_id: UUID, text: str) -> None:
+    turn_id = str(uuid4())
+    await memory.save_input(
+        TurnInput(
+            agent_id=agent_id,
+            turn_id=turn_id,
+            peer=PEER,
+            text=text,
+            raw_text=text,
+            created_at=datetime.now(UTC),
+        )
+    )
     await memory.save_messages(
         agent_id=agent_id,
         peer=PEER,
         messages=[{"role": "assistant", "content": f"Ответ на {text}"}],
-        raw_user_text=text,
+        turn_id=turn_id,
     )
 
 
 async def _load_context(memory: DatabaseShortTermMemory, agent_id: UUID) -> set[str]:
-    # The incoming row and the reply of one turn share created_at, so their
-    # order is not part of the contract here.
     messages = await memory.load_recent_messages(
         agent_id=agent_id,
         peer=PEER,

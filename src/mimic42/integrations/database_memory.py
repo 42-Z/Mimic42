@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from mimic42.core.memory import TurnInput
 from mimic42.integrations.database_models import AgentMessageModel, AgentModel
 
 
@@ -14,29 +16,63 @@ class DatabaseShortTermMemory:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
 
+    async def save_input(self, incoming: TurnInput) -> None:
+        payload: dict[str, Any] = {"peer": incoming.peer, "turn_id": incoming.turn_id}
+        if incoming.peer_name:
+            payload["peer_name"] = incoming.peer_name
+        if incoming.agent_name:
+            payload["agent_name"] = incoming.agent_name
+        if incoming.media:
+            payload["media"] = incoming.media
+        if incoming.reply:
+            payload["reply"] = incoming.reply
+        statement = (
+            insert(AgentMessageModel)
+            .values(
+                id=UUID(incoming.turn_id),
+                agent_id=incoming.agent_id,
+                thread_id=incoming.thread_id,
+                direction="incoming",
+                role="user",
+                content=incoming.raw_text if incoming.raw_text.strip() else incoming.text,
+                payload=payload,
+            )
+            .on_conflict_do_nothing(index_elements=[AgentMessageModel.id])
+        )
+        async with self._session_factory() as db_session:
+            await db_session.execute(statement)
+            await db_session.commit()
+
     async def load_recent_messages(
         self,
         *,
         agent_id: UUID,
         peer: str,
         since: datetime,
+        exclude_turn_id: str | None = None,
     ) -> list[dict[str, Any]]:
         # A context reset from the dashboard moves the lower bound: older rows
         # stay in the transcript but no longer reach the model.
         reset_at = (
             select(AgentModel.context_reset_at).where(AgentModel.id == agent_id).scalar_subquery()
         )
-        async with self._session_factory() as db_session:
-            result = await db_session.scalars(
-                select(AgentMessageModel)
-                .where(
-                    AgentMessageModel.agent_id == agent_id,
-                    AgentMessageModel.payload["peer"].as_string() == peer,
-                    AgentMessageModel.created_at >= since,
-                    or_(reset_at.is_(None), AgentMessageModel.created_at > reset_at),
-                )
-                .order_by(AgentMessageModel.created_at.asc())
+        statement = (
+            select(AgentMessageModel)
+            .where(
+                AgentMessageModel.agent_id == agent_id,
+                AgentMessageModel.payload["peer"].as_string() == peer,
+                AgentMessageModel.created_at >= since,
+                or_(reset_at.is_(None), AgentMessageModel.created_at > reset_at),
             )
+            .order_by(AgentMessageModel.created_at.asc())
+        )
+        if exclude_turn_id is not None:
+            stored_turn_id = AgentMessageModel.payload["turn_id"].as_string()
+            statement = statement.where(
+                or_(stored_turn_id.is_(None), stored_turn_id != exclude_turn_id)
+            )
+        async with self._session_factory() as db_session:
+            result = await db_session.scalars(statement)
             messages: list[dict[str, Any]] = []
             for model in result:
                 # Normalize stored role to OpenAI/LangChain format
@@ -82,73 +118,12 @@ class DatabaseShortTermMemory:
         structured_response: dict[str, Any] | None = None,
         peer_name: str = "",
         agent_name: str = "",
-        raw_user_text: str = "",
         turn_id: str | None = None,
         thread_id: UUID | None = None,
-        media: list[dict[str, Any]] | None = None,
-        reply: dict[str, Any] | None = None,
     ) -> None:
-        """Save a list of LangChain message dicts to the database.
-
-        Normalizes roles, filters tool-result dumps, and stores UI metadata.
-        Also persists the incoming user message so the UI can display the full
-        conversation thread (incoming + outgoing). ``media`` carries archived
-        attachment metadata (Storage paths) for the incoming message; ``reply``
-        carries the Telegram reply target (message id + preview).
-        """
-        from datetime import datetime, timedelta
-
-        now = datetime.now(UTC)
-        media_attached = False
-        reply_attached = False
-        user_row_written = False
+        """Persist generated messages and structured output, never the turn input."""
+        now = func.now()
         async with self._session_factory() as db_session:
-            # ── Persist incoming user message first ──────────────────────────
-            # Avoid duplicate if raw_user_text matches the last user message
-            # already present in the messages list (e.g. formatted text).
-            # Compare normalized text: LangChain dicts may carry the role in
-            # either "role" or "type" ("human"/"user"), and whitespace
-            # differences must not cause duplicate rows.
-            last_user_content = ""
-            for msg in reversed(messages):
-                msg_role = str(msg.get("role", msg.get("type", "")))
-                if msg_role in ("user", "human"):
-                    raw_content = msg.get("content", "")
-                    if isinstance(raw_content, list):
-                        import json as _json
-
-                        raw_content = _json.dumps(raw_content, ensure_ascii=False)
-                    elif not isinstance(raw_content, str):
-                        raw_content = str(raw_content)
-                    last_user_content = raw_content.strip()
-                    break
-
-            if raw_user_text and raw_user_text.strip() != last_user_content:
-                user_payload: dict[str, Any] = {"peer": peer}
-                if peer_name:
-                    user_payload["peer_name"] = peer_name
-                if agent_name:
-                    user_payload["agent_name"] = agent_name
-                if turn_id is not None:
-                    user_payload["turn_id"] = turn_id
-                if media:
-                    user_payload["media"] = media
-                    media_attached = True
-                if reply:
-                    user_payload["reply"] = reply
-                    reply_attached = True
-                db_session.add(
-                    AgentMessageModel(
-                        agent_id=agent_id,
-                        direction="incoming",
-                        role="user",
-                        content=raw_user_text,
-                        payload=user_payload,
-                        created_at=now,
-                    )
-                )
-                user_row_written = True
-
             row_count = 0
             for i, msg in enumerate(messages):
                 row_count = i + 1
@@ -169,17 +144,8 @@ class DatabaseShortTermMemory:
                 elif not isinstance(content, str):
                     content = str(content)
 
-                # ── Normalize roles ─────────────────────────────────────────────
                 if role in ("human", "user"):
-                    role = "user"
-                    if user_row_written:
-                        # One turn = one incoming row. The raw telegram text (or
-                        # the prepended human message) already represents this
-                        # user message; writing the formatted duplicate would
-                        # create two incoming rows with the same turn_id and
-                        # duplicate feed blocks with identical react keys.
-                        continue
-                    user_row_written = True
+                    continue
                 elif role in ("ai", "assistant"):
                     role = "assistant"
                 elif role == "tool":
@@ -187,17 +153,6 @@ class DatabaseShortTermMemory:
                     # Tool usage will be surfaced via agent_events in a later phase.
                     continue
 
-                # Media/reply metadata belongs to the incoming message row. When
-                # the dedup above skipped creating that row, attach it to the
-                # first stored user message of this batch instead.
-                if media and not media_attached and role == "user":
-                    payload["media"] = media
-                    media_attached = True
-                if reply and not reply_attached and role == "user":
-                    payload["reply"] = reply
-                    reply_attached = True
-
-                # ── Clean assistant content ──────────────────────────────────────
                 if role == "assistant":
                     # Structured output often leaves content empty or dumps the
                     # raw repr.  Prefer the human-readable text.  Content can be
@@ -246,8 +201,7 @@ class DatabaseShortTermMemory:
                     else:
                         continue
 
-                # Map to database direction enum
-                direction = self._resolve_direction(role, msg)
+                direction = "dashboard_trigger" if role == "system" else "agent_response"
 
                 # Preserve LangChain-specific fields in payload
                 if "tool_calls" in msg:
@@ -295,17 +249,3 @@ class DatabaseShortTermMemory:
                         )
                     )
             await db_session.commit()
-
-    @staticmethod
-    def _resolve_direction(role: str, msg: dict[str, Any]) -> str:
-        if role in ("user", "human"):
-            return "incoming"
-        if role == "tool":
-            return "tool_result"
-        if role in ("assistant", "ai"):
-            # Assistant messages are always user-facing responses.
-            # Tool calls live in payload and are surfaced via agent_events.
-            return "agent_response"
-        if role == "system":
-            return "dashboard_trigger"
-        return "agent_response"

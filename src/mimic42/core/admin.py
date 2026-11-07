@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Any, Literal, Protocol, TypedDict
 from uuid import UUID
@@ -97,6 +98,12 @@ class AdminProxySummary(BaseModel):
 
 class AdminProxyDetail(AdminProxySummary):
     created_by: UUID | None
+
+
+@dataclass(frozen=True)
+class ProxyUpdateResult:
+    proxy: AdminProxyDetail
+    affected_agent_ids: tuple[UUID, ...]
 
 
 class ProxyImportResult(BaseModel):
@@ -321,7 +328,7 @@ class AdminRepository(TelegramSettingsStore, Protocol):
         values: ProxyPatchValues,
         *,
         actor_user_id: UUID,
-    ) -> AdminProxyDetail: ...
+    ) -> ProxyUpdateResult: ...
 
     async def delete_proxy(self, proxy_id: UUID, *, actor_user_id: UUID) -> list[UUID]: ...
 

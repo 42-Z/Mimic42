@@ -1,6 +1,6 @@
 'use client';
 
-import { CheckCircle2, ExternalLink, XCircle, Loader2 } from 'lucide-react';
+import { Ban, CheckCircle2, XCircle, Loader2 } from 'lucide-react';
 import { getToolMeta } from '@/lib/activity/toolCatalog';
 import { getEventMeta } from '@/lib/activity/eventCatalog';
 import type { ActivityAction } from '@/lib/activity/normalize';
@@ -18,17 +18,7 @@ function hasBody(value: Record<string, unknown> | null | undefined): boolean {
   return value != null && Object.keys(value).length > 0;
 }
 
-/**
- * Can this row expand into its details panel?
- *
- * Leaf rows — lifecycle events without args/result (`turn.completed`,
- * `turn.failed`) — have nothing to expand into and carry the trace link, which
- * must never sit inside the expand button (nested-interactive). A row with a
- * trace link therefore always renders as a plain line; if tool events ever get
- * trace links, move the link outside the button instead.
- */
 export function isExpandableAction(action: ActivityAction): boolean {
-  if (action.traceUrl) return false;
   return hasBody(action.args) || hasBody(action.result);
 }
 
@@ -39,6 +29,7 @@ export function ActionRow({ action }: { action: ActivityAction }) {
     : getEventMeta(action.eventType);
   const Icon = meta?.icon ?? null;
   const failed = action.status === 'failed';
+  const cancelled = action.status === 'cancelled';
   const running = action.status === 'running' || action.status === 'pending';
   const duration = formatDuration(action.startedAt, action.completedAt);
   const resultSummary = summarizeResult(action.result);
@@ -77,23 +68,13 @@ export function ActionRow({ action }: { action: ActivityAction }) {
           {resultSummary}
         </span>
       )}
-      {action.traceUrl && (
-        <a
-          href={action.traceUrl}
-          target="_blank"
-          rel="noreferrer"
-          className="shrink-0 inline-flex items-center gap-1 text-[11px] text-plasma-400 hover:text-plasma-300 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-plasma-500 rounded-[2px]"
-        >
-          Трейс
-          <span className="sr-only">(откроется в новой вкладке)</span>
-          <ExternalLink aria-hidden="true" className="h-3 w-3" />
-        </a>
-      )}
       {duration && (
         <span className="shrink-0 font-mono text-[10px] tabular-nums text-muted-foreground">{duration}</span>
       )}
       {failed ? (
         <XCircle className="h-3.5 w-3.5 shrink-0 text-crimson-500" />
+      ) : cancelled ? (
+        <Ban className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
       ) : running ? (
         <Loader2 className="h-3.5 w-3.5 shrink-0 text-plasma-500 animate-spin" />
       ) : (

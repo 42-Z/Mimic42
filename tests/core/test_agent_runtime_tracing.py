@@ -1,17 +1,20 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterator
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import pytest
 
 from mimic42.config import Settings
+from mimic42.core.activity import ActivityRecorder
 from mimic42.core.agent_runtime import (
     AgentRuntimeConfig,
     AgentTrigger,
     MimicAgentRuntime,
 )
+from mimic42.core.memory import TurnInput
 from mimic42.integrations import tracing
 from mimic42.testing.telegram import FakeTelegramAccount, FakeTelegramClient
 
@@ -75,10 +78,8 @@ class FakeLangChainAgent:
 
 
 class FakeMemoryService:
-    async def build_messages(
-        self, *, agent_id: UUID, peer: str, user_text: str
-    ) -> list[dict[str, Any]]:
-        return [{"role": "user", "content": user_text}]
+    async def prepare_turn(self, incoming: TurnInput) -> list[dict[str, Any]]:
+        return [{"role": "user", "content": incoming.text}]
 
     async def save_messages(self, **_: Any) -> None:
         return None
@@ -87,9 +88,7 @@ class FakeMemoryService:
 class BuildFailingMemory(FakeMemoryService):
     """Сборка контекста падает (например, отказ Mem0)."""
 
-    async def build_messages(
-        self, *, agent_id: UUID, peer: str, user_text: str
-    ) -> list[dict[str, Any]]:
+    async def prepare_turn(self, incoming: TurnInput) -> list[dict[str, Any]]:
         raise RuntimeError("memory exploded")
 
 
@@ -100,7 +99,7 @@ class SaveFailingMemory(FakeMemoryService):
         raise RuntimeError("storage exploded")
 
 
-class FakeActivity:
+class FakeActivity(ActivityRecorder):
     def __init__(self) -> None:
         self.events: list[dict[str, Any]] = []
 
@@ -171,7 +170,7 @@ async def _run_turn(
     activity = activity or FakeActivity()
     # Тестовый шов вместо БД: события пишутся в список, а поле типизировано
     # как ActivityRecorder — отсюда invalid-assignment у заглушки.
-    runtime._activity = activity  # ty: ignore[invalid-assignment]
+    runtime._activity = activity
     await runtime.start()
     if expect_error is not None:
         with pytest.raises(RuntimeError, match=expect_error):
@@ -290,7 +289,7 @@ async def test_turn_failed_omits_trace_url_without_permalink(
     assert "trace_url" not in failed[0]["payload"]
 
 
-async def test_build_messages_failure_records_turn_failed_with_trace(
+async def test_prepare_turn_failure_records_turn_failed_with_trace(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Сбой сборки контекста — ошибка хода с turn_id и ссылкой на трейс (ревью).
@@ -357,3 +356,53 @@ async def test_event_recording_failure_does_not_mask_turn_error(
             expect_error=None,
             activity=BrokenActivity(),  # type: ignore[arg-type]
         )
+
+
+async def test_cancelled_turn_retains_trace_and_propagates_cancellation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(tracing.braintrust, "init_logger", lambda **_: object())
+    monkeypatch.setattr(tracing, "set_global_handler", lambda _handler: None)
+    monkeypatch.setattr(tracing, "BraintrustCallbackHandler", lambda: "handler")
+    span = FakeSpan()
+    monkeypatch.setattr(tracing.braintrust, "start_span", lambda **_: span)
+    tracing.setup_tracing(_settings(braintrust_api_key="bt-key"))
+    started = asyncio.Event()
+
+    class BlockingAgent(FakeLangChainAgent):
+        async def ainvoke(
+            self,
+            input_data: dict[str, object],
+            context: object | None = None,
+        ) -> dict[str, object]:
+            started.set()
+            await asyncio.Event().wait()
+            raise AssertionError("Cancelled model cannot complete")
+
+    activity = FakeActivity()
+    runtime = MimicAgentRuntime(
+        config=make_config(),
+        telegram_client=FakeTelegramClient(),
+        langchain_agent=BlockingAgent(),
+        memory_service=FakeMemoryService(),
+    )
+    runtime._activity = activity
+    task = asyncio.create_task(runtime.trigger_message(AgentTrigger(peer="chat", text="keep")))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await runtime.stop()
+    terminal = [event for event in activity.events if event["event_type"].startswith("turn.")]
+    assert len(terminal) == 1
+    assert terminal[0]["event_type"] == "turn.cancelled"
+    assert terminal[0]["status"] == "cancelled"
+    assert terminal[0]["payload"]["trace_url"] == TRACE_URL
+    assert terminal[0]["payload"]["turn_id"]
+    assert terminal[0]["started_at"] <= terminal[0]["completed_at"]
+    assert span.ended == 1

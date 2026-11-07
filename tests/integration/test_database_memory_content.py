@@ -48,7 +48,6 @@ async def test_whitespace_only_assistant_content_replaced_by_structured_text(
         agent_id=agent_id,
         peer="12345",
         messages=[{"role": "assistant", "content": "\n"}],
-        raw_user_text="Привет из реального теста",
         turn_id="turn-ws",
         structured_response={
             "text": "Привет! Рада, что реальный тест идёт гладко 😊",
@@ -82,7 +81,6 @@ async def test_none_structured_text_stored_as_empty_not_none_literal(
         agent_id=agent_id,
         peer="12345",
         messages=[{"role": "assistant", "content": ""}],
-        raw_user_text="Привет",
         turn_id="turn-none",
         structured_response={
             "text": None,
@@ -116,7 +114,6 @@ async def test_whitespace_only_assistant_content_without_structured_skipped(
         agent_id=agent_id,
         peer="12345",
         messages=[{"role": "assistant", "content": "   \n  "}],
-        raw_user_text="Привет",
         turn_id="turn-ws2",
     )
 
@@ -145,7 +142,6 @@ async def test_nonempty_assistant_content_keeps_its_formatting(
         agent_id=agent_id,
         peer="12345",
         messages=[{"role": "assistant", "content": "С ответом\n\nот меня"}],
-        raw_user_text="Привет",
         turn_id="turn-keep",
     )
 

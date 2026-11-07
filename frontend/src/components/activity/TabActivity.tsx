@@ -13,7 +13,7 @@ import { TurnCard } from './TurnCard';
 import { LifecycleStack } from './LifecycleStack';
 import { groupAgentToggles, type ActivityGroup } from '@/lib/activity/group';
 import { isStackOpen, setStackOpen, type ExpandedStackIds } from '@/lib/activity/expand';
-import { turnToActivityItem, type ActivityItem } from '@/lib/activity/normalize';
+import { mergeActivityItems, turnToActivityItem, type ActivityItem } from '@/lib/activity/normalize';
 import { cn } from '@/lib/utils';
 
 type FeedFilter = 'full' | 'chat' | 'errors';
@@ -80,20 +80,12 @@ export function TabActivity({ agentId, agentName }: { agentId: string; agentName
 
   const items = useMemo(() => {
     const historical = (data?.pages ?? []).flatMap((page) =>
-      page.turns.map((turn) => {
-        const item = turnToActivityItem(turn);
-        // The short thread title beats the long "Name (@user, ID: ...)" string.
-        item.peerTitle = peerNames.get(item.peer) ?? item.peerTitle ?? null;
-        return item;
-      }),
+      page.turns.map(turnToActivityItem),
     );
-    const seen = new Set(historical.map((i) => i.id));
-    const realtime = realtimeItems
-      .filter((i) => !seen.has(i.id))
-      .map((i) => ({ ...i, peerTitle: peerNames.get(i.peer) ?? i.peerTitle ?? null }));
-    const merged = [...realtime, ...historical];
-    merged.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-    return merged;
+    return mergeActivityItems(historical, realtimeItems).map((item) => ({
+      ...item,
+      peerTitle: peerNames.get(item.peer) ?? item.peerTitle,
+    }));
   }, [data?.pages, realtimeItems, peerNames]);
 
   const filtered = useMemo(() => {

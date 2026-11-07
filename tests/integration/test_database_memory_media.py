@@ -15,9 +15,15 @@ from mimic42.core.activity import ActivityRecorder
 from mimic42.core.agent_runtime import AgentRuntimeState
 from mimic42.core.media import MediaFile
 from mimic42.core.media_download import MediaRef
+from mimic42.core.memory import TurnInput
 from mimic42.integrations.database_agent_store import DatabaseAgentStore
 from mimic42.integrations.database_memory import DatabaseShortTermMemory
-from mimic42.integrations.database_models import AgentEventModel, AgentMessageModel, AgentModel
+from mimic42.integrations.database_models import (
+    AgentEventModel,
+    AgentMessageModel,
+    AgentModel,
+    MessageThreadModel,
+)
 from mimic42.integrations.telegram_tools import TelegramToolbox
 from mimic42.testing.slots import Slot
 
@@ -52,7 +58,7 @@ async def _create_agent(
     return agent_id
 
 
-async def test_save_messages_attaches_media_to_incoming_row(
+async def test_save_input_attaches_media_to_incoming_row(
     db_session_factory: async_sessionmaker[AsyncSession],
     clean_slot: Slot,
 ) -> None:
@@ -60,15 +66,19 @@ async def test_save_messages_attaches_media_to_incoming_row(
     agent_id = await _create_agent(db_session_factory, owner_id)
     store = DatabaseShortTermMemory(db_session_factory)
 
-    await store.save_messages(
-        agent_id=agent_id,
-        peer="12345",
-        messages=[{"role": "assistant", "content": "Ответ"}],
-        peer_name="Ivan",
-        raw_user_text="Привет",
-        turn_id="turn-42",
-        media=MEDIA,
-        reply=REPLY,
+    turn_id = str(uuid4())
+    await store.save_input(
+        TurnInput(
+            agent_id=agent_id,
+            peer="12345",
+            text="[Сообщение] Привет",
+            raw_text="Привет",
+            peer_name="Ivan",
+            turn_id=turn_id,
+            created_at=datetime.now(UTC),
+            media=MEDIA,
+            reply=REPLY,
+        )
     )
 
     async with db_session_factory() as session:
@@ -83,37 +93,28 @@ async def test_save_messages_attaches_media_to_incoming_row(
         assert row.content == "Привет"
         assert row.payload.get("media") == MEDIA
         assert row.payload.get("reply") == REPLY
-        assert row.payload.get("turn_id") == "turn-42"
+        assert row.payload.get("turn_id") == turn_id
+        assert row.id == UUID(turn_id)
 
 
-async def test_save_messages_attaches_media_when_incoming_row_deduped(
+async def test_save_input_is_idempotent_and_preserves_media(
     db_session_factory: async_sessionmaker[AsyncSession],
     clean_slot: Slot,
 ) -> None:
     owner_id = clean_slot.persona("twofa").user_id
     agent_id = await _create_agent(db_session_factory, owner_id)
     store = DatabaseShortTermMemory(db_session_factory)
-    messages = [
-        {"role": "user", "content": "Привет"},
-        {"role": "assistant", "content": "Ответ"},
-    ]
-
-    await store.save_messages(
+    incoming = TurnInput(
         agent_id=agent_id,
         peer="12345",
-        messages=messages,
-        raw_user_text="Привет",
+        text="Привет",
+        raw_text="Привет",
+        turn_id=str(uuid4()),
+        created_at=datetime.now(UTC),
         media=MEDIA,
     )
-    # Второй вызов: raw_user_text совпадает с последним user-контентом —
-    # дедуп не создаёт incoming-строку, медиа должны лечь на user-строку цикла.
-    await store.save_messages(
-        agent_id=agent_id,
-        peer="12345",
-        messages=messages,
-        raw_user_text="Привет",
-        media=MEDIA,
-    )
+    await store.save_input(incoming)
+    await store.save_input(incoming)
 
     async with db_session_factory() as session:
         rows = list(
@@ -124,10 +125,11 @@ async def test_save_messages_attaches_media_when_incoming_row_deduped(
                 .order_by(AgentMessageModel.created_at.asc())
             )
         )
-        assert any(row.payload.get("media") == MEDIA for row in rows)
+        assert len(rows) == 1
+        assert rows[0].payload.get("media") == MEDIA
 
 
-async def test_save_messages_writes_single_incoming_row_when_raw_differs(
+async def test_save_messages_does_not_duplicate_explicit_raw_input(
     db_session_factory: async_sessionmaker[AsyncSession],
     clean_slot: Slot,
 ) -> None:
@@ -137,6 +139,17 @@ async def test_save_messages_writes_single_incoming_row_when_raw_differs(
     agent_id = await _create_agent(db_session_factory, owner_id)
     store = DatabaseShortTermMemory(db_session_factory)
     formatted = "[Входящее сообщение]\nСодержимое: Привет"
+    turn_id = str(uuid4())
+    await store.save_input(
+        TurnInput(
+            agent_id=agent_id,
+            peer="12345",
+            text=formatted,
+            raw_text="Привет",
+            turn_id=turn_id,
+            created_at=datetime.now(UTC),
+        )
+    )
 
     await store.save_messages(
         agent_id=agent_id,
@@ -145,8 +158,7 @@ async def test_save_messages_writes_single_incoming_row_when_raw_differs(
             {"role": "user", "content": formatted},
             {"role": "assistant", "content": "Ответ"},
         ],
-        raw_user_text="Привет",
-        turn_id="turn-7",
+        turn_id=turn_id,
     )
 
     async with db_session_factory() as session:
@@ -159,7 +171,132 @@ async def test_save_messages_writes_single_incoming_row_when_raw_differs(
         )
         assert len(rows) == 1
         assert rows[0].content == "Привет"
-    assert rows[0].payload.get("turn_id") == "turn-7"
+    assert rows[0].payload.get("turn_id") == turn_id
+
+
+@pytest.mark.parametrize("raw_text", ["caption", "", " \n "])
+async def test_input_preserves_thread_names_and_media_with_display_fallback(
+    db_session_factory: async_sessionmaker[AsyncSession], clean_slot: Slot, raw_text: str
+) -> None:
+    agent_id = await _create_agent(db_session_factory, clean_slot.persona("twofa").user_id)
+    thread_id = uuid4()
+    async with db_session_factory() as session:
+        session.add(MessageThreadModel(id=thread_id, agent_id=agent_id, telegram_peer_id="12345"))
+        await session.commit()
+    turn_id = str(uuid4())
+    await DatabaseShortTermMemory(db_session_factory).save_input(
+        TurnInput(
+            agent_id=agent_id,
+            turn_id=turn_id,
+            peer="12345",
+            text="[Фото] enriched prompt",
+            raw_text=raw_text,
+            created_at=datetime.now(UTC),
+            thread_id=thread_id,
+            peer_name="Partner",
+            agent_name="Mimic",
+            media=MEDIA,
+            reply=REPLY,
+        )
+    )
+    async with db_session_factory() as session:
+        row = await session.get(AgentMessageModel, UUID(turn_id))
+        assert row is not None
+        assert row.thread_id == thread_id
+        assert row.content == (raw_text if raw_text.strip() else "[Фото] enriched prompt")
+        assert row.payload == {
+            "peer": "12345",
+            "turn_id": turn_id,
+            "peer_name": "Partner",
+            "agent_name": "Mimic",
+            "media": MEDIA,
+            "reply": REPLY,
+        }
+
+
+async def test_context_excludes_current_turn_without_losing_legacy_null_rows(
+    db_session_factory: async_sessionmaker[AsyncSession], clean_slot: Slot
+) -> None:
+    agent_id = await _create_agent(db_session_factory, clean_slot.persona("twofa").user_id)
+    current_turn = str(uuid4())
+    async with db_session_factory() as session:
+        for content, payload in [
+            ("legacy missing", {"peer": "chat"}),
+            ("legacy null", {"peer": "chat", "turn_id": None}),
+            ("prior", {"peer": "chat", "turn_id": str(uuid4())}),
+            ("current", {"peer": "chat", "turn_id": current_turn}),
+            ("other peer", {"peer": "other"}),
+        ]:
+            session.add(
+                AgentMessageModel(
+                    agent_id=agent_id,
+                    role="user",
+                    direction="incoming",
+                    content=content,
+                    payload=payload,
+                )
+            )
+        await session.commit()
+    messages = await DatabaseShortTermMemory(db_session_factory).load_recent_messages(
+        agent_id=agent_id,
+        peer="chat",
+        since=datetime.now(UTC) - timedelta(hours=1),
+        exclude_turn_id=current_turn,
+    )
+    assert {message["content"] for message in messages} == {
+        "legacy missing",
+        "legacy null",
+        "prior",
+    }
+
+
+async def test_input_and_output_use_same_database_clock_as_timer_events(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from mimic42.integrations import database_memory
+
+    class SkewedDatetime(datetime):
+        @classmethod
+        def now(cls, tz: Any = None) -> datetime:
+            return datetime.now(tz) - timedelta(days=1)
+
+    monkeypatch.setattr(database_memory, "datetime", SkewedDatetime)
+    agent_id = await _create_agent(db_session_factory, clean_slot.persona("twofa").user_id)
+    await ActivityRecorder(db_session_factory).record(
+        agent_id=agent_id, event_type="timer.fired", status="succeeded", payload={"peer": "chat"}
+    )
+    incoming = TurnInput(
+        agent_id=agent_id,
+        turn_id=str(uuid4()),
+        peer="chat",
+        text="timer prompt",
+        raw_text="",
+        created_at=datetime.now(UTC) - timedelta(days=1),
+    )
+    memory = DatabaseShortTermMemory(db_session_factory)
+    await memory.save_input(incoming)
+    await memory.save_messages(
+        agent_id=agent_id,
+        peer="chat",
+        messages=[{"role": "assistant", "content": "reply"}],
+        turn_id=incoming.turn_id,
+    )
+    async with db_session_factory() as session:
+        fired = await session.scalar(
+            select(AgentEventModel).where(AgentEventModel.agent_id == agent_id)
+        )
+        rows = list(
+            await session.scalars(
+                select(AgentMessageModel)
+                .where(AgentMessageModel.agent_id == agent_id)
+                .order_by(AgentMessageModel.created_at)
+            )
+        )
+    assert fired is not None
+    assert [row.content for row in rows] == ["timer prompt", "reply"]
+    assert fired.created_at <= rows[0].created_at <= rows[1].created_at
 
 
 @pytest.mark.parametrize(
@@ -199,11 +336,16 @@ async def test_archived_attachment_is_resolved_after_restart_outside_context_win
         media_id=media_id,
         telegram_ref=ref,
     )
-    await DatabaseShortTermMemory(db_session_factory).save_messages(
-        agent_id=agent_id,
-        peer="-100500",
-        messages=[{"role": "user", "content": "Вложение"}],
-        media=[media.as_payload()],
+    await DatabaseShortTermMemory(db_session_factory).save_input(
+        TurnInput(
+            agent_id=agent_id,
+            peer="-100500",
+            text="Вложение",
+            raw_text="",
+            turn_id=str(uuid4()),
+            created_at=datetime.now(UTC),
+            media=[media.as_payload()],
+        )
     )
     async with db_session_factory() as session:
         row = await session.scalar(
@@ -290,17 +432,27 @@ async def test_new_metadata_only_registration_does_not_hide_an_existing_archive(
     media_id = "photo:123:456:0102:2"
     path = f"{agent_id}/u1/photo.jpeg"
     memory = DatabaseShortTermMemory(db_session_factory)
-    await memory.save_messages(
-        agent_id=agent_id,
-        peer="-100500",
-        messages=[{"role": "user", "content": "Архив"}],
-        media=[{"media_id": media_id, "storage_path": path, "peer": -100500, "message_id": 55}],
+    await memory.save_input(
+        TurnInput(
+            agent_id=agent_id,
+            peer="-100500",
+            text="Архив",
+            raw_text="",
+            turn_id=str(uuid4()),
+            created_at=datetime.now(UTC),
+            media=[{"media_id": media_id, "storage_path": path, "peer": -100500, "message_id": 55}],
+        )
     )
-    await memory.save_messages(
-        agent_id=agent_id,
-        peer="42",
-        messages=[{"role": "user", "content": "Повторное вложение без архива"}],
-        media=[{"media_id": media_id, "peer": 42, "message_id": 77}],
+    await memory.save_input(
+        TurnInput(
+            agent_id=agent_id,
+            peer="42",
+            text="Повторное вложение без архива",
+            raw_text="",
+            turn_id=str(uuid4()),
+            created_at=datetime.now(UTC),
+            media=[{"media_id": media_id, "peer": 42, "message_id": 77}],
+        )
     )
 
     assert await DatabaseAgentStore(db_session_factory).lookup_media_ref(
@@ -390,11 +542,16 @@ async def test_persisted_archive_path_cannot_escape_the_agent_prefix(
     agent_id = await _create_agent(db_session_factory, clean_slot.persona("twofa").user_id)
     media_id = "photo:123:456:0102:2"
     path = f"{uuid4()}/u1/file" if path_suffix == "foreign" else f"{agent_id}/{path_suffix}"
-    await DatabaseShortTermMemory(db_session_factory).save_messages(
-        agent_id=agent_id,
-        peer="-100500",
-        messages=[{"role": "user", "content": "Вложение"}],
-        media=[{"media_id": media_id, "storage_path": path, "peer": -100500, "message_id": 55}],
+    await DatabaseShortTermMemory(db_session_factory).save_input(
+        TurnInput(
+            agent_id=agent_id,
+            peer="-100500",
+            text="Вложение",
+            raw_text="",
+            turn_id=str(uuid4()),
+            created_at=datetime.now(UTC),
+            media=[{"media_id": media_id, "storage_path": path, "peer": -100500, "message_id": 55}],
+        )
     )
 
     assert await DatabaseAgentStore(db_session_factory).lookup_media_ref(

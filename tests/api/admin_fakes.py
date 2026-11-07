@@ -26,6 +26,7 @@ from mimic42.core.admin import (
     PresetPatchValues,
     ProxyCreateValues,
     ProxyPatchValues,
+    ProxyUpdateResult,
     PublicTelegramSettings,
     StoredTelegramSettings,
 )
@@ -394,7 +395,7 @@ class FakeAdminRepository:
         values: ProxyPatchValues,
         *,
         actor_user_id: UUID,
-    ) -> AdminProxyDetail:
+    ) -> ProxyUpdateResult:
         self.proxy_calls.append(
             (
                 "update",
@@ -416,7 +417,24 @@ class FakeAdminRepository:
         if updated.has_password and not updated.username:
             raise AdminProxyValidationError("Для пароля укажите логин прокси")
         self.proxies[proxy_id] = updated
-        return updated
+        config = self.proxy_configs.get(proxy_id)
+        if config is not None:
+            config_values = {
+                key: value
+                for key, value in values.items()
+                if key in {"protocol", "host", "port", "username"}
+            }
+            if password := values.get("password"):
+                config_values["password"] = SecretStr(password)
+            self.proxy_configs[proxy_id] = config.model_copy(update=config_values)
+        return ProxyUpdateResult(
+            proxy=updated,
+            affected_agent_ids=tuple(
+                agent_id
+                for agent_id, assigned in self.agent_proxies.items()
+                if assigned is not None and assigned.id == proxy_id
+            ),
+        )
 
     async def delete_proxy(self, proxy_id: UUID, *, actor_user_id: UUID) -> list[UUID]:
         self.proxy_calls.append(("delete", {"proxy_id": proxy_id, "actor_user_id": actor_user_id}))

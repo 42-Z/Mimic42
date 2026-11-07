@@ -11,10 +11,14 @@ from httpx import ASGITransport, AsyncClient
 
 from mimic42.api.app import create_app
 from mimic42.core.agent_runtime import (
+    AgentLifecycleChangedError,
     AgentRuntimeConfig,
     AgentRuntimeState,
+    AgentTrigger,
+    AgentTriggerResult,
     MimicAgentRuntime,
     TelegramProxyConfig,
+    TelegramTeardownPendingError,
 )
 from mimic42.core.agent_store import AgentRecord, InMemoryAgentStore
 from mimic42.core.manager import AgentManager
@@ -90,6 +94,40 @@ def _create_runtime(config: AgentRuntimeConfig) -> MimicAgentRuntime:
         telegram_client=FakeTelegramClient(),
         langchain_agent=FakeLangChainAgent(),
     )
+
+
+@pytest.mark.parametrize("action", ["start", "reload", "messages/trigger"])
+@pytest.mark.parametrize("error_type", [TelegramTeardownPendingError, AgentLifecycleChangedError])
+async def test_lifecycle_state_changes_return_conflict(
+    saved_agent_config: AgentRuntimeConfig, action: str, error_type: type[RuntimeError]
+) -> None:
+    class ConflictingManager(FakeAgentManager):
+        async def start_agent(self, agent_id: UUID) -> None:
+            raise error_type()
+
+        async def reload_agent(self, agent_id: UUID) -> None:
+            raise error_type()
+
+        async def trigger_message(
+            self, agent_id: UUID, trigger: AgentTrigger
+        ) -> AgentTriggerResult:
+            raise error_type()
+
+    app = create_test_app(
+        manager=ConflictingManager(default_owner_id=saved_agent_config.owner_id),
+        auth_verifier=FakeAuthVerifier(saved_agent_config.owner_id),
+    )
+    async with AsyncClient(
+        transport=ASGITransport(app=app, raise_app_exceptions=False), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            f"/api/v1/agents/{saved_agent_config.agent_id}/{action}",
+            headers=AUTH_HEADERS,
+            json={"peer": "chat", "text": "hello"} if action == "messages/trigger" else None,
+        )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == str(error_type())
 
 
 @pytest.mark.parametrize("auto_start", [False, True])
