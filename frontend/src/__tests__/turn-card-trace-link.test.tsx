@@ -38,24 +38,21 @@ const item = (actions: ActivityAction[], over: Partial<ActivityItem> = {}): Acti
 
 const TRACE_URL = 'https://braintrust.dev/app/p/mimic42/t/turn-1';
 
-describe('TurnCard: ссылка «Трейс» вне кнопок', () => {
-  test('turn.completed — строка без кнопки раскрытия, ссылка не внутри button', () => {
+describe('TurnCard без ссылок на трассировку', () => {
+  test('turn.completed без деталей не раскрывается и не показывает ссылку', () => {
     render(
       <TurnCard
         item={item([action({ traceUrl: TRACE_URL, startedAt: '2026-09-26T10:00:00Z', completedAt: '2026-09-26T10:00:01Z' })])}
       />,
     );
 
-    const link = screen.getByRole('link', { name: /Трейс/ });
-    expect(link.getAttribute('href')).toBe(TRACE_URL);
-    expect(link.getAttribute('target')).toBe('_blank');
-    expect(link.closest('button')).toBeNull();
-    // Единственная кнопка карточки — шапка хода: строка turn.completed
-    // не раскрывается (у неё нет args/result).
+    expect(screen.getByText('Ход завершён')).toBeTruthy();
+    expect(screen.queryAllByRole('link').length).toBe(0);
+    expect(screen.queryAllByText(/Трейс/).length).toBe(0);
     expect(screen.getAllByRole('button')).toHaveLength(1);
   });
 
-  test('turn.failed с hint — видны и ошибка, и ссылка вне button', () => {
+  test('turn.failed сохраняет текст ошибки без ссылки', () => {
     render(
       <TurnCard
         item={item(
@@ -74,11 +71,12 @@ describe('TurnCard: ссылка «Трейс» вне кнопок', () => {
     );
 
     expect(screen.getByText('Сессия отозвана, требуется переподключение')).toBeTruthy();
-    expect(screen.getByRole('link', { name: /Трейс/ }).closest('button')).toBeNull();
+    expect(screen.queryAllByRole('link').length).toBe(0);
     expect(screen.getAllByRole('button')).toHaveLength(1);
   });
 
   test('тул с args по-прежнему раскрывается кнопкой', async () => {
+    const user = userEvent.setup();
     render(
       <TurnCard
         item={item([
@@ -97,11 +95,11 @@ describe('TurnCard: ссылка «Трейс» вне кнопок', () => {
     expect(button.getAttribute('aria-expanded')).toBe('false');
     expect(screen.queryByText('Аргументы JSON')).toBeNull();
 
-    await userEvent.click(button);
+    await user.click(button);
 
     expect(button.getAttribute('aria-expanded')).toBe('true');
     expect(screen.getByText('Аргументы JSON')).toBeTruthy();
-    // Кнопка раскрытия не вкладывает в себя интерактивные элементы.
+    expect(screen.getByText('Результат JSON')).toBeTruthy();
     expect(button.querySelector('a')).toBeNull();
   });
 
@@ -125,9 +123,8 @@ describe('TurnCard: ссылка «Трейс» вне кнопок', () => {
     expect(screen.queryByText('Детали недоступны')).toBeNull();
   });
 
-  test('строка со ссылкой на трейс не оборачивается в кнопку даже у тула', () => {
-    // Защита в глубину: <a> не может жить внутри <button> (nested-interactive),
-    // поэтому строка со ссылкой всегда остаётся листовой.
+  test('traceUrl не мешает раскрыть аргументы и результат инструмента', async () => {
+    const user = userEvent.setup();
     render(
       <TurnCard
         item={item([
@@ -136,12 +133,52 @@ describe('TurnCard: ссылка «Трейс» вне кнопок', () => {
             eventType: 'tool.send_text_message',
             label: 'Отправить сообщение',
             args: { message: 'Привет!' },
+            result: { success: true, message_id: 42 },
             traceUrl: TRACE_URL,
           }),
         ])}
       />,
     );
 
-    expect(screen.getByRole('link', { name: /Трейс/ }).closest('button')).toBeNull();
+    const button = screen.getByRole('button', { name: /Отправить сообщение/ });
+    expect(button.getAttribute('aria-expanded')).toBe('false');
+
+    await user.click(button);
+
+    expect(button.getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getByText('Привет!')).toBeTruthy();
+    expect(screen.getByText('42')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Аргументы JSON' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Результат JSON' })).toBeTruthy();
+    expect(screen.queryAllByRole('link').length).toBe(0);
+
+    await user.click(button);
+
+    expect(button.getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByText('Аргументы JSON')).toBeNull();
+    expect(screen.queryByText('Результат JSON')).toBeNull();
+  });
+
+  test('результат без аргументов раскрывается даже при наличии traceUrl', async () => {
+    const user = userEvent.setup();
+    render(
+      <TurnCard
+        item={item([
+          action({
+            eventType: 'tool.get_me',
+            label: 'Информация об аккаунте',
+            result: { username: 'mimic42' },
+            traceUrl: TRACE_URL,
+          }),
+        ])}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: /Информация об аккаунте/ }));
+
+    expect(screen.getByText('mimic42')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Результат JSON' })).toBeTruthy();
+    expect(screen.queryByText('Аргументы JSON')).toBeNull();
+    expect(screen.queryAllByRole('link').length).toBe(0);
   });
 });

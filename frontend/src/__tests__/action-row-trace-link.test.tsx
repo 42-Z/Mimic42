@@ -17,27 +17,26 @@ const action = (over: Partial<ActivityAction> = {}): ActivityAction => ({
   ...over,
 });
 
-describe('ActionRow trace link', () => {
-  test('ссылка «Трейс» ведёт на trace_url в новой вкладке', () => {
+describe('ActionRow без ссылок на трассировку', () => {
+  test('traceUrl не превращается в пользовательскую ссылку', () => {
     render(
       <ActionRow
         action={action({ traceUrl: 'https://braintrust.dev/app/p/mimic42/t/turn-1' })}
       />,
     );
 
-    const link = screen.getByRole('link', { name: /Трейс/ });
-    expect(link.getAttribute('href')).toBe('https://braintrust.dev/app/p/mimic42/t/turn-1');
-    expect(link.getAttribute('target')).toBe('_blank');
-    expect(link.getAttribute('rel')).toContain('noreferrer');
+    expect(screen.getByText('Ход завершён')).toBeTruthy();
+    expect(screen.queryAllByRole('link').length).toBe(0);
+    expect(screen.queryAllByText(/Трейс/).length).toBe(0);
   });
 
   test('без traceUrl ссылки нет', () => {
     render(<ActionRow action={action()} />);
 
-    expect(screen.queryByRole('link')).toBeNull();
+    expect(screen.queryAllByRole('link').length).toBe(0);
   });
 
-  test('у failed-строки видны и hint, и ссылка «Трейс»', () => {
+  test('у failed-строки видна ошибка без ссылки на трассировку', () => {
     render(
       <ActionRow
         action={action({
@@ -52,17 +51,7 @@ describe('ActionRow trace link', () => {
 
     const hint = screen.getByText('Сессия отозвана, требуется переподключение');
     expect(hint).toBeTruthy();
-    expect(screen.getByRole('link', { name: /Трейс/ })).toBeTruthy();
-    // У строк без раскрытия hint виден и на узких экранах — раскрыть их нельзя.
+    expect(screen.queryAllByRole('link').length).toBe(0);
     expect(hint.className).not.toContain('hidden');
-  });
-
-  test('ссылка «Трейс» объявляет новую вкладку скринридеру', () => {
-    render(
-      <ActionRow action={action({ traceUrl: 'https://braintrust.dev/app/p/mimic42/t/turn-1' })} />,
-    );
-
-    const link = screen.getByRole('link', { name: /Трейс/ });
-    expect(link.textContent).toContain('откроется в новой вкладке');
   });
 });
