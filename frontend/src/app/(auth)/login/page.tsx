@@ -11,6 +11,7 @@ import { Card, CardHeader, CardTitle, CardContent, CardFooter } from '@/componen
 import { useToast } from '@/components/ui/toast';
 import { Zap, Eye, EyeOff } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { getLoginRedirect } from '@/lib/login-redirect';
 
 const SUPABASE_ERROR_MESSAGES: Record<string, string> = {
   'Invalid login credentials': 'Неверный email или пароль',
@@ -90,7 +91,7 @@ function LoginContent() {
         return;
       }
 
-      const redirect = searchParams.get('redirect') ?? '/dashboard';
+      const redirect = getLoginRedirect(searchParams.get('redirect'));
       router.push(redirect);
       router.refresh();
     } finally {
