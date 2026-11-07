@@ -29,6 +29,7 @@ export const EVENT_CATALOG: Record<string, EventMeta> = {
   'agent.context_reset': { ru: 'Контекст сброшен', icon: RotateCcw },
   'model.failed': { ru: 'Модель не ответила', icon: AlertTriangle },
   'turn.failed': { ru: 'Ход завершился ошибкой', icon: AlertTriangle },
+  'turn.cancelled': { ru: 'Ход отменён', icon: Square },
   // Finish flag, not a check: ActionRow already ends every line with the
   // CheckCircle2 status icon — one glyph twice in the busiest feed row.
   'turn.completed': { ru: 'Ход завершён', icon: Flag },

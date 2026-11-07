@@ -110,12 +110,6 @@ function MessageRow({
   );
 }
 
-/**
- * One action row of a turn. Rows with details expand on click; leaf rows
- * (lifecycle events without args/result) render as a plain line — they have
- * nothing to expand into and carry the trace link, which must not live inside
- * the expand button (nested-interactive).
- */
 function ToolEntry({
   action,
   item,
@@ -211,8 +205,6 @@ export function TurnCard({
   );
 
   // Lifecycle rows (start/stop/timer events) render as a single compact line.
-  // No trace link here: only turn-scoped events (turn.completed/turn.failed)
-  // carry trace_url, so a lifecycle action never has a trace to open.
   if (item.kind === 'lifecycle') {
     const action = item.actions[0];
     if (!action) return null;

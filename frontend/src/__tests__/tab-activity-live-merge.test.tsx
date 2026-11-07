@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, mock, spyOn, test } from 'bun:test';
 import { render, screen } from '@testing-library/react';
-import * as activityFeed from '@/hooks/useActivityFeed';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import type { ActivityFeedPages } from '@/hooks/useActivityFeed';
 import * as realtimeFeed from '@/hooks/useRealtimeFeed';
-import * as telegramSession from '@/hooks/useTelegramSession';
 import { TabActivity } from '@/components/activity/TabActivity';
 import type { ActivityItem } from '@/lib/activity/normalize';
+import { queryKeys } from '@/lib/queryClient';
 import type { ConversationTurn } from '@/types';
 
 const AGENT_ID = '11111111-2222-4333-8444-555555555555';
@@ -53,28 +54,39 @@ const live = (incoming: ActivityItem['incoming']): ActivityItem => ({
 });
 
 function renderFeed(historical: ConversationTurn, realtime: ActivityItem) {
-  spyOn(activityFeed, 'useActivityFeed').mockReturnValue({
-    data: { pages: [{ turns: [historical], next_before: null, next_before_id: null }], pageParams: [null] },
-    isLoading: false,
-    fetchNextPage: mock(() => Promise.resolve()),
-    hasNextPage: false,
-    isFetchingNextPage: false,
-  } as ReturnType<typeof activityFeed.useActivityFeed>);
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, gcTime: Infinity } },
+  });
+  client.setQueryData<ActivityFeedPages>(queryKeys.conversation.byAgent(AGENT_ID), {
+    pages: [{ turns: [historical], next_before: null, next_before_id: null }],
+    pageParams: [null],
+  });
+  client.setQueryData(queryKeys.threads.byAgent(AGENT_ID), []);
   spyOn(realtimeFeed, 'useRealtimeFeed').mockReturnValue({
     items: [realtime],
     isConnected: true,
     clearFeed: () => {},
   });
-  spyOn(telegramSession, 'useMessageThreads').mockReturnValue({
-    data: [],
-  } as unknown as ReturnType<typeof telegramSession.useMessageThreads>);
-
-  return render(<TabActivity agentId={AGENT_ID} />);
+  return render(
+    <QueryClientProvider client={client}>
+      <TabActivity agentId={AGENT_ID} />
+    </QueryClientProvider>,
+  );
 }
 
 afterEach(() => mock.restore());
 
 describe('TabActivity объединяет неполную историю и текущий ход', () => {
+  test('входящее видно до первого события инструмента или завершения модели', () => {
+    renderFeed(history(''), {
+      ...live({ id: 'incoming-1', content: 'Модель ещё думает', createdAt: TIMESTAMP }),
+      actions: [],
+    });
+
+    expect(screen.getByText('Модель ещё думает')).toBeTruthy();
+    expect(screen.getByText('1 записей')).toBeTruthy();
+  });
+
   test('входящее сообщение и работающий инструмент не теряются за историей того же хода', () => {
     renderFeed(history(''), live({
       id: 'incoming-1',
