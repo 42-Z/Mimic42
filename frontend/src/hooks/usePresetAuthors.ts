@@ -2,7 +2,7 @@
 
 import { useQuery } from '@tanstack/react-query';
 import { getSupabaseClient, type SupabaseBrowserClient } from '@/lib/supabase/client';
-import { queryKeys } from '@/lib/queryClient';
+import { useAccountQueryKeys } from '@/hooks/useAccount';
 
 export interface PresetAuthor {
   id: string;
@@ -15,19 +15,22 @@ export interface PresetAuthor {
  */
 export async function fetchPresetAuthors(
   client: SupabaseBrowserClient,
+  signal?: AbortSignal,
 ): Promise<PresetAuthor[]> {
-  const { data, error } = await client.from('preset_authors').select('*');
+  const request = client.from('preset_authors').select('*');
+  const { data, error } = await (signal ? request.abortSignal(signal) : request);
   if (error) throw new Error(error.message);
   return (data ?? []) as PresetAuthor[];
 }
 
 export function usePresetAuthors() {
+  const queryKeys = useAccountQueryKeys();
   return useQuery({
     queryKey: queryKeys.presets.authors(),
     staleTime: 30_000,
     refetchInterval: 60_000,
     refetchOnWindowFocus: 'always',
     refetchOnReconnect: true,
-    queryFn: () => fetchPresetAuthors(getSupabaseClient()),
+    queryFn: ({ signal }) => fetchPresetAuthors(getSupabaseClient(), signal),
   });
 }

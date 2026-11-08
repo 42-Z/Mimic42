@@ -1,12 +1,12 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Library, Plus, Search } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/card';
 import { PresetEditorDialog } from '@/components/presets/PresetEditorDialog';
-import { getSupabaseClient } from '@/lib/supabase/client';
+import { useAccount } from '@/hooks/useAccount';
 import { readEnabledTools } from '@/lib/tools/agentTools';
 import { TOOL_INFO } from '@/lib/tools/toolInfo';
 import { cn } from '@/lib/utils';
@@ -48,22 +48,10 @@ export default function PresetsPage() {
 
   const [tab, setTab] = useState<TabKey>('store');
   const [search, setSearch] = useState('');
-  const [userId, setUserId] = useState<string | null>(null);
+  const userId = useAccount()?.userId ?? null;
   const [editorOpen, setEditorOpen] = useState(false);
   const [editing, setEditing] = useState<CatalogEntry | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    getSupabaseClient()
-      .auth.getUser()
-      .then(({ data }) => {
-        if (!cancelled) setUserId(data.user?.id ?? null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   const create = useCreatePreset();
   const update = useUpdatePreset();

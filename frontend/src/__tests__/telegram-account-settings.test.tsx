@@ -67,12 +67,12 @@ describe('TelegramAccountSettings', () => {
     await user.click(screen.getByRole('button', { name: 'Сохранить' }));
 
     await waitFor(() =>
-      expect(change).toHaveBeenCalledWith(AGENT_ID, { username: 'new_name' }),
+      expect(change).toHaveBeenCalledWith(AGENT_ID, { username: 'new_name' }, { accountScope: undefined }),
     );
     expect(await screen.findByText('Сохранено: @new_name')).toBeTruthy();
     expect(input.value).toBe('new_name');
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.telegram.byAgent(AGENT_ID) });
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.agents.all });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.forUser(null).telegram.byAgent(AGENT_ID) });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.forUser(null).agents.all });
   });
 
   test('a background refresh does not overwrite the typed name', async () => {
@@ -116,7 +116,7 @@ describe('TelegramAccountSettings', () => {
     expect(state).not.toHaveBeenCalled();
     await user.click(screen.getByRole('button', { name: 'Настроить' }));
 
-    await waitFor(() => expect(state).toHaveBeenCalledWith(AGENT_ID));
+    await waitFor(() => expect(state).toHaveBeenCalledWith(AGENT_ID, { accountScope: undefined }));
     expect(await screen.findByLabelText('Пароль')).toBeTruthy();
   });
 
@@ -132,7 +132,7 @@ describe('TelegramAccountSettings', () => {
     await user.click(screen.getByRole('button', { name: 'Установить пароль' }));
 
     await waitFor(() =>
-      expect(change).toHaveBeenCalledWith(AGENT_ID, { new_password: 'new_secret' }),
+      expect(change).toHaveBeenCalledWith(AGENT_ID, { new_password: 'new_secret' }, { accountScope: undefined }),
     );
     expect(await screen.findByText('Пароль установлен')).toBeTruthy();
     expect(input.value).toBe('');
@@ -156,7 +156,7 @@ describe('TelegramAccountSettings', () => {
       expect(change).toHaveBeenCalledWith(AGENT_ID, {
         current_password: 'old_secret',
         new_password: 'new_secret',
-      }),
+      }, { accountScope: undefined }),
     );
     expect(await screen.findByText('Пароль изменён')).toBeTruthy();
     expect(current.value).toBe('');

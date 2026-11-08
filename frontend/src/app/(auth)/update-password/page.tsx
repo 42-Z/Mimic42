@@ -1,8 +1,10 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { getSupabaseClient } from '@/lib/supabase/client';
+import { updateAccountPassword } from '@/lib/updatePassword';
+import { useAccount } from '@/hooks/useAccount';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardHeader, CardTitle, CardContent, Spinner } from '@/components/ui/card';
@@ -10,30 +12,20 @@ import { useToast } from '@/components/ui/toast';
 import { Zap } from 'lucide-react';
 
 export default function UpdatePasswordPage() {
+  const account = useAccount();
   const router = useRouter();
   const { toast } = useToast();
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [passwordError, setPasswordError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [isReady, setIsReady] = useState(false);
+  const isReady = Boolean(account?.userId);
+  const redirectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    const supabase = getSupabaseClient();
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
-      if (event === 'PASSWORD_RECOVERY') {
-        setIsReady(true);
-      }
-    });
-
-    // Also check if we already have a session (user clicked link and was redirected)
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session) {
-        setIsReady(true);
-      }
-    });
-
-    return () => subscription.unsubscribe();
+    return () => {
+      if (redirectTimer.current) clearTimeout(redirectTimer.current);
+    };
   }, []);
 
   const validate = () => {
@@ -52,21 +44,27 @@ export default function UpdatePasswordPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!account?.userId || account.controller.signal.aborted || isLoading) return;
     if (!validate()) return;
 
     setIsLoading(true);
     try {
       const supabase = getSupabaseClient();
-      const { error } = await supabase.auth.updateUser({ password });
-
-      if (error) {
-        toast(error.message, 'error');
-      } else {
-        toast('Пароль успешно обновлен', 'success');
-        setTimeout(() => router.push('/login'), 1500);
-      }
+      await updateAccountPassword(password, {
+        userId: account.userId,
+        signal: account.controller.signal,
+      }, supabase.auth);
+      if (account.controller.signal.aborted) return;
+      toast('Пароль успешно обновлен', 'success');
+      redirectTimer.current = setTimeout(() => {
+        if (!account.controller.signal.aborted) router.push('/login');
+      }, 1500);
+    } catch (error) {
+      if (account.controller.signal.aborted) return;
+      if (error instanceof Error && error.name === 'AbortError') return;
+      toast(error instanceof Error ? error.message : 'Не удалось обновить пароль.', 'error');
     } finally {
-      setIsLoading(false);
+      if (!account.controller.signal.aborted) setIsLoading(false);
     }
   };
 

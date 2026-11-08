@@ -29,7 +29,9 @@ class SupabaseJWTVerifier:
         self._supabase_url = supabase_url.rstrip("/")
         self._jwks_client = PyJWKClient(
             f"{self._supabase_url}/auth/v1/.well-known/jwks.json",
-            cache_keys=True,
+            cache_keys=False,
+            cache_jwk_set=True,
+            lifespan=300,
         )
 
     async def verify(self, token: str) -> CurrentUser:

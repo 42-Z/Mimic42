@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { useState, type ReactNode } from 'react';
 import type {
@@ -46,6 +46,8 @@ const { adminApi } = await import('@/lib/adminApi');
 const { AdminAccessProvider, useAdminAccess } = await import('@/hooks/useAdminAccess');
 const { useAdminActions, useAdminUsers } = await import('@/hooks/useAdmin');
 const { queryKeys } = await import('@/lib/queryClient');
+const { AccountProvider } = await import('@/hooks/useAccount');
+const { navigationMock } = await import('./next-navigation-mock');
 
 const userA = '11111111-1111-1111-1111-111111111111';
 const userB = '22222222-2222-2222-2222-222222222222';
@@ -119,18 +121,22 @@ function PresetWriteProbe() {
   );
 }
 
-function renderProbe(children: ReactNode = <Probe />) {
-  const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false, gcTime: Infinity } },
-  });
+async function renderProbe(children: ReactNode = <Probe />) {
+  let queryClient: QueryClient | undefined;
+  function CaptureClient() {
+    queryClient = useQueryClient();
+    return <>{children}</>;
+  }
+  navigationMock.pathname = '/login';
   const view = render(
-    <QueryClientProvider client={queryClient}>
+    <AccountProvider>
       <AdminAccessProvider>
-        {children}
+        <CaptureClient />
       </AdminAccessProvider>
-    </QueryClientProvider>,
+    </AccountProvider>,
   );
-  return { queryClient, ...view };
+  await waitFor(() => expect(queryClient).toBeDefined());
+  return { get queryClient() { return queryClient!; }, ...view };
 }
 
 function emitAuth(event: string, nextSession: FakeSession | null) {
@@ -200,7 +206,7 @@ describe('admin access boundary state', () => {
         updated_by: userA,
       };
     };
-    const view = renderProbe(<WriteProbe />);
+    const view = await renderProbe(<WriteProbe />);
     const telegramKey = queryKeys.admin.telegram(userA);
     view.queryClient.setQueryData(telegramKey, {
       api_id: 1,
@@ -243,9 +249,9 @@ describe('admin access boundary state', () => {
       settings: null,
     };
     adminApi.createPreset = async () => preset;
-    const view = renderProbe(<PresetWriteProbe />);
+    const view = await renderProbe(<PresetWriteProbe />);
     const adminUsersKey = queryKeys.admin.users(userA, '', 1, 25);
-    const catalogKey = queryKeys.presets.list();
+    const catalogKey = queryKeys.forUser(userA).presets.list();
     view.queryClient.setQueryData(adminUsersKey, { total: 0 });
     view.queryClient.setQueryData(catalogKey, []);
 
@@ -267,7 +273,7 @@ describe('admin access boundary state', () => {
     activeSession = session(userA);
     let resolveIdentity: ((identity: AdminIdentity) => void) | undefined;
     meBehavior = () => new Promise<AdminIdentity>((resolve) => (resolveIdentity = resolve));
-    renderProbe();
+    await renderProbe();
 
     await waitFor(() => expect(meCalls).toBe(1));
     expect(usersCalls).toBe(0);
@@ -286,7 +292,7 @@ describe('admin access boundary state', () => {
       user_id: activeSession?.user.id ?? userA,
       is_admin: true,
     });
-    const view = renderProbe();
+    const view = await renderProbe();
     const oldUsersKey = queryKeys.admin.users(userA, '', 1, 25);
     const oldPresetKey = queryKeys.admin.preset(userA, 'cached-preset');
 
@@ -325,7 +331,7 @@ describe('admin access boundary state', () => {
     usersBehavior = async () => {
       throw { status: 403, message: 'forbidden' };
     };
-    const view = renderProbe();
+    const view = await renderProbe();
 
     await waitFor(() => expect(screen.getByTestId('access').textContent).toBe(`${userA}:denied`));
 

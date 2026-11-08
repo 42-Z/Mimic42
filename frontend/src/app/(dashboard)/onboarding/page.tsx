@@ -32,30 +32,13 @@ import type { ApiError } from '@/types';
 
 export default function OnboardingPage() {
   const { data: session, isLoading } = useOnboardingSession();
-  const [telegramCode, setTelegramCodeState] = useState('');
+  const [telegramCode, setTelegramCode] = useState('');
 
-  // Secure client-side synchronization and preventive purging
   useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const saved = sessionStorage.getItem('_m42_tc_state');
-      const status = session?.authorization_status;
-
-      // Immediately purge if authorized, not started, or finished to prevent lingering codes
-      if (status === 'authorized' || status === 'not_started' || session?.completed_agent_id) {
-        sessionStorage.removeItem('_m42_tc_state');
-        setTelegramCodeState('');
-      } else if (saved) {
-        setTelegramCodeState(saved);
-      }
+    if (session?.authorization_status === 'authorized' || session?.completed_agent_id) {
+      setTelegramCode('');
     }
   }, [session]);
-
-  const setTelegramCode = (code: string) => {
-    setTelegramCodeState(code);
-    if (typeof window !== 'undefined') {
-      sessionStorage.setItem('_m42_tc_state', code);
-    }
-  };
 
   if (isLoading) {
     return (

@@ -2,7 +2,7 @@
 
 import { useQuery } from '@tanstack/react-query';
 import { getSupabaseClient, type SupabaseBrowserClient } from '@/lib/supabase/client';
-import { queryKeys } from '@/lib/queryClient';
+import { useAccountQueryKeys } from '@/hooks/useAccount';
 import type { PromptPresetRow } from '@/types';
 
 /**
@@ -12,23 +12,26 @@ import type { PromptPresetRow } from '@/types';
  */
 export async function fetchPromptPresets(
   client: SupabaseBrowserClient,
+  signal?: AbortSignal,
 ): Promise<PromptPresetRow[]> {
-  const { data, error } = await client
+  const request = client
     .from('prompt_presets')
     .select('*')
     .order('sort_order');
+  const { data, error } = await (signal ? request.abortSignal(signal) : request);
 
   if (error) throw new Error(error.message);
   return (data ?? []) as PromptPresetRow[];
 }
 
 export function usePromptPresets() {
+  const queryKeys = useAccountQueryKeys();
   return useQuery({
     queryKey: queryKeys.presets.list(),
     staleTime: 30_000,
     refetchInterval: 60_000,
     refetchOnWindowFocus: 'always',
     refetchOnReconnect: true,
-    queryFn: () => fetchPromptPresets(getSupabaseClient()),
+    queryFn: ({ signal }) => fetchPromptPresets(getSupabaseClient(), signal),
   });
 }

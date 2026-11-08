@@ -57,11 +57,11 @@ function renderFeed(historical: ConversationTurn, realtime: ActivityItem) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: Infinity } },
   });
-  client.setQueryData<ActivityFeedPages>(queryKeys.conversation.byAgent(AGENT_ID), {
+  client.setQueryData<ActivityFeedPages>(queryKeys.forUser(null).conversation.byAgent(AGENT_ID), {
     pages: [{ turns: [historical], next_before: null, next_before_id: null }],
     pageParams: [null],
   });
-  client.setQueryData(queryKeys.threads.byAgent(AGENT_ID), []);
+  client.setQueryData(queryKeys.forUser(null).threads.byAgent(AGENT_ID), []);
   spyOn(realtimeFeed, 'useRealtimeFeed').mockReturnValue({
     items: [realtime],
     isConnected: true,

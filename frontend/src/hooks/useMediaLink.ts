@@ -3,8 +3,8 @@
 import { useCallback } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import type { MediaUrlResult } from '@/hooks/useMediaUrl';
-import { agentsApi } from '@/lib/api';
-import { queryKeys } from '@/lib/queryClient';
+import { useAccountApi } from '@/hooks/useAccountApi';
+import { useAccountQueryKeys } from '@/hooks/useAccount';
 
 export interface MediaLinkResult extends MediaUrlResult {
   refresh: () => Promise<string | null>;
@@ -15,6 +15,8 @@ export function useMediaLink(
   agentId: string,
   storagePath: string | null | undefined,
 ): MediaLinkResult {
+  const { agents: agentsApi } = useAccountApi();
+  const queryKeys = useAccountQueryKeys();
   const path = storagePath ?? '';
   const { data, isError, refetch } = useQuery({
     queryKey: queryKeys.media.link(agentId, path),

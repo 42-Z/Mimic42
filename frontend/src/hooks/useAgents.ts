@@ -1,14 +1,16 @@
 'use client';
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { agentsApi } from '@/lib/api';
-import { queryKeys } from '@/lib/queryClient';
+import { useAccountApi } from '@/hooks/useAccountApi';
+import { useAccountQueryKeys } from '@/hooks/useAccount';
 import type { AgentRecord } from '@/types';
 
 /**
  * Hook for fetching the list of all agents for the current user.
  */
 export function useAgents() {
+  const { agents: agentsApi } = useAccountApi();
+  const queryKeys = useAccountQueryKeys();
   return useQuery({
     queryKey: queryKeys.agents.list(),
     queryFn: agentsApi.list,
@@ -21,6 +23,8 @@ export function useAgents() {
  * Optimistically updates state, rolls back on error.
  */
 export function useStartAgent() {
+  const { agents: agentsApi } = useAccountApi();
+  const queryKeys = useAccountQueryKeys();
   const qc = useQueryClient();
 
   return useMutation({
@@ -60,6 +64,8 @@ export function useStartAgent() {
  * Optimistically updates state, rolls back on error.
  */
 export function useStopAgent() {
+  const { agents: agentsApi } = useAccountApi();
+  const queryKeys = useAccountQueryKeys();
   const qc = useQueryClient();
 
   return useMutation({
@@ -92,6 +98,8 @@ export function useStopAgent() {
  * Optimistically removes it from the list, rolls back on error.
  */
 export function useDeleteAgent() {
+  const { agents: agentsApi } = useAccountApi();
+  const queryKeys = useAccountQueryKeys();
   const qc = useQueryClient();
 
   return useMutation({
@@ -123,6 +131,8 @@ export function useDeleteAgent() {
  * History stays in the feed; the reset itself shows up there as an event.
  */
 export function useResetContext(agentId: string) {
+  const { agents: agentsApi } = useAccountApi();
+  const queryKeys = useAccountQueryKeys();
   const qc = useQueryClient();
 
   return useMutation({
@@ -138,6 +148,8 @@ export function useResetContext(agentId: string) {
  * Hook for triggering a message to a peer via the agent.
  */
 export function useTriggerMessage(agentId: string) {
+  const { agents: agentsApi } = useAccountApi();
+  const queryKeys = useAccountQueryKeys();
   const qc = useQueryClient();
 
   return useMutation({

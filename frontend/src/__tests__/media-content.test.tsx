@@ -193,7 +193,7 @@ describe('MediaContent: стикеры', () => {
     expect((video as HTMLVideoElement).muted).toBe(true);
     expect(video.hasAttribute('autoplay')).toBe(false);
     expect(video.getAttribute('src')).toBe('https://storage.test/a1/archive/video.webm');
-    expect(apiClient.get).toHaveBeenCalledWith('/agents/a1/media-link/a1/archive/video.webm');
+    expect(apiClient.get).toHaveBeenCalledWith('/agents/a1/media-link/a1/archive/video.webm', { accountScope: undefined });
     expect(URL.createObjectURL).not.toHaveBeenCalled();
     expect(screen.queryByRole('img')).toBeNull();
     expect(screen.queryByTestId('media-gallery')).toBeNull();
@@ -396,7 +396,7 @@ describe('MediaContent: стикеры', () => {
     const load = spyOn(video, 'load').mockImplementation(() => { video.currentTime = 0; });
     fireEvent.play(video);
     await act(async () => {
-      await queryClient.refetchQueries({ queryKey: queryKeys.media.all });
+      await queryClient.refetchQueries({ queryKey: queryKeys.forUser(null).media.all });
     });
     await waitFor(() => expect(signatures).toBe(2));
     expect(video.getAttribute('src')).toBe('https://storage.test/clip-1');
@@ -461,7 +461,7 @@ describe('MediaContent: стикеры', () => {
     const video = await screen.findByLabelText(`Стикер ${sticker.name}`);
     mediaError(video, 3);
     await act(async () => {
-      await queryClient.refetchQueries({ queryKey: queryKeys.media.all });
+      await queryClient.refetchQueries({ queryKey: queryKeys.forUser(null).media.all });
     });
     expect(Boolean(screen.queryByText('terminal.webm (недоступно)'))).toBe(true);
     expect(Boolean(screen.queryByLabelText(`Стикер ${sticker.name}`))).toBe(false);
@@ -531,7 +531,7 @@ describe('MediaContent: стикеры', () => {
     await act(async () => { response.resolve('https://storage.test/slow'); });
     await screen.findByLabelText(`Стикер ${sticker.name}`);
     const cached = queryClient.getQueryData<{ renewAt: number }>(
-      queryKeys.media.link('a1', sticker.storage_path!),
+      queryKeys.forUser(null).media.link('a1', sticker.storage_path!),
     );
     expect(cached?.renewAt).toBe(requestedAt + 54_000);
   });
@@ -645,7 +645,7 @@ describe('MediaContent: стикеры', () => {
     expect(video.tagName).toBe('VIDEO');
     expect(video.hasAttribute('loop')).toBe(false);
     expect(video.getAttribute('src')).toBe('https://storage.test/a1/archive/round.mp4');
-    expect(apiClient.get).toHaveBeenCalledWith('/agents/a1/media-link/a1/archive/round.mp4');
+    expect(apiClient.get).toHaveBeenCalledWith('/agents/a1/media-link/a1/archive/round.mp4', { accountScope: undefined });
     expect(URL.createObjectURL).not.toHaveBeenCalled();
   });
 
@@ -664,7 +664,7 @@ describe('MediaContent: стикеры', () => {
       );
     });
     expect(container.querySelector('audio')?.hasAttribute('controls')).toBe(true);
-    expect(apiClient.get).toHaveBeenCalledWith('/agents/a1/media-link/a1/archive/voice.ogg');
+    expect(apiClient.get).toHaveBeenCalledWith('/agents/a1/media-link/a1/archive/voice.ogg', { accountScope: undefined });
   });
 
   test('обычное видео из Telegram (doc + video/mp4) играет как видео', async () => {
@@ -679,7 +679,7 @@ describe('MediaContent: стикеры', () => {
     const video = await screen.findByLabelText(clip.name);
     expect(video.tagName).toBe('VIDEO');
     expect(video.getAttribute('src')).toBe('https://storage.test/a1/archive/clip.mp4');
-    expect(apiClient.get).toHaveBeenCalledWith('/agents/a1/media-link/a1/archive/clip.mp4');
+    expect(apiClient.get).toHaveBeenCalledWith('/agents/a1/media-link/a1/archive/clip.mp4', { accountScope: undefined });
     expect(screen.queryByRole('link', { name: /clip\.mp4/ })).toBeNull();
   });
 

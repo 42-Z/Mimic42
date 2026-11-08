@@ -120,9 +120,6 @@ describe('preset mutations', () => {
   test('избранное вставляет владельца из сессии и preset_id', async () => {
     const calls: MutationCalls = {};
     const client = {
-      auth: {
-        getUser: () => Promise.resolve({ data: { user: { id: 'user-1' } } }),
-      },
       from(table: string) {
         calls.table = table;
         return {
@@ -135,7 +132,7 @@ describe('preset mutations', () => {
       },
     } as unknown as SupabaseBrowserClient;
 
-    await favoritePreset(client, 'preset-1');
+    await favoritePreset(client, 'preset-1', 'user-1');
 
     expect(calls.table).toBe('preset_favorites');
     expect(calls.op).toBe('insert');
@@ -149,6 +146,20 @@ describe('preset mutations', () => {
 
     expect(calls.table).toBe('preset_favorites');
     expect(calls.eq).toEqual(['id', 'fav-1']);
+  });
+
+  test('избранное не отправляется без захваченного владельца', async () => {
+    const { client, calls } = fakeMutationClient({ data: null, error: null });
+    await expect(favoritePreset(client, 'preset-1', null)).rejects.toThrow('Not authenticated');
+    expect(calls.table).toBeUndefined();
+  });
+
+  test('избранное не отправляется после завершения периода авторизации', async () => {
+    const { client, calls } = fakeMutationClient({ data: null, error: null });
+    const controller = new AbortController();
+    controller.abort();
+    await expect(favoritePreset(client, 'preset-1', 'user-A', controller.signal)).rejects.toThrow();
+    expect(calls.table).toBeUndefined();
   });
 
   test('убрать живое избранное можно по пресету', async () => {

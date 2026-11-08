@@ -14,6 +14,7 @@ import { maskPhoneNumber, sanitizeText, truncate } from '@/lib/sanitize';
 import { needsRebind } from '@/lib/telegram';
 import { isSpamBlocked, spamBlockedFirst } from '@/lib/spamBlock';
 import { getSupabaseClient } from '@/lib/supabase/client';
+import { useAccount } from '@/hooks/useAccount';
 import { formatDistanceToNow } from 'date-fns';
 import { ru } from 'date-fns/locale';
 import {
@@ -72,6 +73,7 @@ function DashboardHeader({ agentsCount }: { agentsCount: number }) {
 
 // ── KPI Cards ─────────────────────────────────────────────────────────────────
 function KPIRow({ agentIds }: { agentIds: string[] }) {
+  const account = useAccount();
   const { data: kpis, isLoading } = useAllAgentsKPIs(agentIds);
   const router = useRouter();
   const { toast } = useToast();
@@ -79,14 +81,15 @@ function KPIRow({ agentIds }: { agentIds: string[] }) {
   const openLatestError = async () => {
     if (!kpis || kpis.errors_today === 0 || agentIds.length === 0) return;
     const supabase = getSupabaseClient();
-    const { data } = await supabase
+    const request = supabase
       .from('agent_events')
       .select('agent_id')
       .in('agent_id', agentIds)
       .eq('status', 'failed')
       .order('created_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
+      .limit(1);
+    const { data } = await (account ? request.abortSignal(account.controller.signal) : request).maybeSingle();
+    if (account?.controller.signal.aborted) return;
     if (data?.agent_id) {
       router.push(`/agent/${data.agent_id}?tab=logs&filter=errors`);
     } else {

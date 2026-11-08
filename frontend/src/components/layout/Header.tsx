@@ -1,9 +1,7 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { getSupabaseClient } from '@/lib/supabase/client';
+import { useAccount } from '@/hooks/useAccount';
 import { Menu, User } from 'lucide-react';
-import type { User as SupabaseUser } from '@supabase/supabase-js';
 import { Button } from '@/components/ui/button';
 
 interface HeaderProps {
@@ -11,13 +9,7 @@ interface HeaderProps {
 }
 
 export function Header({ onMenuClick }: HeaderProps) {
-  const [user, setUser] = useState<SupabaseUser | null>(null);
-
-  useEffect(() => {
-    const supabase = getSupabaseClient();
-    supabase.auth.getUser().then(({ data }) => setUser(data.user));
-  }, []);
-
+  const user = useAccount()?.user;
   const email = user?.email ?? '';
   const displayName = email.split('@')[0] ?? 'user';
 

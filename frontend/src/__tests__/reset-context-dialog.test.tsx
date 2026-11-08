@@ -40,7 +40,7 @@ describe('ResetContextDialog', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Сбросить' }));
 
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
-    expect(reset).toHaveBeenCalledWith(AGENT_ID);
+    expect(reset).toHaveBeenCalledWith(AGENT_ID, { accountScope: undefined });
     expect(screen.getByText('Контекст сброшен')).toBeTruthy();
   });
 

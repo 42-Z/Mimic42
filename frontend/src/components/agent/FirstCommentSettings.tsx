@@ -3,7 +3,7 @@
 import { useRef, useState } from 'react';
 import { ImagePlus, Loader2, Plus, Trash2, X } from 'lucide-react';
 
-import { agentsApi } from '@/lib/api';
+import { useAccountApi } from '@/hooks/useAccountApi';
 import { useMediaUrl } from '@/hooks/useMediaUrl';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/input';
@@ -202,6 +202,7 @@ interface VariantRowProps {
 }
 
 function VariantRow({ agentId, index, variant, showErrors, onPatch, onRemove }: VariantRowProps) {
+  const { agents: agentsApi } = useAccountApi();
   const fileInput = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
@@ -378,4 +379,3 @@ function ImagePreview({
     </div>
   );
 }
-

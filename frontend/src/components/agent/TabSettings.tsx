@@ -20,8 +20,8 @@ import {
 } from '@/components/agent/FirstCommentSettings';
 import { WarmupSettingsSection, readWarmup } from '@/components/agent/WarmupSettings';
 import { DEFAULT_MODEL, optionsIncluding } from '@/lib/models';
-import { agentsApi } from '@/lib/api';
-import { queryKeys } from '@/lib/queryClient';
+import { useAccountApi } from '@/hooks/useAccountApi';
+import { useAccountQueryKeys } from '@/hooks/useAccount';
 import { pickReasoningValue, reasoningLabel, reasoningOptionValues } from '@/lib/reasoning';
 import { readDisabledChats, mergeDisabledChats } from '@/lib/chats/agentChats';
 import { readEnabledTools, mergeEnabledTools } from '@/lib/tools/agentTools';
@@ -37,6 +37,8 @@ type SettingsFormValues = Omit<AgentSettingsValues, 'first_comment' | 'warmup'> 
 type TextField = Exclude<keyof AgentSettingsValues, 'first_comment' | 'warmup'>;
 
 export function TabSettings({ agentId }: { agentId: string }) {
+  const { agents: agentsApi } = useAccountApi();
+  const queryKeys = useAccountQueryKeys();
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const { data: details, isLoading } = useAgentDetails(agentId);

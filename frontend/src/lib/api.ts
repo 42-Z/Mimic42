@@ -1,4 +1,9 @@
-import axios, { type AxiosError, type InternalAxiosRequestConfig } from 'axios';
+import axios, {
+  CanceledError,
+  type AxiosError,
+  type AxiosRequestConfig,
+  type InternalAxiosRequestConfig,
+} from 'axios';
 import { encodeMediaPath } from '@/lib/mediaPath';
 import { getSupabaseClient } from '@/lib/supabase/client';
 import type { ApiError, ConversationTurn } from '@/types';
@@ -17,6 +22,17 @@ export interface ConversationCursor {
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000';
 
+export interface ApiAccountScope {
+  userId: string | null;
+  signal: AbortSignal;
+}
+
+declare module 'axios' {
+  interface AxiosRequestConfig {
+    accountScope?: ApiAccountScope;
+  }
+}
+
 /**
  * Central Axios instance for all FastAPI requests.
  * Automatically attaches Supabase JWT to every request.
@@ -29,19 +45,31 @@ export const apiClient = axios.create({
   },
 });
 
+export function setApiAccountScope(scope: ApiAccountScope | undefined) {
+  (apiClient.defaults as typeof apiClient.defaults & { accountScope?: ApiAccountScope }).accountScope = scope;
+}
+
 // ── Request interceptor — attach JWT ─────────────────────────────────────────
 apiClient.interceptors.request.use(
   async (config: InternalAxiosRequestConfig) => {
-    try {
-      const supabase = getSupabaseClient();
-      const { data: { session } } = await supabase.auth.getSession();
+    const scope = config.accountScope;
+    const assertCurrent = () => {
+      if (scope?.signal.aborted || config.signal?.aborted) throw new CanceledError('Account changed');
+    };
+    assertCurrent();
+    const supabase = getSupabaseClient();
+    const { data: { session }, error } = await supabase.auth.getSession();
+    assertCurrent();
+    if (error) throw error;
+    if (scope && (session?.user.id ?? null) !== scope.userId) throw new CanceledError('Account changed');
+    if (scope) {
+      config.signal = config.signal
+        ? AbortSignal.any([scope.signal, config.signal as AbortSignal])
+        : scope.signal;
+    }
 
-      if (session?.access_token) {
-        config.headers.Authorization = `Bearer ${session.access_token}`;
-      }
-    } catch {
-      // If getting the session fails, proceed without the token.
-      // The backend will return 401 and the response interceptor will handle it.
+    if (session?.access_token) {
+      config.headers.Authorization = `Bearer ${session.access_token}`;
     }
 
     return config;
@@ -51,8 +79,14 @@ apiClient.interceptors.request.use(
 
 // ── Response interceptor — normalize errors ───────────────────────────────────
 apiClient.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    if (response.config.accountScope?.signal.aborted) throw new CanceledError('Account changed');
+    return response;
+  },
   (error: AxiosError) => {
+    if (axios.isCancel(error) || error.config?.accountScope?.signal.aborted) {
+      return Promise.reject(new CanceledError('Account changed'));
+    }
     const status = error.response?.status;
     const detail = (error.response?.data as Record<string, unknown>)?.detail;
 
@@ -146,47 +180,47 @@ import type {
 
 export const agentsApi = {
   /** GET /api/v1/agents */
-  list: () =>
-    apiClient.get<AgentRecord[]>('/agents').then((r) => r.data),
+  list: (options?: AxiosRequestConfig) =>
+    apiClient.get<AgentRecord[]>('/agents', options).then((r) => r.data),
 
   /** GET /api/v1/agents/:id */
-  get: (id: string) =>
-    apiClient.get<AgentStatus>(`/agents/${id}`).then((r) => r.data),
+  get: (id: string, options?: AxiosRequestConfig) =>
+    apiClient.get<AgentStatus>(`/agents/${id}`, options).then((r) => r.data),
 
   /** POST /api/v1/agents/:id/start */
-  start: (id: string) =>
-    apiClient.post<void>(`/agents/${id}/start`).then(() => undefined),
+  start: (id: string, options?: AxiosRequestConfig) =>
+    apiClient.post<void>(`/agents/${id}/start`, undefined, options).then(() => undefined),
 
   /** POST /api/v1/agents/:id/stop */
-  stop: (id: string) =>
-    apiClient.post<void>(`/agents/${id}/stop`).then(() => undefined),
+  stop: (id: string, options?: AxiosRequestConfig) =>
+    apiClient.post<void>(`/agents/${id}/stop`, undefined, options).then(() => undefined),
 
   /** POST /api/v1/agents/:id/reload — re-applies settings to the runtime */
-  reload: (id: string) =>
-    apiClient.post<void>(`/agents/${id}/reload`).then(() => undefined),
+  reload: (id: string, options?: AxiosRequestConfig) =>
+    apiClient.post<void>(`/agents/${id}/reload`, undefined, options).then(() => undefined),
 
   /** POST /api/v1/agents/:id/telegram/rebind — запросить код входа */
-  rebindTelegram: (id: string) =>
+  rebindTelegram: (id: string, options?: AxiosRequestConfig) =>
     apiClient
-      .post<OnboardingPublicStatus>(`/agents/${id}/telegram/rebind`)
+      .post<OnboardingPublicStatus>(`/agents/${id}/telegram/rebind`, undefined, options)
       .then((r) => r.data),
 
   /** POST /api/v1/agents/:id/telegram/rebind/confirm — применить новую сессию */
-  confirmRebind: (id: string, body: { onboarding_id: string }) =>
+  confirmRebind: (id: string, body: { onboarding_id: string }, options?: AxiosRequestConfig) =>
     apiClient
-      .post<AgentStatus>(`/agents/${id}/telegram/rebind/confirm`, body)
+      .post<AgentStatus>(`/agents/${id}/telegram/rebind/confirm`, body, options)
       .then((r) => r.data),
 
   /** GET /api/v1/agents/:id/telegram/password — есть ли облачный пароль */
-  getTelegramPasswordState: (id: string) =>
+  getTelegramPasswordState: (id: string, options?: AxiosRequestConfig) =>
     apiClient
-      .get<TelegramPasswordState>(`/agents/${id}/telegram/password`)
+      .get<TelegramPasswordState>(`/agents/${id}/telegram/password`, options)
       .then((r) => r.data),
 
   /** PUT /api/v1/agents/:id/telegram/username — установить или сменить @username */
-  changeTelegramUsername: (id: string, body: TelegramUsernameInput) =>
+  changeTelegramUsername: (id: string, body: TelegramUsernameInput, options?: AxiosRequestConfig) =>
     apiClient
-      .put<TelegramUsernameResponse>(`/agents/${id}/telegram/username`, body)
+      .put<TelegramUsernameResponse>(`/agents/${id}/telegram/username`, body, options)
       .then((r) => r.data),
 
   /**
@@ -194,39 +228,41 @@ export const agentsApi = {
    * edit_2fa проверяет простые числа и может отвечать долго, поэтому таймаут
    * увеличен только у этой операции.
    */
-  changeTelegramPassword: (id: string, body: TelegramPasswordInput) =>
+  changeTelegramPassword: (id: string, body: TelegramPasswordInput, options?: AxiosRequestConfig) =>
     apiClient
       .put<TelegramPasswordResponse>(`/agents/${id}/telegram/password`, body, {
+        ...options,
         timeout: 120_000,
       })
       .then((r) => r.data),
 
   /** DELETE /api/v1/agents/:id */
-  remove: (id: string) =>
-    apiClient.delete<void>(`/agents/${id}`).then(() => undefined),
+  remove: (id: string, options?: AxiosRequestConfig) =>
+    apiClient.delete<void>(`/agents/${id}`, options).then(() => undefined),
 
   /** POST /api/v1/agents/:id/context/reset — the agent forgets recent conversations */
-  resetContext: (id: string) =>
+  resetContext: (id: string, options?: AxiosRequestConfig) =>
     apiClient
-      .post<{ context_reset_at: string }>(`/agents/${id}/context/reset`)
+      .post<{ context_reset_at: string }>(`/agents/${id}/context/reset`, undefined, options)
       .then((r) => r.data),
 
   /** GET /api/v1/agents/:id/warmup — ограничение Telegram и режим восстановления */
-  getWarmupState: (id: string) =>
-    apiClient.get<WarmupState>(`/agents/${id}/warmup`).then((r) => r.data),
+  getWarmupState: (id: string, options?: AxiosRequestConfig) =>
+    apiClient.get<WarmupState>(`/agents/${id}/warmup`, options).then((r) => r.data),
 
   /** POST /api/v1/agents/:id/warmup/recovery — включить восстановление (409, если не ограничен) */
-  startWarmupRecovery: (id: string) =>
-    apiClient.post<WarmupState>(`/agents/${id}/warmup/recovery`).then((r) => r.data),
+  startWarmupRecovery: (id: string, options?: AxiosRequestConfig) =>
+    apiClient.post<WarmupState>(`/agents/${id}/warmup/recovery`, undefined, options).then((r) => r.data),
 
   /** GET /api/v1/agents/:id/chats — диалоги аккаунта (409, пока агент не запущен) */
-  listChats: (id: string) =>
-    apiClient.get<AgentChat[]>(`/agents/${id}/chats`).then((r) => r.data),
+  listChats: (id: string, options?: AxiosRequestConfig) =>
+    apiClient.get<AgentChat[]>(`/agents/${id}/chats`, options).then((r) => r.data),
 
   /** GET /api/v1/agents/:id/conversation — cursor page, newest first */
-  getConversation: (id: string, limit = 50, before?: string | null, beforeId?: string | null) =>
+  getConversation: (id: string, limit = 50, before?: string | null, beforeId?: string | null, options?: AxiosRequestConfig) =>
     apiClient
       .get<ConversationPage>(`/agents/${id}/conversation`, {
+        ...options,
         params: before
           ? { limit, before, ...(beforeId ? { before_id: beforeId } : {}) }
           : { limit },
@@ -234,9 +270,9 @@ export const agentsApi = {
       .then((r) => r.data),
 
   /** POST /api/v1/agents/:id/messages/trigger */
-  triggerMessage: (id: string, body: TriggerMessageInput) =>
+  triggerMessage: (id: string, body: TriggerMessageInput, options?: AxiosRequestConfig) =>
     apiClient
-      .post<TriggerMessageResponse>(`/agents/${id}/messages/trigger`, body)
+      .post<TriggerMessageResponse>(`/agents/${id}/messages/trigger`, body, options)
       .then((r) => r.data),
 
   /**
@@ -244,53 +280,102 @@ export const agentsApi = {
    * Бакет закрыт для клиентских ролей, поэтому файл идёт через бэкенд.
    * Content-Type не задаётся вручную: его ставит браузер вместе с boundary.
    */
-  uploadMedia: (id: string, file: File) => {
+  uploadMedia: (id: string, file: File, options?: AxiosRequestConfig) => {
     const body = new FormData();
     body.append('file', file);
     return apiClient
       .post<UploadedMedia>(`/agents/${id}/media`, body, {
+        ...options,
         headers: { 'Content-Type': undefined },
       })
       .then((r) => r.data);
   },
 
   /** GET /api/v1/agents/:id/media-link/:path — подписанная ссылка на объект Storage */
-  signMediaLink: (id: string, storagePath: string) =>
+  signMediaLink: (id: string, storagePath: string, options?: AxiosRequestConfig) =>
     apiClient
-      .get<MediaLink>(`/agents/${id}/media-link/${encodeMediaPath(storagePath)}`)
+      .get<MediaLink>(`/agents/${id}/media-link/${encodeMediaPath(storagePath)}`, options)
       .then((r) => r.data),
 };
 
 export const onboardingApi = {
   /** POST /api/v1/onboarding/telegram */
-  startTelegram: (body: OnboardingTelegramInput) =>
+  startTelegram: (body: OnboardingTelegramInput, options?: AxiosRequestConfig) =>
     apiClient
-      .post<OnboardingPublicStatus>('/onboarding/telegram', body)
+      .post<OnboardingPublicStatus>('/onboarding/telegram', body, options)
       .then((r) => r.data),
 
   /** POST /api/v1/onboarding/:onboardingId/telegram/code */
-  submitCode: (onboardingId: string, body: TelegramCodeInput) =>
+  submitCode: (onboardingId: string, body: TelegramCodeInput, options?: AxiosRequestConfig) =>
     apiClient
-      .post<OnboardingPublicStatus>(`/onboarding/${onboardingId}/telegram/code`, body)
+      .post<OnboardingPublicStatus>(`/onboarding/${onboardingId}/telegram/code`, body, options)
       .then((r) => r.data),
 
   /** POST /api/v1/onboarding/:onboardingId/agent */
-  finalizeAgent: (onboardingId: string, body: FinalizeAgentInput) =>
+  finalizeAgent: (onboardingId: string, body: FinalizeAgentInput, options?: AxiosRequestConfig) =>
     apiClient
-      .post<AgentStatus>(`/onboarding/${onboardingId}/agent`, body)
+      .post<AgentStatus>(`/onboarding/${onboardingId}/agent`, body, options)
       .then((r) => r.data),
 };
 
 export const agentMemoryApi = {
   /** GET /api/v1/agents/:id/memory */
-  list: (agentId: string, query?: string) =>
+  list: (agentId: string, query?: string, options?: AxiosRequestConfig) =>
     apiClient
-      .get<AgentMemory[]>(`/agents/${agentId}/memory`, { params: query ? { query } : {} })
+      .get<AgentMemory[]>(`/agents/${agentId}/memory`, { ...options, params: query ? { query } : {} })
       .then((r) => r.data),
 
   /** GET /api/v1/agents/:id/memory/:memoryId/history */
-  getHistory: (agentId: string, memoryId: string) =>
+  getHistory: (agentId: string, memoryId: string, options?: AxiosRequestConfig) =>
     apiClient
-      .get<MemoryHistoryItem[]>(`/agents/${agentId}/memory/${memoryId}/history`)
+      .get<MemoryHistoryItem[]>(`/agents/${agentId}/memory/${memoryId}/history`, options)
       .then((r) => r.data),
 };
+
+export function createAccountApi(scope: ApiAccountScope | undefined) {
+  const options = { accountScope: scope };
+  return {
+    agents: {
+      list: () => agentsApi.list(options),
+      get: (id: string) => agentsApi.get(id, options),
+      start: (id: string) => agentsApi.start(id, options),
+      stop: (id: string) => agentsApi.stop(id, options),
+      reload: (id: string) => agentsApi.reload(id, options),
+      rebindTelegram: (id: string) => agentsApi.rebindTelegram(id, options),
+      confirmRebind: (id: string, body: { onboarding_id: string }) =>
+        agentsApi.confirmRebind(id, body, options),
+      getTelegramPasswordState: (id: string) =>
+        agentsApi.getTelegramPasswordState(id, options),
+      changeTelegramUsername: (id: string, body: TelegramUsernameInput) =>
+        agentsApi.changeTelegramUsername(id, body, options),
+      changeTelegramPassword: (id: string, body: TelegramPasswordInput) =>
+        agentsApi.changeTelegramPassword(id, body, options),
+      remove: (id: string) => agentsApi.remove(id, options),
+      resetContext: (id: string) => agentsApi.resetContext(id, options),
+      getWarmupState: (id: string) => agentsApi.getWarmupState(id, options),
+      startWarmupRecovery: (id: string) =>
+        agentsApi.startWarmupRecovery(id, options),
+      listChats: (id: string) => agentsApi.listChats(id, options),
+      getConversation: (id: string, limit = 50, before?: string | null, beforeId?: string | null) =>
+        agentsApi.getConversation(id, limit, before, beforeId, options),
+      triggerMessage: (id: string, body: TriggerMessageInput) =>
+        agentsApi.triggerMessage(id, body, options),
+      uploadMedia: (id: string, file: File) => agentsApi.uploadMedia(id, file, options),
+      signMediaLink: (id: string, path: string) =>
+        agentsApi.signMediaLink(id, path, options),
+    },
+    onboarding: {
+      startTelegram: (body: OnboardingTelegramInput) =>
+        onboardingApi.startTelegram(body, options),
+      submitCode: (id: string, body: TelegramCodeInput) =>
+        onboardingApi.submitCode(id, body, options),
+      finalizeAgent: (id: string, body: FinalizeAgentInput) =>
+        onboardingApi.finalizeAgent(id, body, options),
+    },
+    memory: {
+      list: (id: string, query?: string) => agentMemoryApi.list(id, query, options),
+      getHistory: (id: string, memoryId: string) =>
+        agentMemoryApi.getHistory(id, memoryId, options),
+    },
+  };
+}
