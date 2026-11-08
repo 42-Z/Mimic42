@@ -46,15 +46,14 @@ export function useOnboardingSession() {
     queryKey: queryKeys.onboarding.session(),
     queryFn: async ({ signal }) => {
       const supabase = getSupabaseClient();
-      const { data: { user } } = await supabase.auth.getUser();
       signal.throwIfAborted();
       account?.controller.signal.throwIfAborted();
-      if (!user) throw new Error('Not authenticated');
+      if (!account?.userId) throw new Error('Not authenticated');
 
       const { data, error } = await supabase
         .from('agent_onboarding_sessions')
         .select('*')
-        .eq('owner_id', user.id)
+        .eq('owner_id', account.userId)
         .is('completed_agent_id', null)
         .order('created_at', { ascending: false })
         .limit(1)
@@ -87,14 +86,13 @@ export function useSaveOnboardingStep() {
       update: Partial<OnboardingSessionRow>;
     }) => {
       const supabase = getSupabaseClient();
-      const { data: { user } } = await supabase.auth.getUser();
       account?.controller.signal.throwIfAborted();
-      if (!user) throw new Error('Not authenticated');
+      if (!account?.userId) throw new Error('Not authenticated');
 
       const { settings, ...rest } = update;
       const payload = {
-        owner_id: user.id,
         ...rest,
+        owner_id: account.userId,
         // OnboardingSessionRow is a manual mirror, wider than the generated
         // Json type: cast settings at the supabase-js boundary, as in
         // useUpdateAgentSettings.

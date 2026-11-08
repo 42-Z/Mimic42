@@ -78,6 +78,8 @@ async function fetchActivitySeed(agentIds: string[], signal: AbortSignal): Promi
  */
 export function useRealtimeFeed(agentId: string) {
   const account = useAccount();
+  const accountSignal = account?.controller.signal;
+  const userId = account?.userId ?? null;
   const queryKeys = useAccountQueryKeys();
   const qc = useQueryClient();
   const channelRef = useRef<RealtimeChannel | null>(null);
@@ -92,7 +94,7 @@ export function useRealtimeFeed(agentId: string) {
   const pendingInvalidates = useRef<Set<string>>(new Set());
 
   const flushInvalidates = useCallback(() => {
-    if (account?.controller.signal.aborted) return;
+    if (accountSignal?.aborted) return;
     const keys = [...pendingInvalidates.current];
     pendingInvalidates.current.clear();
     for (const key of keys) {
@@ -101,9 +103,9 @@ export function useRealtimeFeed(agentId: string) {
         // обновляем только голову ленты, а не все загруженные страницы.
         // Сырые realtime-инкременты уже в ленте, поэтому сбой головы не
         // повод перезапрашивать историю — следующая вспышка повторит попытку.
-        void refreshActivityFeedHead(qc, account?.userId ?? null, agentId, undefined, account ? {
-          userId: account.userId,
-          signal: account.controller.signal,
+        void refreshActivityFeedHead(qc, userId, agentId, undefined, accountSignal ? {
+          userId,
+          signal: accountSignal,
         } : undefined).catch((error: unknown) => {
           console.warn('activity feed head refresh failed', error);
         });
@@ -112,7 +114,7 @@ export function useRealtimeFeed(agentId: string) {
       }
     }
     invalidateTimer.current = null;
-  }, [agentId, qc, account, queryKeys]);
+  }, [agentId, qc, accountSignal, userId, queryKeys]);
 
   const scheduleInvalidate = useCallback((key: string) => {
     pendingInvalidates.current.add(key);
@@ -154,6 +156,7 @@ export function useRealtimeFeed(agentId: string) {
   useEffect(() => {
     if (!agentId) return;
     let active = true;
+    const pending = pendingInvalidates.current;
 
     // A new agent must not inherit rows from the previous one.
     setNewMessages([]);
@@ -182,7 +185,7 @@ export function useRealtimeFeed(agentId: string) {
           filter: `agent_id=eq.${agentId}`,
         },
         (payload: RealtimePayload<AgentMessageRow>) => {
-          if (!active || account?.controller.signal.aborted) return;
+          if (!active || accountSignal?.aborted) return;
           addMessage(payload.new);
         }
       )
@@ -195,12 +198,12 @@ export function useRealtimeFeed(agentId: string) {
           filter: `agent_id=eq.${agentId}`,
         },
         (payload: RealtimePayload<AgentEventRow>) => {
-          if (!active || account?.controller.signal.aborted) return;
+          if (!active || accountSignal?.aborted) return;
           addEvent(payload.new);
         }
       )
       .subscribe((status) => {
-        if (!active || account?.controller.signal.aborted) return;
+        if (!active || accountSignal?.aborted) return;
         setIsConnected(status === 'SUBSCRIBED');
       });
 
@@ -210,12 +213,12 @@ export function useRealtimeFeed(agentId: string) {
       active = false;
       if (invalidateTimer.current) clearTimeout(invalidateTimer.current);
       invalidateTimer.current = null;
-      pendingInvalidates.current.clear();
+      pending.clear();
       supabase.removeChannel(channel);
       channelRef.current = null;
       setIsConnected(false);
     };
-  }, [agentId, addMessage, addEvent, account]);
+  }, [agentId, addMessage, addEvent, accountSignal]);
 
   const items: ActivityItem[] = useMemo(
     () =>
@@ -244,6 +247,8 @@ export function useRealtimeFeed(agentId: string) {
  */
 export function useMultiAgentRealtimeFeed(agentIds: string[]) {
   const account = useAccount();
+  const accountSignal = account?.controller.signal;
+  const userId = account?.userId ?? null;
   const qc = useQueryClient();
   const [newMessages, setNewMessages] = useState<AgentMessageRow[]>([]);
   const [newEvents, setNewEvents] = useState<AgentEventRow[]>([]);
@@ -252,7 +257,7 @@ export function useMultiAgentRealtimeFeed(agentIds: string[]) {
   const agentKey = [...agentIds].sort().join(',');
 
   const { data: seed, refetch: refetchSeed } = useQuery<ActivitySeed>({
-    queryKey: ['agent-feed-seed', account?.userId ?? null, agentKey],
+    queryKey: ['agent-feed-seed', userId, agentKey],
     queryFn: ({ signal }) => fetchActivitySeed(agentIds, signal),
     enabled: agentIds.length > 0,
     staleTime: 30_000,
@@ -286,7 +291,7 @@ export function useMultiAgentRealtimeFeed(agentIds: string[]) {
           filter,
         },
         (payload: RealtimePayload<AgentMessageRow>) => {
-          if (!active || account?.controller.signal.aborted) return;
+          if (!active || accountSignal?.aborted) return;
           const msg = payload.new;
           if (isTranscriptRow(msg)) return;
           setNewMessages((prev) => {
@@ -306,7 +311,7 @@ export function useMultiAgentRealtimeFeed(agentIds: string[]) {
           filter,
         },
         (payload: RealtimePayload<AgentEventRow>) => {
-          if (!active || account?.controller.signal.aborted) return;
+          if (!active || accountSignal?.aborted) return;
           const event = payload.new;
           setNewEvents((prev) => {
             const updated = [...prev, event];
@@ -317,7 +322,7 @@ export function useMultiAgentRealtimeFeed(agentIds: string[]) {
         }
       )
       .subscribe((status) => {
-        if (!active || account?.controller.signal.aborted) return;
+        if (!active || accountSignal?.aborted) return;
         setIsConnected(status === 'SUBSCRIBED');
       });
 
@@ -326,7 +331,7 @@ export function useMultiAgentRealtimeFeed(agentIds: string[]) {
       supabase.removeChannel(channel);
       setIsConnected(false);
     };
-  }, [agentKey, qc, account]);
+  }, [agentKey, qc, accountSignal]);
 
   // Merge the seed (recent history) with realtime increments, then normalize.
   const items: ActivityItem[] = useMemo(() => {
@@ -360,7 +365,7 @@ export function useMultiAgentRealtimeFeed(agentIds: string[]) {
  */
 
 export function useAgentStatusRealtime(agentId: string) {
-  const account = useAccount();
+  const accountSignal = useAccount()?.controller.signal;
   const queryKeys = useAccountQueryKeys();
   const qc = useQueryClient();
   const channelRef = useRef<RealtimeChannel | null>(null);
@@ -390,7 +395,7 @@ export function useAgentStatusRealtime(agentId: string) {
           filter: `id=eq.${agentId}`,
         },
         () => {
-          if (!active || account?.controller.signal.aborted) return;
+          if (!active || accountSignal?.aborted) return;
           qc.invalidateQueries({ queryKey: queryKeys.agents.detail(agentId) });
           qc.invalidateQueries({ queryKey: queryKeys.agents.list() });
         }
@@ -404,7 +409,7 @@ export function useAgentStatusRealtime(agentId: string) {
       supabase.removeChannel(channel);
       channelRef.current = null;
     };
-  }, [agentId, qc, queryKeys, account]);
+  }, [agentId, qc, queryKeys, accountSignal]);
 }
 
 /**
@@ -412,7 +417,7 @@ export function useAgentStatusRealtime(agentId: string) {
  * and refreshes the agent list.
  */
 export function useAllAgentsStatusRealtime() {
-  const account = useAccount();
+  const accountSignal = useAccount()?.controller.signal;
   const queryKeys = useAccountQueryKeys();
   const qc = useQueryClient();
 
@@ -430,7 +435,7 @@ export function useAllAgentsStatusRealtime() {
           table: 'agents',
         },
         () => {
-          if (!active || account?.controller.signal.aborted) return;
+          if (!active || accountSignal?.aborted) return;
           qc.invalidateQueries({ queryKey: queryKeys.agents.list() });
         }
       )
@@ -440,5 +445,5 @@ export function useAllAgentsStatusRealtime() {
       active = false;
       supabase.removeChannel(channel);
     };
-  }, [qc, queryKeys, account]);
+  }, [qc, queryKeys, accountSignal]);
 }

@@ -10,13 +10,15 @@ import {
   type ReactNode,
 } from 'react';
 import { QueryClientProvider, type QueryClient } from '@tanstack/react-query';
-import { usePathname } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
+import type { User } from '@supabase/supabase-js';
 import { createQueryClient, queryKeys } from '@/lib/queryClient';
 import { setApiAccountScope } from '@/lib/api';
 import { getSupabaseClient } from '@/lib/supabase/client';
 
 interface AccountScope {
   userId: string | null;
+  user: User | null;
   generation: number;
   queryClient: QueryClient;
   controller: AbortController;
@@ -43,6 +45,7 @@ export function AccountProvider({ children }: { children: ReactNode }) {
   const current = useRef<AccountScope | null>(null);
   const generation = useRef(0);
   const pathname = usePathname();
+  const router = useRouter();
   const publicPage = ['/login', '/register', '/reset-password', '/update-password'].includes(pathname);
 
   useEffect(() => {
@@ -58,11 +61,19 @@ export function AccountProvider({ children }: { children: ReactNode }) {
       void outgoing.queryClient.cancelQueries();
       outgoing.queryClient.clear();
     };
-    const accept = (userId: string | null) => {
-      if (!active || current.current?.userId === userId) return;
+    const accept = (user: User | null) => {
+      if (!active) return;
+      const userId = user?.id ?? null;
+      if (current.current?.userId === userId) {
+        const next = { ...current.current, user };
+        current.current = next;
+        setState({ status: 'ready', scope: next });
+        return;
+      }
       retire();
       const next: AccountScope = {
         userId,
+        user,
         generation: ++generation.current,
         queryClient: createQueryClient(),
         controller: new AbortController(),
@@ -90,7 +101,7 @@ export function AccountProvider({ children }: { children: ReactNode }) {
       } = supabase.auth.onAuthStateChange((_event, session) => {
         if (!active) return;
         sequence += 1;
-        accept(session?.user.id ?? null);
+        accept(session?.user ?? null);
       });
       unsubscribe = () => subscription.unsubscribe();
       void supabase.auth
@@ -98,7 +109,7 @@ export function AccountProvider({ children }: { children: ReactNode }) {
         .then(({ data, error: authError }) => {
           if (!active || sequence !== initialSequence) return;
           if (authError) fail();
-          else accept(data.session?.user.id ?? null);
+          else accept(data.session?.user ?? null);
         })
         .catch(() => {
           if (sequence === initialSequence) fail();
@@ -114,6 +125,13 @@ export function AccountProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const scope = state.status === 'ready' ? state.scope : null;
+  useEffect(() => {
+    if (scope && scope.userId === null && !publicPage) {
+      const redirect = encodeURIComponent(`${pathname}${window.location.search}`);
+      router.replace(`/login?redirect=${redirect}`);
+    }
+  }, [scope, publicPage, pathname, router]);
+
   if ((!scope || scope.userId === null) && !publicPage) {
     return (
       <div role={state.status === 'error' ? 'alert' : 'status'}>

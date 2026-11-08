@@ -79,12 +79,16 @@ export async function deletePreset(client: SupabaseBrowserClient, id: string, si
   if (error) throw new Error(error.message);
 }
 
-export async function favoritePreset(client: SupabaseBrowserClient, presetId: string, signal?: AbortSignal) {
-  const { data: { user } } = await client.auth.getUser();
+export async function favoritePreset(
+  client: SupabaseBrowserClient,
+  presetId: string,
+  ownerId: string | null,
+  signal?: AbortSignal,
+) {
   signal?.throwIfAborted();
-  if (!user) throw new Error('Not authenticated');
+  if (!ownerId) throw new Error('Not authenticated');
   const request = client.from('preset_favorites').insert({
-    owner_id: user.id,
+    owner_id: ownerId,
     preset_id: presetId,
   });
   const { error } = await (signal ? request.abortSignal(signal) : request);
@@ -171,7 +175,9 @@ export function useFavoritePreset() {
   const account = useAccount();
   const invalidate = useInvalidatePresets();
   return useMutation({
-    mutationFn: (presetId: string) => favoritePreset(getSupabaseClient(), presetId, account?.controller.signal),
+    mutationFn: (presetId: string) => favoritePreset(
+      getSupabaseClient(), presetId, account?.userId ?? null, account?.controller.signal,
+    ),
     onSettled: invalidate,
   });
 }

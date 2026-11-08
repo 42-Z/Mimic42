@@ -17,7 +17,6 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 import { getSupabaseClient } from '@/lib/supabase/client';
-import { useRouter } from 'next/navigation';
 import { useAgents } from '@/hooks/useAgents';
 import { useAdminAccess } from '@/hooks/useAdminAccess';
 import { Button } from '@/components/ui/button';
@@ -55,15 +54,13 @@ interface SidebarProps {
 
 export function Sidebar({ className, mobileOpen = false, onMobileClose }: SidebarProps) {
   const pathname = usePathname();
-  const router = useRouter();
   const [collapsed, setCollapsed] = React.useState(false);
   const { data: agents } = useAgents();
   const { isAdmin } = useAdminAccess();
 
   const handleLogout = async () => {
     const supabase = getSupabaseClient();
-    await supabase.auth.signOut();
-    router.push('/login');
+    await supabase.auth.signOut({ scope: 'local' });
   };
 
   const isActive = (href: string, exact = false) => {

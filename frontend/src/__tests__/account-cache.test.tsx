@@ -111,6 +111,28 @@ test('same-user refresh retains cache and draft', async () => {
   expect((screen.getByLabelText('draft') as HTMLInputElement).value).toBe('keep draft');
 });
 
+test('external sign-out hides private state and redirects to login', async () => {
+  navigationMock.pathname = '/agents/private-agent';
+  render(<Providers><Probe /></Providers>);
+  await waitFor(() => expect(screen.queryByLabelText('draft')).not.toBeNull());
+  const outgoing = clients.at(-1)!;
+  fireEvent.change(screen.getByLabelText('draft'), { target: { value: 'private draft' } });
+
+  await change(null, 'SIGNED_OUT');
+
+  expect(screen.queryByLabelText('draft')).toBeNull();
+  expect(outgoing.getQueryCache().getAll()).toHaveLength(0);
+  expect(navigationMock.replace).toHaveBeenCalledWith('/login?redirect=%2Fagents%2Fprivate-agent');
+});
+
+test('confirmed anonymous bootstrap redirects private routes without mounting them', async () => {
+  session = null;
+  bootstrap = Promise.resolve({ data: { session }, error: null });
+  render(<Providers><Probe /></Providers>);
+  await waitFor(() => expect(navigationMock.replace).toHaveBeenCalledWith('/login?redirect=%2Fdashboard'));
+  expect(screen.queryByLabelText('draft')).toBeNull();
+});
+
 test('bootstrap gates private UI and ignores stale bootstrap after an auth event in StrictMode', async () => {
   const initial = deferred<Awaited<typeof bootstrap>>();
   bootstrap = initial.promise;

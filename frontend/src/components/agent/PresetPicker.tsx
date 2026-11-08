@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Sparkles } from 'lucide-react';
 import { Modal } from '@/components/ui/modal';
 import { Button } from '@/components/ui/button';
@@ -9,7 +9,7 @@ import { usePromptPresets } from '@/hooks/usePromptPresets';
 import { usePresetFavorites } from '@/hooks/usePresetFavorites';
 import { readEnabledTools } from '@/lib/tools/agentTools';
 import { TOOL_INFO } from '@/lib/tools/toolInfo';
-import { getSupabaseClient } from '@/lib/supabase/client';
+import { useAccount } from '@/hooks/useAccount';
 import { cn } from '@/lib/utils';
 import { buildFavoriteEntries } from '@/lib/presets/catalog';
 import type { PromptPresetRow, PresetFavoriteRow } from '@/types';
@@ -51,21 +51,9 @@ export function PresetPicker({
   onApply: (preset: AppliedPromptPreset) => void;
 }) {
   const [isOpen, setIsOpen] = useState(false);
-  const [userId, setUserId] = useState<string | null>(null);
+  const userId = useAccount()?.userId ?? null;
   const { data, isLoading, isError } = usePromptPresets();
   const { data: favoritesList, isLoading: favoritesLoading } = usePresetFavorites();
-
-  useEffect(() => {
-    let cancelled = false;
-    getSupabaseClient()
-      .auth.getUser()
-      .then(({ data }) => {
-        if (!cancelled) setUserId(data.user?.id ?? null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   return (
     <>
