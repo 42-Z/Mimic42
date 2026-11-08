@@ -26,7 +26,6 @@ const { Providers } = await import('@/app/providers');
 const { useStartAgent } = await import('@/hooks/useAgents');
 const { apiClient } = await import('@/lib/api');
 const originalAdapter = apiClient.defaults.adapter;
-adminApi.me = async () => ({ user_id: session!.user.id, is_admin: false });
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -64,13 +63,20 @@ async function change(userId: string | null, event = 'SIGNED_IN') {
   await act(async () => { listeners.forEach((listener) => listener(event, session)); });
 }
 beforeEach(() => {
+  spyOn(adminApi, 'me').mockImplementation(async () => ({ user_id: session!.user.id, is_admin: false }));
   navigationMock.pathname = '/dashboard';
   subscriptions.length = 0;
   session = { access_token: 'token-A', user: { id: 'A' } };
   bootstrap = Promise.resolve({ data: { session }, error: null });
   clients = []; signals = []; pending = deferred(); mutation = deferred();
 });
-afterEach(() => { cleanup(); clients.forEach((client) => client.clear()); listeners.clear(); apiClient.defaults.adapter = originalAdapter; });
+afterEach(() => {
+  cleanup();
+  clients.forEach((client) => client.clear());
+  listeners.clear();
+  apiClient.defaults.adapter = originalAdapter;
+  mock.restore();
+});
 
 test('account switch removes old DOM and aborts pending queries; late mutations cannot enter B or A2', async () => {
   render(<Providers><Probe /></Providers>);
