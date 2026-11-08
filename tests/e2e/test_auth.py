@@ -10,7 +10,7 @@ import httpx
 import pytest
 from playwright.sync_api import Page, Route, expect
 
-from tests.e2e.helpers import API_URL, APP_URL, create_test_agent, login_via_form
+from tests.e2e.helpers import API_URL, APP_URL, create_test_agent, login_via_form, reset_backend
 
 pytestmark = pytest.mark.e2e
 
@@ -95,14 +95,16 @@ class TestSignOut:
 
     def test_switching_accounts_hides_previous_agents_while_loading_and_on_error(
         self,
-        persona_page: Callable[..., Page],
+        page: Page,
         api: httpx.Client,
         users: dict,
+        slot_info: tuple[str, str, dict],
     ) -> None:
+        reset_backend(api, slot_info[0])
         agent_name = "Личный агент аккаунта A"
         agent_id = create_test_agent(api, users["full"].id, agent_name)
-        page = persona_page("full", fresh=True)
         login_via_form(page, users["full"])
+        expect(page).to_have_url(re.compile(r"/dashboard$"), timeout=30_000)
         expect(page.get_by_test_id(f"agent-card-{agent_id}")).to_be_visible()
         document_id = page.evaluate("() => window.__accountSwitchDocument = crypto.randomUUID()")
 
@@ -144,16 +146,31 @@ class TestSignOut:
 
         pending_agents: list[Route] = []
         agents_url = f"{API_URL}/api/v1/agents"
-        hold_agents = pending_agents.append
-        page.route(agents_url, hold_agents)
+        fail_agents = False
+
+        def fail_agent_request(route: Route) -> None:
+            route.fulfill(
+                status=503,
+                headers={"Access-Control-Allow-Origin": APP_URL},
+                json={"detail": "Unavailable"},
+            )
+
+        def handle_agents(route: Route) -> None:
+            if fail_agents:
+                fail_agent_request(route)
+            else:
+                pending_agents.append(route)
+
+        page.route(agents_url, handle_agents)
         page.get_by_label("Email").fill(users["empty"].email)
         page.get_by_label("Пароль", exact=True).fill(users["empty"].password)
         with (
-            page.expect_request(agents_url),
+            page.expect_request(agents_url, timeout=30_000),
             page.expect_response(
                 lambda response: (
                     "/auth/v1/token?grant_type=password" in response.url and response.status == 200
-                )
+                ),
+                timeout=30_000,
             ) as signed_in,
         ):
             page.get_by_role("button", name="Войти").click()
@@ -165,22 +182,10 @@ class TestSignOut:
         assert page.evaluate("window.__accountSwitchLeaks") == []
         assert page.evaluate("window.__accountSwitchDocument") == document_id
 
-        page.unroute(agents_url, hold_agents)
-        page.route(
-            agents_url,
-            lambda route: route.fulfill(
-                status=503,
-                headers={"Access-Control-Allow-Origin": APP_URL},
-                json={"detail": "Unavailable"},
-            ),
-        )
+        fail_agents = True
         for route in pending_agents:
             with page.expect_response(agents_url) as failed_agents:
-                route.fulfill(
-                    status=503,
-                    headers={"Access-Control-Allow-Origin": APP_URL},
-                    json={"detail": "Unavailable"},
-                )
+                fail_agent_request(route)
             assert failed_agents.value.finished() is None
         page.get_by_role("link", name="Главная", exact=True).click()
         expect(page).to_have_url(f"{APP_URL}/onboarding")
