@@ -124,6 +124,11 @@ class DatabaseTelegramProxyStore:
                 check.error,
             )
             await self.deactivate(model.id)
+        if proxy_ids:
+            # Пул был непустым, но всё, что в нём есть, не проходит проверку.
+            # Молча уходить напрямую нельзя: политика приложения — без прокси
+            # в Telegram не ходить (пустой пул — отдельный случай разработки).
+            raise TelegramProxyUnavailableError("Ни один прокси из пула не пропускает Telegram")
         return None
 
     async def load(self, proxy_id: UUID) -> TelegramProxyConfig:

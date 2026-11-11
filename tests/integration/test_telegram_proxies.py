@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from mimic42.core.agent_runtime import AgentRuntimeState, TelegramProxyConfig
 from mimic42.core.crypto import FernetSecretCipher
 from mimic42.core.onboarding import OnboardingSession, TelegramLoginStatus
-from mimic42.core.telegram_proxy import TelegramProxyCheckResult
+from mimic42.core.telegram_proxy import TelegramProxyCheckResult, TelegramProxyUnavailableError
 from mimic42.integrations.database_admin import DatabaseAdminRepository
 from mimic42.integrations.database_agent_store import DatabaseAgentStore
 from mimic42.integrations.database_models import (
@@ -417,6 +417,35 @@ async def test_allocation_verifies_the_proxy_and_deactivates_a_dead_one(
         stored_dead = await session.get(TelegramProxyModel, dead.id)
     assert stored_dead is not None
     assert stored_dead.is_active is False
+
+
+@pytest.mark.asyncio
+async def test_allocation_does_not_go_direct_when_every_active_proxy_is_dead(
+    admin_db_factory: async_sessionmaker[Any],
+) -> None:
+    await _clear_proxies(admin_db_factory)
+    cipher = _cipher()
+    dead = TelegramProxyModel(
+        label="Мёртвый",
+        protocol="socks5",
+        host="dead.example.test",
+        port=1080,
+        is_active=True,
+    )
+    async with admin_db_factory() as session, session.begin():
+        session.add(dead)
+
+    async def reject(_config: TelegramProxyConfig) -> TelegramProxyCheckResult:
+        return TelegramProxyCheckResult(ok=False, error="authentication failed")
+
+    store = DatabaseTelegramProxyStore(admin_db_factory, cipher=cipher, checker=reject)
+    with pytest.raises(TelegramProxyUnavailableError):
+        await store.allocate()
+
+    async with admin_db_factory() as session:
+        stored = await session.get(TelegramProxyModel, dead.id)
+    assert stored is not None
+    assert stored.is_active is False
 
 
 @pytest.mark.asyncio

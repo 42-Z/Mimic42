@@ -233,6 +233,35 @@ async def test_dead_proxy_leaves_the_pool_and_code_goes_through_replacement() ->
 
 
 @pytest.mark.asyncio
+async def test_failed_proxy_without_a_replacement_fails_instead_of_going_direct() -> None:
+    proxy_id = uuid4()
+    config = _proxy_config("dead.test")
+    store = FakeTelegramProxyStore(
+        allocations=[TelegramProxyAssignment(proxy_id=proxy_id, config=config)],
+        configs={proxy_id: config},
+    )
+
+    async def reject(_config: TelegramProxyConfig) -> TelegramProxyCheckResult:
+        return TelegramProxyCheckResult(ok=False, error="authentication failed")
+
+    factory = FakeTelegramAuthClientFactory(
+        FakeTelegramAccount(), broken_proxies={(config.host, config.port)}
+    )
+    service = AgentOnboardingService(
+        repository=InMemoryOnboardingRepository(),
+        telegram_factory=factory,
+        proxy_store=store,
+        proxy_checker=reject,
+    )
+
+    with pytest.raises(TelegramProxyUnavailableError):
+        await service.request_telegram_code(_credentials(uuid4()))
+
+    assert store.deactivated == [proxy_id]
+    assert factory.proxies == [config]
+
+
+@pytest.mark.asyncio
 async def test_transient_connect_failure_retries_the_same_proxy() -> None:
     proxy_id = uuid4()
     config = _proxy_config()
