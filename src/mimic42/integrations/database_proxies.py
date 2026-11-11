@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime, timedelta
 from typing import Literal, cast
 from uuid import UUID
 
 from pydantic import SecretStr
-from sqlalchemy import func, select, text, update
+from sqlalchemy import case, func, or_, select, text, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -25,9 +26,13 @@ from mimic42.integrations.database_models import (
 
 logger = logging.getLogger("mimic42.telegram_proxies")
 
-# Сколько кандидатов проверять за одну выдачу: мёртвые снимаются с пула,
+# Сколько кандидатов проверять за одну выдачу: нерабочие уходят в кулдаун,
 # поэтому в следующий раз проверка начнётся со следующего по загрузке.
 ALLOCATION_CHECK_LIMIT = 5
+
+# Временная недоступность не выключает прокси: после паузы выдача пробует
+# его снова. Админ по-прежнему может выключить прокси вручную.
+PROXY_COOLDOWN = timedelta(minutes=5)
 
 
 async def lock_proxy_pool(session: AsyncSession) -> None:
@@ -55,9 +60,20 @@ async def least_loaded_proxy_ids(
     statement = select(TelegramProxyModel.id).where(TelegramProxyModel.is_active.is_(True))
     if exclude_id is not None:
         statement = statement.where(TelegramProxyModel.id != exclude_id)
+    cooling = case(
+        (
+            or_(
+                TelegramProxyModel.unavailable_until.is_(None),
+                TelegramProxyModel.unavailable_until <= func.now(),
+            ),
+            0,
+        ),
+        else_=1,
+    )
     return list(
         await session.scalars(
             statement.order_by(
+                cooling,
                 agent_load + onboarding_load,
                 TelegramProxyModel.created_at,
                 TelegramProxyModel.id,
@@ -90,8 +106,8 @@ class DatabaseTelegramProxyStore:
     async def allocate(self) -> TelegramProxyAssignment | None:
         """Выдать прокси, проверив его через Telegram до назначения.
 
-        Непригодные записи снимаются с выдачи, поэтому следующий вызов
-        начнёт с других кандидатов.
+        Не прошедший проверку прокси не выключается: он получает паузу и
+        снова участвует в выдаче после неё.
         """
         try:
             async with self._session_factory() as session:
@@ -111,19 +127,22 @@ class DatabaseTelegramProxyStore:
             try:
                 config = telegram_proxy_config(model, self._cipher)
             except TelegramProxyUnavailableError as exc:
-                logger.warning("Прокси %s непригоден (%s); снимаю с выдачи", model.id, exc)
-                await self.deactivate(model.id)
+                logger.warning("Прокси %s непригоден (%s); ставлю на паузу", model.id, exc)
+                await self.mark_unavailable(model.id)
                 continue
             check = await self._checker(config)
             if check.ok:
+                if model.unavailable_until is not None:
+                    await self._clear_unavailable(model.id)
                 return TelegramProxyAssignment(proxy_id=model.id, config=config)
             logger.warning(
-                "Прокси %s:%s не прошёл проверку (%s); снимаю с выдачи",
+                "Прокси %s:%s не прошёл проверку (%s); пауза %s",
                 model.host,
                 model.port,
                 check.error,
+                PROXY_COOLDOWN,
             )
-            await self.deactivate(model.id)
+            await self.mark_unavailable(model.id)
         if proxy_ids:
             # Пул был непустым, но всё, что в нём есть, не проходит проверку.
             # Молча уходить напрямую нельзя: политика приложения — без прокси
@@ -141,17 +160,29 @@ class DatabaseTelegramProxyStore:
             raise TelegramProxyUnavailableError("Прокси не найден")
         return telegram_proxy_config(model, self._cipher)
 
-    async def deactivate(self, proxy_id: UUID) -> None:
-        """Снять прокси с автовыдачи, не удаляя запись у привязанных агентов."""
+    async def mark_unavailable(self, proxy_id: UUID) -> None:
+        """Поставить прокси на паузу, не выключая его из пула навсегда."""
         try:
             async with self._session_factory() as session, session.begin():
                 await session.execute(
                     update(TelegramProxyModel)
                     .where(TelegramProxyModel.id == proxy_id)
-                    .values(is_active=False)
+                    .values(unavailable_until=datetime.now(UTC) + PROXY_COOLDOWN)
                 )
         except SQLAlchemyError:
             raise TelegramProxyUnavailableError("Хранилище прокси временно недоступно") from None
+
+    async def _clear_unavailable(self, proxy_id: UUID) -> None:
+        """Снять паузу после успешной проверки; сбой очистки выдаче не мешает."""
+        try:
+            async with self._session_factory() as session, session.begin():
+                await session.execute(
+                    update(TelegramProxyModel)
+                    .where(TelegramProxyModel.id == proxy_id)
+                    .values(unavailable_until=None)
+                )
+        except SQLAlchemyError:
+            logger.warning("Не удалось снять паузу с прокси %s", proxy_id, exc_info=True)
 
     async def assignment_for_agent(self, agent_id: UUID) -> TelegramProxyAssignment | None:
         statement = (

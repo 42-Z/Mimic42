@@ -47,7 +47,7 @@ class FakeTelegramProxyStore:
         self.allocate_calls = 0
         self.load_calls: list[UUID] = []
         self.agent_calls: list[UUID] = []
-        self.deactivated: list[UUID] = []
+        self.unavailable: list[UUID] = []
 
     async def allocate(self) -> TelegramProxyAssignment | None:
         self.allocate_calls += 1
@@ -62,9 +62,8 @@ class FakeTelegramProxyStore:
             raise TelegramProxyUnavailableError("Прокси не найден")
         return config
 
-    async def deactivate(self, proxy_id: UUID) -> None:
-        self.deactivated.append(proxy_id)
-        self.configs.pop(proxy_id, None)
+    async def mark_unavailable(self, proxy_id: UUID) -> None:
+        self.unavailable.append(proxy_id)
 
     async def assignment_for_agent(self, agent_id: UUID) -> TelegramProxyAssignment | None:
         self.agent_calls.append(agent_id)
@@ -226,7 +225,7 @@ async def test_dead_proxy_leaves_the_pool_and_code_goes_through_replacement() ->
     saved = await repository.get(started.onboarding_id)
     assert saved.proxy_id == working_id
     assert saved.authorization_status is TelegramLoginStatus.CODE_REQUESTED
-    assert store.deactivated == [dead_id]
+    assert store.unavailable == [dead_id]
     assert store.allocate_calls == 2
     assert factory.proxies == [dead, working]
     assert checked == [dead]
@@ -257,7 +256,7 @@ async def test_failed_proxy_without_a_replacement_fails_instead_of_going_direct(
     with pytest.raises(TelegramProxyUnavailableError):
         await service.request_telegram_code(_credentials(uuid4()))
 
-    assert store.deactivated == [proxy_id]
+    assert store.unavailable == [proxy_id]
     assert factory.proxies == [config]
 
 
@@ -283,7 +282,7 @@ async def test_transient_connect_failure_retries_the_same_proxy() -> None:
     saved = await repository.get(started.onboarding_id)
     assert saved.proxy_id == proxy_id
     assert saved.authorization_status is TelegramLoginStatus.CODE_REQUESTED
-    assert store.deactivated == []
+    assert store.unavailable == []
     assert store.allocate_calls == 1
     assert factory.proxies == [config, config]
 
@@ -322,7 +321,7 @@ async def test_rebind_keeps_the_agent_proxy_when_it_cannot_connect() -> None:
     with pytest.raises(TelegramProxyUnavailableError):
         await service.start_rebind(agent_id, owner_id=owner_id)
 
-    assert store.deactivated == []
+    assert store.unavailable == []
     assert store.allocate_calls == 0
     assert factory.proxies == [config]
 
@@ -347,7 +346,7 @@ async def test_connect_failure_without_a_checker_is_not_retried() -> None:
     with pytest.raises(TelegramProxyUnavailableError):
         await service.request_telegram_code(_credentials(uuid4()))
 
-    assert store.deactivated == []
+    assert store.unavailable == []
     assert factory.proxies == [config]
 
 

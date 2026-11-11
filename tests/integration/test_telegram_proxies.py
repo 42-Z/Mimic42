@@ -374,7 +374,7 @@ async def test_allocation_prefers_the_least_loaded_active_proxy(
 
 
 @pytest.mark.asyncio
-async def test_allocation_verifies_the_proxy_and_deactivates_a_dead_one(
+async def test_allocation_verifies_the_proxy_and_cools_down_a_dead_one(
     admin_db_factory: async_sessionmaker[Any],
 ) -> None:
     await _clear_proxies(admin_db_factory)
@@ -416,7 +416,8 @@ async def test_allocation_verifies_the_proxy_and_deactivates_a_dead_one(
     async with admin_db_factory() as session:
         stored_dead = await session.get(TelegramProxyModel, dead.id)
     assert stored_dead is not None
-    assert stored_dead.is_active is False
+    assert stored_dead.is_active is True
+    assert stored_dead.unavailable_until is not None
 
 
 @pytest.mark.asyncio
@@ -445,11 +446,12 @@ async def test_allocation_does_not_go_direct_when_every_active_proxy_is_dead(
     async with admin_db_factory() as session:
         stored = await session.get(TelegramProxyModel, dead.id)
     assert stored is not None
-    assert stored.is_active is False
+    assert stored.is_active is True
+    assert stored.unavailable_until is not None
 
 
 @pytest.mark.asyncio
-async def test_deactivated_proxy_leaves_allocation_and_draft_moves_to_replacement(
+async def test_cooling_proxy_is_skipped_and_draft_moves_to_a_working_one(
     admin_db_factory: async_sessionmaker[Any],
     test_slot: Slot,
 ) -> None:
@@ -492,7 +494,7 @@ async def test_deactivated_proxy_leaves_allocation_and_draft_moves_to_replacemen
             )
         )
 
-    await store.deactivate(dead.id)
+    await store.mark_unavailable(dead.id)
     replacement = await store.allocate()
     assert replacement is not None
     assert replacement.proxy_id == working.id
@@ -502,8 +504,12 @@ async def test_deactivated_proxy_leaves_allocation_and_draft_moves_to_replacemen
     )
     async with admin_db_factory() as session:
         stored = await session.get(AgentOnboardingSessionModel, onboarding_id)
+        stored_dead = await session.get(TelegramProxyModel, dead.id)
     assert stored is not None
     assert stored.proxy_id == working.id
+    assert stored_dead is not None
+    assert stored_dead.is_active is True
+    assert stored_dead.unavailable_until is not None
 
 
 @pytest.mark.asyncio
