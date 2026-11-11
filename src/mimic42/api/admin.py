@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Coroutine
 from datetime import UTC, datetime
@@ -44,7 +43,7 @@ from mimic42.core.admin import (
     ProxyPatchValues,
     PublicTelegramSettings,
 )
-from mimic42.core.agent_runtime import AgentRuntimeState, TelegramProxyConfig
+from mimic42.core.agent_runtime import AgentRuntimeState
 from mimic42.core.proxy_import import (
     MAX_PROXY_IMPORT_TEXT,
     normalize_proxy_host,
@@ -56,8 +55,6 @@ from mimic42.core.telegram_proxy import TelegramProxyCheckResult
 from mimic42.integrations.telegram_proxy_check import check_telegram_proxy
 
 logger = logging.getLogger(__name__)
-
-PROXY_CHECK_CONCURRENCY = 5
 
 
 class PresetCreateRequest(BaseModel):
@@ -440,35 +437,6 @@ async def update_preset(
     )
 
 
-def _proxy_config(values: ProxyCreateValues) -> TelegramProxyConfig:
-    """Конфиг для проверки: пароль нужен ей в открытом виде."""
-    password = values.get("password")
-    return TelegramProxyConfig(
-        protocol=values["protocol"],
-        host=values["host"],
-        port=values["port"],
-        username=values.get("username"),
-        password=SecretStr(password) if password is not None else None,
-    )
-
-
-async def _check_proxy_values(values: ProxyCreateValues) -> TelegramProxyCheckResult:
-    return await check_telegram_proxy(_proxy_config(values))
-
-
-async def _check_import_candidates(
-    candidates: list[ProxyCreateValues],
-) -> list[TelegramProxyCheckResult]:
-    """Проверять партию с ограниченной параллельностью, а не строго по одной."""
-    semaphore = asyncio.Semaphore(PROXY_CHECK_CONCURRENCY)
-
-    async def check(values: ProxyCreateValues) -> TelegramProxyCheckResult:
-        async with semaphore:
-            return await _check_proxy_values(values)
-
-    return list(await asyncio.gather(*(check(values) for values in candidates)))
-
-
 @router.get("/proxies", response_model=AdminPage[AdminProxySummary])
 async def list_proxies(
     request: Request,
@@ -496,7 +464,6 @@ async def import_proxies(
     imported = 0
     skipped = parsed.skipped
     errors = list(parsed.errors)
-    candidates: list[ProxyCreateValues] = []
     for entry in parsed.entries:
         exists = await _admin_result(
             repository.proxy_exists(
@@ -509,32 +476,20 @@ async def import_proxies(
         if exists:
             skipped += 1
             continue
-        candidates.append(
-            ProxyCreateValues(
-                label=None,
-                protocol=entry.protocol,
-                host=entry.host,
-                port=entry.port,
-                username=entry.username,
-                password=entry.password,
-                is_active=values.is_active,
+        await _admin_result(
+            repository.create_proxy(
+                ProxyCreateValues(
+                    label=None,
+                    protocol=entry.protocol,
+                    host=entry.host,
+                    port=entry.port,
+                    username=entry.username,
+                    password=entry.password,
+                    is_active=values.is_active,
+                ),
+                actor_user_id=current_user.user_id,
             )
         )
-    if values.is_active:
-        checks = await _check_import_candidates(candidates)
-        usable: list[ProxyCreateValues] = []
-        for candidate, check in zip(candidates, checks, strict=True):
-            if check.ok:
-                usable.append(candidate)
-            else:
-                skipped += 1
-                errors.append(
-                    f"{candidate['host']}:{candidate['port']} — "
-                    f"не пропускает Telegram: {check.error}"
-                )
-        candidates = usable
-    for candidate in candidates:
-        await _admin_result(repository.create_proxy(candidate, actor_user_id=current_user.user_id))
         imported += 1
     return ProxyImportResult(imported=imported, skipped=skipped, errors=errors)
 
@@ -559,13 +514,6 @@ async def create_proxy(
         password=(values.password.get_secret_value() if values.password is not None else None),
         is_active=values.is_active,
     )
-    if values.is_active:
-        check = await _check_proxy_values(create_values)
-        if not check.ok:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Прокси не пропускает Telegram: {check.error}",
-            )
     return await _admin_result(
         repository.create_proxy(create_values, actor_user_id=current_user.user_id)
     )
