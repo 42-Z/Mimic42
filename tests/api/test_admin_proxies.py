@@ -84,6 +84,16 @@ def _app(
     )
 
 
+@pytest.fixture(autouse=True)
+def healthy_proxies(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Создание и импорт проверяют прокси сетевым запросом: в тестах он мгновенный."""
+
+    async def fake_check(_config: TelegramProxyConfig) -> TelegramProxyCheckResult:
+        return TelegramProxyCheckResult(ok=True, latency_ms=3)
+
+    monkeypatch.setattr("mimic42.api.admin.check_telegram_proxy", fake_check)
+
+
 def _detail_with_agent(owner_id: UUID, agent_id: UUID) -> AdminUserDetail:
     return AdminUserDetail(
         profile=AdminUserSummary(
@@ -301,6 +311,135 @@ async def test_import_url_errors_never_echo_credentials_and_keep_counters() -> N
     assert len(created) == 1
     assert created[0][1]["values"]["label"] is None
     assert created[0][1]["values"]["password"] == "imported_secret"
+
+
+@pytest.mark.asyncio
+async def test_create_proxy_refuses_an_active_proxy_that_cannot_reach_telegram(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admin_id = uuid4()
+    repository = FakeAdminRepository(admin_ids={admin_id})
+    app = _app(admin_id, repository)
+
+    async def reject(_config: TelegramProxyConfig) -> TelegramProxyCheckResult:
+        return TelegramProxyCheckResult(ok=False, error="authentication failed")
+
+    monkeypatch.setattr("mimic42.api.admin.check_telegram_proxy", reject)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/v1/admin/proxies",
+            headers=AUTH_HEADERS,
+            json={
+                "protocol": "socks5",
+                "host": "proxy.example.test",
+                "port": 1080,
+                "username": "mimic",
+                "password": "secret",
+                "is_active": True,
+            },
+        )
+
+    assert response.status_code == 400
+    assert "authentication failed" in response.json()["detail"]
+    assert repository.proxy_calls == []
+
+
+@pytest.mark.asyncio
+async def test_create_proxy_does_not_check_an_inactive_proxy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admin_id = uuid4()
+    repository = FakeAdminRepository(admin_ids={admin_id})
+    app = _app(admin_id, repository)
+
+    async def forbidden(_config: TelegramProxyConfig) -> TelegramProxyCheckResult:
+        raise AssertionError("неактивный прокси не должен проверяться")
+
+    monkeypatch.setattr("mimic42.api.admin.check_telegram_proxy", forbidden)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/v1/admin/proxies",
+            headers=AUTH_HEADERS,
+            json={
+                "protocol": "socks5",
+                "host": "proxy.example.test",
+                "port": 1080,
+                "is_active": False,
+            },
+        )
+
+    assert response.status_code == 201
+    assert repository.proxy_calls[0][1]["values"]["is_active"] is False
+
+
+@pytest.mark.asyncio
+async def test_import_skips_proxies_that_fail_the_check_and_keeps_the_rest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admin_id = uuid4()
+    repository = FakeAdminRepository(admin_ids={admin_id})
+    app = _app(admin_id, repository)
+
+    async def check(config: TelegramProxyConfig) -> TelegramProxyCheckResult:
+        if config.host == "dead.example.test":
+            return TelegramProxyCheckResult(ok=False, error="authentication failed")
+        return TelegramProxyCheckResult(ok=True, latency_ms=4)
+
+    monkeypatch.setattr("mimic42.api.admin.check_telegram_proxy", check)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/v1/admin/proxies/import",
+            headers=AUTH_HEADERS,
+            json={
+                "text": "dead.example.test:1080:user:old-secret\n"
+                "good.example.test:1080:user:ok-secret",
+                "protocol": "socks5",
+                "is_active": True,
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["imported"] == 1
+    assert body["skipped"] == 1
+    assert len(body["errors"]) == 1
+    assert "dead.example.test:1080" in body["errors"][0]
+    assert "authentication failed" in body["errors"][0]
+    assert "old-secret" not in response.text
+    assert "ok-secret" not in response.text
+    created = [call for call in repository.proxy_calls if call[0] == "create"]
+    assert len(created) == 1
+    assert created[0][1]["values"]["host"] == "good.example.test"
+
+
+@pytest.mark.asyncio
+async def test_import_does_not_check_proxies_when_importing_them_inactive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admin_id = uuid4()
+    repository = FakeAdminRepository(admin_ids={admin_id})
+    app = _app(admin_id, repository)
+
+    async def forbidden(_config: TelegramProxyConfig) -> TelegramProxyCheckResult:
+        raise AssertionError("неактивные прокси не должны проверяться")
+
+    monkeypatch.setattr("mimic42.api.admin.check_telegram_proxy", forbidden)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/v1/admin/proxies/import",
+            headers=AUTH_HEADERS,
+            json={
+                "text": "dead.example.test:1080:user:old-secret",
+                "protocol": "socks5",
+                "is_active": False,
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["imported"] == 1
+    created = [call for call in repository.proxy_calls if call[0] == "create"]
+    assert len(created) == 1
+    assert created[0][1]["values"]["is_active"] is False
 
 
 @pytest.mark.asyncio
