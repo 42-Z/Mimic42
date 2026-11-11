@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Any, cast
 
 from telethon import TelegramClient
@@ -10,6 +11,8 @@ from mimic42.core.agent_runtime import TelegramProxyConfig
 from mimic42.core.onboarding import TelegramPasswordRequiredError
 from mimic42.core.telegram_proxy import TelegramProxyUnavailableError
 from mimic42.integrations.telethon_client import build_proxy_argument
+
+logger = logging.getLogger("mimic42.telegram_auth")
 
 
 class TelethonAuthClient:
@@ -34,9 +37,14 @@ class TelethonAuthClient:
             await self._client.connect()
         except Exception as exc:
             if self._proxy is not None:
-                raise TelegramProxyUnavailableError(
-                    "Не удалось подключиться через прокси: он недоступен или не пропускает Telegram"
-                ) from exc
+                logger.warning(
+                    "Прокси %s:%s не дал подключиться к Telegram: %s",
+                    self._proxy.host,
+                    self._proxy.port,
+                    exc,
+                    exc_info=True,
+                )
+                raise TelegramProxyUnavailableError("он не пропускает Telegram") from exc
             raise
 
     async def disconnect(self) -> None:

@@ -279,6 +279,14 @@ class DatabaseOnboardingRepository:
             if proxy_id != attempt.proxy_id:
                 raise TelegramLoginRouteChangedError()
 
+    async def assign_proxy(self, onboarding_id: UUID, proxy_id: UUID | None) -> None:
+        async with self._session_factory() as db, db.begin():
+            await db.execute(
+                update(AgentOnboardingSessionModel)
+                .where(AgentOnboardingSessionModel.id == onboarding_id)
+                .values(proxy_id=proxy_id)
+            )
+
     async def record_auth(
         self,
         ref: TelegramAuthorizationRef,

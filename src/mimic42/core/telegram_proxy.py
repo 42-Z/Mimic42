@@ -28,6 +28,10 @@ class TelegramProxyStore(Protocol):
         """Конфиг конкретного прокси, в том числе отключённого: агент уже им пользуется."""
         ...
 
+    async def deactivate(self, proxy_id: UUID) -> None:
+        """Снять прокси с выдачи. Агенты и черновики с ним не переезжают сами."""
+        ...
+
     async def assignment_for_agent(self, agent_id: UUID) -> TelegramProxyAssignment | None:
         """Прокси, закреплённый за агентом в telegram_sessions."""
         ...

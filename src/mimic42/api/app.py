@@ -124,6 +124,7 @@ from mimic42.integrations.database_warmup import DatabaseWarmupHistory, Database
 from mimic42.integrations.mem0_memory import build_mem0_memory
 from mimic42.integrations.supabase_media import SupabaseMediaStorage
 from mimic42.integrations.telegram_auth import TelethonAuthClientFactory
+from mimic42.integrations.telegram_proxy_check import check_telegram_proxy
 from mimic42.integrations.tracing import flush_tracing, setup_tracing
 
 logger = logging.getLogger("mimic42.api.app")
@@ -510,6 +511,7 @@ def create_app(
                         cipher=cipher,
                         agent_store=database_agent_store,
                         proxy_store=database_proxy_store,
+                        proxy_checker=check_telegram_proxy,
                     )
                 if manager is None:
                     agent_memory = long_term_memory or build_mem0_memory(app_settings.mem0_api_key)

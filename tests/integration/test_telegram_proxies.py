@@ -21,6 +21,7 @@ from mimic42.integrations.database_models import (
     TelegramProxyModel,
     TelegramSessionModel,
 )
+from mimic42.integrations.database_onboarding import DatabaseOnboardingRepository
 from mimic42.integrations.database_proxies import DatabaseTelegramProxyStore
 from mimic42.testing import seed_agent, seed_rebind
 from mimic42.testing.slots import Slot, plain_dsn
@@ -365,6 +366,64 @@ async def test_allocation_prefers_the_least_loaded_active_proxy(
     fallback = await store.allocate()
     assert fallback is not None
     assert fallback.proxy_id == older.id
+
+
+@pytest.mark.asyncio
+async def test_deactivated_proxy_leaves_allocation_and_draft_moves_to_replacement(
+    admin_db_factory: async_sessionmaker[Any],
+    test_slot: Slot,
+) -> None:
+    owner_id = test_slot.persona("code").user_id
+    await _clear_proxies(admin_db_factory)
+    cipher = _cipher()
+    store = DatabaseTelegramProxyStore(admin_db_factory, cipher=cipher)
+    dead = TelegramProxyModel(
+        label="Умерший",
+        protocol="socks5",
+        host="dead.example.test",
+        port=1080,
+        is_active=True,
+    )
+    working = TelegramProxyModel(
+        label="Рабочий",
+        protocol="socks5",
+        host="working.example.test",
+        port=1080,
+        is_active=True,
+    )
+    async with admin_db_factory() as session, session.begin():
+        session.add_all([dead, working])
+        await session.flush()
+        dead.created_at = datetime.now(UTC) - timedelta(days=1)
+        working.created_at = datetime.now(UTC)
+
+    first = await store.allocate()
+    assert first is not None
+    assert first.proxy_id == dead.id
+
+    onboarding_id = uuid4()
+    async with admin_db_factory() as session, session.begin():
+        session.add(
+            AgentOnboardingSessionModel(
+                id=onboarding_id,
+                owner_id=owner_id,
+                authorization_status="not_started",
+                proxy_id=dead.id,
+            )
+        )
+
+    await store.deactivate(dead.id)
+    replacement = await store.allocate()
+    assert replacement is not None
+    assert replacement.proxy_id == working.id
+
+    await DatabaseOnboardingRepository(admin_db_factory, cipher=cipher).assign_proxy(
+        onboarding_id, working.id
+    )
+    async with admin_db_factory() as session:
+        stored = await session.get(AgentOnboardingSessionModel, onboarding_id)
+    assert stored is not None
+    assert stored.proxy_id == working.id
 
 
 @pytest.mark.asyncio

@@ -5,7 +5,7 @@ from typing import Literal, cast
 from uuid import UUID
 
 from pydantic import SecretStr
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select, text, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -91,6 +91,18 @@ class DatabaseTelegramProxyStore:
         if model is None:
             raise TelegramProxyUnavailableError("Прокси не найден")
         return telegram_proxy_config(model, self._cipher)
+
+    async def deactivate(self, proxy_id: UUID) -> None:
+        """Снять прокси с автовыдачи, не удаляя запись у привязанных агентов."""
+        try:
+            async with self._session_factory() as session, session.begin():
+                await session.execute(
+                    update(TelegramProxyModel)
+                    .where(TelegramProxyModel.id == proxy_id)
+                    .values(is_active=False)
+                )
+        except SQLAlchemyError:
+            raise TelegramProxyUnavailableError("Хранилище прокси временно недоступно") from None
 
     async def assignment_for_agent(self, agent_id: UUID) -> TelegramProxyAssignment | None:
         statement = (
