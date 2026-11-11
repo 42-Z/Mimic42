@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Literal, cast
 from uuid import UUID
 
@@ -13,6 +14,7 @@ from mimic42.core.agent_runtime import TelegramProxyConfig
 from mimic42.core.onboarding import SecretCipher
 from mimic42.core.telegram_proxy import (
     TelegramProxyAssignment,
+    TelegramProxyCheckResult,
     TelegramProxyUnavailableError,
 )
 from mimic42.integrations.database_models import (
@@ -23,14 +25,18 @@ from mimic42.integrations.database_models import (
 
 logger = logging.getLogger("mimic42.telegram_proxies")
 
+# Сколько кандидатов проверять за одну выдачу: мёртвые снимаются с пула,
+# поэтому в следующий раз проверка начнётся со следующего по загрузке.
+ALLOCATION_CHECK_LIMIT = 5
+
 
 async def lock_proxy_pool(session: AsyncSession) -> None:
     await session.execute(text("select public.lock_telegram_proxy_pool()"))
 
 
-async def least_loaded_proxy_id(
-    session: AsyncSession, *, exclude_id: UUID | None = None
-) -> UUID | None:
+async def least_loaded_proxy_ids(
+    session: AsyncSession, *, limit: int, exclude_id: UUID | None = None
+) -> list[UUID]:
     agent_load = (
         select(func.count(TelegramSessionModel.id))
         .where(TelegramSessionModel.proxy_id == TelegramProxyModel.id)
@@ -49,38 +55,76 @@ async def least_loaded_proxy_id(
     statement = select(TelegramProxyModel.id).where(TelegramProxyModel.is_active.is_(True))
     if exclude_id is not None:
         statement = statement.where(TelegramProxyModel.id != exclude_id)
-    return await session.scalar(
-        statement.order_by(
-            agent_load + onboarding_load, TelegramProxyModel.created_at, TelegramProxyModel.id
-        ).limit(1)
+    return list(
+        await session.scalars(
+            statement.order_by(
+                agent_load + onboarding_load,
+                TelegramProxyModel.created_at,
+                TelegramProxyModel.id,
+            ).limit(limit)
+        )
     )
 
 
+async def least_loaded_proxy_id(
+    session: AsyncSession, *, exclude_id: UUID | None = None
+) -> UUID | None:
+    ids = await least_loaded_proxy_ids(session, limit=1, exclude_id=exclude_id)
+    return ids[0] if ids else None
+
+
 class DatabaseTelegramProxyStore:
-    """Прокси из пула: автовыдача, чтение конфига и назначение агента."""
+    """Прокси из пула: проверенная выдача, чтение конфига и назначение агента."""
 
     def __init__(
         self,
         session_factory: async_sessionmaker[AsyncSession],
         *,
         cipher: SecretCipher | None = None,
+        checker: Callable[[TelegramProxyConfig], Awaitable[TelegramProxyCheckResult]],
     ) -> None:
         self._session_factory = session_factory
         self._cipher = cipher
+        self._checker = checker
 
     async def allocate(self) -> TelegramProxyAssignment | None:
+        """Выдать прокси, проверив его через Telegram до назначения.
+
+        Непригодные записи снимаются с выдачи, поэтому следующий вызов
+        начнёт с других кандидатов.
+        """
         try:
             async with self._session_factory() as session:
-                proxy_id = await least_loaded_proxy_id(session)
-                model = await session.get(TelegramProxyModel, proxy_id) if proxy_id else None
+                proxy_ids = await least_loaded_proxy_ids(session, limit=ALLOCATION_CHECK_LIMIT)
+                models = {
+                    model.id: model
+                    for model in await session.scalars(
+                        select(TelegramProxyModel).where(TelegramProxyModel.id.in_(proxy_ids))
+                    )
+                }
         except SQLAlchemyError:
             raise TelegramProxyUnavailableError("Хранилище прокси временно недоступно") from None
-        if model is None:
-            return None
-        return TelegramProxyAssignment(
-            proxy_id=model.id,
-            config=telegram_proxy_config(model, self._cipher),
-        )
+        for proxy_id in proxy_ids:
+            model = models.get(proxy_id)
+            if model is None:
+                continue
+            try:
+                config = telegram_proxy_config(model, self._cipher)
+            except TelegramProxyUnavailableError as exc:
+                logger.warning("Прокси %s непригоден (%s); снимаю с выдачи", model.id, exc)
+                await self.deactivate(model.id)
+                continue
+            check = await self._checker(config)
+            if check.ok:
+                return TelegramProxyAssignment(proxy_id=model.id, config=config)
+            logger.warning(
+                "Прокси %s:%s не прошёл проверку (%s); снимаю с выдачи",
+                model.host,
+                model.port,
+                check.error,
+            )
+            await self.deactivate(model.id)
+        return None
 
     async def load(self, proxy_id: UUID) -> TelegramProxyConfig:
         try:

@@ -670,6 +670,14 @@ async def assign_agent_proxy(
     current_user: Annotated[CurrentUser, Depends(require_admin)],
 ) -> AdminAgentProxy | None:
     repository = _get_admin_repository(request)
+    if values.proxy_id is not None:
+        config = await _admin_result(repository.read_proxy_config(values.proxy_id))
+        check = await check_telegram_proxy(config)
+        if not check.ok:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Прокси не пропускает Telegram: {check.error}",
+            )
     proxy = await _admin_result(
         repository.assign_agent_proxy(
             agent_id,

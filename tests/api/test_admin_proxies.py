@@ -742,6 +742,15 @@ async def test_assign_proxy_updates_agent_and_reloads_runtime() -> None:
     repository = FakeAdminRepository(
         admin_ids={admin_id},
         proxies=[proxy],
+        proxy_configs={
+            proxy.id: TelegramProxyConfig(
+                protocol="socks5",
+                host=proxy.host,
+                port=proxy.port,
+                username=proxy.username,
+                password=SecretStr("secret"),
+            )
+        },
         user_details={owner_id: _detail_with_agent(owner_id, agent_id)},
     )
     manager = FakeAgentManager(default_owner_id=owner_id)
@@ -775,6 +784,48 @@ async def test_assign_proxy_updates_agent_and_reloads_runtime() -> None:
 
 
 @pytest.mark.asyncio
+async def test_assign_proxy_refuses_a_proxy_that_cannot_reach_telegram(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admin_id = uuid4()
+    owner_id = uuid4()
+    agent_id = uuid4()
+    proxy = _proxy_detail()
+    repository = FakeAdminRepository(
+        admin_ids={admin_id},
+        proxies=[proxy],
+        proxy_configs={
+            proxy.id: TelegramProxyConfig(
+                protocol="socks5",
+                host=proxy.host,
+                port=proxy.port,
+                username=proxy.username,
+                password=SecretStr("secret"),
+            )
+        },
+        user_details={owner_id: _detail_with_agent(owner_id, agent_id)},
+    )
+    manager = FakeAgentManager(default_owner_id=owner_id)
+    app = _app(admin_id, repository, manager)
+
+    async def reject(_config: TelegramProxyConfig) -> TelegramProxyCheckResult:
+        return TelegramProxyCheckResult(ok=False, error="authentication failed")
+
+    monkeypatch.setattr("mimic42.api.admin.check_telegram_proxy", reject)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.put(
+            f"/api/v1/admin/agents/{agent_id}/proxy",
+            headers=AUTH_HEADERS,
+            json={"proxy_id": str(proxy.id)},
+        )
+
+    assert response.status_code == 400
+    assert "authentication failed" in response.json()["detail"]
+    assert agent_id not in repository.agent_proxies
+    assert manager.reloaded == []
+
+
+@pytest.mark.asyncio
 async def test_assign_proxy_reports_reload_failure_after_persisting_the_change() -> None:
     admin_id = uuid4()
     owner_id = uuid4()
@@ -783,6 +834,15 @@ async def test_assign_proxy_reports_reload_failure_after_persisting_the_change()
     repository = FakeAdminRepository(
         admin_ids={admin_id},
         proxies=[proxy],
+        proxy_configs={
+            proxy.id: TelegramProxyConfig(
+                protocol="socks5",
+                host=proxy.host,
+                port=proxy.port,
+                username=proxy.username,
+                password=SecretStr("secret"),
+            )
+        },
         user_details={owner_id: _detail_with_agent(owner_id, agent_id)},
     )
     manager = FakeAgentManager(default_owner_id=owner_id, reload_error=True)

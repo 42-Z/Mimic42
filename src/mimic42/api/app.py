@@ -502,11 +502,16 @@ def create_app(
                 database_proxy_store = DatabaseTelegramProxyStore(
                     session_factory,
                     cipher=cipher,
+                    checker=check_telegram_proxy,
                 )
                 app.state.agent_store = database_agent_store
                 if onboarding_service is None:
                     app.state.onboarding_service = AgentOnboardingService(
-                        repository=DatabaseOnboardingRepository(session_factory, cipher=cipher),
+                        repository=DatabaseOnboardingRepository(
+                            session_factory,
+                            cipher=cipher,
+                            proxy_store=database_proxy_store,
+                        ),
                         telegram_factory=app_telegram_factory,
                         cipher=cipher,
                         agent_store=database_agent_store,

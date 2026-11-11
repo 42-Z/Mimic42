@@ -10,9 +10,10 @@ from cryptography.fernet import Fernet
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from mimic42.core.agent_runtime import AgentRuntimeState
+from mimic42.core.agent_runtime import AgentRuntimeState, TelegramProxyConfig
 from mimic42.core.crypto import FernetSecretCipher
 from mimic42.core.onboarding import OnboardingSession, TelegramLoginStatus
+from mimic42.core.telegram_proxy import TelegramProxyCheckResult
 from mimic42.integrations.database_admin import DatabaseAdminRepository
 from mimic42.integrations.database_agent_store import DatabaseAgentStore
 from mimic42.integrations.database_models import (
@@ -29,6 +30,10 @@ from mimic42.testing.slots import Slot, plain_dsn
 
 def _cipher() -> FernetSecretCipher:
     return FernetSecretCipher(Fernet.generate_key().decode())
+
+
+async def _healthy_proxy(_config: TelegramProxyConfig) -> TelegramProxyCheckResult:
+    return TelegramProxyCheckResult(ok=True, latency_ms=1)
 
 
 async def _clear_proxies(factory: async_sessionmaker[Any]) -> None:
@@ -342,7 +347,7 @@ async def test_allocation_prefers_the_least_loaded_active_proxy(
         agent_id = await _agent(admin_db_factory, owner_id)
         await _set_session_proxy(admin_db_factory, agent_id, older.id)
 
-    store = DatabaseTelegramProxyStore(admin_db_factory, cipher=cipher)
+    store = DatabaseTelegramProxyStore(admin_db_factory, cipher=cipher, checker=_healthy_proxy)
     assignment = await store.allocate()
 
     assert assignment is not None
@@ -369,6 +374,52 @@ async def test_allocation_prefers_the_least_loaded_active_proxy(
 
 
 @pytest.mark.asyncio
+async def test_allocation_verifies_the_proxy_and_deactivates_a_dead_one(
+    admin_db_factory: async_sessionmaker[Any],
+) -> None:
+    await _clear_proxies(admin_db_factory)
+    cipher = _cipher()
+    dead = TelegramProxyModel(
+        label="Мёртвый",
+        protocol="socks5",
+        host="dead.example.test",
+        port=1080,
+        is_active=True,
+    )
+    working = TelegramProxyModel(
+        label="Рабочий",
+        protocol="socks5",
+        host="working.example.test",
+        port=1080,
+        is_active=True,
+    )
+    async with admin_db_factory() as session, session.begin():
+        session.add_all([dead, working])
+        await session.flush()
+        dead.created_at = datetime.now(UTC) - timedelta(days=1)
+        working.created_at = datetime.now(UTC)
+
+    checked: list[str] = []
+
+    async def check(config: TelegramProxyConfig) -> TelegramProxyCheckResult:
+        checked.append(config.host)
+        if config.host == "dead.example.test":
+            return TelegramProxyCheckResult(ok=False, error="authentication failed")
+        return TelegramProxyCheckResult(ok=True, latency_ms=2)
+
+    store = DatabaseTelegramProxyStore(admin_db_factory, cipher=cipher, checker=check)
+    assignment = await store.allocate()
+
+    assert assignment is not None
+    assert assignment.proxy_id == working.id
+    assert checked == ["dead.example.test", "working.example.test"]
+    async with admin_db_factory() as session:
+        stored_dead = await session.get(TelegramProxyModel, dead.id)
+    assert stored_dead is not None
+    assert stored_dead.is_active is False
+
+
+@pytest.mark.asyncio
 async def test_deactivated_proxy_leaves_allocation_and_draft_moves_to_replacement(
     admin_db_factory: async_sessionmaker[Any],
     test_slot: Slot,
@@ -376,7 +427,7 @@ async def test_deactivated_proxy_leaves_allocation_and_draft_moves_to_replacemen
     owner_id = test_slot.persona("code").user_id
     await _clear_proxies(admin_db_factory)
     cipher = _cipher()
-    store = DatabaseTelegramProxyStore(admin_db_factory, cipher=cipher)
+    store = DatabaseTelegramProxyStore(admin_db_factory, cipher=cipher, checker=_healthy_proxy)
     dead = TelegramProxyModel(
         label="Умерший",
         protocol="socks5",

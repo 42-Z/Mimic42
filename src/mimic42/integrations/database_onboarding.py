@@ -21,7 +21,11 @@ from mimic42.core.onboarding import (
     TelegramRebindUnavailableError,
     _validate_verification,
 )
-from mimic42.core.telegram_proxy import TelegramProxyAssignment, TelegramProxyUnavailableError
+from mimic42.core.telegram_proxy import (
+    TelegramProxyAssignment,
+    TelegramProxyStore,
+    TelegramProxyUnavailableError,
+)
 from mimic42.integrations.database_models import (
     AgentModel,
     AgentOnboardingSessionModel,
@@ -29,7 +33,6 @@ from mimic42.integrations.database_models import (
     TelegramSessionModel,
 )
 from mimic42.integrations.database_proxies import (
-    least_loaded_proxy_id,
     lock_proxy_pool,
     telegram_proxy_config,
 )
@@ -41,9 +44,11 @@ class DatabaseOnboardingRepository:
         session_factory: async_sessionmaker[AsyncSession],
         *,
         cipher: SecretCipher | None = None,
+        proxy_store: TelegramProxyStore | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._cipher = cipher
+        self._proxy_store = proxy_store
 
     async def create(self, session: OnboardingSession) -> None:
         """Insert an explicit initial row. Auth results must use record_auth instead."""
@@ -77,6 +82,20 @@ class DatabaseOnboardingRepository:
         api_hash_secret: str,
         onboarding_id: UUID | None = None,
     ) -> OnboardingSession:
+        # Выдача идёт до транзакции: проверка прокси — сетевой запрос, и держать
+        # на нём блокировку пула нельзя. После неё транзакция либо сохраняет
+        # маршрут черновика, либо оставляет уже назначенный другим запросом.
+        allocated_proxy_id: UUID | None = None
+        if onboarding_id is not None:
+            async with self._session_factory() as db:
+                allocated_proxy_id = await db.scalar(
+                    select(AgentOnboardingSessionModel.proxy_id).where(
+                        AgentOnboardingSessionModel.id == onboarding_id
+                    )
+                )
+        if allocated_proxy_id is None and self._proxy_store is not None:
+            assignment = await self._proxy_store.allocate()
+            allocated_proxy_id = assignment.proxy_id if assignment else None
         async with self._session_factory() as db, db.begin():
             await lock_proxy_pool(db)
             if onboarding_id is None:
@@ -99,7 +118,7 @@ class DatabaseOnboardingRepository:
                     raise OnboardingAlreadyCompletedError(onboarding_id)
             proxy_id = model.proxy_id
             if proxy_id is None:
-                proxy_id = await least_loaded_proxy_id(db)
+                proxy_id = allocated_proxy_id
             saved = await db.scalar(
                 update(AgentOnboardingSessionModel)
                 .where(AgentOnboardingSessionModel.id == model.id)
