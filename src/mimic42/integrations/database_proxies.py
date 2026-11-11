@@ -98,7 +98,7 @@ class DatabaseTelegramProxyStore:
         self._cipher = cipher
         self._checker = checker
 
-    async def allocate(self) -> TelegramProxyAssignment | None:
+    async def allocate(self, *, exclude: UUID | None = None) -> TelegramProxyAssignment | None:
         """Выдать прокси, проверив его через Telegram до назначения.
 
         Не прошедший проверку прокси не выключается: он получает паузу и
@@ -106,7 +106,7 @@ class DatabaseTelegramProxyStore:
         """
         try:
             async with self._session_factory() as session:
-                proxy_ids = await least_loaded_proxy_ids(session)
+                proxy_ids = await least_loaded_proxy_ids(session, exclude_id=exclude)
                 models = {
                     model.id: model
                     for model in await session.scalars(

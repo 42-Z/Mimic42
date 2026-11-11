@@ -49,7 +49,7 @@ class FakeTelegramProxyStore:
         self.agent_calls: list[UUID] = []
         self.unavailable: list[UUID] = []
 
-    async def allocate(self) -> TelegramProxyAssignment | None:
+    async def allocate(self, *, exclude: UUID | None = None) -> TelegramProxyAssignment | None:
         self.allocate_calls += 1
         if self.allocations:
             return self.allocations.pop(0)

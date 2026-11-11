@@ -697,7 +697,7 @@ class AgentOnboardingService:
             attempt.session.onboarding_id,
         )
         await self._proxy_store.mark_unavailable(assignment.proxy_id)
-        replacement = await self._proxy_store.allocate()
+        replacement = await self._proxy_store.allocate(exclude=assignment.proxy_id)
         if replacement is None:
             raise TelegramProxyUnavailableError("Больше нет рабочих прокси в пуле")
         await self._repository.assign_proxy(

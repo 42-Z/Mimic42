@@ -20,8 +20,8 @@ class TelegramProxyAssignment(BaseModel):
 class TelegramProxyStore(Protocol):
     """Выдача и чтение прокси для онбординга и перепривязки."""
 
-    async def allocate(self) -> TelegramProxyAssignment | None:
-        """Наименее загруженный активный прокси; None — пул пуст."""
+    async def allocate(self, *, exclude: UUID | None = None) -> TelegramProxyAssignment | None:
+        """Наименее загруженный активный прокси; ``exclude`` — не предлагать его снова."""
         ...
 
     async def load(self, proxy_id: UUID) -> TelegramProxyConfig:
