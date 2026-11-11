@@ -26,10 +26,6 @@ from mimic42.integrations.database_models import (
 
 logger = logging.getLogger("mimic42.telegram_proxies")
 
-# Сколько кандидатов проверять за одну выдачу: нерабочие уходят в кулдаун,
-# поэтому в следующий раз проверка начнётся со следующего по загрузке.
-ALLOCATION_CHECK_LIMIT = 5
-
 # Временная недоступность не выключает прокси: после паузы выдача пробует
 # его снова. Админ по-прежнему может выключить прокси вручную.
 PROXY_COOLDOWN = timedelta(minutes=5)
@@ -40,7 +36,7 @@ async def lock_proxy_pool(session: AsyncSession) -> None:
 
 
 async def least_loaded_proxy_ids(
-    session: AsyncSession, *, limit: int, exclude_id: UUID | None = None
+    session: AsyncSession, *, limit: int | None = None, exclude_id: UUID | None = None
 ) -> list[UUID]:
     agent_load = (
         select(func.count(TelegramSessionModel.id))
@@ -70,16 +66,15 @@ async def least_loaded_proxy_ids(
         ),
         else_=1,
     )
-    return list(
-        await session.scalars(
-            statement.order_by(
-                cooling,
-                agent_load + onboarding_load,
-                TelegramProxyModel.created_at,
-                TelegramProxyModel.id,
-            ).limit(limit)
-        )
+    ordered = statement.order_by(
+        cooling,
+        agent_load + onboarding_load,
+        TelegramProxyModel.created_at,
+        TelegramProxyModel.id,
     )
+    if limit is not None:
+        ordered = ordered.limit(limit)
+    return list(await session.scalars(ordered))
 
 
 async def least_loaded_proxy_id(
@@ -111,7 +106,7 @@ class DatabaseTelegramProxyStore:
         """
         try:
             async with self._session_factory() as session:
-                proxy_ids = await least_loaded_proxy_ids(session, limit=ALLOCATION_CHECK_LIMIT)
+                proxy_ids = await least_loaded_proxy_ids(session)
                 models = {
                     model.id: model
                     for model in await session.scalars(
