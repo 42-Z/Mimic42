@@ -51,7 +51,7 @@ from mimic42.core.proxy_import import (
     parse_proxy_file,
 )
 from mimic42.core.telegram_app_settings import TelegramAppSettings
-from mimic42.core.telegram_proxy import TelegramProxyCheckResult
+from mimic42.core.telegram_proxy import TelegramProxyCheckResult, TelegramProxyUnavailableError
 from mimic42.integrations.telegram_proxy_check import check_telegram_proxy
 
 logger = logging.getLogger(__name__)
@@ -607,7 +607,22 @@ async def delete_proxy(
 async def check_proxy(request: Request, proxy_id: UUID) -> TelegramProxyCheckResult:
     repository = _get_admin_repository(request)
     config = await _admin_result(repository.read_proxy_config(proxy_id))
-    return await check_telegram_proxy(config)
+    result = await check_telegram_proxy(config)
+    store = getattr(request.app.state, "proxy_store", None)
+    if store is None:
+        return result
+    try:
+        if result.ok:
+            # Ручная успешная проверка снимает паузу, которую поставила выдача.
+            await store.clear_unavailable(proxy_id)
+            return result
+        await store.mark_unavailable(proxy_id)
+        return result.model_copy(
+            update={"unavailable_until": await store.unavailable_until(proxy_id)}
+        )
+    except TelegramProxyUnavailableError as exc:
+        logger.warning("Не удалось сохранить паузу прокси %s (%s)", proxy_id, type(exc).__name__)
+        raise _admin_unavailable() from exc
 
 
 @router.put("/agents/{agent_id}/proxy", response_model=AdminAgentProxy | None)
@@ -618,6 +633,14 @@ async def assign_agent_proxy(
     current_user: Annotated[CurrentUser, Depends(require_admin)],
 ) -> AdminAgentProxy | None:
     repository = _get_admin_repository(request)
+    if values.proxy_id is not None:
+        config = await _admin_result(repository.read_proxy_config(values.proxy_id))
+        check = await check_telegram_proxy(config)
+        if not check.ok:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Прокси не пропускает Telegram: {check.error}",
+            )
     proxy = await _admin_result(
         repository.assign_agent_proxy(
             agent_id,

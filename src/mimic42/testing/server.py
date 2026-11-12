@@ -18,9 +18,10 @@ from mimic42.api.app import create_app
 from mimic42.api.auth import AuthVerifier
 from mimic42.config import Settings
 from mimic42.core.activity import ActivityRecorder
-from mimic42.core.agent_runtime import AgentRuntimeState
+from mimic42.core.agent_runtime import AgentRuntimeState, TelegramProxyConfig
 from mimic42.core.crypto import FernetSecretCipher
 from mimic42.core.onboarding import OnboardingSession, TelegramLoginStatus
+from mimic42.core.telegram_proxy import TelegramProxyCheckResult
 from mimic42.testing import registry, seed_agent
 from mimic42.testing.cleanup import (
     current_onboarding_draft_id,
@@ -267,6 +268,11 @@ async def delete_test_official_preset(
     return result.endswith(" 1")
 
 
+async def _fake_proxy_check(_config: TelegramProxyConfig) -> TelegramProxyCheckResult:
+    """Тестовый контур не должен зависеть от настоящего пула прокси."""
+    return TelegramProxyCheckResult(ok=True, latency_ms=1)
+
+
 def build_test_app(
     settings: Settings | None = None,
     *,
@@ -294,6 +300,7 @@ def build_test_app(
         langchain_agent_factory=scripted,
         long_term_memory=FakeLongTermMemory(),
         auth_verifier=auth_verifier,
+        proxy_checker=_fake_proxy_check,
     )
     application.state.scripted_agents = scripted
     _mount_test_routes(application, app_settings)

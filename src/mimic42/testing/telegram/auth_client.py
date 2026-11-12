@@ -2,15 +2,29 @@ from __future__ import annotations
 
 from mimic42.core.agent_runtime import TelegramProxyConfig
 from mimic42.core.onboarding import TelegramPasswordRequiredError
+from mimic42.core.telegram_proxy import TelegramProxyUnavailableError
 from mimic42.testing.telegram.account import FakeTelegramAccount
 
 
 class FakeTelegramAuthClient:
-    def __init__(self, account: FakeTelegramAccount) -> None:
+    def __init__(
+        self,
+        account: FakeTelegramAccount,
+        *,
+        proxy: TelegramProxyConfig | None = None,
+    ) -> None:
         self._account = account
+        self._proxy = proxy
+        self._connect_error: Exception | None = None
+
+    def fail_next_connect(self, error: Exception) -> None:
+        """Один раз упасть на подключении — как настоящий прокси."""
+        self._connect_error = error
 
     async def connect(self) -> None:
-        return None
+        if self._connect_error is not None:
+            error, self._connect_error = self._connect_error, None
+            raise error
 
     async def disconnect(self) -> None:
         return None
@@ -60,8 +74,16 @@ class FakeTelegramAuthClient:
 
 
 class FakeTelegramAuthClientFactory:
-    def __init__(self, account: FakeTelegramAccount) -> None:
+    def __init__(
+        self,
+        account: FakeTelegramAccount,
+        *,
+        broken_proxies: set[tuple[str, int]] | None = None,
+        transient_failures: int = 0,
+    ) -> None:
         self._account = account
+        self._broken_proxies = set(broken_proxies or ())
+        self._transient_failures = transient_failures
         self.built_with: tuple[int, str] | None = None
         self.proxies: list[TelegramProxyConfig | None] = []
 
@@ -75,6 +97,12 @@ class FakeTelegramAuthClientFactory:
     ) -> FakeTelegramAuthClient:
         self.built_with = (api_id, api_hash)
         self.proxies.append(proxy)
+        client = FakeTelegramAuthClient(self._account, proxy=proxy)
+        if proxy is not None and (proxy.host, proxy.port) in self._broken_proxies:
+            client.fail_next_connect(TelegramProxyUnavailableError("он не пропускает Telegram"))
+        elif self._transient_failures > 0:
+            self._transient_failures -= 1
+            client.fail_next_connect(TelegramProxyUnavailableError("он не пропускает Telegram"))
         if session_string:
             self._account.authorized = True
-        return FakeTelegramAuthClient(self._account)
+        return client

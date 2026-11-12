@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Protocol
 from uuid import UUID
 
@@ -20,12 +21,16 @@ class TelegramProxyAssignment(BaseModel):
 class TelegramProxyStore(Protocol):
     """Выдача и чтение прокси для онбординга и перепривязки."""
 
-    async def allocate(self) -> TelegramProxyAssignment | None:
-        """Наименее загруженный активный прокси; None — пул пуст."""
+    async def allocate(self, *, exclude: UUID | None = None) -> TelegramProxyAssignment | None:
+        """Наименее загруженный активный прокси; ``exclude`` — не предлагать его снова."""
         ...
 
     async def load(self, proxy_id: UUID) -> TelegramProxyConfig:
         """Конфиг конкретного прокси, в том числе отключённого: агент уже им пользуется."""
+        ...
+
+    async def mark_unavailable(self, proxy_id: UUID) -> None:
+        """Временно исключить прокси из выдачи, не выключая его навсегда."""
         ...
 
     async def assignment_for_agent(self, agent_id: UUID) -> TelegramProxyAssignment | None:
@@ -37,3 +42,5 @@ class TelegramProxyCheckResult(BaseModel):
     ok: bool
     latency_ms: int | None = Field(default=None, ge=0)
     error: str | None = None
+    # Пауза, действующая после проверки: админ видит, когда прокси вернётся в пул.
+    unavailable_until: datetime | None = None

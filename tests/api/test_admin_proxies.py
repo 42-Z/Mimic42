@@ -84,6 +84,16 @@ def _app(
     )
 
 
+@pytest.fixture(autouse=True)
+def healthy_proxies(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Назначение прокси агенту проверяет его сетевым запросом: в тестах он мгновенный."""
+
+    async def fake_check(_config: TelegramProxyConfig) -> TelegramProxyCheckResult:
+        return TelegramProxyCheckResult(ok=True, latency_ms=3)
+
+    monkeypatch.setattr("mimic42.api.admin.check_telegram_proxy", fake_check)
+
+
 def _detail_with_agent(owner_id: UUID, agent_id: UUID) -> AdminUserDetail:
     return AdminUserDetail(
         profile=AdminUserSummary(
@@ -603,6 +613,15 @@ async def test_assign_proxy_updates_agent_and_reloads_runtime() -> None:
     repository = FakeAdminRepository(
         admin_ids={admin_id},
         proxies=[proxy],
+        proxy_configs={
+            proxy.id: TelegramProxyConfig(
+                protocol="socks5",
+                host=proxy.host,
+                port=proxy.port,
+                username=proxy.username,
+                password=SecretStr("secret"),
+            )
+        },
         user_details={owner_id: _detail_with_agent(owner_id, agent_id)},
     )
     manager = FakeAgentManager(default_owner_id=owner_id)
@@ -636,6 +655,48 @@ async def test_assign_proxy_updates_agent_and_reloads_runtime() -> None:
 
 
 @pytest.mark.asyncio
+async def test_assign_proxy_refuses_a_proxy_that_cannot_reach_telegram(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admin_id = uuid4()
+    owner_id = uuid4()
+    agent_id = uuid4()
+    proxy = _proxy_detail()
+    repository = FakeAdminRepository(
+        admin_ids={admin_id},
+        proxies=[proxy],
+        proxy_configs={
+            proxy.id: TelegramProxyConfig(
+                protocol="socks5",
+                host=proxy.host,
+                port=proxy.port,
+                username=proxy.username,
+                password=SecretStr("secret"),
+            )
+        },
+        user_details={owner_id: _detail_with_agent(owner_id, agent_id)},
+    )
+    manager = FakeAgentManager(default_owner_id=owner_id)
+    app = _app(admin_id, repository, manager)
+
+    async def reject(_config: TelegramProxyConfig) -> TelegramProxyCheckResult:
+        return TelegramProxyCheckResult(ok=False, error="authentication failed")
+
+    monkeypatch.setattr("mimic42.api.admin.check_telegram_proxy", reject)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.put(
+            f"/api/v1/admin/agents/{agent_id}/proxy",
+            headers=AUTH_HEADERS,
+            json={"proxy_id": str(proxy.id)},
+        )
+
+    assert response.status_code == 400
+    assert "authentication failed" in response.json()["detail"]
+    assert agent_id not in repository.agent_proxies
+    assert manager.reloaded == []
+
+
+@pytest.mark.asyncio
 async def test_assign_proxy_reports_reload_failure_after_persisting_the_change() -> None:
     admin_id = uuid4()
     owner_id = uuid4()
@@ -644,6 +705,15 @@ async def test_assign_proxy_reports_reload_failure_after_persisting_the_change()
     repository = FakeAdminRepository(
         admin_ids={admin_id},
         proxies=[proxy],
+        proxy_configs={
+            proxy.id: TelegramProxyConfig(
+                protocol="socks5",
+                host=proxy.host,
+                port=proxy.port,
+                username=proxy.username,
+                password=SecretStr("secret"),
+            )
+        },
         user_details={owner_id: _detail_with_agent(owner_id, agent_id)},
     )
     manager = FakeAgentManager(default_owner_id=owner_id, reload_error=True)
@@ -688,4 +758,95 @@ async def test_proxy_check_returns_connection_result(
         )
 
     assert response.status_code == 200
-    assert response.json() == {"ok": True, "latency_ms": 42, "error": None}
+    assert response.json() == {
+        "ok": True,
+        "latency_ms": 42,
+        "error": None,
+        "unavailable_until": None,
+    }
+
+
+class _FakeProxyStore:
+    def __init__(self) -> None:
+        self.pause: datetime | None = None
+        self.marked: list[UUID] = []
+        self.cleared: list[UUID] = []
+
+    async def mark_unavailable(self, proxy_id: UUID) -> None:
+        self.marked.append(proxy_id)
+        self.pause = datetime(2026, 1, 1, 12, 5, tzinfo=UTC)
+
+    async def clear_unavailable(self, proxy_id: UUID) -> None:
+        self.cleared.append(proxy_id)
+        self.pause = None
+
+    async def unavailable_until(self, proxy_id: UUID) -> datetime | None:
+        return self.pause
+
+
+@pytest.mark.asyncio
+async def test_proxy_check_puts_a_failing_proxy_on_a_pause(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admin_id = uuid4()
+    proxy = _proxy_detail()
+    repository = FakeAdminRepository(
+        admin_ids={admin_id},
+        proxies=[proxy],
+        proxy_configs={
+            proxy.id: TelegramProxyConfig(protocol="socks5", host=proxy.host, port=proxy.port)
+        },
+    )
+    app = _app(admin_id, repository)
+    store = _FakeProxyStore()
+    app.state.proxy_store = store
+
+    async def reject(_config: TelegramProxyConfig) -> TelegramProxyCheckResult:
+        return TelegramProxyCheckResult(ok=False, error="authentication failed")
+
+    monkeypatch.setattr("mimic42.api.admin.check_telegram_proxy", reject)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            f"/api/v1/admin/proxies/{proxy.id}/check",
+            headers=AUTH_HEADERS,
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is False
+    assert body["error"] == "authentication failed"
+    assert body["unavailable_until"] is not None
+    assert store.marked == [proxy.id]
+
+
+@pytest.mark.asyncio
+async def test_proxy_check_clears_a_pause_after_a_successful_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admin_id = uuid4()
+    proxy = _proxy_detail()
+    repository = FakeAdminRepository(
+        admin_ids={admin_id},
+        proxies=[proxy],
+        proxy_configs={
+            proxy.id: TelegramProxyConfig(protocol="socks5", host=proxy.host, port=proxy.port)
+        },
+    )
+    app = _app(admin_id, repository)
+    store = _FakeProxyStore()
+    store.pause = datetime(2026, 1, 1, 12, 5, tzinfo=UTC)
+    app.state.proxy_store = store
+
+    async def accept(_config: TelegramProxyConfig) -> TelegramProxyCheckResult:
+        return TelegramProxyCheckResult(ok=True, latency_ms=12)
+
+    monkeypatch.setattr("mimic42.api.admin.check_telegram_proxy", accept)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            f"/api/v1/admin/proxies/{proxy.id}/check",
+            headers=AUTH_HEADERS,
+        )
+
+    assert response.status_code == 200
+    assert response.json()["unavailable_until"] is None
+    assert store.cleared == [proxy.id]

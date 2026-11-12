@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Protocol
@@ -20,6 +21,7 @@ from mimic42.core.agent_store import AgentStore
 from mimic42.core.telegram_attrs import read_attr, read_optional_attr
 from mimic42.core.telegram_proxy import (
     TelegramProxyAssignment,
+    TelegramProxyCheckResult,
     TelegramProxyStore,
     TelegramProxyUnavailableError,
 )
@@ -190,6 +192,10 @@ class OnboardingRepository(Protocol):
 
     async def check_attempt(self, attempt: TelegramLoginAttempt) -> None: ...
 
+    async def assign_proxy(self, onboarding_id: UUID, proxy_id: UUID | None) -> None:
+        """Сменить маршрут черновика: следующие шаги пойдут через новый прокси."""
+        ...
+
     async def record_auth(
         self,
         ref: TelegramAuthorizationRef,
@@ -350,6 +356,13 @@ class InMemoryOnboardingRepository:
         if proxy_id != attempt.proxy_id:
             raise TelegramLoginRouteChangedError()
 
+    async def assign_proxy(self, onboarding_id: UUID, proxy_id: UUID | None) -> None:
+        async with self.lock:
+            current = self._sessions.get(onboarding_id)
+            if current is None:
+                raise OnboardingNotFoundError(onboarding_id)
+            current.proxy_id = proxy_id
+
     async def record_auth(
         self,
         ref: TelegramAuthorizationRef,
@@ -464,6 +477,8 @@ class AgentOnboardingService:
         cipher: SecretCipher | None = None,
         agent_store: AgentStore | None = None,
         proxy_store: TelegramProxyStore | None = None,
+        proxy_checker: Callable[[TelegramProxyConfig], Awaitable[TelegramProxyCheckResult]]
+        | None = None,
     ) -> None:
         self._repository = repository or InMemoryOnboardingRepository(
             proxy_store=proxy_store, agent_store=agent_store
@@ -479,6 +494,7 @@ class AgentOnboardingService:
         self._cipher = cipher or PlainTextCipher()
         self._agent_store = agent_store
         self._proxy_store = proxy_store
+        self._proxy_checker = proxy_checker
         self._llm_model = DEFAULT_LLM_MODEL
 
     async def request_telegram_code(
@@ -495,14 +511,10 @@ class AgentOnboardingService:
         return await self._request_code(session.authorization_ref())
 
     async def _request_code(self, ref: TelegramAuthorizationRef) -> OnboardingPublicStatus:
-        attempt = await self._repository.load_attempt(ref)
+        attempt, client = await self._connect(ref)
         session = attempt.session
-        client = self._build_client(attempt)
         try:
             try:
-                await self._repository.check_attempt(attempt)
-                await client.connect()
-                await self._repository.check_attempt(attempt)
                 sent_code = await client.send_code_request(session.phone_number or "")
                 saved = await self._repository.record_auth(
                     ref,
@@ -548,13 +560,9 @@ class AgentOnboardingService:
             owner_id=owner_id,
         )
         ref = session.authorization_ref()
-        attempt = await self._repository.load_attempt(ref)
-        client = self._build_client(attempt)
+        attempt, client = await self._connect(ref)
         try:
             try:
-                await self._repository.check_attempt(attempt)
-                await client.connect()
-                await self._repository.check_attempt(attempt)
                 if verification.password:
                     await client.sign_in(
                         password=verification.password,
@@ -615,6 +623,118 @@ class AgentOnboardingService:
         finally:
             await _disconnect_auth_client(client)
         return _public_status(saved)
+
+    async def _connect(
+        self, ref: TelegramAuthorizationRef
+    ) -> tuple[TelegramLoginAttempt, TelegramAuthClient]:
+        """Подключиться по маршруту черновика, заменив мёртвый прокси.
+
+        Сбой прокси на первом шаге входа не должен блокировать онбординг:
+        прокси проверяется отдельно, а при подтверждённой поломке снимается
+        с выдачи и сессия переносится на другой.
+        """
+        attempt = await self._load_attempt_with_recovery(ref)
+        client = self._build_client(attempt)
+        try:
+            await self._repository.check_attempt(attempt)
+            await client.connect()
+            await self._repository.check_attempt(attempt)
+            return attempt, client
+        except TelegramProxyUnavailableError:
+            await _disconnect_auth_client(client)
+            replacement = await self._replace_failed_proxy(attempt)
+            if replacement is None:
+                raise
+            client = self._build_client(replacement)
+            try:
+                await self._repository.check_attempt(replacement)
+                await client.connect()
+                await self._repository.check_attempt(replacement)
+            except Exception:
+                await _disconnect_auth_client(client)
+                raise
+            return replacement, client
+        except Exception:
+            await _disconnect_auth_client(client)
+            raise
+
+    async def _load_attempt_with_recovery(
+        self, ref: TelegramAuthorizationRef
+    ) -> TelegramLoginAttempt:
+        """Загрузить маршрут входа, заменив непригодный прокси.
+
+        ``load_attempt`` падает, если запись прокси удалена или её пароль не
+        расшифровывается. Без этой замены такой черновик застревал бы на 503
+        до ручного вмешательства.
+        """
+        try:
+            return await self._repository.load_attempt(ref)
+        except TelegramProxyUnavailableError:
+            replacement = await self._recover_unusable_assignment(ref)
+            if replacement is None:
+                raise
+            return replacement
+
+    async def _recover_unusable_assignment(
+        self, ref: TelegramAuthorizationRef
+    ) -> TelegramLoginAttempt | None:
+        if self._proxy_store is None or ref.completed_agent_id is not None:
+            return None
+        logger.warning(
+            "Маршрут входа onboarding=%s непригоден; выдаю другой прокси",
+            ref.onboarding_id,
+        )
+        assignment = await self._proxy_store.allocate()
+        if assignment is None:
+            raise TelegramProxyUnavailableError("Больше нет рабочих прокси в пуле")
+        await self._repository.assign_proxy(ref.onboarding_id, assignment.proxy_id)
+        return await self._repository.load_attempt(ref)
+
+    async def _replace_failed_proxy(
+        self, attempt: TelegramLoginAttempt
+    ) -> TelegramLoginAttempt | None:
+        """Проверить прокси после сбоя подключения и сменить маршрут при поломке.
+
+        Возвращает новую попытку или ``None``, если повторять некуда:
+        прокси нет, проверка недоступна, или это перепривязка агента —
+        маршрут работающего агента молча не меняем, но сломанный прокси
+        всё равно уходит на паузу.
+        """
+        assignment = attempt.assignment
+        if assignment is None or self._proxy_store is None or self._proxy_checker is None:
+            return None
+        try:
+            check = await self._proxy_checker(assignment.config)
+        except Exception:
+            logger.warning(
+                "Не удалось проверить прокси %s:%s после сбоя подключения",
+                assignment.config.host,
+                assignment.config.port,
+                exc_info=True,
+            )
+            return None
+        if check.ok:
+            # Прокси живой: сеть моргнула, повторяем тот же маршрут.
+            return await self._repository.load_attempt(attempt.session.authorization_ref())
+        logger.warning(
+            "Прокси %s:%s не пропускает Telegram (%s); снимаю его с выдачи "
+            "и меняю маршрут входа onboarding=%s",
+            assignment.config.host,
+            assignment.config.port,
+            check.error,
+            attempt.session.onboarding_id,
+        )
+        await self._proxy_store.mark_unavailable(assignment.proxy_id)
+        if attempt.session.completed_agent_id is not None:
+            return None
+        replacement = await self._proxy_store.allocate(exclude=assignment.proxy_id)
+        if replacement is None:
+            raise TelegramProxyUnavailableError("Больше нет рабочих прокси в пуле")
+        await self._repository.assign_proxy(
+            attempt.session.onboarding_id,
+            replacement.proxy_id,
+        )
+        return await self._repository.load_attempt(attempt.session.authorization_ref())
 
     def _build_client(self, attempt: TelegramLoginAttempt) -> TelegramAuthClient:
         session = attempt.session

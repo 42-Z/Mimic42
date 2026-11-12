@@ -10,9 +10,10 @@ from cryptography.fernet import Fernet
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from mimic42.core.agent_runtime import AgentRuntimeState
+from mimic42.core.agent_runtime import AgentRuntimeState, TelegramProxyConfig
 from mimic42.core.crypto import FernetSecretCipher
 from mimic42.core.onboarding import OnboardingSession, TelegramLoginStatus
+from mimic42.core.telegram_proxy import TelegramProxyCheckResult, TelegramProxyUnavailableError
 from mimic42.integrations.database_admin import DatabaseAdminRepository
 from mimic42.integrations.database_agent_store import DatabaseAgentStore
 from mimic42.integrations.database_models import (
@@ -21,6 +22,7 @@ from mimic42.integrations.database_models import (
     TelegramProxyModel,
     TelegramSessionModel,
 )
+from mimic42.integrations.database_onboarding import DatabaseOnboardingRepository
 from mimic42.integrations.database_proxies import DatabaseTelegramProxyStore
 from mimic42.testing import seed_agent, seed_rebind
 from mimic42.testing.slots import Slot, plain_dsn
@@ -28,6 +30,10 @@ from mimic42.testing.slots import Slot, plain_dsn
 
 def _cipher() -> FernetSecretCipher:
     return FernetSecretCipher(Fernet.generate_key().decode())
+
+
+async def _healthy_proxy(_config: TelegramProxyConfig) -> TelegramProxyCheckResult:
+    return TelegramProxyCheckResult(ok=True, latency_ms=1)
 
 
 async def _clear_proxies(factory: async_sessionmaker[Any]) -> None:
@@ -267,7 +273,15 @@ async def test_deleting_the_last_proxy_clears_agent_assignment(
 ) -> None:
     cipher = _cipher()
     await _clear_proxies(admin_db_factory)
-    repository = DatabaseAdminRepository(admin_db_factory, cipher=cipher)
+    repository = DatabaseAdminRepository(
+        admin_db_factory,
+        cipher=cipher,
+        proxy_store=DatabaseTelegramProxyStore(
+            admin_db_factory,
+            cipher=cipher,
+            checker=_healthy_proxy,
+        ),
+    )
     actor_id = test_slot.persona("full").user_id
     owner_id = test_slot.persona("full").user_id
     proxy = await repository.create_proxy(
@@ -303,7 +317,15 @@ async def test_allocation_prefers_the_least_loaded_active_proxy(
 ) -> None:
     cipher = _cipher()
     await _clear_proxies(admin_db_factory)
-    repository = DatabaseAdminRepository(admin_db_factory, cipher=cipher)
+    repository = DatabaseAdminRepository(
+        admin_db_factory,
+        cipher=cipher,
+        proxy_store=DatabaseTelegramProxyStore(
+            admin_db_factory,
+            cipher=cipher,
+            checker=_healthy_proxy,
+        ),
+    )
     actor_id = test_slot.persona("full").user_id
     older = await repository.create_proxy(
         {
@@ -341,7 +363,7 @@ async def test_allocation_prefers_the_least_loaded_active_proxy(
         agent_id = await _agent(admin_db_factory, owner_id)
         await _set_session_proxy(admin_db_factory, agent_id, older.id)
 
-    store = DatabaseTelegramProxyStore(admin_db_factory, cipher=cipher)
+    store = DatabaseTelegramProxyStore(admin_db_factory, cipher=cipher, checker=_healthy_proxy)
     assignment = await store.allocate()
 
     assert assignment is not None
@@ -365,6 +387,191 @@ async def test_allocation_prefers_the_least_loaded_active_proxy(
     fallback = await store.allocate()
     assert fallback is not None
     assert fallback.proxy_id == older.id
+
+
+@pytest.mark.asyncio
+async def test_allocation_verifies_the_proxy_and_cools_down_a_dead_one(
+    admin_db_factory: async_sessionmaker[Any],
+) -> None:
+    await _clear_proxies(admin_db_factory)
+    cipher = _cipher()
+    dead = TelegramProxyModel(
+        label="Мёртвый",
+        protocol="socks5",
+        host="dead.example.test",
+        port=1080,
+        is_active=True,
+    )
+    working = TelegramProxyModel(
+        label="Рабочий",
+        protocol="socks5",
+        host="working.example.test",
+        port=1080,
+        is_active=True,
+    )
+    async with admin_db_factory() as session, session.begin():
+        session.add_all([dead, working])
+        await session.flush()
+        dead.created_at = datetime.now(UTC) - timedelta(days=1)
+        working.created_at = datetime.now(UTC)
+
+    checked: list[str] = []
+
+    async def check(config: TelegramProxyConfig) -> TelegramProxyCheckResult:
+        checked.append(config.host)
+        if config.host == "dead.example.test":
+            return TelegramProxyCheckResult(ok=False, error="authentication failed")
+        return TelegramProxyCheckResult(ok=True, latency_ms=2)
+
+    store = DatabaseTelegramProxyStore(admin_db_factory, cipher=cipher, checker=check)
+    assignment = await store.allocate()
+
+    assert assignment is not None
+    assert assignment.proxy_id == working.id
+    assert checked == ["dead.example.test", "working.example.test"]
+    async with admin_db_factory() as session:
+        stored_dead = await session.get(TelegramProxyModel, dead.id)
+    assert stored_dead is not None
+    assert stored_dead.is_active is True
+    assert stored_dead.unavailable_until is not None
+
+
+@pytest.mark.asyncio
+async def test_allocation_does_not_go_direct_when_every_active_proxy_is_dead(
+    admin_db_factory: async_sessionmaker[Any],
+) -> None:
+    await _clear_proxies(admin_db_factory)
+    cipher = _cipher()
+    dead = TelegramProxyModel(
+        label="Мёртвый",
+        protocol="socks5",
+        host="dead.example.test",
+        port=1080,
+        is_active=True,
+    )
+    async with admin_db_factory() as session, session.begin():
+        session.add(dead)
+
+    async def reject(_config: TelegramProxyConfig) -> TelegramProxyCheckResult:
+        return TelegramProxyCheckResult(ok=False, error="authentication failed")
+
+    store = DatabaseTelegramProxyStore(admin_db_factory, cipher=cipher, checker=reject)
+    with pytest.raises(TelegramProxyUnavailableError):
+        await store.allocate()
+
+    async with admin_db_factory() as session:
+        stored = await session.get(TelegramProxyModel, dead.id)
+    assert stored is not None
+    assert stored.is_active is True
+    assert stored.unavailable_until is not None
+
+
+@pytest.mark.asyncio
+async def test_cooling_proxy_is_skipped_and_draft_moves_to_a_working_one(
+    admin_db_factory: async_sessionmaker[Any],
+    test_slot: Slot,
+) -> None:
+    owner_id = test_slot.persona("code").user_id
+    await _clear_proxies(admin_db_factory)
+    cipher = _cipher()
+    store = DatabaseTelegramProxyStore(admin_db_factory, cipher=cipher, checker=_healthy_proxy)
+    dead = TelegramProxyModel(
+        label="Умерший",
+        protocol="socks5",
+        host="dead.example.test",
+        port=1080,
+        is_active=True,
+    )
+    working = TelegramProxyModel(
+        label="Рабочий",
+        protocol="socks5",
+        host="working.example.test",
+        port=1080,
+        is_active=True,
+    )
+    async with admin_db_factory() as session, session.begin():
+        session.add_all([dead, working])
+        await session.flush()
+        dead.created_at = datetime.now(UTC) - timedelta(days=1)
+        working.created_at = datetime.now(UTC)
+
+    first = await store.allocate()
+    assert first is not None
+    assert first.proxy_id == dead.id
+
+    onboarding_id = uuid4()
+    async with admin_db_factory() as session, session.begin():
+        session.add(
+            AgentOnboardingSessionModel(
+                id=onboarding_id,
+                owner_id=owner_id,
+                authorization_status="not_started",
+                proxy_id=dead.id,
+            )
+        )
+
+    await store.mark_unavailable(dead.id)
+    replacement = await store.allocate()
+    assert replacement is not None
+    assert replacement.proxy_id == working.id
+
+    await DatabaseOnboardingRepository(admin_db_factory, cipher=cipher).assign_proxy(
+        onboarding_id, working.id
+    )
+    async with admin_db_factory() as session:
+        stored = await session.get(AgentOnboardingSessionModel, onboarding_id)
+        stored_dead = await session.get(TelegramProxyModel, dead.id)
+    assert stored is not None
+    assert stored.proxy_id == working.id
+    assert stored_dead is not None
+    assert stored_dead.is_active is True
+    assert stored_dead.unavailable_until is not None
+
+
+@pytest.mark.asyncio
+async def test_allocation_clears_the_cooldown_after_a_successful_check(
+    admin_db_factory: async_sessionmaker[Any],
+) -> None:
+    await _clear_proxies(admin_db_factory)
+    proxy = TelegramProxyModel(
+        label="Отдохнувший",
+        protocol="socks5",
+        host="recovered.example.test",
+        port=1080,
+        is_active=True,
+    )
+    async with admin_db_factory() as session, session.begin():
+        session.add(proxy)
+        await session.flush()
+        proxy.unavailable_until = datetime.now(UTC) - timedelta(minutes=1)
+
+    store = DatabaseTelegramProxyStore(
+        admin_db_factory,
+        cipher=_cipher(),
+        checker=_healthy_proxy,
+    )
+    assignment = await store.allocate()
+
+    assert assignment is not None
+    assert assignment.proxy_id == proxy.id
+    async with admin_db_factory() as session:
+        stored = await session.get(TelegramProxyModel, proxy.id)
+    assert stored is not None
+    assert stored.unavailable_until is None
+
+
+@pytest.mark.asyncio
+async def test_allocation_returns_none_for_an_empty_pool(
+    admin_db_factory: async_sessionmaker[Any],
+) -> None:
+    await _clear_proxies(admin_db_factory)
+    store = DatabaseTelegramProxyStore(
+        admin_db_factory,
+        cipher=_cipher(),
+        checker=_healthy_proxy,
+    )
+
+    assert await store.allocate() is None
 
 
 @pytest.mark.asyncio
@@ -484,7 +691,16 @@ async def test_pending_onboarding_moves_to_a_replacement_proxy_on_delete(
     actor_id = test_slot.persona("full").user_id
     owner_id = test_slot.persona("code").user_id
     await _clear_proxies(admin_db_factory)
-    repository = DatabaseAdminRepository(admin_db_factory, cipher=_cipher())
+    cipher = _cipher()
+    repository = DatabaseAdminRepository(
+        admin_db_factory,
+        cipher=cipher,
+        proxy_store=DatabaseTelegramProxyStore(
+            admin_db_factory,
+            cipher=cipher,
+            checker=_healthy_proxy,
+        ),
+    )
     proxy = await repository.create_proxy(
         {
             "label": "В онбординге",

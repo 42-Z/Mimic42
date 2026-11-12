@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Network, Pencil, Plus, Radar, Trash2, Upload } from 'lucide-react';
+import { Network, Pencil, Plus, Radar, Timer, Trash2, Upload } from 'lucide-react';
 import { useAdminActions, useAdminProxies } from '@/hooks/useAdmin';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
@@ -88,6 +88,27 @@ function updatedDate(value: string): string {
     month: 'short',
     year: 'numeric',
   }).format(parsed);
+}
+
+function pauseUntilLabel(value: string | null): string | null {
+  if (!value) return null;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime()) || parsed.getTime() <= Date.now()) return null;
+  return new Intl.DateTimeFormat('ru-RU', {
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(parsed);
+}
+
+function ProxyPauseBadge({ value }: { value: string | null }) {
+  const until = pauseUntilLabel(value);
+  if (!until) return null;
+  return (
+    <Badge className="border-warning/40 text-warning" variant="outline">
+      <Timer aria-hidden="true" />
+      Пауза до {until}
+    </Badge>
+  );
 }
 
 function proxyName(proxy: { label: string | null; host: string; port: number }): string {
@@ -301,16 +322,18 @@ export function AdminProxies() {
     if (checkingId !== null) return;
     setCheckingId(proxy.id);
     try {
+      const wasPaused = pauseUntilLabel(proxy.unavailable_until) !== null;
       const result = await actions.checkProxy(proxy.id);
       if (result.ok) {
-        toast(
+        const latency =
           result.latency_ms === null
             ? 'Прокси отвечает.'
-            : `Прокси отвечает за ${result.latency_ms} мс.`,
-          'success',
-        );
+            : `Прокси отвечает за ${result.latency_ms} мс.`;
+        toast(wasPaused ? `${latency} Пауза снята.` : latency, 'success');
       } else {
-        toast(result.error ?? 'Прокси не ответил.', 'error');
+        const reason = result.error ?? 'Прокси не ответил.';
+        const pause = pauseUntilLabel(result.unavailable_until);
+        toast(pause ? `${reason} Пауза до ${pause}.` : reason, 'error');
       }
     } catch {
       toast('Не удалось проверить прокси. Повторите попытку.', 'error');
@@ -354,8 +377,8 @@ export function AdminProxies() {
             Прокси
           </h2>
           <p className="max-w-[65ch] text-sm text-muted-foreground">
-            Пул адресов для Telegram-трафика мимиков. Новые мимики получают активный прокси
-            автоматически, вручную его можно заменить или снять.
+            Пул адресов для Telegram-трафика мимиков. Новый мимик получает проверенный прокси
+            автоматически; прокси, который не пропускает Telegram, временно уходит на паузу.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -473,9 +496,12 @@ export function AdminProxies() {
                     {proxy.host}:{proxy.port}
                   </TableCell>
                   <TableCell>
-                    <Badge variant={proxy.is_active ? 'secondary' : 'outline'}>
-                      {proxy.is_active ? 'Активен' : 'Отключён'}
-                    </Badge>
+                    <div className="flex flex-col items-start gap-1.5">
+                      <Badge variant={proxy.is_active ? 'secondary' : 'outline'}>
+                        {proxy.is_active ? 'Активен' : 'Отключён'}
+                      </Badge>
+                      {proxy.is_active && <ProxyPauseBadge value={proxy.unavailable_until} />}
+                    </div>
                   </TableCell>
                   <TableCell className="whitespace-nowrap">
                     <span className="font-mono text-xs tabular-nums">{proxy.agents_total}</span>
@@ -539,7 +565,7 @@ export function AdminProxies() {
         description={
           editing
             ? 'Пароль хранится зашифрованным и не показывается. Пустое поле оставляет прежний.'
-            : 'Адрес получит новый мимик, если прокси активен.'
+            : 'Прокси попадёт в пул и будет проверен при выдаче мимику.'
         }
         isOpen={editorOpen}
         onClose={closeEditor}

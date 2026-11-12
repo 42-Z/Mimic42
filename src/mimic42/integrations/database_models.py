@@ -120,6 +120,7 @@ class TelegramProxyModel(Base):
     username: Mapped[str | None] = mapped_column(Text)
     password_ciphertext: Mapped[str | None] = mapped_column(Text)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    unavailable_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_by: Mapped[UUID | None] = mapped_column(ForeignKey("profiles.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, cast
 from uuid import UUID, uuid4
@@ -42,6 +43,7 @@ from mimic42.core.admin import (
 from mimic42.core.agent_runtime import AgentRuntimeState, TelegramProxyConfig
 from mimic42.core.model_catalog import DEFAULT_LLM_MODEL
 from mimic42.core.onboarding import SecretCipher
+from mimic42.core.telegram_proxy import TelegramProxyStore, TelegramProxyUnavailableError
 from mimic42.integrations.database_admin_statistics import (
     effective_agents_cte,
     runtime_state_parameters,
@@ -64,6 +66,8 @@ from mimic42.integrations.database_proxies import (
     telegram_proxy_config,
 )
 
+logger = logging.getLogger("mimic42.admin")
+
 
 class DatabaseAdminRepository:
     def __init__(
@@ -71,9 +75,11 @@ class DatabaseAdminRepository:
         session_factory: async_sessionmaker[AsyncSession],
         *,
         cipher: SecretCipher | None = None,
+        proxy_store: TelegramProxyStore | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._cipher = cipher
+        self._proxy_store = proxy_store
 
     async def is_admin(self, user_id: UUID) -> bool:
         statement = select(exists().where(AdminUserModel.user_id == user_id))
@@ -806,6 +812,15 @@ class DatabaseAdminRepository:
                 if proxy.password_ciphertext is not None and not proxy.username:
                     raise AdminProxyValidationError("Для пароля укажите логин прокси")
 
+                # Починенный или включённый админом прокси не должен ждать
+                # окончания паузы: даём ему проверку при ближайшей выдаче.
+                connection_changed = any(
+                    field in changed_fields
+                    for field in ("protocol", "host", "port", "username", "password")
+                )
+                if connection_changed or ("is_active" in changed_fields and proxy.is_active):
+                    proxy.unavailable_until = None
+
                 if changed_fields:
                     proxy.updated_at = datetime.now(UTC)
                     await session.flush()
@@ -846,7 +861,21 @@ class DatabaseAdminRepository:
             raise AdminUnavailableError("Administrative storage is unavailable") from None
         return result
 
+    async def _select_checked_replacement(self, proxy_id: UUID) -> UUID | None:
+        if self._proxy_store is None:
+            return None
+        try:
+            assignment = await self._proxy_store.allocate(exclude=proxy_id)
+        except TelegramProxyUnavailableError:
+            logger.warning("Не удалось подобрать замену для прокси %s", proxy_id, exc_info=True)
+            return None
+        return assignment.proxy_id if assignment is not None else None
+
     async def delete_proxy(self, proxy_id: UUID, *, actor_user_id: UUID) -> list[UUID]:
+        # Проверка замены — сетевой запрос, поэтому она идёт до транзакции.
+        # Если пул не дал рабочего прокси, назначать вслепую нельзя: агенты
+        # получат NULL и не будут молча переведены на мёртвый прокси.
+        checked_replacement = await self._select_checked_replacement(proxy_id)
         try:
             async with self._session_factory() as session, session.begin():
                 await lock_proxy_pool(session)
@@ -873,10 +902,13 @@ class DatabaseAdminRepository:
                         AgentOnboardingSessionModel.completed_agent_id.is_(None),
                     )
                 )
-                replacement_id = await least_loaded_proxy_id(
-                    session,
-                    exclude_id=proxy_id,
-                )
+                replacement_id = checked_replacement
+                if replacement_id is None and self._proxy_store is None:
+                    # Совместимость для репозитория без пула (тесты, скрипты).
+                    replacement_id = await least_loaded_proxy_id(
+                        session,
+                        exclude_id=proxy_id,
+                    )
                 await session.execute(
                     update(TelegramSessionModel)
                     .where(TelegramSessionModel.proxy_id == proxy_id)
@@ -1021,6 +1053,7 @@ class DatabaseAdminRepository:
             username=proxy.username,
             has_password=proxy.password_ciphertext is not None,
             is_active=proxy.is_active,
+            unavailable_until=proxy.unavailable_until,
             agents_total=agents_total,
             onboarding_total=onboarding_total,
             created_at=proxy.created_at,
