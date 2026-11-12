@@ -16,7 +16,10 @@ from mimic42.core.onboarding import (
 )
 from mimic42.core.telegram_proxy import TelegramProxyAssignment
 from mimic42.integrations.database_agent_store import DatabaseAgentStore
-from mimic42.integrations.database_models import AgentOnboardingSessionModel
+from mimic42.integrations.database_models import (
+    AgentOnboardingSessionModel,
+    TelegramProxyModel,
+)
 from mimic42.integrations.database_onboarding import DatabaseOnboardingRepository
 from mimic42.testing import seed_agent
 from mimic42.testing.slots import Slot
@@ -234,62 +237,91 @@ async def test_auth_result_preserves_browser_profile_and_settings_edits(
     assert current.authorization_status is TelegramLoginStatus.CODE_REQUESTED
 
 
+async def _create_proxy(db_session_factory: async_sessionmaker[AsyncSession]) -> UUID:
+    proxy_id = uuid4()
+    async with db_session_factory() as db, db.begin():
+        db.add(
+            TelegramProxyModel(
+                id=proxy_id,
+                protocol="socks5",
+                host=f"proxy-{proxy_id.hex[:12]}.example.test",
+                port=1080,
+                is_active=True,
+            )
+        )
+    return proxy_id
+
+
+async def _delete_proxy(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    proxy_id: UUID,
+) -> None:
+    async with db_session_factory() as db, db.begin():
+        await db.execute(delete(TelegramProxyModel).where(TelegramProxyModel.id == proxy_id))
+
+
 async def test_begin_login_allocates_a_proxy_before_saving_the_draft(
     db_session_factory: async_sessionmaker[AsyncSession],
     clean_slot: Slot,
 ) -> None:
-    proxy_id = uuid4()
-    store = _ProxyStore(
-        TelegramProxyAssignment(
-            proxy_id=proxy_id,
-            config=TelegramProxyConfig(protocol="socks5", host="proxy.example.test", port=1080),
+    proxy_id = await _create_proxy(db_session_factory)
+    try:
+        store = _ProxyStore(
+            TelegramProxyAssignment(
+                proxy_id=proxy_id,
+                config=TelegramProxyConfig(protocol="socks5", host="proxy.example.test", port=1080),
+            )
         )
-    )
-    repository = DatabaseOnboardingRepository(db_session_factory, proxy_store=store)
+        repository = DatabaseOnboardingRepository(db_session_factory, proxy_store=store)
 
-    session = await repository.begin_login(
-        TelegramCredentials(
-            owner_id=clean_slot.persona("code").user_id,
-            api_id=12345,
-            api_hash="hash",
-            phone_number="+79990000000",
-        ),
-        api_hash_secret="hash",
-    )
+        session = await repository.begin_login(
+            TelegramCredentials(
+                owner_id=clean_slot.persona("code").user_id,
+                api_id=12345,
+                api_hash="hash",
+                phone_number="+79990000000",
+            ),
+            api_hash_secret="hash",
+        )
 
-    assert store.allocate_calls == 1
-    assert session.proxy_id == proxy_id
-    async with db_session_factory() as db:
-        row = await db.get(AgentOnboardingSessionModel, session.onboarding_id)
-    assert row is not None
-    assert row.proxy_id == proxy_id
+        assert store.allocate_calls == 1
+        assert session.proxy_id == proxy_id
+        async with db_session_factory() as db:
+            row = await db.get(AgentOnboardingSessionModel, session.onboarding_id)
+        assert row is not None
+        assert row.proxy_id == proxy_id
+    finally:
+        await _delete_proxy(db_session_factory, proxy_id)
 
 
 async def test_begin_login_keeps_an_existing_proxy_without_a_new_allocation(
     db_session_factory: async_sessionmaker[AsyncSession],
     clean_slot: Slot,
 ) -> None:
-    proxy_id = uuid4()
-    draft = OnboardingSession(
-        onboarding_id=uuid4(),
-        owner_id=clean_slot.persona("code").user_id,
-        authorization_status=TelegramLoginStatus.NOT_STARTED,
-        proxy_id=proxy_id,
-    )
-    store = _ProxyStore(None)
-    repository = DatabaseOnboardingRepository(db_session_factory, proxy_store=store)
-    await repository.create(draft)
+    proxy_id = await _create_proxy(db_session_factory)
+    try:
+        draft = OnboardingSession(
+            onboarding_id=uuid4(),
+            owner_id=clean_slot.persona("code").user_id,
+            authorization_status=TelegramLoginStatus.NOT_STARTED,
+            proxy_id=proxy_id,
+        )
+        store = _ProxyStore(None)
+        repository = DatabaseOnboardingRepository(db_session_factory, proxy_store=store)
+        await repository.create(draft)
 
-    session = await repository.begin_login(
-        TelegramCredentials(
-            owner_id=draft.owner_id,
-            api_id=12345,
-            api_hash="hash",
-            phone_number="+79990000000",
-        ),
-        api_hash_secret="hash",
-        onboarding_id=draft.onboarding_id,
-    )
+        session = await repository.begin_login(
+            TelegramCredentials(
+                owner_id=draft.owner_id,
+                api_id=12345,
+                api_hash="hash",
+                phone_number="+79990000000",
+            ),
+            api_hash_secret="hash",
+            onboarding_id=draft.onboarding_id,
+        )
 
-    assert store.allocate_calls == 0
-    assert session.proxy_id == proxy_id
+        assert store.allocate_calls == 0
+        assert session.proxy_id == proxy_id
+    finally:
+        await _delete_proxy(db_session_factory, proxy_id)
