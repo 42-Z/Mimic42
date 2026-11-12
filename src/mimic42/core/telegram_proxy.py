@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Protocol
 from uuid import UUID
 
@@ -41,3 +42,5 @@ class TelegramProxyCheckResult(BaseModel):
     ok: bool
     latency_ms: int | None = Field(default=None, ge=0)
     error: str | None = None
+    # Пауза, действующая после проверки: админ видит, когда прокси вернётся в пул.
+    unavailable_until: datetime | None = None

@@ -208,6 +208,29 @@ class DatabaseTelegramProxyStore:
         except SQLAlchemyError:
             raise TelegramProxyUnavailableError("Хранилище прокси временно недоступно") from None
 
+    async def clear_unavailable(self, proxy_id: UUID) -> None:
+        """Снять паузу после ручной проверки: админ подтвердил, что прокси работает."""
+        try:
+            async with self._session_factory() as session, session.begin():
+                await session.execute(
+                    update(TelegramProxyModel)
+                    .where(TelegramProxyModel.id == proxy_id)
+                    .values(unavailable_until=None)
+                )
+        except SQLAlchemyError:
+            raise TelegramProxyUnavailableError("Хранилище прокси временно недоступно") from None
+
+    async def unavailable_until(self, proxy_id: UUID) -> datetime | None:
+        try:
+            async with self._session_factory() as session:
+                return await session.scalar(
+                    select(TelegramProxyModel.unavailable_until).where(
+                        TelegramProxyModel.id == proxy_id
+                    )
+                )
+        except SQLAlchemyError:
+            raise TelegramProxyUnavailableError("Хранилище прокси временно недоступно") from None
+
     async def _clear_unavailable(self, proxy_id: UUID, *, expected: datetime) -> None:
         """Снять ту паузу, которую видели при проверке; сбой очистки не мешает."""
         try:

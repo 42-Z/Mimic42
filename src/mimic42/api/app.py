@@ -508,6 +508,7 @@ def create_app(
                     cipher=cipher,
                     checker=app_proxy_checker,
                 )
+                app.state.proxy_store = database_proxy_store
             if build_agent_services:
                 assert session_factory is not None
                 assert database_proxy_store is not None

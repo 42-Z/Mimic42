@@ -35,6 +35,7 @@ function proxySummary(overrides: Partial<AdminProxySummary> = {}): AdminProxySum
     username: 'mimic',
     has_password: true,
     is_active: true,
+    unavailable_until: null,
     agents_total: 0,
     onboarding_total: 0,
     created_at: now,
@@ -105,7 +106,7 @@ beforeEach(() => {
   };
   adminApi.checkProxy = async (proxyId) => {
     checkCalls.push(proxyId);
-    return { ok: true, latency_ms: 12, error: null };
+    return { ok: true, latency_ms: 12, error: null, unavailable_until: null };
   };
   adminApi.importProxies = async (values) => {
     importCalls.push(values);
@@ -314,5 +315,32 @@ describe('AdminProxies', () => {
 
     expect(await screen.findByText('Прокси отвечает за 12 мс.')).toBeTruthy();
     expect(checkCalls).toEqual([proxySummary().id]);
+  });
+
+  test('marks a paused proxy in the pool list', async () => {
+    const pause = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+    loadProxies = async () => proxyPage([proxySummary({ unavailable_until: pause })]);
+    renderProxies();
+
+    expect(await screen.findByText(/Пауза до/)).toBeTruthy();
+  });
+
+  test('shows the pause after a failed proxy check', async () => {
+    const pause = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+    loadProxies = async () => proxyPage([proxySummary()]);
+    adminApi.checkProxy = async (proxyId) => {
+      checkCalls.push(proxyId);
+      return {
+        ok: false,
+        latency_ms: null,
+        error: 'authentication failed',
+        unavailable_until: pause,
+      };
+    };
+    renderProxies();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Проверить прокси Основной' }));
+
+    expect(await screen.findByText(/authentication failed.*Пауза до/)).toBeTruthy();
   });
 });

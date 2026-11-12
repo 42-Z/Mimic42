@@ -244,7 +244,10 @@ export function useAdminActions() {
       execute(() => adminApi.deleteProxy(proxyId), async (ownerId) => {
         await queryClient.invalidateQueries({ queryKey: queryKeys.admin.scope(ownerId) });
       }),
-    checkProxy: (proxyId: string) => execute(() => adminApi.checkProxy(proxyId)),
+    checkProxy: (proxyId: string) =>
+      execute(() => adminApi.checkProxy(proxyId), async (ownerId) => {
+        await queryClient.invalidateQueries({ queryKey: queryKeys.admin.scope(ownerId) });
+      }),
     assignAgentProxy: (agentId: string, proxyId: string | null) =>
       execute(() => adminApi.assignAgentProxy(agentId, proxyId), async (ownerId) => {
         await queryClient.invalidateQueries({ queryKey: queryKeys.admin.scope(ownerId) });

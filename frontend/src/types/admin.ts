@@ -49,6 +49,7 @@ export interface AdminProxySummary {
   username: string | null;
   has_password: boolean;
   is_active: boolean;
+  unavailable_until: string | null;
   agents_total: number;
   onboarding_total: number;
   created_at: string;
@@ -83,6 +84,7 @@ export interface AdminProxyCheckResult {
   ok: boolean;
   latency_ms: number | null;
   error: string | null;
+  unavailable_until: string | null;
 }
 
 export interface AdminProxyImportInput {

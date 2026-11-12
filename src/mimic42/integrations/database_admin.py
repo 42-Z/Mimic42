@@ -1053,6 +1053,7 @@ class DatabaseAdminRepository:
             username=proxy.username,
             has_password=proxy.password_ciphertext is not None,
             is_active=proxy.is_active,
+            unavailable_until=proxy.unavailable_until,
             agents_total=agents_total,
             onboarding_total=onboarding_total,
             created_at=proxy.created_at,
