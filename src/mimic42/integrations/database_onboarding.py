@@ -83,16 +83,27 @@ class DatabaseOnboardingRepository:
         onboarding_id: UUID | None = None,
     ) -> OnboardingSession:
         # Выдача идёт до транзакции: проверка прокси — сетевой запрос, и держать
-        # на нём блокировку пула нельзя. После неё транзакция либо сохраняет
-        # маршрут черновика, либо оставляет уже назначенный другим запросом.
+        # на нём блокировку пула нельзя. Владельца и существование черновика
+        # проверяем заранее, чтобы чужой id не запускал проверку пула.
         allocated_proxy_id: UUID | None = None
         if onboarding_id is not None:
             async with self._session_factory() as db:
-                allocated_proxy_id = await db.scalar(
-                    select(AgentOnboardingSessionModel.proxy_id).where(
-                        AgentOnboardingSessionModel.id == onboarding_id
+                row = (
+                    await db.execute(
+                        select(
+                            AgentOnboardingSessionModel.owner_id,
+                            AgentOnboardingSessionModel.completed_agent_id,
+                            AgentOnboardingSessionModel.proxy_id,
+                        ).where(AgentOnboardingSessionModel.id == onboarding_id)
                     )
-                )
+                ).first()
+            if row is None:
+                raise OnboardingNotFoundError(onboarding_id)
+            if row.owner_id != credentials.owner_id:
+                raise OnboardingOwnershipError(onboarding_id)
+            if row.completed_agent_id is not None:
+                raise OnboardingAlreadyCompletedError(onboarding_id)
+            allocated_proxy_id = row.proxy_id
         if allocated_proxy_id is None and self._proxy_store is not None:
             assignment = await self._proxy_store.allocate()
             allocated_proxy_id = assignment.proxy_id if assignment else None
@@ -300,6 +311,7 @@ class DatabaseOnboardingRepository:
 
     async def assign_proxy(self, onboarding_id: UUID, proxy_id: UUID | None) -> None:
         async with self._session_factory() as db, db.begin():
+            await lock_proxy_pool(db)
             await db.execute(
                 update(AgentOnboardingSessionModel)
                 .where(AgentOnboardingSessionModel.id == onboarding_id)

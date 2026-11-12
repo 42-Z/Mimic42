@@ -633,7 +633,7 @@ class AgentOnboardingService:
         прокси проверяется отдельно, а при подтверждённой поломке снимается
         с выдачи и сессия переносится на другой.
         """
-        attempt = await self._repository.load_attempt(ref)
+        attempt = await self._load_attempt_with_recovery(ref)
         client = self._build_client(attempt)
         try:
             await self._repository.check_attempt(attempt)
@@ -658,6 +658,38 @@ class AgentOnboardingService:
             await _disconnect_auth_client(client)
             raise
 
+    async def _load_attempt_with_recovery(
+        self, ref: TelegramAuthorizationRef
+    ) -> TelegramLoginAttempt:
+        """Загрузить маршрут входа, заменив непригодный прокси.
+
+        ``load_attempt`` падает, если запись прокси удалена или её пароль не
+        расшифровывается. Без этой замены такой черновик застревал бы на 503
+        до ручного вмешательства.
+        """
+        try:
+            return await self._repository.load_attempt(ref)
+        except TelegramProxyUnavailableError:
+            replacement = await self._recover_unusable_assignment(ref)
+            if replacement is None:
+                raise
+            return replacement
+
+    async def _recover_unusable_assignment(
+        self, ref: TelegramAuthorizationRef
+    ) -> TelegramLoginAttempt | None:
+        if self._proxy_store is None or ref.completed_agent_id is not None:
+            return None
+        logger.warning(
+            "Маршрут входа onboarding=%s непригоден; выдаю другой прокси",
+            ref.onboarding_id,
+        )
+        assignment = await self._proxy_store.allocate()
+        if assignment is None:
+            raise TelegramProxyUnavailableError("Больше нет рабочих прокси в пуле")
+        await self._repository.assign_proxy(ref.onboarding_id, assignment.proxy_id)
+        return await self._repository.load_attempt(ref)
+
     async def _replace_failed_proxy(
         self, attempt: TelegramLoginAttempt
     ) -> TelegramLoginAttempt | None:
@@ -665,15 +697,11 @@ class AgentOnboardingService:
 
         Возвращает новую попытку или ``None``, если повторять некуда:
         прокси нет, проверка недоступна, или это перепривязка агента —
-        маршрут работающего агента молча не меняем.
+        маршрут работающего агента молча не меняем, но сломанный прокси
+        всё равно уходит на паузу.
         """
         assignment = attempt.assignment
-        if (
-            assignment is None
-            or self._proxy_store is None
-            or self._proxy_checker is None
-            or attempt.session.completed_agent_id is not None
-        ):
+        if assignment is None or self._proxy_store is None or self._proxy_checker is None:
             return None
         try:
             check = await self._proxy_checker(assignment.config)
@@ -697,6 +725,8 @@ class AgentOnboardingService:
             attempt.session.onboarding_id,
         )
         await self._proxy_store.mark_unavailable(assignment.proxy_id)
+        if attempt.session.completed_agent_id is not None:
+            return None
         replacement = await self._proxy_store.allocate(exclude=assignment.proxy_id)
         if replacement is None:
             raise TelegramProxyUnavailableError("Больше нет рабочих прокси в пуле")

@@ -44,7 +44,9 @@ class TelethonAuthClient:
                     exc,
                     exc_info=True,
                 )
-                raise TelegramProxyUnavailableError("он не пропускает Telegram") from exc
+                raise TelegramProxyUnavailableError(
+                    "не удалось установить соединение через прокси"
+                ) from exc
             raise
 
     async def disconnect(self) -> None:

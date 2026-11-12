@@ -39,6 +39,7 @@ from mimic42.core.agent_runtime import (
     AgentTriggerResult,
     ChatListUnavailableError,
     TelegramAuthorizationRequired,
+    TelegramProxyConfig,
     TelegramSessionChangedError,
     TelegramTeardownPendingError,
 )
@@ -108,7 +109,10 @@ from mimic42.core.telegram_app_settings import (
     TelegramAppSettings,
     TelegramAppUnavailableError,
 )
-from mimic42.core.telegram_proxy import TelegramProxyUnavailableError
+from mimic42.core.telegram_proxy import (
+    TelegramProxyCheckResult,
+    TelegramProxyUnavailableError,
+)
 from mimic42.core.warmup import WarmupState
 from mimic42.core.warmup_service import pair_policy_for
 from mimic42.integrations import openrouter_catalog
@@ -429,9 +433,12 @@ def create_app(
     langchain_agent_factory: LangChainAgentFactory | None = None,
     long_term_memory: LongTermMemoryLike | None = None,
     media_uploader: MediaUploader | None = None,
+    proxy_checker: Callable[[TelegramProxyConfig], Awaitable[TelegramProxyCheckResult]]
+    | None = None,
 ) -> FastAPI:
     app_settings = settings or Settings()
     app_telegram_factory = telegram_factory or TelethonAuthClientFactory()
+    app_proxy_checker = proxy_checker or check_telegram_proxy
     app_telegram_app_settings = telegram_app_settings or TelegramAppSettings(
         repository=admin_repository,
         cipher=_telegram_settings_cipher(app_settings),
@@ -493,16 +500,20 @@ def create_app(
                 if build_database and app_settings.secret_key is not None
                 else None
             )
-            if build_agent_services:
+            database_proxy_store: DatabaseTelegramProxyStore | None = None
+            if build_agent_services or build_admin_repository:
                 assert session_factory is not None
-                database_agent_store = agent_store or DatabaseAgentStore(
-                    session_factory,
-                    cipher=cipher,
-                )
                 database_proxy_store = DatabaseTelegramProxyStore(
                     session_factory,
                     cipher=cipher,
-                    checker=check_telegram_proxy,
+                    checker=app_proxy_checker,
+                )
+            if build_agent_services:
+                assert session_factory is not None
+                assert database_proxy_store is not None
+                database_agent_store = agent_store or DatabaseAgentStore(
+                    session_factory,
+                    cipher=cipher,
                 )
                 app.state.agent_store = database_agent_store
                 if onboarding_service is None:
@@ -516,7 +527,7 @@ def create_app(
                         cipher=cipher,
                         agent_store=database_agent_store,
                         proxy_store=database_proxy_store,
-                        proxy_checker=check_telegram_proxy,
+                        proxy_checker=app_proxy_checker,
                     )
                 if manager is None:
                     agent_memory = long_term_memory or build_mem0_memory(app_settings.mem0_api_key)
@@ -543,6 +554,7 @@ def create_app(
                 app.state.admin_repository = DatabaseAdminRepository(
                     session_factory,
                     cipher=cipher,
+                    proxy_store=database_proxy_store,
                 )
 
             if telegram_app_settings is None:

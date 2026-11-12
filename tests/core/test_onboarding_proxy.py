@@ -45,12 +45,14 @@ class FakeTelegramProxyStore:
         self.configs = dict(configs or {})
         self.agent_assignments = dict(agent_assignments or {})
         self.allocate_calls = 0
+        self.excludes: list[UUID | None] = []
         self.load_calls: list[UUID] = []
         self.agent_calls: list[UUID] = []
         self.unavailable: list[UUID] = []
 
     async def allocate(self, *, exclude: UUID | None = None) -> TelegramProxyAssignment | None:
         self.allocate_calls += 1
+        self.excludes.append(exclude)
         if self.allocations:
             return self.allocations.pop(0)
         return self.allocation
@@ -227,8 +229,49 @@ async def test_dead_proxy_leaves_the_pool_and_code_goes_through_replacement() ->
     assert saved.authorization_status is TelegramLoginStatus.CODE_REQUESTED
     assert store.unavailable == [dead_id]
     assert store.allocate_calls == 2
+    assert store.excludes == [None, dead_id]
     assert factory.proxies == [dead, working]
     assert checked == [dead]
+
+
+@pytest.mark.asyncio
+async def test_unusable_proxy_record_is_replaced_before_connecting() -> None:
+    owner_id, onboarding_id, stale_id, working_id = uuid4(), uuid4(), uuid4(), uuid4()
+    working = _proxy_config("working.test")
+    repository = InMemoryOnboardingRepository()
+    await repository.save(
+        OnboardingSession(
+            onboarding_id=onboarding_id,
+            owner_id=owner_id,
+            api_id=12345,
+            api_hash_secret="hash",
+            phone_number="+79990000000",
+            authorization_status=TelegramLoginStatus.NOT_STARTED,
+            proxy_id=stale_id,
+        )
+    )
+    store = FakeTelegramProxyStore(
+        allocations=[TelegramProxyAssignment(proxy_id=working_id, config=working)],
+        configs={working_id: working},
+    )
+    factory = FakeTelegramAuthClientFactory(FakeTelegramAccount())
+    service = AgentOnboardingService(
+        repository=repository,
+        telegram_factory=factory,
+        proxy_store=store,
+        proxy_checker=_healthy_proxy,
+    )
+
+    started = await service.request_telegram_code(
+        _credentials(owner_id),
+        onboarding_id=onboarding_id,
+    )
+
+    saved = await repository.get(started.onboarding_id)
+    assert saved.proxy_id == working_id
+    assert saved.authorization_status is TelegramLoginStatus.CODE_REQUESTED
+    assert store.allocate_calls == 1
+    assert factory.proxies == [working]
 
 
 @pytest.mark.asyncio
@@ -288,7 +331,7 @@ async def test_transient_connect_failure_retries_the_same_proxy() -> None:
 
 
 @pytest.mark.asyncio
-async def test_rebind_keeps_the_agent_proxy_when_it_cannot_connect() -> None:
+async def test_rebind_pauses_a_broken_agent_proxy_without_moving_the_agent() -> None:
     owner_id, agent_id, proxy_id = uuid4(), uuid4(), uuid4()
     config = _proxy_config("agent-proxy.test")
     repository = InMemoryOnboardingRepository()
@@ -311,17 +354,21 @@ async def test_rebind_keeps_the_agent_proxy_when_it_cannot_connect() -> None:
     factory = FakeTelegramAuthClientFactory(
         FakeTelegramAccount(), broken_proxies={("agent-proxy.test", config.port)}
     )
+
+    async def reject(_config: TelegramProxyConfig) -> TelegramProxyCheckResult:
+        return TelegramProxyCheckResult(ok=False, error="authentication failed")
+
     service = AgentOnboardingService(
         repository=repository,
         telegram_factory=factory,
         proxy_store=store,
-        proxy_checker=_healthy_proxy,
+        proxy_checker=reject,
     )
 
     with pytest.raises(TelegramProxyUnavailableError):
         await service.start_rebind(agent_id, owner_id=owner_id)
 
-    assert store.unavailable == []
+    assert store.unavailable == [proxy_id]
     assert store.allocate_calls == 0
     assert factory.proxies == [config]
 
@@ -501,7 +548,7 @@ async def test_rebind_does_not_allocate_a_proxy_for_an_agent_without_one() -> No
 
 
 @pytest.mark.asyncio
-async def test_rebind_does_not_fall_back_when_the_agent_proxy_is_broken() -> None:
+async def test_rebind_refuses_network_when_the_agent_proxy_record_is_missing() -> None:
     owner_id = uuid4()
     agent_id = uuid4()
     proxy_id = uuid4()
