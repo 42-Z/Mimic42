@@ -33,6 +33,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from mimic42.core.agent_runtime import AgentRuntimeState, MimicAgentRuntime, OpenerResult
+from mimic42.core.memory import settle_persistence
 from mimic42.core.warmup import (
     EVENT_RECOVERED,
     EVENT_RECOVERY_STARTED,
@@ -139,6 +140,7 @@ class WarmupService:
         # не дойти, а до этого та же попытка не должна выглядеть «ещё не начатой».
         self._reserved: dict[tuple[AttemptKind, UUID], list[datetime]] = {}
         self._task: asyncio.Task[None] | None = None
+        self._transition_locks: dict[UUID, asyncio.Lock] = {}
 
     def start(self) -> None:
         if self._task is None:
@@ -312,8 +314,8 @@ class WarmupService:
         self._last_suspect_check[agent_id] = now
         free = await runtime.check_spambot()
         if free is False:
-            self._spam_suspects.pop(agent_id, None)
             await self._mark_restricted(runtime)
+            self._spam_suspects.pop(agent_id, None)
             # Бот только что ответил: повторно спрашивать в этом же тике незачем.
             self._last_spambot_check[agent_id] = now
             logger.warning("Spam limit confirmed by @SpamBot for agent %s", agent_id)
@@ -444,31 +446,39 @@ class WarmupService:
     # ── Ограниченные аккаунты ─────────────────────────────────────────────────
 
     async def _record_transition(self, runtime: MimicAgentRuntime, event_type: str) -> None:
-        if self._state_store is None:
-            return
-        try:
+        if self._state_store is not None:
             await self._state_store.record(runtime.config.agent_id, event_type)
-        except Exception:
-            logger.exception("Failed to record %s for %s", event_type, runtime.config.agent_id)
+        if event_type == EVENT_RESTRICTED:
+            runtime.warmup_restricted_at = self._now()
+            runtime.warmup_recovery = False
+        elif event_type == EVENT_RECOVERY_STARTED:
+            runtime.warmup_recovery = True
+        elif event_type == EVENT_RECOVERED:
+            runtime.warmup_restricted_at = None
+            runtime.warmup_recovery = False
+
+    def _transition_lock(self, runtime: MimicAgentRuntime) -> asyncio.Lock:
+        return self._transition_locks.setdefault(runtime.config.agent_id, asyncio.Lock())
 
     async def _mark_restricted(self, runtime: MimicAgentRuntime) -> None:
         """Аккаунт ограничен: сам диалогов не начинает, пока пользователь не выберет."""
-        if runtime.warmup_restricted_at is not None:
-            return
-        runtime.warmup_restricted_at = self._now()
-        runtime.warmup_recovery = False
-        await self._record_transition(runtime, EVENT_RESTRICTED)
+        async with self._transition_lock(runtime):
+            if runtime.warmup_restricted_at is not None:
+                return
+            await settle_persistence(self._record_transition(runtime, EVENT_RESTRICTED))
         # Сразу проверим, а не через шесть часов: статус и дата в ответе бота уточняют картину.
         self._last_spambot_check.pop(runtime.config.agent_id, None)
 
     async def start_recovery(self, agent_id: UUID) -> bool:
         """Пользователь выбрал восстановление. False — агент не ограничен или не найден."""
         runtime = self._agent_by_id(agent_id)
-        if runtime is None or runtime.warmup_restricted_at is None:
+        if runtime is None:
             return False
-        if not runtime.warmup_recovery:
-            runtime.warmup_recovery = True
-            await self._record_transition(runtime, EVENT_RECOVERY_STARTED)
+        async with self._transition_lock(runtime):
+            if runtime.warmup_restricted_at is None:
+                return False
+            if not runtime.warmup_recovery:
+                await settle_persistence(self._record_transition(runtime, EVENT_RECOVERY_STARTED))
         return True
 
     async def _tend_restricted(
@@ -500,9 +510,12 @@ class WarmupService:
         free = await runtime.check_spambot()
         if free is not True:
             return False
-        runtime.warmup_restricted_at = None
-        runtime.warmup_recovery = False
-        await self._record_transition(runtime, EVENT_RECOVERED)
+        try:
+            async with self._transition_lock(runtime):
+                await settle_persistence(self._record_transition(runtime, EVENT_RECOVERED))
+        except BaseException:
+            self._last_spambot_check.pop(agent_id, None)
+            raise
         logger.info("Warmup: restriction lifted for agent %s", agent_id)
         return True
 

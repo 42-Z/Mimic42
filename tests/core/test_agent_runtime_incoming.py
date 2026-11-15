@@ -389,7 +389,7 @@ async def test_timer_is_recorded_before_blocked_model_in_verified_peer(
         status="pending",
     )
     session = AsyncMock()
-    session.scalars.return_value = [timer]
+    session.scalar.side_effect = [timer, None]
     session.__aenter__.return_value = session
     runtime._session_factory = cast(Any, MagicMock(return_value=session))
     monkeypatch.setattr(runtime, "_ensure_peer_allowed", AsyncMock(return_value=12345))
@@ -416,7 +416,7 @@ async def test_timer_is_recorded_before_blocked_model_in_verified_peer(
         if event["event_type"] in {"timer.fired", "turn.completed"}
     ]
     assert outcomes == ["timer.fired", "turn.completed"]
-    assert timer.status == "succeeded"
+    assert session.execute.await_args.args[0].compile().params["status"] == "succeeded"
 
 
 async def test_timer_waiting_for_admission_does_not_fire_or_restart_after_stop(
@@ -433,7 +433,7 @@ async def test_timer_waiting_for_admission_does_not_fire_or_restart_after_stop(
         status="pending",
     )
     session = AsyncMock()
-    session.scalars.return_value = [timer]
+    session.scalar.side_effect = [timer, None]
     session.__aenter__.return_value = session
     runtime._session_factory = cast(Any, MagicMock(return_value=session))
     checked = asyncio.Event()
@@ -454,3 +454,120 @@ async def test_timer_waiting_for_admission_does_not_fire_or_restart_after_stop(
     assert agent.inputs == []
     assert store.rows == []
     assert not any(event["event_type"] == "timer.fired" for event in activity.events)
+
+
+@pytest.mark.parametrize("stage", ["commit", "close"])
+async def test_cancellation_during_timer_claim_restores_unstarted_timer(
+    incoming_turn: tuple[MimicAgentRuntime, TranscriptStore, ControlledAgent, FakeActivity],
+    monkeypatch: pytest.MonkeyPatch,
+    stage: str,
+) -> None:
+    runtime, store, agent, activity = incoming_turn
+    await runtime.start()
+    timer = SimpleNamespace(
+        id=uuid4(),
+        peer="chat",
+        description="reminder",
+        trigger_at=datetime.now(UTC),
+        status="pending",
+    )
+    session = AsyncMock()
+    session.scalar.side_effect = [timer, None]
+    session.__aenter__.return_value = session
+    runtime._session_factory = cast(Any, MagicMock(return_value=session))
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def delayed(*args: Any) -> None:
+        entered.set()
+        await release.wait()
+
+    monkeypatch.setattr(session, "commit" if stage == "commit" else "__aexit__", delayed)
+    task = asyncio.create_task(runtime._check_and_trigger_timers())
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+    assert session.execute.await_args.args[0].compile().params["status"] == "pending"
+    assert agent.inputs == []
+    assert store.rows == []
+    assert not any(event["event_type"] == "timer.fired" for event in activity.events)
+
+
+@pytest.mark.parametrize("replacement", [False, True])
+async def test_restart_waits_for_previous_scheduler_persistence_before_recovery(
+    incoming_turn: tuple[MimicAgentRuntime, TranscriptStore, ControlledAgent, FakeActivity],
+    monkeypatch: pytest.MonkeyPatch,
+    replacement: bool,
+) -> None:
+    runtime, _, agent, activity = incoming_turn
+    await runtime.start()
+    timer = SimpleNamespace(
+        id=uuid4(),
+        peer="chat",
+        description="reminder",
+        trigger_at=datetime.now(UTC),
+        status="pending",
+    )
+    session = AsyncMock()
+    session.scalar.side_effect = [timer, None]
+    session.__aenter__.return_value = session
+    runtime._session_factory = cast(Any, MagicMock(return_value=session))
+    checked = asyncio.Event()
+    saving = asyncio.Event()
+    release = asyncio.Event()
+    recovered = asyncio.Event()
+
+    async def block_peer(peer: str) -> None:
+        checked.set()
+        await asyncio.Future()
+
+    async def finish(timer_id: UUID, status: str) -> None:
+        saving.set()
+        await release.wait()
+        timer.status = status
+
+    async def recover() -> None:
+        assert timer.status == "pending"
+        recovered.set()
+
+    async def idle_scheduler() -> None:
+        return
+
+    monkeypatch.setattr(runtime, "_ensure_peer_allowed", block_peer)
+    monkeypatch.setattr(runtime, "_finish_timer", finish)
+    monkeypatch.setattr("mimic42.core.agent_runtime.STOP_STEP_TIMEOUT_SECONDS", 0.01)
+    runtime._scheduler_task = asyncio.create_task(runtime._run_scheduler_loop())
+    await asyncio.wait_for(checked.wait(), 2)
+    await runtime.stop()
+    assert saving.is_set()
+    restarted = runtime
+    if replacement:
+        restarted = MimicAgentRuntime(
+            config=runtime.config,
+            telegram_client=FakeTelegramClient(),
+            langchain_agent=agent,
+        )
+        restarted._activity = cast(Any, activity)
+    monkeypatch.setattr(restarted, "_recover_interrupted_timers", recover)
+    monkeypatch.setattr(restarted, "_run_scheduler_loop", idle_scheduler)
+    start = asyncio.create_task(restarted.start())
+    try:
+        await asyncio.sleep(0)
+        assert not start.done()
+        assert not recovered.is_set()
+        release.set()
+        await asyncio.wait_for(start, 2)
+        assert recovered.is_set()
+        assert timer.status == "pending"
+    finally:
+        release.set()
+        await asyncio.gather(start, return_exceptions=True)
+        await restarted.stop()
