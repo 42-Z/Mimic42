@@ -17,7 +17,7 @@ from python_socks import ProxyConnectionError, ProxyError, ProxyTimeoutError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from telethon import errors
 
-from mimic42.core.activity import ActivityRecorder
+from mimic42.core.activity import ActivityRecorder, _truncate
 from mimic42.core.album_grouper import AlbumGrouper
 from mimic42.core.chat_access import ChatAccess, ChatDisabledError, link_hint
 from mimic42.core.chat_directory import ChatDirectory, ChatItem
@@ -89,6 +89,7 @@ STOP_STEP_TIMEOUT_SECONDS = 5.0
 # одновременных соединения одной сессии Telegram считает ошибкой (AUTH_KEY_DUPLICATED)
 # и отзывает ключ — «с того же или другого IP», так что перекрытия допускать нельзя.
 TELEGRAM_TEARDOWN_WAIT_SECONDS = 30.0
+TIMER_SCHEDULER_WAIT_SECONDS = 30.0
 
 
 @dataclass(frozen=True)
@@ -98,13 +99,16 @@ class _TelegramTeardown:
 
 
 _PENDING_TELEGRAM_TEARDOWNS: dict[UUID, _TelegramTeardown] = {}
+_PENDING_TIMER_SCHEDULERS: dict[UUID, asyncio.Task[None]] = {}
 TURN_FAILURE_RECORDED_NOTE = "Mimic42 recorded this turn failure in the activity feed."
 
 
-@dataclass(frozen=True)
+@dataclass
 class _TimerDispatch:
     description: str
     trigger_at: datetime
+    generation: int
+    started: bool = False
 
 
 class OpenerTargetMismatch(RuntimeError):
@@ -124,8 +128,18 @@ class TelegramTeardownPendingError(RuntimeError):
 class AgentLifecycleChangedError(RuntimeError):
     """Рантайм закрыт или остановлен до допуска запрошенной операции."""
 
+    def __init__(self, message: str = "Состояние агента изменилось. Повторите запрос.") -> None:
+        super().__init__(message)
+
+
+class TimerSchedulerPendingError(AgentLifecycleChangedError):
+    """Предыдущий планировщик ещё сохраняет результат: восстановление запускать рано."""
+
     def __init__(self) -> None:
-        super().__init__("Состояние агента изменилось. Повторите запрос.")
+        super().__init__(
+            "Предыдущий планировщик ещё сохраняет состояние таймера. "
+            "Запуск отложен, чтобы не потерять задание. Повторите через минуту."
+        )
 
 
 class TelegramAuthorizationRequired(RuntimeError):
@@ -869,6 +883,7 @@ class MimicAgentRuntime:
             self._state = AgentRuntimeState.STARTING
             try:
                 await _await_telegram_teardown(self.config.agent_id)
+                await _await_timer_scheduler(self.config.agent_id)
             except BaseException:
                 self._state = previous_state
                 raise
@@ -888,6 +903,7 @@ class MimicAgentRuntime:
                 # До обработчика сообщений: ответы @SpamBot, дошедшие после рестарта,
                 # не должны начинать ход агента (он иначе нажимает кнопки апелляции).
                 await self._remember_spambot_id()
+                await self._recover_interrupted_timers()
                 logger.debug("Authorized. Registering message handler...")
                 self._register_message_handler()
                 logger.info("Message handler registered")
@@ -979,6 +995,7 @@ class MimicAgentRuntime:
         try:
             if self._scheduler_task is not None:
                 scheduler_task = self._scheduler_task
+                _hold_timer_scheduler(self.config.agent_id, scheduler_task)
                 scheduler_task.cancel()
                 await self._within_stop_step(scheduler_task, "планировщик таймеров")
                 self._scheduler_task = None
@@ -1329,7 +1346,7 @@ class MimicAgentRuntime:
     async def _trigger_running_message(
         self, trigger: AgentTrigger, *, timer: _TimerDispatch | None = None
     ) -> AgentTriggerResult:
-        admitted_generation = self._stop_generation
+        admitted_generation = timer.generation if timer is not None else self._stop_generation
         task = asyncio.current_task()
         assert task is not None
         self._direct_turns.add(task)
@@ -1344,6 +1361,7 @@ class MimicAgentRuntime:
                 ):
                     raise AgentLifecycleChangedError()
                 if timer is not None:
+                    timer.started = True
                     await self._record_event(
                         event_type="timer.fired",
                         status="succeeded",
@@ -2628,72 +2646,175 @@ class MimicAgentRuntime:
                 break
 
     async def _check_and_trigger_timers(self) -> None:
-        if not self._session_factory:
+        """Брать по одному; повтор безопасен только до допуска к ходу агента."""
+        session_factory = self._session_factory
+        if session_factory is None:
             return
 
         from datetime import UTC, datetime
 
-        from sqlalchemy import select, update
+        from sqlalchemy import select
 
         from mimic42.integrations.database_models import AgentTimerModel
 
         now_utc = datetime.now(UTC)
 
-        async with self._session_factory() as db_session:
-            stmt = select(AgentTimerModel).where(
-                AgentTimerModel.agent_id == self.config.agent_id,
-                AgentTimerModel.status == "pending",
-                AgentTimerModel.trigger_at <= now_utc,
-            )
-            result = await db_session.scalars(stmt)
-            due_timers = list(result)
+        generation = self._stop_generation
+        while generation == self._stop_generation:
+            timer: AgentTimerModel | None = None
+            timer_id: UUID | None = None
+            dispatch: _TimerDispatch | None = None
+            claimed = False
 
-            if not due_timers:
-                return
-
-            for timer in due_timers:
-                timer.status = "running"
-            await db_session.commit()
-
-            for timer in due_timers:
-                try:
-                    checked_id = await self._ensure_peer_allowed(timer.peer)
-                    trigger_text = f"[Отложенное событие] Сработал таймер: {timer.description}"
-                    # Ход идёт в проверенный чат, а не в исходное имя: пока модель
-                    # думает, имя может стать чужим. По ID ту же переписку найдёт и память.
-                    await self._trigger_running_message(
-                        AgentTrigger(
-                            peer=timer.peer if checked_id is None else str(checked_id),
-                            text=trigger_text,
-                        ),
-                        timer=_TimerDispatch(
-                            description=timer.description, trigger_at=timer.trigger_at
-                        ),
+            async def claim() -> None:
+                nonlocal timer, timer_id, dispatch
+                async with session_factory() as db_session:
+                    stmt = (
+                        select(AgentTimerModel)
+                        .where(
+                            AgentTimerModel.agent_id == self.config.agent_id,
+                            AgentTimerModel.status == "pending",
+                            AgentTimerModel.trigger_at <= now_utc,
+                        )
+                        .order_by(AgentTimerModel.trigger_at, AgentTimerModel.id)
+                        .limit(1)
+                        .with_for_update(skip_locked=True)
                     )
-                    timer.status = "succeeded"
-                except Exception as e:
-                    logger.exception("Error triggering timer %s", timer.id)
-                    timer.status = "failed"
-                    await self._record_event(
+                    timer = await db_session.scalar(stmt)
+                    if timer is not None:
+                        timer_id = timer.id
+                        dispatch = _TimerDispatch(
+                            description=timer.description,
+                            trigger_at=timer.trigger_at,
+                            generation=generation,
+                        )
+                        timer.status = "running"
+                        await db_session.commit()
+
+            try:
+                await settle_persistence(claim())
+                claimed = True
+                if timer is None:
+                    return
+                assert dispatch is not None
+                checked_id = await self._ensure_peer_allowed(timer.peer)
+                trigger_text = f"[Отложенное событие] Сработал таймер: {timer.description}"
+                await self._trigger_running_message(
+                    AgentTrigger(
+                        peer=timer.peer if checked_id is None else str(checked_id),
+                        text=trigger_text,
+                    ),
+                    timer=dispatch,
+                )
+            except asyncio.CancelledError:
+                if timer_id is not None:
+                    await settle_persistence(
+                        self._finish_timer(
+                            timer_id,
+                            "failed" if dispatch is not None and dispatch.started else "pending",
+                        )
+                    )
+                raise
+            except AgentLifecycleChangedError:
+                assert timer is not None and dispatch is not None
+                await settle_persistence(
+                    self._finish_timer(timer.id, "failed" if dispatch.started else "pending")
+                )
+                return
+            except Exception as e:
+                if not claimed or timer is None:
+                    raise
+                logger.exception("Error triggering timer %s", timer.id)
+                await settle_persistence(self._finish_timer(timer.id, "failed"))
+                await self._record_event(
+                    event_type="timer.failed",
+                    status="failed",
+                    payload={
+                        "timer_id": str(timer.id),
+                        "peer": timer.peer,
+                        "description": timer.description,
+                        "trigger_at": timer.trigger_at.isoformat(),
+                        "error_code": type(e).__name__,
+                    },
+                    error=str(e),
+                )
+            else:
+                assert timer is not None
+                await settle_persistence(self._finish_timer(timer.id, "succeeded"))
+
+    async def _finish_timer(self, timer_id: UUID, status: str) -> None:
+        from sqlalchemy import update
+
+        from mimic42.integrations.database_models import AgentTimerModel
+
+        assert self._session_factory is not None
+        async with self._session_factory() as session:
+            await session.execute(
+                update(AgentTimerModel)
+                .where(AgentTimerModel.id == timer_id, AgentTimerModel.status == "running")
+                .values(status=status)
+            )
+            await session.commit()
+
+    async def _recover_interrupted_timers(self) -> None:
+        """Не повторять ход с неизвестным результатом: Telegram мог уже принять отправку."""
+        if self._session_factory is None:
+            return
+        from sqlalchemy import update
+
+        from mimic42.integrations.database_models import AgentEventModel, AgentTimerModel
+
+        async with self._session_factory() as session:
+            timers = await session.scalars(
+                update(AgentTimerModel)
+                .where(
+                    AgentTimerModel.agent_id == self.config.agent_id,
+                    AgentTimerModel.status == "running",
+                )
+                .values(status="failed")
+                .returning(AgentTimerModel)
+            )
+            for timer in timers:
+                session.add(
+                    AgentEventModel(
+                        agent_id=self.config.agent_id,
                         event_type="timer.failed",
                         status="failed",
-                        payload={
-                            "peer": timer.peer,
-                            "description": timer.description,
-                            "trigger_at": timer.trigger_at.isoformat(),
-                            "error_code": type(e).__name__,
-                        },
-                        error=str(e),
+                        payload=_truncate(
+                            {
+                                "timer_id": str(timer.id),
+                                "peer": timer.peer,
+                                "description": timer.description,
+                                "trigger_at": timer.trigger_at.isoformat(),
+                                "error_code": "TimerInterrupted",
+                            }
+                        ),
+                        error=(
+                            "Ход прерван. Автоматический повтор отключён: "
+                            "часть действий могла выполниться."
+                        ),
                     )
+                )
+            await session.commit()
 
-                # Update status
-                async with self._session_factory() as update_session:
-                    await update_session.execute(
-                        update(AgentTimerModel)
-                        .where(AgentTimerModel.id == timer.id)
-                        .values(status=timer.status)
-                    )
-                    await update_session.commit()
+
+def _hold_timer_scheduler(agent_id: UUID, task: asyncio.Task[None]) -> None:
+    """Новый runtime дождётся известных локальных записей прежде, чем искать orphan-задачи."""
+    _PENDING_TIMER_SCHEDULERS[agent_id] = task
+
+    def release(finished: asyncio.Task[None]) -> None:
+        if _PENDING_TIMER_SCHEDULERS.get(agent_id) is finished:
+            del _PENDING_TIMER_SCHEDULERS[agent_id]
+
+    task.add_done_callback(release)
+
+
+async def _await_timer_scheduler(agent_id: UUID) -> None:
+    task = _PENDING_TIMER_SCHEDULERS.get(agent_id)
+    if task is not None:
+        done, _ = await asyncio.wait({task}, timeout=TIMER_SCHEDULER_WAIT_SECONDS)
+        if task not in done:
+            raise TimerSchedulerPendingError()
 
 
 async def retry_previous_telegram_teardown(

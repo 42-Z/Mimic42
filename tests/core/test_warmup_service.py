@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import asyncio
+import gc
 import random
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any, cast
 from uuid import UUID, uuid4
+from weakref import ref
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -112,6 +115,120 @@ class MemoryStateStore:
         self, agent_id: UUID, event_type: str, payload: dict[str, Any] | None = None
     ) -> None:
         self.events.append((agent_id, event_type))
+
+
+def test_transition_lock_is_shared_while_used_and_released_afterwards() -> None:
+    runtime = StubRuntime(user_id=1)
+    service, _ = make_service([runtime], MemoryHistory(), due_moment(runtime))
+    lock = service._transition_lock(cast(MimicAgentRuntime, runtime))
+    assert service._transition_lock(cast(MimicAgentRuntime, runtime)) is lock
+    weak = ref(lock)
+    del lock
+    gc.collect()
+    assert weak() is None
+    assert runtime.config.agent_id not in service._transition_locks
+
+
+@pytest.mark.parametrize("transition", [EVENT_RESTRICTED, EVENT_RECOVERY_STARTED, EVENT_RECOVERED])
+async def test_failed_transition_keeps_runtime_state_and_can_be_retried(
+    transition: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = StubRuntime(
+        user_id=1,
+        restricted=transition != EVENT_RESTRICTED,
+        recovery=transition == EVENT_RECOVERED,
+        spambot=True,
+    )
+    store = MemoryStateStore()
+    service, _ = make_service([runtime], MemoryHistory(), due_moment(runtime), store=store)
+    original = (runtime.warmup_restricted_at, runtime.warmup_recovery)
+    record = store.record
+
+    async def fail_record(
+        agent_id: UUID, event_type: str, payload: dict[str, Any] | None = None
+    ) -> None:
+        raise RuntimeError("storage unavailable")
+
+    monkeypatch.setattr(store, "record", fail_record)
+
+    async def apply() -> None:
+        if transition == EVENT_RESTRICTED:
+            await service.report_peer_flood(runtime.config.agent_id)
+        elif transition == EVENT_RECOVERY_STARTED:
+            await service.start_recovery(runtime.config.agent_id)
+        else:
+            await service._release_if_free(cast(MimicAgentRuntime, runtime))
+
+    with pytest.raises(RuntimeError, match="storage unavailable"):
+        await apply()
+    assert (runtime.warmup_restricted_at, runtime.warmup_recovery) == original
+    assert store.events == []
+
+    monkeypatch.setattr(store, "record", record)
+    await apply()
+    assert store.events == [(runtime.config.agent_id, transition)]
+    assert (runtime.warmup_restricted_at, runtime.warmup_recovery) != original
+
+
+async def test_cancelled_recovery_finishes_persistence_and_runtime_update(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = StubRuntime(user_id=1, restricted=True)
+    store = MemoryStateStore()
+    service, _ = make_service([runtime], MemoryHistory(), due_moment(runtime), store=store)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    record = store.record
+
+    async def slow_record(agent_id: UUID, event_type: str, payload: Any = None) -> None:
+        entered.set()
+        await release.wait()
+        await record(agent_id, event_type, payload)
+
+    monkeypatch.setattr(store, "record", slow_record)
+    task = asyncio.create_task(service.start_recovery(runtime.config.agent_id))
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        task.cancel()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+    assert runtime.warmup_recovery is True
+    assert store.events == [(runtime.config.agent_id, EVENT_RECOVERY_STARTED)]
+
+
+async def test_recovery_requests_are_serialized_until_transition_is_saved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = StubRuntime(user_id=1, restricted=True)
+    store = MemoryStateStore()
+    service, _ = make_service([runtime], MemoryHistory(), due_moment(runtime), store=store)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    record = store.record
+
+    async def slow_record(agent_id: UUID, event_type: str, payload: Any = None) -> None:
+        entered.set()
+        await release.wait()
+        await record(agent_id, event_type, payload)
+
+    monkeypatch.setattr(store, "record", slow_record)
+    first = asyncio.create_task(service.start_recovery(runtime.config.agent_id))
+    second = asyncio.create_task(service.start_recovery(runtime.config.agent_id))
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        assert not first.done()
+        assert not second.done()
+        assert runtime.warmup_recovery is False
+        release.set()
+        assert await asyncio.gather(first, second) == [True, True]
+    finally:
+        release.set()
+        await asyncio.gather(first, second, return_exceptions=True)
+    assert store.events == [(runtime.config.agent_id, EVENT_RECOVERY_STARTED)]
 
 
 def make_service(

@@ -24,6 +24,7 @@ const OTHER_AGENT_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const TIMESTAMP = '2026-11-05T12:00:00.000Z';
 const originalTimezone = process.env.TZ;
 const clients: QueryClient[] = [];
+const timestampValues = new Map<string, bigint>();
 let restoreClient: (() => void) | undefined;
 
 function row(index: number, values: Partial<AnalyticsRow> = {}): AnalyticsRow {
@@ -53,13 +54,17 @@ function splitFilters(value: string): string[] {
 
 function compareTimestamps(left: string, right: string): number {
   function microseconds(value: string): bigint {
+    const cached = timestampValues.get(value);
+    if (cached !== undefined) return cached;
     const zoneStart = value.endsWith('Z')
       ? value.length - 1
       : Math.max(value.indexOf('+', 19), value.indexOf('-', 19));
     const seconds = value.slice(0, 19) + value.slice(zoneStart);
     const fraction = value.charAt(19) === '.' ? value.slice(20, zoneStart) : '';
-    return BigInt(Date.parse(seconds)) * BigInt(1000)
+    const result = BigInt(Date.parse(seconds)) * BigInt(1000)
       + BigInt(fraction.padEnd(6, '0').slice(0, 6));
+    timestampValues.set(value, result);
+    return result;
   }
 
   const a = microseconds(left);
@@ -214,6 +219,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  timestampValues.clear();
   clients.splice(0).forEach((client) => client.clear());
   restoreClient?.();
   restoreClient = undefined;
