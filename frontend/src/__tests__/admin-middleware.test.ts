@@ -1,12 +1,15 @@
-import { afterAll, beforeEach, expect, mock, test } from 'bun:test';
+import { afterEach, beforeEach, expect, spyOn, test } from 'bun:test';
+import * as supabaseSsr from '@supabase/ssr';
 import { NextRequest } from 'next/server';
+import { middleware } from '@/middleware';
 
 let signedIn = true;
 let hasAgent = false;
 let agentLookups = 0;
+let restoreServerClient: (() => void) | undefined;
 
-mock.module('@supabase/ssr', () => ({
-  createServerClient: () => ({
+function createTestClient() {
+  return {
     auth: {
       getUser: async () => ({
         data: { user: signedIn ? { id: 'user-id' } : null },
@@ -24,18 +27,25 @@ mock.module('@supabase/ssr', () => ({
         }),
       }),
     }),
-  }),
-}));
-
-const { middleware } = await import('@/middleware');
+  } as unknown as ReturnType<typeof supabaseSsr.createServerClient>;
+}
 
 beforeEach(() => {
   signedIn = true;
   hasAgent = false;
   agentLookups = 0;
+  const spy = spyOn(supabaseSsr, 'createServerClient').mockImplementation(createTestClient);
+  restoreServerClient = () => spy.mockRestore();
 });
 
-afterAll(() => mock.restore());
+afterEach(() => {
+  restoreServerClient?.();
+  restoreServerClient = undefined;
+});
+
+test('mocking middleware authentication preserves the browser client export', () => {
+  expect(typeof supabaseSsr.createBrowserClient).toBe('function');
+});
 
 test('signed-in administrators can open /admin without owning an agent', async () => {
   const response = await middleware(new NextRequest('https://mimic.test/admin'));
