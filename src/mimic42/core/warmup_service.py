@@ -30,6 +30,7 @@ from collections.abc import Callable, Iterable
 from datetime import UTC, datetime, time
 from typing import Any, Literal, Protocol
 from uuid import UUID
+from weakref import WeakValueDictionary
 from zoneinfo import ZoneInfo
 
 from mimic42.core.agent_runtime import AgentRuntimeState, MimicAgentRuntime, OpenerResult
@@ -140,7 +141,7 @@ class WarmupService:
         # не дойти, а до этого та же попытка не должна выглядеть «ещё не начатой».
         self._reserved: dict[tuple[AttemptKind, UUID], list[datetime]] = {}
         self._task: asyncio.Task[None] | None = None
-        self._transition_locks: dict[UUID, asyncio.Lock] = {}
+        self._transition_locks: WeakValueDictionary[UUID, asyncio.Lock] = WeakValueDictionary()
 
     def start(self) -> None:
         if self._task is None:

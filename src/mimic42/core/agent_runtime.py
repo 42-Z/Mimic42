@@ -17,7 +17,7 @@ from python_socks import ProxyConnectionError, ProxyError, ProxyTimeoutError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from telethon import errors
 
-from mimic42.core.activity import ActivityRecorder
+from mimic42.core.activity import ActivityRecorder, _truncate
 from mimic42.core.album_grouper import AlbumGrouper
 from mimic42.core.chat_access import ChatAccess, ChatDisabledError, link_hint
 from mimic42.core.chat_directory import ChatDirectory, ChatItem
@@ -89,6 +89,7 @@ STOP_STEP_TIMEOUT_SECONDS = 5.0
 # одновременных соединения одной сессии Telegram считает ошибкой (AUTH_KEY_DUPLICATED)
 # и отзывает ключ — «с того же или другого IP», так что перекрытия допускать нельзя.
 TELEGRAM_TEARDOWN_WAIT_SECONDS = 30.0
+TIMER_SCHEDULER_WAIT_SECONDS = 30.0
 
 
 @dataclass(frozen=True)
@@ -127,8 +128,18 @@ class TelegramTeardownPendingError(RuntimeError):
 class AgentLifecycleChangedError(RuntimeError):
     """Рантайм закрыт или остановлен до допуска запрошенной операции."""
 
+    def __init__(self, message: str = "Состояние агента изменилось. Повторите запрос.") -> None:
+        super().__init__(message)
+
+
+class TimerSchedulerPendingError(AgentLifecycleChangedError):
+    """Предыдущий планировщик ещё сохраняет результат: восстановление запускать рано."""
+
     def __init__(self) -> None:
-        super().__init__("Состояние агента изменилось. Повторите запрос.")
+        super().__init__(
+            "Предыдущий планировщик ещё сохраняет состояние таймера. "
+            "Запуск отложен, чтобы не потерять задание. Повторите через минуту."
+        )
 
 
 class TelegramAuthorizationRequired(RuntimeError):
@@ -2769,13 +2780,15 @@ class MimicAgentRuntime:
                         agent_id=self.config.agent_id,
                         event_type="timer.failed",
                         status="failed",
-                        payload={
-                            "timer_id": str(timer.id),
-                            "peer": timer.peer,
-                            "description": timer.description,
-                            "trigger_at": timer.trigger_at.isoformat(),
-                            "error_code": "TimerInterrupted",
-                        },
+                        payload=_truncate(
+                            {
+                                "timer_id": str(timer.id),
+                                "peer": timer.peer,
+                                "description": timer.description,
+                                "trigger_at": timer.trigger_at.isoformat(),
+                                "error_code": "TimerInterrupted",
+                            }
+                        ),
                         error=(
                             "Ход прерван. Автоматический повтор отключён: "
                             "часть действий могла выполниться."
@@ -2799,7 +2812,9 @@ def _hold_timer_scheduler(agent_id: UUID, task: asyncio.Task[None]) -> None:
 async def _await_timer_scheduler(agent_id: UUID) -> None:
     task = _PENDING_TIMER_SCHEDULERS.get(agent_id)
     if task is not None:
-        await asyncio.shield(asyncio.gather(task, return_exceptions=True))
+        done, _ = await asyncio.wait({task}, timeout=TIMER_SCHEDULER_WAIT_SECONDS)
+        if task not in done:
+            raise TimerSchedulerPendingError()
 
 
 async def retry_previous_telegram_teardown(

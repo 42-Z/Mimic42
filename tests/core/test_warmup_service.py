@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import random
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any, cast
 from uuid import UUID, uuid4
+from weakref import ref
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -113,6 +115,18 @@ class MemoryStateStore:
         self, agent_id: UUID, event_type: str, payload: dict[str, Any] | None = None
     ) -> None:
         self.events.append((agent_id, event_type))
+
+
+def test_transition_lock_is_shared_while_used_and_released_afterwards() -> None:
+    runtime = StubRuntime(user_id=1)
+    service, _ = make_service([runtime], MemoryHistory(), due_moment(runtime))
+    lock = service._transition_lock(cast(MimicAgentRuntime, runtime))
+    assert service._transition_lock(cast(MimicAgentRuntime, runtime)) is lock
+    weak = ref(lock)
+    del lock
+    gc.collect()
+    assert weak() is None
+    assert runtime.config.agent_id not in service._transition_locks
 
 
 @pytest.mark.parametrize("transition", [EVENT_RESTRICTED, EVENT_RECOVERY_STARTED, EVENT_RECOVERED])

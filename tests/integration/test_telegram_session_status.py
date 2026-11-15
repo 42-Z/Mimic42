@@ -36,6 +36,8 @@ from mimic42.testing.telegram import FakeTelegramAccount
 
 from ..core.test_agent_runtime import FakeLangChainAgent, FakeTelegramClient, make_config
 
+DATABASE_WAIT_TIMEOUT_SECONDS = 30.0
+
 
 async def _seed_agent_with_session(
     db_session_factory: async_sessionmaker[AsyncSession],
@@ -340,7 +342,9 @@ async def test_old_runtime_cannot_revoke_newly_rebound_session(
 
 
 async def _wait_for_blocker(session: AsyncSession, pid: int, blocker: int) -> None:
-    async with asyncio.timeout(5):
+    """Дождаться состояния блокировки; время сетевого подключения не входит в ожидание."""
+    await session.connection()
+    async with asyncio.timeout(DATABASE_WAIT_TIMEOUT_SECONDS):
         while not await session.scalar(
             text("select :blocker = any(pg_blocking_pids(:pid))"), {"pid": pid, "blocker": blocker}
         ):
@@ -399,12 +403,12 @@ async def test_revoke_waits_for_rebind_before_locking_telegram_session(
     )
     revoke = None
     try:
-        async with asyncio.timeout(5):
+        async with asyncio.timeout(DATABASE_WAIT_TIMEOUT_SECONDS):
             await agent_locked.wait()
         revoke = asyncio.create_task(
             runtime._mark_telegram_session_revoked(error=REVOKED_SESSION_MESSAGE)
         )
-        pid = await asyncio.wait_for(runtime_pid, timeout=5)
+        pid = await asyncio.wait_for(runtime_pid, timeout=DATABASE_WAIT_TIMEOUT_SECONDS)
         async with db_session_factory() as observer:
             await _wait_for_blocker(observer, pid, rebind_pid.result())
             row = await observer.scalar(
@@ -417,7 +421,8 @@ async def test_revoke_waits_for_rebind_before_locking_telegram_session(
     finally:
         release_rebind.set()
         await asyncio.wait_for(
-            asyncio.gather(rebind, *([revoke] if revoke is not None else [])), timeout=10
+            asyncio.gather(rebind, *([revoke] if revoke is not None else [])),
+            timeout=DATABASE_WAIT_TIMEOUT_SECONDS,
         )
 
     async with db_session_factory() as session:
@@ -477,13 +482,13 @@ async def test_parent_delete_waits_for_pool_before_locking_agent(
             )
             await observer.rollback()
             await holder.commit()
-            assert (await asyncio.wait_for(deletion, timeout=5)).scalar_one() == (
-                agent_id if table == "agents" else owner_id
-            )
+            assert (
+                await asyncio.wait_for(deletion, timeout=DATABASE_WAIT_TIMEOUT_SECONDS)
+            ).scalar_one() == (agent_id if table == "agents" else owner_id)
         finally:
             await observer.rollback()
             await holder.rollback()
-            await asyncio.wait_for(deletion, timeout=5)
+            await asyncio.wait_for(deletion, timeout=DATABASE_WAIT_TIMEOUT_SECONDS)
             await deleting.rollback()
 
 
