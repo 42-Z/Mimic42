@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
@@ -11,6 +12,7 @@ from mimic42.api.auth import CurrentUser
 from mimic42.core.crypto import FernetSecretCipher
 from mimic42.core.onboarding import OnboardingSession, TelegramLoginStatus
 from mimic42.integrations.database_agent_store import DatabaseAgentStore
+from mimic42.integrations.database_models import AgentEventModel
 from mimic42.testing import registry, seed_agent
 from mimic42.testing.llm import Reply
 from mimic42.testing.peer import FakePeer
@@ -79,3 +81,67 @@ async def test_whole_turn_reaches_the_database_and_the_api(
     texts = [item["content"] for item in response.json()]
     assert "привет" in texts
     assert "привет, чем помочь" in texts
+
+
+@pytest.mark.asyncio
+async def test_attack_events_reach_the_conversation_feed(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    """Событие атаки видно в ленте отдельным блоком, обычное событие тоже не потеряно."""
+    owner_id = clean_slot.persona("full").user_id
+    agent_id = uuid4()
+    cipher = FernetSecretCipher(os.environ["SECRET_KEY"])
+    store = DatabaseAgentStore(db_session_factory, cipher=cipher)
+    await seed_agent(
+        store,
+        OnboardingSession(
+            onboarding_id=agent_id,
+            owner_id=owner_id,
+            authorization_status=TelegramLoginStatus.AUTHORIZED,
+            api_id=1,
+            api_hash_secret=cipher.encrypt("test-api-hash"),
+            session_secret=cipher.encrypt("test-session"),
+            name="собеседник",
+            soul_prompt="спокойный помощник, отвечает коротко",
+        ),
+    )
+
+    attack_id = uuid4()
+    base = datetime(2026, 11, 16, 12, 0, tzinfo=UTC)
+    async with db_session_factory() as session:
+        session.add(
+            AgentEventModel(
+                agent_id=agent_id,
+                event_type="agent.started",
+                status="succeeded",
+                payload={},
+                created_at=base,
+            )
+        )
+        session.add(
+            AgentEventModel(
+                agent_id=agent_id,
+                event_type="attack.comment_sent",
+                status="succeeded",
+                payload={
+                    "attack_id": str(attack_id),
+                    "random_id": 9001,
+                    "message_id": 501,
+                },
+                created_at=base + timedelta(seconds=5),
+            )
+        )
+        await session.commit()
+
+    page = await store.get_conversation(agent_id=agent_id, limit=10)
+
+    events = {turn.tools[0].name: turn.tools[0] for turn in page.turns if turn.tools}
+    assert set(events) == {"agent.started", "attack.comment_sent"}
+    sent = events["attack.comment_sent"]
+    assert sent.status == "succeeded"
+    assert sent.payload == {
+        "attack_id": str(attack_id),
+        "random_id": 9001,
+        "message_id": 501,
+    }

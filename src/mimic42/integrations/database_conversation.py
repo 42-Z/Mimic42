@@ -20,7 +20,15 @@ from mimic42.integrations.database_models import AgentEventModel, AgentMessageMo
 
 _INCOMING = ("incoming", "dashboard_trigger")
 _OUTGOING = ("agent_response", "outgoing")
-_LIFECYCLE_PREFIXES = ("agent.", "timer.", "turn.", "message.", "first_comment.", "warmup.")
+_LIFECYCLE_PREFIXES = (
+    "agent.",
+    "timer.",
+    "turn.",
+    "message.",
+    "first_comment.",
+    "warmup.",
+    "attack.",
+)
 
 
 def _turn_id(payload: Any) -> ColumnElement[str]:
