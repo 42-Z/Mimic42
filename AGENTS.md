@@ -55,7 +55,7 @@
 | `frontend/` | Дашборд на Next.js (источник правды — `frontend/src/app/`) |
 | `supabase/migrations/` | SQL-миграции (Supabase CLI) |
 | `tests/` | Pytest: `api/`, `core/`, `integrations/`, `integration/`, `testing/` |
-| `docs/superpowers/plans/` | Планы реализации |
+| `docs/superpowers/` | Артефакты воркфлоу superpowers. Папкой управляет только этот воркфлоу; в этом окружении он не установлен, писать сюда нельзя. |
 
 ## Команды
 
@@ -149,6 +149,12 @@ GitHub Project: https://github.com/orgs/42-Z/projects/2/
 - https://supabase.com/docs
 - https://fastapi.tiangolo.com/
 - https://docs.sqlalchemy.org/en/20/
+
+### Воркфлоу
+
+Своего воркфлоу у проекта нет. Папка `docs/superpowers/` принадлежит внешнему воркфлоу superpowers: в этом окружении он не установлен, и писать в неё нельзя.
+
+Планы и спецификации ведутся по pstack. Папки под артефакты pstack в проекте нет, поэтому они лежат вне проекта, во временной папке.
 
 ### Скиллы
 
