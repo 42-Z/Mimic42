@@ -159,6 +159,27 @@ class MemoryMediaStorage:
             kind=kind, name=name, mime_type=mime_type, size=len(data), storage_path=path
         )
 
+    async def upload_at_prefix(
+        self,
+        *,
+        path_prefix: str,
+        filename: str,
+        data: bytes,
+        mime_type: str,
+        kind: str = "doc",
+    ) -> Any:
+        """Загрузка пула атаки в папку владельца, как у Supabase-хранилища."""
+        from mimic42.core.media import MediaFile, safe_filename
+
+        if not data:
+            return None
+        name = safe_filename(filename)
+        path = f"{path_prefix}/{uuid4()}/{name}"
+        self._files[path] = bytes(data)
+        return MediaFile(
+            kind=kind, name=name, mime_type=mime_type, size=len(data), storage_path=path
+        )
+
     async def open(self, path: str) -> bytes | None:
         return self._files.get(path)
 
