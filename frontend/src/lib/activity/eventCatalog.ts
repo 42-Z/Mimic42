@@ -10,6 +10,8 @@ import {
   Hourglass,
   Ban,
   RotateCcw,
+  Swords,
+  UserMinus,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -46,6 +48,12 @@ export const EVENT_CATALOG: Record<string, EventMeta> = {
   'warmup.restricted': { ru: 'Telegram ограничил аккаунт: писать первым нельзя', icon: AlertTriangle },
   'warmup.recovery_started': { ru: 'Включено восстановление аккаунта', icon: Flame },
   'warmup.recovered': { ru: 'Ограничение Telegram снято', icon: Flame },
+  'attack.started': { ru: 'Атака запущена', icon: Swords },
+  'attack.comment_sent': { ru: 'Атака: комментарий отправлен', icon: MessageSquarePlus },
+  'attack.comment_failed': { ru: 'Атака: комментарий не ушёл', icon: MessageSquareX },
+  'attack.cancelled': { ru: 'Атака отменена', icon: Square },
+  'attack.finished': { ru: 'Атака завершена', icon: Flag },
+  'attack.agent_left': { ru: 'Атака: мимик выбыл', icon: UserMinus },
 };
 
 export function getEventMeta(eventType: string): EventMeta | null {

@@ -20,6 +20,12 @@ export interface ConversationCursor {
   id: string;
 }
 
+/** GET /api/v1/attacks — активные атаки сверху, архив снизу. */
+export interface AttackListResponse {
+  active: AttackSummary[];
+  archive: AttackSummary[];
+}
+
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000';
 
 export interface ApiAccountScope {
@@ -160,6 +166,11 @@ import type {
   AgentChat,
   AgentRecord,
   AgentStatus,
+  AttackAgentAvailability,
+  AttackDetail,
+  AttackDraft,
+  AttackPatch,
+  AttackSummary,
   OnboardingTelegramInput,
   OnboardingPublicStatus,
   TelegramCodeInput,
@@ -332,6 +343,73 @@ export const agentMemoryApi = {
       .then((r) => r.data),
 };
 
+export const attacksApi = {
+  /** GET /api/v1/attacks */
+  list: (options?: AxiosRequestConfig) =>
+    apiClient.get<AttackListResponse>('/attacks', options).then((r) => r.data),
+
+  /** GET /api/v1/attacks/:id */
+  get: (id: string, options?: AxiosRequestConfig) =>
+    apiClient.get<AttackDetail>(`/attacks/${id}`, options).then((r) => r.data),
+
+  /** POST /api/v1/attacks */
+  create: (body: AttackDraft, options?: AxiosRequestConfig) =>
+    apiClient.post<AttackDetail>('/attacks', body, options).then((r) => r.data),
+
+  /** PATCH /api/v1/attacks/:id */
+  update: (id: string, body: AttackPatch, options?: AxiosRequestConfig) =>
+    apiClient.patch<AttackDetail>(`/attacks/${id}`, body, options).then((r) => r.data),
+
+  /** POST /api/v1/attacks/:id/start */
+  start: (id: string, options?: AxiosRequestConfig) =>
+    apiClient.post<AttackDetail>(`/attacks/${id}/start`, undefined, options).then((r) => r.data),
+
+  /** POST /api/v1/attacks/:id/cancel */
+  cancel: (id: string, options?: AxiosRequestConfig) =>
+    apiClient.post<AttackDetail>(`/attacks/${id}/cancel`, undefined, options).then((r) => r.data),
+
+  /** POST /api/v1/attacks/:id/repeat — новый черновик с теми же настройками */
+  repeat: (id: string, options?: AxiosRequestConfig) =>
+    apiClient.post<AttackDetail>(`/attacks/${id}/repeat`, undefined, options).then((r) => r.data),
+
+  /** POST /api/v1/attacks/:id/agents — добавить или перенести мимика */
+  addAgent: (id: string, agentId: string, options?: AxiosRequestConfig) =>
+    apiClient
+      .post<void>(`/attacks/${id}/agents`, { agent_id: agentId }, options)
+      .then(() => undefined),
+
+  /** DELETE /api/v1/attacks/:id/agents/:agentId — пауза участия */
+  removeAgent: (id: string, agentId: string, options?: AxiosRequestConfig) =>
+    apiClient.delete<void>(`/attacks/${id}/agents/${agentId}`, options).then(() => undefined),
+
+  /** GET /api/v1/attacks/agents — доступность мимиков для пикера */
+  agents: (options?: AxiosRequestConfig) =>
+    apiClient
+      .get<AttackAgentAvailability[]>('/attacks/agents', options)
+      .then((r) => r.data),
+
+  /**
+   * POST /api/v1/attack-media — картинка пула атаки.
+   * Content-Type не задаётся вручную: его ставит браузер вместе с boundary.
+   */
+  uploadMedia: (file: File, options?: AxiosRequestConfig) => {
+    const body = new FormData();
+    body.append('file', file);
+    return apiClient
+      .post<UploadedMedia>('/attack-media', body, {
+        ...options,
+        headers: { 'Content-Type': undefined },
+      })
+      .then((r) => r.data);
+  },
+
+  /** GET /api/v1/attack-media-link/:path — подписанная ссылка на превью */
+  mediaLink: (path: string, options?: AxiosRequestConfig) =>
+    apiClient
+      .get<MediaLink>(`/attack-media-link/${encodeMediaPath(path)}`, options)
+      .then((r) => r.data),
+};
+
 export function createAccountApi(scope: ApiAccountScope | undefined) {
   const options = { accountScope: scope };
   return {
@@ -363,6 +441,20 @@ export function createAccountApi(scope: ApiAccountScope | undefined) {
       uploadMedia: (id: string, file: File) => agentsApi.uploadMedia(id, file, options),
       signMediaLink: (id: string, path: string) =>
         agentsApi.signMediaLink(id, path, options),
+    },
+    attacks: {
+      list: () => attacksApi.list(options),
+      get: (id: string) => attacksApi.get(id, options),
+      create: (body: AttackDraft) => attacksApi.create(body, options),
+      update: (id: string, body: AttackPatch) => attacksApi.update(id, body, options),
+      start: (id: string) => attacksApi.start(id, options),
+      cancel: (id: string) => attacksApi.cancel(id, options),
+      repeat: (id: string) => attacksApi.repeat(id, options),
+      addAgent: (id: string, agentId: string) => attacksApi.addAgent(id, agentId, options),
+      removeAgent: (id: string, agentId: string) => attacksApi.removeAgent(id, agentId, options),
+      agents: () => attacksApi.agents(options),
+      uploadMedia: (file: File) => attacksApi.uploadMedia(file, options),
+      mediaLink: (path: string) => attacksApi.mediaLink(path, options),
     },
     onboarding: {
       startTelegram: (body: OnboardingTelegramInput) =>
