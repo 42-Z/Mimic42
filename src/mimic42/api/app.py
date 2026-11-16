@@ -27,7 +27,9 @@ from pydantic import BaseModel, Field
 
 from mimic42.api.admin import get_admin_identity
 from mimic42.api.admin import router as admin_router
+from mimic42.api.attacks import router as attacks_router
 from mimic42.api.auth import AuthVerifier, CurrentUser, SupabaseJWTVerifier, require_user
+from mimic42.api.uploads import image_filename, read_limited_upload
 from mimic42.config import Settings
 from mimic42.core.admin import AdminIdentity, AdminRepository
 from mimic42.core.agent_runtime import (
@@ -280,9 +282,6 @@ class TelegramRebindConfirmRequest(BaseModel):
     onboarding_id: UUID
 
 
-_UPLOAD_CHUNK_BYTES = 1024 * 1024
-
-
 class UploadedMedia(BaseModel):
     """Ответ на загрузку картинки: путь кладётся в настройки агента."""
 
@@ -295,28 +294,6 @@ class UploadedMedia(BaseModel):
 class MediaLinkResponse(BaseModel):
     url: str
     expires_in: int
-
-
-def _image_filename(filename: str | None, extension: str) -> str:
-    """Имя с расширением настоящего формата: по нему Telethon решает, фото это или файл."""
-    base = (filename or "").strip()
-    stem = base.rsplit(".", 1)[0] if "." in base else base
-    return f"{stem or 'image'}.{extension}"
-
-
-async def _read_limited(file: UploadFile, limit: int) -> bytes | None:
-    """Прочитать загрузку порциями; ``None`` — файл больше ``limit``.
-
-    Целиком в память не читаем: размер клиент может не прислать или соврать.
-    """
-    chunks: list[bytes] = []
-    size = 0
-    while chunk := await file.read(_UPLOAD_CHUNK_BYTES):
-        size += len(chunk)
-        if size > limit:
-            return None
-        chunks.append(chunk)
-    return b"".join(chunks)
 
 
 def _get_telegram_app_settings(app: FastAPI) -> TelegramAppSettings:
@@ -681,6 +658,7 @@ def create_app(
     )
 
     app.include_router(admin_router)
+    app.include_router(attacks_router)
 
     account_router = APIRouter()
 
@@ -1048,7 +1026,7 @@ def create_app(
             raise HTTPException(status_code=404, detail="Медиа недоступно")
         await _ensure_agent_owner(store, agent_id=agent_id, user_id=current_user.user_id)
 
-        data = await _read_limited(file, MAX_PHOTO_BYTES)
+        data = await read_limited_upload(file, MAX_PHOTO_BYTES)
         if data is None:
             raise HTTPException(
                 status_code=413,
@@ -1065,7 +1043,7 @@ def create_app(
         mime_type, extension = photo_type
         uploaded = await media_storage.upload(
             agent_id=agent_id,
-            filename=_image_filename(file.filename, extension),
+            filename=image_filename(file.filename, extension),
             data=data,
             mime_type=mime_type,
             kind="photo",

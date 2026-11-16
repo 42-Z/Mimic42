@@ -41,7 +41,7 @@ from mimic42.core.attack import (
     SlotClaim,
     TargetRef,
 )
-from mimic42.core.attack_service import AttackService
+from mimic42.core.attack_service import AgentAvailability, AttackService
 from mimic42.core.attack_target import (
     AttackTarget,
     CommentsDisabledError,
@@ -283,6 +283,14 @@ class FakeRepo(FakeAttackGate):
             for attack in self.attacks.values()
             if attack.status is AttackStatus.RUNNING
         ]
+
+    async def list_attacks(self, owner_id: UUID) -> list[AttackView]:
+        return [
+            self._view(attack) for attack in self.attacks.values() if attack.owner_id == owner_id
+        ]
+
+    async def agent_availability(self, owner_id: UUID) -> list[AgentAvailability]:
+        return []
 
     async def cancel(self, attack_id: UUID, reason: AttackEndReason, now: datetime) -> AttackView:
         attack = self._attack(attack_id)

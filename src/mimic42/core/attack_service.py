@@ -123,6 +123,18 @@ class AttackActivityPort(Protocol):
     ) -> None: ...
 
 
+@dataclass(frozen=True)
+class AgentAvailability:
+    """Мимик и всё, что мешает или позволяет добавить его в атаку."""
+
+    agent_id: UUID
+    name: str
+    state: AgentRuntimeState
+    telegram_authorized: bool
+    warmup_restricted_at: datetime | None
+    active_attack_id: UUID | None
+
+
 class AttackRepositoryPort(Protocol):
     """Транзакции кампании, резерва и заметок, на которые опирается сервис."""
 
@@ -171,6 +183,10 @@ class AttackRepositoryPort(Protocol):
     async def mark_note_written(self, participation_id: UUID, now: datetime) -> bool: ...
 
     async def load(self, attack_id: UUID) -> AttackView | None: ...
+
+    async def list_attacks(self, owner_id: UUID) -> list[AttackView]: ...
+
+    async def agent_availability(self, owner_id: UUID) -> list[AgentAvailability]: ...
 
     async def load_running(self) -> list[AttackView]: ...
 
@@ -372,6 +388,17 @@ class AttackService:
             if agent_id in run.agents:
                 return attack_id
         return None
+
+    # ── Чтение для API ────────────────────────────────────────────────────────
+
+    async def list(self, owner_id: UUID) -> Sequence[AttackView]:
+        return await self._repo.list_attacks(owner_id)
+
+    async def get(self, attack_id: UUID) -> AttackView | None:
+        return await self._repo.load(attack_id)
+
+    async def agent_availability(self, owner_id: UUID) -> Sequence[AgentAvailability]:
+        return await self._repo.agent_availability(owner_id)
 
     # ── Хуки менеджера ────────────────────────────────────────────────────────
 

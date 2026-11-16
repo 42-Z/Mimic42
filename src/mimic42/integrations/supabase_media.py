@@ -97,6 +97,43 @@ class SupabaseMediaStorage:
             kind=kind, name=safe_name, mime_type=mime_type, size=len(data), storage_path=path
         )
 
+    async def upload_at_prefix(
+        self,
+        *,
+        path_prefix: str,
+        filename: str,
+        data: bytes,
+        mime_type: str,
+        kind: str = "doc",
+    ) -> MediaFile | None:
+        """Загрузить файл в заданную папку: у атаки нет ``agent_id``.
+
+        Путь строит хранилище, а не роутер: имя файла санитайзится здесь же,
+        поэтому один вызов даёт ту же форму объекта, что и ``upload``.
+        """
+        if not data:
+            return None
+        if len(data) > MAX_MEDIA_BYTES:
+            logger.warning("Media %s too large (%d bytes), skipping", filename, len(data))
+            return None
+        safe_name = safe_filename(filename)
+        prefix = path_prefix.strip("/")
+        path = f"{prefix}/{uuid4()}/{safe_name}"
+        try:
+            await asyncio.to_thread(
+                lambda: self._bucket().upload(
+                    file=data,
+                    path=path,
+                    file_options={"content-type": mime_type, "upsert": "false"},
+                )
+            )
+        except Exception:
+            logger.warning("Failed to upload media %s", path, exc_info=True)
+            return None
+        return MediaFile(
+            kind=kind, name=safe_name, mime_type=mime_type, size=len(data), storage_path=path
+        )
+
     async def open(self, path: str) -> bytes | None:
         try:
             blob = await asyncio.to_thread(lambda: self._bucket().download(path))

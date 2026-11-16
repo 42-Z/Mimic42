@@ -13,10 +13,11 @@ from collections.abc import Sequence
 from datetime import datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import func, select, update
+from sqlalchemy import and_, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from telethon.helpers import generate_random_long
 
+from mimic42.core.agent_runtime import AgentRuntimeState
 from mimic42.core.attack import (
     AttackAgentStatus,
     AttackConfig,
@@ -41,6 +42,7 @@ from mimic42.core.attack import (
     failure_text,
     validate_config,
 )
+from mimic42.core.attack_service import AgentAvailability
 from mimic42.integrations.database_models import (
     AgentModel,
     AttackAgentModel,
@@ -589,6 +591,72 @@ class DatabaseAttackRepository:
                 return None
             return _attack_view(attack, await _load_participations(db, attack.id))
 
+    async def list_attacks(self, owner_id: UUID) -> list[AttackView]:
+        async with self._session_factory() as db:
+            attacks = list(
+                await db.scalars(
+                    select(AttackModel)
+                    .where(AttackModel.owner_id == owner_id)
+                    .order_by(AttackModel.created_at.desc(), AttackModel.id.desc())
+                )
+            )
+            return [
+                _attack_view(attack, await _load_participations(db, attack.id))
+                for attack in attacks
+            ]
+
+    async def agent_availability(self, owner_id: UUID) -> list[AgentAvailability]:
+        """Мимики владельца с авторизацией, ограничением и живой атакой.
+
+        Частичный уникальный индекс не даёт мимику двух живых участий, поэтому
+        левое соединение с ``attack_agents`` даёт не больше одной строки на
+        мимика; отсутствие сессии значит «Telegram не авторизован».
+        """
+        async with self._session_factory() as db:
+            rows = (
+                await db.execute(
+                    select(
+                        AgentModel.id,
+                        AgentModel.name,
+                        AgentModel.status,
+                        AgentModel.warmup_restricted_at,
+                        TelegramSessionModel.authorization_status,
+                        AttackAgentModel.attack_id,
+                    )
+                    .outerjoin(
+                        TelegramSessionModel,
+                        TelegramSessionModel.agent_id == AgentModel.id,
+                    )
+                    .outerjoin(
+                        AttackAgentModel,
+                        and_(
+                            AttackAgentModel.agent_id == AgentModel.id,
+                            AttackAgentModel.status.in_(_LIVE),
+                        ),
+                    )
+                    .where(AgentModel.owner_id == owner_id)
+                    .order_by(AgentModel.name, AgentModel.id)
+                )
+            ).all()
+        return [
+            AgentAvailability(
+                agent_id=agent_id,
+                name=name,
+                state=_agent_state(status_value),
+                telegram_authorized=authorization_status == "authorized",
+                warmup_restricted_at=warmup_restricted_at,
+                active_attack_id=active_attack_id,
+            )
+            for (
+                agent_id,
+                name,
+                status_value,
+                warmup_restricted_at,
+                authorization_status,
+                active_attack_id,
+            ) in rows
+        ]
+
     async def live_participation(self, agent_id: UUID) -> ParticipationView | None:
         """Живое участие мимика: по нему сервис находит прежнюю атаку при переносе."""
         async with self._session_factory() as db:
@@ -718,6 +786,14 @@ class DatabaseAttackRepository:
         attack.status = AttackStatus.CANCELLED.value
         attack.finished_at = now
         attack.end_reason = end_reason.value
+
+
+def _agent_state(value: str) -> AgentRuntimeState:
+    """Статус из БД в состояние рантайма: неизвестное значение значит «остановлен»."""
+    try:
+        return AgentRuntimeState(value)
+    except ValueError:
+        return AgentRuntimeState.STOPPED
 
 
 def _release_pending(participation: AttackAgentModel, attack: AttackModel) -> None:
