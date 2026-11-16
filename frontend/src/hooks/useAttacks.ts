@@ -70,6 +70,26 @@ export function useCreateAttack() {
   });
 }
 
+/** Создание и немедленный запуск: кнопка «Создать и запустить» в форме. */
+export function useCreateAndStartAttack() {
+  const { attacks: attacksApi } = useAccountApi();
+  const queryKeys = useAccountQueryKeys();
+  const qc = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (body: AttackDraft) => {
+      const attack = await attacksApi.create(body);
+      return attacksApi.start(attack.id);
+    },
+    onSuccess: (attack) => {
+      qc.setQueryData(queryKeys.attacks.detail(attack.id), attack);
+      qc.invalidateQueries({ queryKey: queryKeys.attacks.list() });
+      qc.invalidateQueries({ queryKey: queryKeys.attacks.agents() });
+      qc.invalidateQueries({ queryKey: queryKeys.agents.all });
+    },
+  });
+}
+
 export function useUpdateAttack(id: string) {
   const { attacks: attacksApi } = useAccountApi();
   const queryKeys = useAccountQueryKeys();

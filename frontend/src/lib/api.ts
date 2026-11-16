@@ -20,10 +20,13 @@ export interface ConversationCursor {
   id: string;
 }
 
-/** GET /api/v1/attacks — активные атаки сверху, архив снизу. */
+/**
+ * GET /api/v1/attacks — активные атаки сверху, архив снизу.
+ * Карточке списка нужны тексты и медиа, поэтому список отдаёт полные детали.
+ */
 export interface AttackListResponse {
-  active: AttackSummary[];
-  archive: AttackSummary[];
+  active: AttackDetail[];
+  archive: AttackDetail[];
 }
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:8000';
@@ -170,7 +173,6 @@ import type {
   AttackDetail,
   AttackDraft,
   AttackPatch,
-  AttackSummary,
   OnboardingTelegramInput,
   OnboardingPublicStatus,
   TelegramCodeInput,

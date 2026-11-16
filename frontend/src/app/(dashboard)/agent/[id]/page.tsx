@@ -17,6 +17,7 @@ import {
 import { useAgentMemories, useAgentMemoryHistory } from '@/hooks/useMemory';
 import { useToast } from '@/components/ui/toast';
 import { AgentStatusBadge } from '@/components/agents/AgentStatusBadge';
+import { Badge } from '@/components/ui/badge';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { Input, Textarea } from '@/components/ui/input';
 import { Card, Skeleton, Spinner, Divider } from '@/components/ui/card';
@@ -32,7 +33,7 @@ import { triggerMessageSchema, type TriggerMessageValues } from '@/lib/validator
 import {
   Settings, Activity, Zap, MessageSquare, BarChart2, Brain,
   Play, Square, Send, AlertTriangle, RefreshCw, Link2,
-  Bot, Clock, Search, Trash2, RotateCcw,
+  Bot, Clock, Search, Trash2, RotateCcw, Swords,
 } from 'lucide-react';
 import Link from 'next/link';
 import { formatDistanceToNow, format } from 'date-fns';
@@ -139,6 +140,20 @@ function AgentPageContent({
                   state={status.state}
                   restricted={Boolean(warmup?.restricted_at)}
                 />
+              )}
+              {status?.attack_id && (
+                <Link
+                  href={`/attacks/${status.attack_id}`}
+                  aria-label="Мимик участвует в атаке"
+                  className="rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                >
+                  <Badge
+                    variant="outline"
+                    className="border-primary/30 bg-primary/10 text-primary transition-colors hover:border-primary/60 hover:bg-primary/15"
+                  >
+                    <Swords aria-hidden="true" />в атаке
+                  </Badge>
+                </Link>
               )}
             </div>
           </div>
