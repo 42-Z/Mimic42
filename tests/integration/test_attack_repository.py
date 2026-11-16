@@ -60,12 +60,13 @@ def _config(
     *,
     limit: MessagesLimit | MinutesLimit | None = None,
     texts: tuple[str, ...] = ("Участвую!",),
+    media_paths: tuple[str, ...] = (),
 ) -> AttackConfig:
     return AttackConfig(
         title="Розыгрыш",
         target=parse_target_link("https://t.me/example/412"),
         texts=texts,
-        media_paths=(),
+        media_paths=media_paths,
         limit=limit if limit is not None else MessagesLimit(3),
     )
 
@@ -589,3 +590,136 @@ async def test_load_running_lists_only_running_attacks(
     listed = await repository.load_running()
 
     assert [attack.id for attack in listed] == [running.id]
+
+
+async def test_finish_waits_for_the_reservation_and_is_idempotent(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    owner_id = clean_slot.persona("twofa").user_id
+    repository = _repo(db_session_factory)
+    agent_id = await _create_agent(db_session_factory, owner_id)
+    attack = await repository.create(owner_id, _config(limit=MessagesLimit(1)), [agent_id], NOW)
+    await repository.start(attack.id, NOW)
+    claim = await repository.claim(attack.id, agent_id, NOW, random.Random(1))
+    assert claim is not None
+
+    waiting = await repository.finish(attack.id, AttackEndReason.LIMIT_REACHED, NEXT)
+
+    assert waiting.status is AttackStatus.RUNNING
+    assert waiting.claimed_count == 1 and waiting.sent_count == 0
+
+    await repository.settle(claim, SendOutcome.sent(77), NEXT, NEXT)
+    closed = await repository.finish(attack.id, AttackEndReason.LIMIT_REACHED, NEXT)
+    again = await repository.finish(attack.id, AttackEndReason.DEADLINE, NEXT)
+
+    assert closed.status is AttackStatus.FINISHED
+    assert closed.end_reason is AttackEndReason.LIMIT_REACHED
+    assert all(row.status is AttackAgentStatus.EXITED for row in closed.participations)
+    assert all(row.exit_reason is ExitReason.ATTACK_FINISHED for row in closed.participations)
+    assert again.end_reason is AttackEndReason.LIMIT_REACHED
+
+
+async def test_finish_closes_an_expired_attack_without_reservations(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    owner_id = clean_slot.persona("twofa").user_id
+    repository = _repo(db_session_factory)
+    agent_id = await _create_agent(db_session_factory, owner_id)
+    attack = await repository.create(owner_id, _config(limit=MinutesLimit(1)), [agent_id], NOW)
+    await repository.start(attack.id, NOW)
+
+    closed = await repository.finish(
+        attack.id, AttackEndReason.DEADLINE, NOW + timedelta(minutes=2)
+    )
+
+    assert closed.status is AttackStatus.FINISHED
+    assert closed.end_reason is AttackEndReason.DEADLINE
+    assert closed.participations[0].exit_reason is ExitReason.ATTACK_FINISHED
+
+
+async def test_set_target_stores_public_ids_and_slowmode(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    owner_id = clean_slot.persona("twofa").user_id
+    repository = _repo(db_session_factory)
+    attack = await repository.create(owner_id, _config(), [], NOW)
+
+    await repository.set_target(attack.id, -100_123, 77, 15, NEXT)
+    stored = await repository.load(attack.id)
+
+    assert stored is not None
+    assert stored.target_channel_id == -100_123
+    assert stored.anchor_message_id == 77
+    assert stored.slowmode_seconds == 15
+
+
+async def test_clear_media_keeps_the_same_reservation(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    owner_id = clean_slot.persona("twofa").user_id
+    repository = _repo(db_session_factory)
+    agent_id = await _create_agent(db_session_factory, owner_id)
+    attack = await repository.create(
+        owner_id,
+        _config(media_paths=("attacks/owner/a.jpg",)),
+        [agent_id],
+        NOW,
+    )
+    await repository.start(attack.id, NOW)
+    claim = await repository.claim(attack.id, agent_id, NOW, random.Random(1))
+    assert claim is not None
+
+    cleared = await repository.clear_media(attack.id, claim.participation_id, claim.random_id)
+    repeated = await repository.claim(attack.id, agent_id, NEXT, random.Random(2))
+    stored = await repository.load(attack.id)
+
+    assert cleared is True
+    assert repeated is not None
+    assert repeated.random_id == claim.random_id
+    assert repeated.media == ()
+    assert stored is not None
+    assert stored.participations[0].id == claim.participation_id
+
+
+async def test_live_participation_follows_the_agent_until_it_exits(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    owner_id = clean_slot.persona("twofa").user_id
+    repository = _repo(db_session_factory)
+    agent_id = await _create_agent(db_session_factory, owner_id)
+    attack = await repository.create(owner_id, _config(), [agent_id], NOW)
+
+    live = await repository.live_participation(agent_id)
+
+    assert live is not None
+    assert live.attack_id == attack.id
+    assert live.id == attack.participations[0].id
+
+    await repository.pause(attack.id, agent_id, owner_id, NEXT)
+
+    assert await repository.live_participation(agent_id) is None
+
+
+async def test_exiting_the_last_mimic_on_a_missing_target_keeps_the_reason(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    owner_id = clean_slot.persona("twofa").user_id
+    repository = _repo(db_session_factory)
+    agent_id = await _create_agent(db_session_factory, owner_id)
+    attack = await repository.create(owner_id, _config(), [agent_id], NOW)
+    await repository.start(attack.id, NOW)
+
+    await repository.exit_participation(
+        attack.participations[0].id, ExitReason.TARGET_UNAVAILABLE, NEXT
+    )
+    stored = await repository.load(attack.id)
+
+    assert stored is not None
+    assert stored.status is AttackStatus.CANCELLED
+    assert stored.end_reason is AttackEndReason.TARGET_UNAVAILABLE

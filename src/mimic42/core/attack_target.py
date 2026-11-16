@@ -41,12 +41,14 @@ class AttackTarget:
     """Разрешённая цель одного мимика: группа обсуждения и корень треда.
 
     ``group`` это сущность из ответа Telegram, а не голый id: в ней лежит
-    ``access_hash``, полученный клиентом мимика.
+    ``access_hash``, полученный клиентом мимика. ``channel_id`` — id канала-
+    источника, нужный интерфейсу; группа обсуждения имеет другой id.
     """
 
     group: Any
     root_reply_id: int
     slowmode_seconds: int | None
+    channel_id: int | None = None
 
 
 async def resolve_target(client: Any, ref: TargetRef) -> AttackTarget:
@@ -71,7 +73,12 @@ async def resolve_target(client: Any, ref: TargetRef) -> AttackTarget:
     root, group = _discussion_root(discussion, ref)
     slowmode = await _slowmode(client, group)
     _ensure_writable(group)
-    return AttackTarget(group=group, root_reply_id=root.id, slowmode_seconds=slowmode)
+    return AttackTarget(
+        group=group,
+        root_reply_id=root.id,
+        slowmode_seconds=slowmode,
+        channel_id=channel.id,
+    )
 
 
 async def refresh_slow_mode(client: Any, target: AttackTarget) -> AttackTarget:

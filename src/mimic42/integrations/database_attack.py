@@ -414,7 +414,7 @@ class DatabaseAttackRepository:
                 participation.pending_media = None
                 participation.last_error_code = None
                 participation.last_error = None
-                if outcome.message_id is not None:
+                if outcome.message_id:
                     participation.last_comment_message_id = outcome.message_id
             elif outcome.kind == "not_sent":
                 _release_pending(participation, attack)
@@ -459,6 +459,77 @@ class DatabaseAttackRepository:
             await db.flush()
             return _settlement(attack)
 
+    async def finish(self, attack_id: UUID, reason: AttackEndReason, now: datetime) -> AttackView:
+        """Завершить идущую атаку, когда лимит или срок уже наступили.
+
+        Финал возможен только без резервов в полёте: слот, который ещё не осел,
+        должен сначала получить исход. Повторный вызов на закрытой атаке
+        возвращает её как есть.
+        """
+        async with self._session_factory() as db, db.begin():
+            attack = await self._lock_attack(db, attack_id)
+            if attack is None:
+                raise AttackNotFoundError(f"Атака {attack_id} не найдена")
+            if attack.status in _CLOSED:
+                return _attack_view(attack, await _load_participations(db, attack.id))
+            if attack.status != AttackStatus.RUNNING.value:
+                raise AttackStateError("Завершить можно только идущую атаку")
+            if attack.claimed_count != attack.sent_count:
+                return _attack_view(attack, await _load_participations(db, attack.id))
+            attack.status = AttackStatus.FINISHED.value
+            attack.finished_at = now
+            attack.end_reason = reason.value
+            still_live = await db.scalars(
+                select(AttackAgentModel)
+                .where(
+                    AttackAgentModel.attack_id == attack.id,
+                    AttackAgentModel.status.in_(_LIVE),
+                )
+                .order_by(AttackAgentModel.id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+            for row in still_live:
+                _exit_row(row, attack, ExitReason.ATTACK_FINISHED, now)
+            await db.flush()
+            return _attack_view(attack, await _load_participations(db, attack.id))
+
+    async def set_target(
+        self,
+        attack_id: UUID,
+        channel_id: int | None,
+        anchor_id: int | None,
+        slowmode_seconds: int | None,
+        now: datetime,
+    ) -> None:
+        """Сохранить публичные id цели и последний slow mode для интерфейса."""
+        async with self._session_factory() as db, db.begin():
+            attack = await self._lock_attack(db, attack_id)
+            if attack is None:
+                raise AttackNotFoundError(f"Атака {attack_id} не найдена")
+            attack.target_channel_id = channel_id
+            attack.anchor_message_id = anchor_id
+            attack.slowmode_seconds = slowmode_seconds
+            attack.updated_at = now
+            await db.flush()
+
+    async def clear_media(self, attack_id: UUID, participation_id: UUID, random_id: int) -> bool:
+        """Убрать картинки из резерва, оставив тот же ``random_id`` для текста.
+
+        Fallback на текст не должен менять идентификатор отправки: иначе повтор
+        после сбоя мог бы создать второй комментарий.
+        """
+        async with self._session_factory() as db, db.begin():
+            attack = await self._lock_attack(db, attack_id)
+            participation = await self._lock_participation(db, participation_id)
+            if attack is None or participation is None:
+                return False
+            if participation.pending_random_id != random_id:
+                return False
+            participation.pending_media = []
+            await db.flush()
+            return True
+
     async def exit_participation(
         self, participation_id: UUID, reason: ExitReason, now: datetime
     ) -> None:
@@ -485,7 +556,16 @@ class DatabaseAttackRepository:
             if participation.status == AttackAgentStatus.EXITED.value:
                 return
             _exit_row(participation, attack, reason, now)
-            await self._cancel_if_empty(db, attack, now)
+            await self._cancel_if_empty(
+                db,
+                attack,
+                now,
+                end_reason=(
+                    AttackEndReason.TARGET_UNAVAILABLE
+                    if reason is ExitReason.TARGET_UNAVAILABLE
+                    else AttackEndReason.NO_AGENTS
+                ),
+            )
             await db.flush()
 
     async def mark_note_written(self, participation_id: UUID, now: datetime) -> bool:
@@ -508,6 +588,12 @@ class DatabaseAttackRepository:
             if attack is None:
                 return None
             return _attack_view(attack, await _load_participations(db, attack.id))
+
+    async def live_participation(self, agent_id: UUID) -> ParticipationView | None:
+        """Живое участие мимика: по нему сервис находит прежнюю атаку при переносе."""
+        async with self._session_factory() as db:
+            row = await self._live_participation(db, agent_id)
+            return _participation_view(row) if row is not None else None
 
     async def load_running(self) -> list[AttackView]:
         async with self._session_factory() as db:
@@ -606,7 +692,14 @@ class DatabaseAttackRepository:
         _exit_row(row, previous, ExitReason.MOVED, now)
         await self._cancel_if_empty(db, previous, now)
 
-    async def _cancel_if_empty(self, db: AsyncSession, attack: AttackModel, now: datetime) -> None:
+    async def _cancel_if_empty(
+        self,
+        db: AsyncSession,
+        attack: AttackModel,
+        now: datetime,
+        *,
+        end_reason: AttackEndReason = AttackEndReason.NO_AGENTS,
+    ) -> None:
         if attack.status != AttackStatus.RUNNING.value:
             return
         remaining = int(
@@ -624,7 +717,7 @@ class DatabaseAttackRepository:
             return
         attack.status = AttackStatus.CANCELLED.value
         attack.finished_at = now
-        attack.end_reason = AttackEndReason.NO_AGENTS.value
+        attack.end_reason = end_reason.value
 
 
 def _release_pending(participation: AttackAgentModel, attack: AttackModel) -> None:
