@@ -47,9 +47,9 @@ jobs:
   backend-db:
     name: backend-db
     runs-on: ubuntu-latest
-    # Полный набор db-тестов уже подходит к 20 минутам и с новыми сценариями
-    # не укладывается в старый лимит. Джоба по-прежнему ограничена явно.
-    timeout-minutes: 30
+    # Сетевые задержки общей Dev-базы влияют на длительность последовательных тестов.
+    # Лимит оставляет запас, но не позволяет зависшей проверке работать бессрочно.
+    timeout-minutes: 45
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     concurrency:
       group: mimic42-dev-testdb
@@ -70,7 +70,7 @@ jobs:
         run: uv sync --locked --all-groups
 
       - name: Tests against Dev database
-        run: uv run pytest -m db -W error -q
+        run: uv run pytest -m db -W error -v --durations=20
         env:
           DATABASE_CONNECTION_STRING: ${{ secrets.DATABASE_CONNECTION_STRING }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
