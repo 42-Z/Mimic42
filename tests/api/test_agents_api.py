@@ -170,6 +170,7 @@ async def test_create_saved_agent_uses_only_saved_runtime_config(
                 "agent_id": str(saved_agent_config.agent_id),
                 "owner_id": str(saved_agent_config.owner_id),
                 "state": "running" if auto_start else "stopped",
+                "attack_id": None,
             }
             runtime = await manager.get_agent(saved_agent_config.agent_id)
             assert runtime.config == saved_agent_config
@@ -455,6 +456,7 @@ async def test_create_start_and_trigger_agent_through_api() -> None:
         "agent_id": str(agent_id),
         "owner_id": str(owner_id),
         "state": "running",
+        "attack_id": None,
     }
     assert start_response.status_code == 204
     assert trigger_response.status_code == 200
@@ -757,6 +759,7 @@ async def test_rebind_flow_reuses_agent_session_and_keeps_agent_profile() -> Non
         "agent_id": str(agent_id),
         "owner_id": str(owner_id),
         "state": "stopped",
+        "attack_id": None,
     }
     assert manager.calls[-2:] == [("stop", agent_id), ("reload", agent_id)]
     assert manager.stopped == [agent_id]
@@ -965,6 +968,7 @@ async def test_rebind_confirm_cannot_apply_authorization_completed_during_stop()
         "agent_id": str(agent_id),
         "owner_id": str(owner_id),
         "state": "stopped",
+        "attack_id": None,
     }
     config = await store.get_runtime_config(agent_id)
     assert config.telegram_session_string == latest.session_secret

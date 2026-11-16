@@ -4,7 +4,7 @@ import asyncio
 import io
 import logging
 import random
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -19,6 +19,7 @@ from telethon import errors
 
 from mimic42.core.activity import ActivityRecorder, _truncate
 from mimic42.core.album_grouper import AlbumGrouper
+from mimic42.core.attack import MAX_ATTACHMENTS
 from mimic42.core.chat_access import ChatAccess, ChatDisabledError, link_hint
 from mimic42.core.chat_directory import ChatDirectory, ChatItem
 from mimic42.core.deferred_inbox import DeferredInbox
@@ -163,6 +164,21 @@ class FirstCommentImageUnavailable(RuntimeError):
     """Картинку варианта не прочитать из хранилища, а подписи, чтобы уйти без неё, нет."""
 
 
+class CommentMediaUnavailable(RuntimeError):
+    """Картинку комментария не прочитать из хранилища: уходить можно только текстом."""
+
+
+class AttackModeActiveError(AgentLifecycleChangedError):
+    """Обычный ход во время атаки запрещён: API отвечает 409.
+
+    Наследуется от ошибки жизненного цикла, чтобы существующий обработчик
+    отдавал конфликт без отдельного маршрута в API.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("Агент участвует в атаке: обычные ходы недоступны до её завершения.")
+
+
 UNAUTHORIZED_SESSION_MESSAGE = (
     "Сессия Telegram не авторизована. Требуется повторная привязка Telegram-аккаунта."
 )
@@ -185,6 +201,15 @@ def _is_dead_session_error(exc: BaseException) -> bool:
         exc,
         (TelegramAuthorizationRequired, AuthKeyDuplicatedError, UnauthorizedError),
     )
+
+
+# Ссылка на файл живёт ограниченное время: с ней объект уже не примут, его
+# нужно залить заново.
+MEDIA_REFERENCE_ERRORS = (
+    errors.FileReferenceExpiredError,
+    errors.FileReferenceInvalidError,
+    errors.FileReferenceEmptyError,
+)
 
 
 class AgentRuntimeState(StrEnum):
@@ -255,6 +280,7 @@ class AgentStatus(BaseModel):
     agent_id: UUID
     owner_id: UUID
     state: AgentRuntimeState
+    attack_id: UUID | None = None
 
 
 class AgentTrigger(BaseModel):
@@ -298,6 +324,8 @@ class TelegramClientLike(Protocol):
     async def send_message(self, entity: str | int, message: str, **kwargs: Any) -> object: ...
 
     async def send_file(self, entity: str | int, file: Any, **kwargs: Any) -> object: ...
+
+    async def upload_file(self, file: Any, **kwargs: Any) -> Any: ...
 
     def add_event_handler(
         self,
@@ -430,6 +458,9 @@ class MimicAgentRuntime:
         self._chat_mute_cache: dict[str, tuple[bool, float]] = {}
         self._scheduler_task: asyncio.Task[None] | None = None
         self._http_client: Any | None = None
+        # Кампания, в которой мимик участвует сейчас: на её время обычный
+        # трафик выключен, а состояние рантайма остаётся RUNNING.
+        self._attack_id: UUID | None = None
         self._album_grouper = AlbumGrouper(self._flush_album)
         self._deferred_inbox = DeferredInbox(self._flush_deferred)
         self._album_comment_guard = PostedAlbumGuard()
@@ -559,7 +590,7 @@ class MimicAgentRuntime:
         Уходит как обычное сообщение с набором текста и записью в историю, поэтому
         собеседник отвечает через свой обычный ход.
         """
-        if self._session_revoked or self._state is not AgentRuntimeState.RUNNING:
+        if self._session_revoked or not self.accepts_normal_traffic:
             return OpenerResult.FAILED
         started_at = datetime.now(UTC)
         peer = str(user_id)
@@ -651,6 +682,25 @@ class MimicAgentRuntime:
             )
         except Exception:
             logger.warning("Failed to remember warmup opener for %s", peer, exc_info=True)
+
+    async def remember_note(self, peer: str, text: str) -> None:
+        """Заметка об атаке в историю агента и Mem0; в Telegram она не уходит.
+
+        Ошибка поднимается вызывающему: отметку о записи сервис ставит только
+        после успеха, поэтому сбой памяти дописывается при сверке.
+        """
+        thread_id = await self._upsert_thread(
+            peer=peer, title=None, last_message_at=datetime.now(UTC)
+        )
+        await self._memory_service.save_messages(
+            agent_id=self.config.agent_id,
+            peer=peer,
+            input_messages=[],
+            output_messages=[{"type": "ai", "role": "assistant", "content": text}],
+            structured_response={"send_any_message": True, "text": text},
+            agent_name=self.config.name,
+            thread_id=thread_id,
+        )
 
     async def _on_peer_flood(self) -> None:
         """Любая отправка агента (ответ, инструмент, комментарий) упёрлась в PeerFloodError."""
@@ -849,6 +899,22 @@ class MimicAgentRuntime:
         return self._state
 
     @property
+    def attack_id(self) -> UUID | None:
+        return self._attack_id
+
+    @property
+    def accepts_normal_traffic(self) -> bool:
+        """Идёт ли обычная жизнь мимика: запущен и не участвует в атаке."""
+        return self._state is AgentRuntimeState.RUNNING and self._attack_id is None
+
+    def enter_attack(self, attack_id: UUID) -> None:
+        """Выключить обычный трафик на время кампании."""
+        self._attack_id = attack_id
+
+    def exit_attack(self) -> None:
+        self._attack_id = None
+
+    @property
     def session_revoked(self) -> bool:
         return self._session_revoked
 
@@ -858,6 +924,7 @@ class MimicAgentRuntime:
             agent_id=self.config.agent_id,
             owner_id=self.config.owner_id,
             state=self.state,
+            attack_id=self._attack_id,
         )
 
     async def list_chats(self) -> list[ChatItem]:
@@ -1140,6 +1207,48 @@ class MimicAgentRuntime:
             task.cancel()
         await asyncio.gather(*pending, return_exceptions=True)
 
+    async def _notify_typing(self, client: TelegramClientLike, entity: Any, action: Any) -> None:
+        from telethon import functions
+
+        try:
+            await client(functions.messages.SetTypingRequest(peer=entity, action=action))
+        except Exception:
+            logger.debug("Failed to update typing action", exc_info=True)
+
+    @asynccontextmanager
+    async def _typing_action(
+        self, client: TelegramClientLike, entity: Any, text: str
+    ) -> AsyncIterator[None]:
+        """Держать «печатает» столько, сколько занял бы набор текста.
+
+        Действие снимается в ``finally`` при любом исходе отправки. Сбой самого
+        индикатора не мешает сообщению уйти: это украшение, а не условие.
+        """
+        from telethon import types
+
+        # ~14 символов в секунду плюс разброс: одинаковый темп выдаёт бота.
+        base_delay = len(text) * 0.07
+        delay = max(0.8, min(15.0, base_delay + random.uniform(0.2, 1.2)))
+        logger.debug("Humanized send: calculated delay %.2fs for %d chars", delay, len(text))
+        end_time = asyncio.get_event_loop().time() + delay
+        try:
+            await self._notify_typing(client, entity, types.SendMessageTypingAction())
+            while True:
+                remaining = end_time - asyncio.get_event_loop().time()
+                if remaining <= 0:
+                    break
+                await asyncio.sleep(min(0.5, remaining))
+                # Иногда набор прерывается на долю секунды: так делают люди.
+                if random.random() < 0.08:
+                    await self._notify_typing(client, entity, types.SendMessageCancelAction())
+                    await asyncio.sleep(random.uniform(0.05, 0.25))
+                    await self._notify_typing(client, entity, types.SendMessageTypingAction())
+                else:
+                    await self._notify_typing(client, entity, types.SendMessageTypingAction())
+            yield
+        finally:
+            await self._notify_typing(client, entity, types.SendMessageCancelAction())
+
     async def _humanized_send(
         self,
         peer: Any,
@@ -1147,8 +1256,6 @@ class MimicAgentRuntime:
         reply_to: int | None = None,
     ) -> Any:
         """Send a message after a human-like typing delay with intermittent typing indicators."""
-        from telethon import functions, types
-
         # Resolve peer entity for typing actions
         entity = peer
         get_input_entity = getattr(self._telegram_client, "get_input_entity", None)
@@ -1158,63 +1265,8 @@ class MimicAgentRuntime:
             except Exception:
                 pass
 
-        # Calculate typing delay: ~14 chars per second + random variance
-        base_delay = len(text) * 0.07
-        delay = max(0.8, min(15.0, base_delay + random.uniform(0.2, 1.2)))
-        logger.debug("Humanized send: calculated delay %.2fs for %d chars", delay, len(text))
-
-        end_time = asyncio.get_event_loop().time() + delay
-
-        # Start typing
-        try:
-            await self._telegram_client(
-                functions.messages.SetTypingRequest(
-                    peer=entity,
-                    action=types.SendMessageTypingAction(),
-                )
-            )
-        except Exception:
-            logger.debug("Failed to start typing action", exc_info=True)
-
-        while True:
-            remaining = end_time - asyncio.get_event_loop().time()
-            if remaining <= 0:
-                break
-            sleep_for = min(0.5, remaining)
-            await asyncio.sleep(sleep_for)
-
-            # Small chance (8%) to briefly interrupt typing for realism
-            if random.random() < 0.08:
-                try:
-                    await self._telegram_client(
-                        functions.messages.SetTypingRequest(
-                            peer=entity,
-                            action=types.SendMessageCancelAction(),
-                        )
-                    )
-                    await asyncio.sleep(random.uniform(0.05, 0.25))
-                    await self._telegram_client(
-                        functions.messages.SetTypingRequest(
-                            peer=entity,
-                            action=types.SendMessageTypingAction(),
-                        )
-                    )
-                except Exception:
-                    pass
-            else:
-                try:
-                    await self._telegram_client(
-                        functions.messages.SetTypingRequest(
-                            peer=entity,
-                            action=types.SendMessageTypingAction(),
-                        )
-                    )
-                except Exception:
-                    pass
-
-        # Send the actual message
-        sent_message = None
-        try:
+        async with self._typing_action(self._telegram_client, entity, text):
+            sent_message = None
             # Telegram text limit is 4096 characters.
             # Use telethon.utils.split_text to respect markdown entities.
             if len(text) > 4096:
@@ -1241,19 +1293,135 @@ class MimicAgentRuntime:
                     )
                 else:
                     sent_message = await self._telegram_client.send_message(peer, text)
-        finally:
-            # Cancel typing
-            try:
-                await self._telegram_client(
-                    functions.messages.SetTypingRequest(
-                        peer=entity,
-                        action=types.SendMessageCancelAction(),
-                    )
-                )
-            except Exception:
-                pass
 
         return sent_message
+
+    async def send_humanized_comment(
+        self,
+        client: TelegramClientLike,
+        *,
+        entity: Any,
+        text: str,
+        media: Sequence[str],
+        reply_to: int | None = None,
+        random_id: int,
+    ) -> Any:
+        """Один комментарий в обсуждение: текст, одна картинка или альбом.
+
+        Отправка идёт сырыми запросами, потому что только они принимают
+        ``random_id``: повтор с тем же id Telegram схлопывает в то же сообщение.
+        Текст уходит ровно как есть — без разметки и разбиения.
+        """
+        from telethon import functions, types
+
+        attachments = tuple(media)
+        if len(attachments) > MAX_ATTACHMENTS:
+            raise ValueError(f"В одном комментарии не больше {MAX_ATTACHMENTS} картинок.")
+        reply = (
+            types.InputReplyToMessage(reply_to_msg_id=reply_to) if reply_to is not None else None
+        )
+
+        async with self._typing_action(client, entity, text):
+            if not attachments:
+                return await client(
+                    functions.messages.SendMessageRequest(
+                        peer=entity,
+                        message=text,
+                        random_id=random_id,
+                        reply_to=reply,
+                        no_webpage=True,
+                    )
+                )
+            photos = [await self._comment_media(client, entity, path) for path in attachments]
+            try:
+                return await client(
+                    self._comment_media_request(
+                        entity=entity,
+                        text=text,
+                        photos=photos,
+                        reply_to=reply,
+                        random_id=random_id,
+                    )
+                )
+            except MEDIA_REFERENCE_ERRORS:
+                logger.info("Ссылка на картинку комментария устарела, заливаем заново")
+                for path in attachments:
+                    self._first_comment_media.pop(path, None)
+                photos = [await self._comment_media(client, entity, path) for path in attachments]
+                return await client(
+                    self._comment_media_request(
+                        entity=entity,
+                        text=text,
+                        photos=photos,
+                        reply_to=reply,
+                        random_id=random_id,
+                    )
+                )
+
+    def _comment_media_request(
+        self,
+        *,
+        entity: Any,
+        text: str,
+        photos: Sequence[Any],
+        reply_to: Any,
+        random_id: int,
+    ) -> Any:
+        """Запрос фото или альбома: подпись только у первого элемента."""
+        from telethon import functions, types, utils
+
+        if len(photos) == 1:
+            return functions.messages.SendMediaRequest(
+                peer=entity,
+                media=utils.get_input_media(photos[0].photo),
+                message=text,
+                random_id=random_id,
+                reply_to=reply_to,
+            )
+        return functions.messages.SendMultiMediaRequest(
+            peer=entity,
+            multi_media=[
+                types.InputSingleMedia(
+                    media=utils.get_input_media(photo.photo),
+                    message=text if index == 0 else "",
+                    random_id=random_id + index,
+                )
+                for index, photo in enumerate(photos)
+            ],
+            reply_to=reply_to,
+        )
+
+    async def _comment_media(self, client: TelegramClientLike, entity: Any, path: str) -> Any:
+        """Картинка комментария: из кеша по пути или свежей загрузкой.
+
+        Кеш общий с первым комментарием: значение — MessageMedia, который
+        принимают и ``send_file``, и ``utils.get_input_media``. Протухшую
+        ссылку вызывающий забывает перед повтором.
+        """
+        from telethon import functions, types
+
+        cached = self._first_comment_media.get(path)
+        if cached is not None:
+            return cached
+        if self._media_uploader is None:
+            raise CommentMediaUnavailable(path)
+        data = await self._media_uploader.open(path)
+        if not data:
+            raise CommentMediaUnavailable(path)
+        stream = io.BytesIO(data)
+        stream.name = path.rsplit("/", 1)[-1] or "image.jpg"
+        uploaded = await client.upload_file(stream)
+        media = await client(
+            functions.messages.UploadMediaRequest(
+                peer=entity,
+                media=types.InputMediaUploadedPhoto(file=uploaded),
+            )
+        )
+        # noforwards-медиа переотправить нельзя, а документ вместо фото не шлём:
+        # в кеш попадает только вложение-фото.
+        if isinstance(media, types.MessageMediaPhoto) and not getattr(media, "noforwards", False):
+            self._first_comment_media[path] = media
+        return media
 
     async def _send_turn_reply(
         self,
@@ -1284,6 +1452,11 @@ class MimicAgentRuntime:
     ) -> Any:
         """Отправка ответа и учёт: вызывать под замком отправок чата."""
         tracker = self._send_window
+        # Пока ход собирал ответ, мимика могли забрать в атаку: ответ в обычный
+        # чат больше не уходит, иначе режим переставал бы быть исключительным.
+        if not self.accepts_normal_traffic:
+            logger.info("Атака: ответ хода в чат %s не отправлен", peer_key)
+            return None
         try:
             sent = await self._humanized_send(peer_for_send, text, reply_to=reply_to)
         except (
@@ -1337,6 +1510,8 @@ class MimicAgentRuntime:
             # Перезапуск поднимет тот же мёртвый ключ и снова упадёт: ждём
             # перепривязки, а не долбим Telegram на каждом входящем.
             raise TelegramAuthorizationRequired(REVOKED_SESSION_MESSAGE)
+        if self._attack_id is not None:
+            raise AttackModeActiveError()
         if self._state is not AgentRuntimeState.RUNNING:
             logger.info(f"Agent not running (state={self._state}), starting...")
             await self.start()
@@ -1354,6 +1529,8 @@ class MimicAgentRuntime:
             async with self._disconnect_revoked_client_after_turn(), self._trigger_lock:
                 if self._session_revoked:
                     raise TelegramAuthorizationRequired(REVOKED_SESSION_MESSAGE)
+                if self._attack_id is not None:
+                    raise AttackModeActiveError()
                 if (
                     self._retired
                     or self._state is not AgentRuntimeState.RUNNING
@@ -1724,8 +1901,9 @@ class MimicAgentRuntime:
         """Новый пост в канале — мгновенный комментарий без ИИ и задержек."""
         # Краткое подключение остановленного агента для настроек поднимает этот
         # обработчик с прежней регистрации: пост не должен уйти комментарием от
-        # рантайма, который не запущен.
-        if self._state is not AgentRuntimeState.RUNNING or self._session_revoked:
+        # рантайма, который не запущен. Во время атаки первый комментарий тоже
+        # выключен: мимик пишет только по расписанию кампании.
+        if not self.accepts_normal_traffic or self._session_revoked:
             return
         settings = self.config.first_comment
         if not settings.is_active:
@@ -1868,8 +2046,6 @@ class MimicAgentRuntime:
         (``message.media``), и повторной загрузки нет. Ссылка на файл у неё
         со временем протухает — тогда картинка заливается заново.
         """
-        from telethon import errors
-
         path = variant.image_path
         if path is None:
             return None
@@ -1880,11 +2056,7 @@ class MimicAgentRuntime:
                 return await self._telegram_client.send_file(
                     target, cached, caption=caption, comment_to=message_id
                 )
-            except (
-                errors.FileReferenceExpiredError,
-                errors.FileReferenceInvalidError,
-                errors.FileReferenceEmptyError,
-            ):
+            except MEDIA_REFERENCE_ERRORS:
                 logger.info("Ссылка на картинку первого комментария устарела, заливаем заново")
                 self._first_comment_media.pop(path, None)
 
@@ -1918,6 +2090,13 @@ class MimicAgentRuntime:
 
     async def _handle_incoming_message(self, event: TelegramEventLike) -> None:
         """Альбомы буферизуются, одиночные сообщения обрабатываются сразу."""
+        # Только флаг атаки, а не весь предикат: апдейты, пришедшие во время
+        # connect(), адресованы запускаемому агенту и не должны теряться.
+        if self._attack_id is not None:
+            logger.info(
+                "Атака: входящее из чата %s не обрабатывается", getattr(event, "chat_id", None)
+            )
+            return
         grouped_id = getattr(event, "grouped_id", None)
         if not isinstance(grouped_id, int):
             # TL: grouped_id — flags.17?long, то есть int или None. Любое другое
@@ -2351,6 +2530,13 @@ class MimicAgentRuntime:
     async def _dispatch_incoming(self, events: list[TelegramEventLike]) -> None:
         """Решить, идёт ли ход сейчас, позже или не идёт вовсе."""
         event = events[0]
+        # Здесь тоже только флаг: состояние STARTING проверяется позже, когда
+        # запуск уже завершился (см. _running_once_started).
+        if self._attack_id is not None:
+            logger.info(
+                "Атака: входящее из чата %s не разбирается", getattr(event, "chat_id", None)
+            )
+            return
         logger.info("Incoming message event received")
         logger.info(
             "Incoming message event: chat_id=%s, text=%s",
@@ -2502,6 +2688,9 @@ class MimicAgentRuntime:
                     "Рантайм не запущен (%s), отложенное из чата %s отброшено", self._state, peer
                 )
                 return
+            if not self.accepts_normal_traffic:
+                logger.info("Атака: отложенное из чата %s не обрабатывается", peer)
+                return
             if self._send_window is not None:
                 now = datetime.now(UTC)
                 window = await self._send_window.check(peer)
@@ -2519,6 +2708,10 @@ class MimicAgentRuntime:
 
     async def _process_batch(self, peer: str, groups: list[list[TelegramEventLike]]) -> None:
         """Один ход по нескольким группам входящих (сообщение или альбом)."""
+        # Проверка повторная: пачка могла дойти до разбора уже после старта атаки.
+        if not self.accepts_normal_traffic:
+            logger.info("Атака: пачка из чата %s не обрабатывается", peer)
+            return
         # Защищаем остальной конвейер обработки сообщения от падений.
         try:
             blocks: list[IncomingBlock] = []
@@ -2577,6 +2770,9 @@ class MimicAgentRuntime:
                 logger.info(
                     "Рантайм не запущен (%s), ход по чату %s отброшен", self._state, trigger.peer
                 )
+                return
+            if not self.accepts_normal_traffic:
+                logger.info("Атака: ход по чату %s отброшен", trigger.peer)
                 return
             await self._take_turn(trigger)
 
@@ -2647,6 +2843,9 @@ class MimicAgentRuntime:
 
     async def _check_and_trigger_timers(self) -> None:
         """Брать по одному; повтор безопасен только до допуска к ходу агента."""
+        # Таймеры не отменяются атакой: остаются pending и сработают после неё.
+        if not self.accepts_normal_traffic:
+            return
         session_factory = self._session_factory
         if session_factory is None:
             return

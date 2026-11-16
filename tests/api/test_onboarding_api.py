@@ -99,6 +99,7 @@ async def test_onboarding_creates_login_flow_verifies_code_and_finalizes_agent()
         "agent_id": str(onboarding_id),
         "owner_id": str(owner_id),
         "state": "stopped",
+        "attack_id": None,
     }
 
 
