@@ -587,8 +587,8 @@ async def test_list_splits_active_and_archive_and_joins_agent_names() -> None:
     assert body["archive"][0]["end_reason"] == "cancelled_by_user"
     assert body["active"][0]["agents"][0]["name"] == "Мимик А"
     assert all(item["owner_id"] == str(owner_id) for item in body["active"])
-    assert "texts" not in body["active"][0]
-    assert "media" not in body["active"][0]
+    assert body["active"][0]["texts"] == ["Участвую!"]
+    assert body["active"][0]["media"] == []
 
 
 async def test_detail_returns_texts_signed_media_and_progress_fields() -> None:

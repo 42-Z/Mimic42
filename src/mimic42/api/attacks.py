@@ -191,8 +191,8 @@ class AttackDetail(AttackSummary):
 
 
 class AttackList(BaseModel):
-    active: list[AttackSummary]
-    archive: list[AttackSummary]
+    active: list[AttackDetail]
+    archive: list[AttackDetail]
 
 
 class AttackAgentAvailability(BaseModel):
@@ -469,12 +469,12 @@ async def list_attacks(
     views = await service.list(current_user.user_id)
     names = await _agent_names(service, current_user.user_id)
     active = [
-        _summary(view, names)
+        await _detail(request, view, names)
         for view in views
         if view.status in (AttackStatus.DRAFT, AttackStatus.RUNNING)
     ]
     archive = [
-        _summary(view, names)
+        await _detail(request, view, names)
         for view in views
         if view.status in (AttackStatus.CANCELLED, AttackStatus.FINISHED)
     ]
