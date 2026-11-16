@@ -67,6 +67,8 @@ BACKOFF_MIN_SECONDS = 5.0
 BACKOFF_MAX_SECONDS = 60.0
 DUPLICATE_RETRY_SECONDS = 2.0
 NO_SLOT_RETRY_SECONDS = 5.0
+RECONCILE_INTERVAL_SECONDS = 12.0
+SWEEP_TASK_NAME = "attack:reconcile"
 
 
 class AttackRuntimePort(Protocol):
@@ -276,6 +278,7 @@ class AttackService:
         self._announced_closed: set[UUID] = set()
         self._closing: set[UUID] = set()
         self._closed = False
+        self._sweep: asyncio.Task[None] | None = None
 
     def _now(self) -> datetime:
         return self._clock()
@@ -408,6 +411,37 @@ class AttackService:
 
     # ── Восстановление и остановка ────────────────────────────────────────────
 
+    async def start(self) -> None:
+        """Поднять идущие атаки и сверять их с базой, пока живёт процесс.
+
+        Первая сверка ждётся, чтобы после рестарта отправители встали до
+        приёма запросов. Дальше ``reconcile`` повторяется по таймеру; он
+        идемпотентен, поэтому пропущенный тик ничего не ломает.
+        """
+        if self._closed or self._sweep is not None:
+            return
+        try:
+            await self.reconcile()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Первичная сверка атак не удалась")
+        if self._closed or self._sweep is not None:
+            return
+        self._sweep = asyncio.create_task(self._reconcile_loop(), name=SWEEP_TASK_NAME)
+
+    async def _reconcile_loop(self) -> None:
+        while not self._closed:
+            await self._sleep(RECONCILE_INTERVAL_SECONDS)
+            if self._closed:
+                return
+            try:
+                await self.reconcile()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Сверка атак не удалась")
+
     async def reconcile(self) -> None:
         """Свести память сервиса с базой: поднять задачи, финал, заметки.
 
@@ -459,6 +493,10 @@ class AttackService:
         Строки атак остаются ``running``: следующий процесс поднимет их через
         ``reconcile`` и продолжит с сохранённого резерва.
         """
+        sweep, self._sweep = self._sweep, None
+        if sweep is not None and sweep is not asyncio.current_task():
+            sweep.cancel()
+            await asyncio.gather(sweep, return_exceptions=True)
         if self._closed and not self._runs:
             return
         self._closed = True

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+from typing import cast
 from uuid import uuid4
 
 import pytest
@@ -11,6 +12,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from mimic42.api.app import AgentManagerLike, create_app
 from mimic42.config import Settings
 from mimic42.core.agent_runtime import AgentRuntimeState
 from mimic42.core.crypto import FernetSecretCipher
@@ -27,6 +29,48 @@ def _cipher() -> FernetSecretCipher:
     этого настоящий lifespan не сможет расшифровать данные, записанные
     тестом другим ключом (или вообще без шифрования)."""
     return FernetSecretCipher(os.environ["SECRET_KEY"])
+
+
+class LifespanAttacks:
+    def __init__(self, events: list[str]) -> None:
+        self.events = events
+
+    async def start(self) -> None:
+        self.events.append("attacks.start")
+
+    async def close(self) -> None:
+        self.events.append("attacks.close")
+
+
+class LifespanManager:
+    """Менеджер без базы: проверяется только порядок start/close в lifespan."""
+
+    def __init__(self) -> None:
+        self.events: list[str] = []
+        self.attacks = LifespanAttacks(self.events)
+
+    async def shutdown(self) -> None:
+        self.events.append("shutdown")
+
+
+@pytest.mark.asyncio
+async def test_lifespan_starts_and_closes_the_attack_sweep() -> None:
+    manager = LifespanManager()
+    settings = Settings(
+        database_connection_string=None,
+        supabase_url=None,
+        supabase_service_key=None,
+        mem0_api_key=None,
+        braintrust_api_key=None,
+        secret_key=None,
+        restore_running_agents=True,
+    )
+    app = create_app(manager=cast(AgentManagerLike, manager), settings=settings)
+
+    async with app.router.lifespan_context(app):
+        assert manager.events == ["attacks.start"]
+
+    assert manager.events == ["attacks.start", "attacks.close", "shutdown"]
 
 
 @pytest.mark.asyncio

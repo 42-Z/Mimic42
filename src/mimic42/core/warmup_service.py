@@ -241,7 +241,9 @@ class WarmupService:
         await self._verify_suspects()
         online = [r for r in self._runtimes() if self._is_reachable(r)]
         for runtime in list(self._runtimes()):
-            if runtime.state is not AgentRuntimeState.RUNNING:
+            if runtime.state is not AgentRuntimeState.RUNNING or runtime.attack_id is not None:
+                # Мимик в атаке не начинает прогрев: обычный трафик выключен,
+                # а отправитель атаки сам решает, когда писать.
                 continue
             reachable = runtime in online
             try:

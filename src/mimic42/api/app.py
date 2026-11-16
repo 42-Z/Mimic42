@@ -601,6 +601,16 @@ def create_app(
                             )
                 except Exception as exc:
                     logger.exception(f"[lifespan] Failed to restore running agents: {exc}")
+            # Атаки поднимаются после восстановления агентов: reconcile сам
+            # материализует участников идущих кампаний. При выключенном
+            # восстановлении чужих агентов (тесты, общий Dev) сервис не
+            # запускается, иначе он поднял бы их в обход настройки.
+            # Раньше прогрева: reconcile выставляет флаг атаки, и его первый же
+            # тик не успевает начать диалог с участником кампании.
+            if app_settings.restore_running_agents or manager is not None:
+                attacks = getattr(app.state.agent_manager, "attacks", None)
+                if attacks is not None:
+                    await attacks.start()
             if build_agent_services and manager is None:
                 warmup = app.state.agent_manager.warmup
                 if warmup is not None:
@@ -612,12 +622,18 @@ def create_app(
             try:
                 await flush_tracing()
             finally:
-                await _get_agent_manager(app).shutdown()
-                if owned_media_storage is not None:
-                    # После остановки агентов: до неё они ещё читают из хранилища картинки.
-                    owned_media_storage.close()
-                if database_engine is not None:
-                    await database_engine.dispose()
+                app_manager_live = _get_agent_manager(app)
+                try:
+                    attacks = getattr(app_manager_live, "attacks", None)
+                    if attacks is not None:
+                        await attacks.close()
+                finally:
+                    await app_manager_live.shutdown()
+                    if owned_media_storage is not None:
+                        # После остановки агентов: до неё они ещё читают из хранилища картинки.
+                        owned_media_storage.close()
+                    if database_engine is not None:
+                        await database_engine.dispose()
 
     app = FastAPI(title="Mimic42 API", version="0.1.0", lifespan=lifespan)
 

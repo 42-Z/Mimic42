@@ -11,6 +11,7 @@ from uuid import UUID
 from langchain_core.tools import BaseTool
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from mimic42.core.activity import ActivityRecorder
 from mimic42.core.agent_runtime import (
     PROXY_CONNECT_ERRORS,
     REVOKED_SESSION_MESSAGE,
@@ -26,6 +27,10 @@ from mimic42.core.agent_runtime import (
     TelegramClientLike,
     TelegramTeardownPendingError,
     retry_previous_telegram_teardown,
+)
+from mimic42.core.attack_service import (
+    AttackRepositoryPort,
+    AttackService,
 )
 from mimic42.core.chat_access import ChatAccess
 from mimic42.core.chat_directory import ChatItem
@@ -51,6 +56,7 @@ from mimic42.core.warmup_service import (
     allow_everyone,
 )
 from mimic42.integrations.chat_directory import DirectoryClient, TelethonChatDirectory
+from mimic42.integrations.database_attack import DatabaseAttackRepository
 from mimic42.integrations.langchain_agent import build_langchain_agent
 from mimic42.integrations.telegram_tools import (
     TelethonRequestClient,
@@ -139,6 +145,8 @@ class AgentManager:
         warmup_state_store: WarmupStateStore | None = None,
         warmup_pair_policy: PairPolicy = allow_everyone,
         proxy_direct_fallback: bool = False,
+        attack_repository: AttackRepositoryPort | None = None,
+        attacks: AttackService | None = None,
     ) -> None:
         self._runtime_factory = runtime_factory or _build_runtime
         self._memory_service_factory = memory_service_factory
@@ -172,6 +180,18 @@ class AgentManager:
             else None
         )
         self._agent_locks: dict[UUID, asyncio.Lock] = {}
+        # Атака живёт рядом с прогревом: её сервис переживает пересборку
+        # рантаймов, а менеджер только зовёт хуки и отдаёт рантаймы.
+        if attacks is not None:
+            self.attacks: AttackService | None = attacks
+        elif session_factory is not None:
+            self.attacks = AttackService(
+                self,
+                attack_repository or DatabaseAttackRepository(session_factory),
+                ActivityRecorder(session_factory),
+            )
+        else:
+            self.attacks = None
 
     def _agent_lock(self, agent_id: UUID) -> asyncio.Lock:
         return self._agent_locks.setdefault(agent_id, asyncio.Lock())
@@ -197,7 +217,9 @@ class AgentManager:
             if start:
                 runtime = await self._start_created_runtime(runtime)
             self._check_removed(config.agent_id)
-            return runtime
+        if start:
+            await self._notify_attacks(config.agent_id, "on_runtime_ready")
+        return runtime
 
     async def create_saved_agent(
         self,
@@ -227,7 +249,9 @@ class AgentManager:
             if start:
                 runtime = await self._start_created_runtime(runtime)
             self._check_removed(agent_id)
-            return runtime
+        if start:
+            await self._notify_attacks(agent_id, "on_runtime_ready")
+        return runtime
 
     async def _start_created_runtime(self, runtime: MimicAgentRuntime) -> MimicAgentRuntime:
         try:
@@ -345,6 +369,39 @@ class AgentManager:
     async def get_agent_status(self, agent_id: UUID) -> AgentStatus:
         return (await self.get_agent(agent_id)).status
 
+    async def get_runtime(self, agent_id: UUID) -> MimicAgentRuntime:
+        """Рантайм для сервиса атак, без ``_agent_lock``, если он уже собран.
+
+        Хуки менеджера зовут сервис, а сервис может попросить рантайм обратно,
+        пока ``stop_agent`` или ``remove_agent`` держат замок агента. Поэтому
+        сначала lock-free peek: живой рантайм не требует ни одного замка.
+        Материализация (``get_agent``) нужна только отправителю, который пришёл
+        снаружи хука и замков менеджера не держит.
+        """
+        runtime = self._agents.get(agent_id)
+        if runtime is not None:
+            return runtime
+        return await self.get_agent(agent_id)
+
+    def runtimes(self) -> list[MimicAgentRuntime]:
+        """Снимок живых рантаймов для остановки отправителей на shutdown."""
+        return list(self._agents.values())
+
+    async def _notify_attacks(self, agent_id: UUID, hook_name: str) -> None:
+        """Хук сервиса атак: сбой сервиса не должен ронять жизненный цикл агента."""
+        attacks = self.attacks
+        if attacks is None:
+            return
+        hook = getattr(attacks, hook_name, None)
+        if hook is None:
+            return
+        try:
+            await hook(agent_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Attack hook %s failed for agent %s", hook_name, agent_id)
+
     async def list_agents(self, *, owner_id: UUID | None = None) -> list[AgentStatus]:
         agents = list(self._agents.values())
         if owner_id is not None:
@@ -355,6 +412,7 @@ class AgentManager:
         self._check_removed(agent_id)
         async with self._agent_lock(agent_id):
             await self._start_agent_locked(agent_id)
+        await self._notify_attacks(agent_id, "on_runtime_ready")
 
     async def _start_agent_locked(self, agent_id: UUID) -> MimicAgentRuntime:
         runtime = await self._get_agent_locked(agent_id)
@@ -378,6 +436,9 @@ class AgentManager:
 
     async def _stop_agent_locked(self, agent_id: UUID) -> None:
         runtime = await self._get_agent_locked(agent_id)
+        # Сервис отменяет отправителя и выводит участие до того, как клиент
+        # закроется: иначе задача успела бы отправить комментарий во время stop.
+        await self._notify_attacks(agent_id, "on_agent_stopped")
         try:
             await retry_previous_telegram_teardown(runtime, wait=False)
             await runtime.stop()
@@ -398,6 +459,7 @@ class AgentManager:
         self._check_removed(agent_id)
         async with self._agent_lock(agent_id):
             await self._reload_agent_locked(agent_id)
+        await self._notify_attacks(agent_id, "on_runtime_changed")
 
     async def _reload_agent_locked(self, agent_id: UUID) -> None:
         self._check_removed(agent_id)
@@ -457,6 +519,11 @@ class AgentManager:
         async with self._lock:
             cleanup = self._removal_tasks.get(agent_id)
             if cleanup is None:
+                runtime = self._agents.get(agent_id)
+                if runtime is not None:
+                    # Сервис выводит участие и пишет заметку, пока рантайм ещё
+                    # в реестре и помнит тред цели.
+                    await self._notify_attacks(agent_id, "on_agent_removed")
                 self._removed.add(agent_id)
                 runtime = self._agents.pop(agent_id, None)
                 if runtime is None:
