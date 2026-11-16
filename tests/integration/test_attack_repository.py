@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import delete
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from mimic42.core.agent_runtime import AgentRuntimeState
@@ -119,6 +119,18 @@ async def _pending_attempts(
         row = await session.get(AttackAgentModel, participation_id)
         assert row is not None
         return row.pending_attempts
+
+
+async def _pending_media_type(
+    db_session_factory: async_sessionmaker[AsyncSession], participation_id: UUID
+) -> str | None:
+    """``None`` — SQL NULL; ``'null'`` — JSON-литерал, который не проходит CHECK."""
+    async with db_session_factory() as session:
+        return await session.scalar(
+            select(func.jsonb_typeof(AttackAgentModel.pending_media)).where(
+                AttackAgentModel.id == participation_id
+            )
+        )
 
 
 async def test_create_moves_agents_out_of_a_previous_draft(
@@ -280,6 +292,7 @@ async def test_settle_sent_counts_once_and_a_repeat_is_a_noop(
     assert stored is not None
     assert stored.participations[0].sent_count == 1
     assert stored.participations[0].next_at == NEXT
+    assert await _pending_media_type(db_session_factory, claim.participation_id) is None
 
 
 async def test_not_sent_releases_the_slot_and_records_the_error(

@@ -457,7 +457,7 @@ class AttackAgentModel(Base):
     next_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     pending_random_id: Mapped[int | None] = mapped_column(BigInteger)
     pending_text: Mapped[str | None] = mapped_column(Text)
-    pending_media: Mapped[list[str] | None] = mapped_column(JSONB)
+    pending_media: Mapped[list[str] | None] = mapped_column(JSONB(none_as_null=True))
     pending_attempts: Mapped[int] = mapped_column(Integer, default=0)
     last_comment_message_id: Mapped[int | None] = mapped_column(BigInteger)
     last_error_code: Mapped[str | None] = mapped_column(Text)
