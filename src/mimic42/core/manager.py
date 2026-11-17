@@ -180,8 +180,6 @@ class AgentManager:
             else None
         )
         self._agent_locks: dict[UUID, asyncio.Lock] = {}
-        # Атака живёт рядом с прогревом: её сервис переживает пересборку
-        # рантаймов, а менеджер только зовёт хуки и отдаёт рантаймы.
         if attacks is not None:
             self.attacks: AttackService | None = attacks
         elif session_factory is not None:
@@ -436,8 +434,6 @@ class AgentManager:
 
     async def _stop_agent_locked(self, agent_id: UUID) -> None:
         runtime = await self._get_agent_locked(agent_id)
-        # Сервис отменяет отправителя и выводит участие до того, как клиент
-        # закроется: иначе задача успела бы отправить комментарий во время stop.
         await self._notify_attacks(agent_id, "on_agent_stopped")
         try:
             await retry_previous_telegram_teardown(runtime, wait=False)
@@ -521,8 +517,6 @@ class AgentManager:
             if cleanup is None:
                 runtime = self._agents.get(agent_id)
                 if runtime is not None:
-                    # Сервис выводит участие и пишет заметку, пока рантайм ещё
-                    # в реестре и помнит тред цели.
                     await self._notify_attacks(agent_id, "on_agent_removed")
                 self._removed.add(agent_id)
                 runtime = self._agents.pop(agent_id, None)

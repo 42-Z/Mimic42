@@ -1452,8 +1452,6 @@ class MimicAgentRuntime:
     ) -> Any:
         """Отправка ответа и учёт: вызывать под замком отправок чата."""
         tracker = self._send_window
-        # Пока ход собирал ответ, мимика могли забрать в атаку: ответ в обычный
-        # чат больше не уходит, иначе режим переставал бы быть исключительным.
         if not self.accepts_normal_traffic:
             logger.info("Атака: ответ хода в чат %s не отправлен", peer_key)
             return None
@@ -2530,8 +2528,6 @@ class MimicAgentRuntime:
     async def _dispatch_incoming(self, events: list[TelegramEventLike]) -> None:
         """Решить, идёт ли ход сейчас, позже или не идёт вовсе."""
         event = events[0]
-        # Здесь тоже только флаг: состояние STARTING проверяется позже, когда
-        # запуск уже завершился (см. _running_once_started).
         if self._attack_id is not None:
             logger.info(
                 "Атака: входящее из чата %s не разбирается", getattr(event, "chat_id", None)
@@ -2708,7 +2704,6 @@ class MimicAgentRuntime:
 
     async def _process_batch(self, peer: str, groups: list[list[TelegramEventLike]]) -> None:
         """Один ход по нескольким группам входящих (сообщение или альбом)."""
-        # Проверка повторная: пачка могла дойти до разбора уже после старта атаки.
         if not self.accepts_normal_traffic:
             logger.info("Атака: пачка из чата %s не обрабатывается", peer)
             return

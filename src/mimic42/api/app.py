@@ -578,12 +578,6 @@ def create_app(
                             )
                 except Exception as exc:
                     logger.exception(f"[lifespan] Failed to restore running agents: {exc}")
-            # Атаки поднимаются после восстановления агентов: reconcile сам
-            # материализует участников идущих кампаний. При выключенном
-            # восстановлении чужих агентов (тесты, общий Dev) сервис не
-            # запускается, иначе он поднял бы их в обход настройки.
-            # Раньше прогрева: reconcile выставляет флаг атаки, и его первый же
-            # тик не успевает начать диалог с участником кампании.
             if app_settings.restore_running_agents or manager is not None:
                 attacks = getattr(app.state.agent_manager, "attacks", None)
                 if attacks is not None:

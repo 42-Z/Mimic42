@@ -299,8 +299,6 @@ class AttackService:
     def _now(self) -> datetime:
         return self._clock()
 
-    # ── Операции API ──────────────────────────────────────────────────────────
-
     async def create_attack(
         self, owner_id: UUID, config: AttackConfig, agent_ids: Sequence[UUID]
     ) -> AttackView:
@@ -389,8 +387,6 @@ class AttackService:
                 return attack_id
         return None
 
-    # ── Чтение для API ────────────────────────────────────────────────────────
-
     async def list(self, owner_id: UUID) -> Sequence[AttackView]:
         return await self._repo.list_attacks(owner_id)
 
@@ -399,8 +395,6 @@ class AttackService:
 
     async def agent_availability(self, owner_id: UUID) -> Sequence[AgentAvailability]:
         return await self._repo.agent_availability(owner_id)
-
-    # ── Хуки менеджера ────────────────────────────────────────────────────────
 
     async def on_runtime_ready(self, agent_id: UUID) -> None:
         if self._closed:
@@ -435,8 +429,6 @@ class AttackService:
 
     async def on_agent_removed(self, agent_id: UUID) -> None:
         await self._agent_left(agent_id, ExitReason.AGENT_REMOVED)
-
-    # ── Восстановление и остановка ────────────────────────────────────────────
 
     async def start(self) -> None:
         """Поднять идущие атаки и сверять их с базой, пока живёт процесс.
@@ -534,8 +526,6 @@ class AttackService:
         for runtime in self._manager.runtimes():
             if runtime.attack_id is not None:
                 runtime.exit_attack()
-
-    # ── Рантаймы и задачи ─────────────────────────────────────────────────────
 
     async def _ensure_runtime(self, agent_id: UUID, attack_id: UUID) -> AttackRuntimePort:
         runtime = await self._manager.get_runtime(agent_id)
@@ -652,8 +642,6 @@ class AttackService:
         if runtime.attack_id == attack_id:
             runtime.exit_attack()
 
-    # ── Цель и отправка ───────────────────────────────────────────────────────
-
     async def _target_for(self, client: Any, attack_id: UUID, agent_id: UUID) -> AttackTarget:
         target = self._targets.get(agent_id)
         if target is not None:
@@ -687,8 +675,6 @@ class AttackService:
 
     async def _drop_media(self, claim: SlotClaim) -> None:
         await self._repo.clear_media(claim.attack_id, claim.participation_id, claim.random_id)
-
-    # ── Выход и заметки ───────────────────────────────────────────────────────
 
     async def _agent_left(self, agent_id: UUID, reason: ExitReason) -> None:
         live = await self._repo.live_participation(agent_id)
@@ -830,8 +816,6 @@ class AttackService:
             if participation is not None:
                 previous.add(participation.attack_id)
         return previous
-
-    # ── События ───────────────────────────────────────────────────────────────
 
     async def _record(self, agent_id: UUID, event_type: str, **payload: Any) -> None:
         if event_type == "attack.comment_failed":
@@ -1161,8 +1145,6 @@ class _Sender:
     async def _settle(
         self, claim: SlotClaim, outcome: SendOutcome, next_at: datetime
     ) -> Settlement:
-        # Флаг ставится до await: отмена после commit не должна превратить уже
-        # записанный исход в interrupted вторым settle.
         self._settled_claim = True
         try:
             return await self._service._gate.settle(claim, outcome, next_at)

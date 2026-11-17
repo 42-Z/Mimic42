@@ -49,8 +49,6 @@ def test_attack_draft_is_created_and_edited_in_dashboard(browser: Browser, real_
         page.goto("/attacks")
         expect(page.get_by_role("heading", name="Атаки")).to_be_visible()
         expect(page.get_by_role("link", name="Создать атаку")).to_be_visible()
-        # Прямой переход: клик по Next-ссылке до гидратации иногда остаётся
-        # на месте, а проверяется здесь форма и API, не роутер.
         page.goto("/attacks/new")
 
         expect(page.get_by_role("heading", name="Новая атака")).to_be_visible()
@@ -60,8 +58,6 @@ def test_attack_draft_is_created_and_edited_in_dashboard(browser: Browser, real_
         page.get_by_label("Лимит сообщений").fill("2")
         page.get_by_role("button", name="Сохранить черновик").click()
 
-        # Первый переход компилирует /attacks/[id], а middleware проверяет
-        # сессию в Supabase: 15 секунд на это не всегда хватает.
         expect(page).to_have_url(re.compile(r"/attacks/[0-9a-f-]+$"), timeout=120_000)
         attack_id = page.url.rsplit("/", 1)[-1]
         expect(page.get_by_role("heading", name=title)).to_be_visible()

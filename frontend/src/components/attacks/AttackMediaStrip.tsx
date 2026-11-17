@@ -33,7 +33,7 @@ export function AttackMediaThumb({
           title={media.name}
           className="block size-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
         >
-          {/* eslint-disable-next-line @next/next/no-img-element -- signed storage URL, Next Image optimizer cannot reach it */}
+          {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src={link.url}
             alt={media.name}

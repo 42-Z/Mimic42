@@ -161,8 +161,6 @@ export interface TriggerMessageResponse {
   telegram_message_id: string | null;
 }
 
-// ── Атака ────────────────────────────────────────────────────────────────────
-
 /** Статус кампании — зеркало `attack_status` в Postgres. */
 export type AttackStatus = 'draft' | 'running' | 'cancelled' | 'finished';
 
@@ -562,7 +560,6 @@ export interface MemoryHistoryItem {
   updated_at?: string | null;
   user_id?: string | null;
 }
-
 
 // ── Prompt presets ────────────────────────────────────────────────────────────
 export interface PromptPresetRow {
