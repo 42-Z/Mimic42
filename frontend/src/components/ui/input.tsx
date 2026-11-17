@@ -98,7 +98,7 @@ const Textarea = React.forwardRef<HTMLTextAreaElement, TextareaProps>(
 
     return (
       <div className="flex flex-col gap-1.5">
-        <div className="flex items-center justify-between">
+        <div className={cn('flex items-center', label ? 'justify-between' : 'justify-end')}>
           {label && (
             <label
               htmlFor={textareaId}

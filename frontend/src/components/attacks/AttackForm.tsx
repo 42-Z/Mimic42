@@ -278,7 +278,7 @@ export function AttackForm({
         <SectionHeader
           icon={Target}
           title="Цель"
-          description="Один пост канала на всю атаку. Комментарии уйдут в обсуждение ответом на него."
+          description="Комментарии уйдут в обсуждение ответом на пост."
         />
         {mode === 'create' ? (
           <Input
@@ -320,7 +320,7 @@ export function AttackForm({
         <SectionHeader
           icon={MessageSquare}
           title="Тексты"
-          description={`Каждый комментарий получает один случайный текст. До ${textMax} символов.`}
+          description="Один случайный текст на комментарий."
         />
         <AttackTextList
           texts={state.texts}
@@ -338,7 +338,7 @@ export function AttackForm({
         <SectionHeader
           icon={ImagePlus}
           title="Картинки"
-          description="Необязательно. Порядок в каждом комментарии перемешивается."
+          description="Порядок перемешивается в каждом комментарии."
         />
         <AttackImageUploader
           images={state.images}
@@ -363,7 +363,6 @@ export function AttackForm({
         <SectionHeader
           icon={Clock}
           title="Лимит"
-          description="Один общий лимит на всю атаку: количество сообщений или длительность."
         />
         <AttackLimitFields
           kind={state.limit_kind}
@@ -393,7 +392,7 @@ export function AttackForm({
             <SectionHeader
               icon={Users}
               title="Мимики"
-              description="Кто будет писать комментарии. Добавление сразу переносит мимика из другой атаки."
+              description="Кто пишет комментарии. Добавление переносит мимика из другой атаки."
             />
             <AttackMimicPicker
               agents={agents}

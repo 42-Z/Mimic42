@@ -26,15 +26,11 @@ export function AttackTextList({
         <div key={index} className="flex items-start gap-2">
           <div className="min-w-0 flex-1">
             <Textarea
-              label={`Текст ${index + 1}`}
+              label={texts.length > 1 ? `Текст ${index + 1}` : undefined}
+              aria-label={`Текст ${index + 1}`}
               value={text}
               onChange={(event) => onChange(index, event.target.value)}
               error={errors[`texts.${index}`]}
-              hint={
-                index === 0
-                  ? `До ${maxLength} символов. Отправляется как есть, без разметки.`
-                  : undefined
-              }
               showCount
               maxLength={maxLength}
               rows={3}
