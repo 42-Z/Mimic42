@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import random
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
@@ -267,6 +268,72 @@ async def test_claim_returns_the_same_reservation_until_it_settles(
     )
     assert stored is not None
     assert stored.claimed_count == 1
+
+
+async def test_an_album_reserves_and_counts_every_telegram_message(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    owner_id = clean_slot.persona("twofa").user_id
+    repository = _repo(db_session_factory)
+    agent_id = await _create_agent(db_session_factory, owner_id)
+    media = tuple(f"attacks/{owner_id}/{index}.jpg" for index in range(10))
+    attack = await repository.create(
+        owner_id,
+        _config(limit=MessagesLimit(25), media_paths=media),
+        [agent_id],
+        NOW,
+    )
+    await repository.start(attack.id, NOW)
+
+    first = await repository.claim(attack.id, agent_id, NOW, random.Random(1))
+    assert first is not None and first.message_count == 10 and len(first.media) == 10
+    first_settlement = await repository.settle(first, SendOutcome.sent(1), NOW, NEXT)
+    assert first_settlement.sent_count == 10 and first_settlement.claimed_count == 10
+
+    second = await repository.claim(attack.id, agent_id, NEXT, random.Random(2))
+    assert second is not None
+    await repository.settle(second, SendOutcome.sent(2), NEXT, NEXT)
+
+    last = await repository.claim(attack.id, agent_id, NEXT, random.Random(3))
+    assert last is not None and last.message_count == 5 and len(last.media) == 5
+    finished = await repository.settle(last, SendOutcome.sent(3), NEXT, NEXT)
+    stored = await repository.load(attack.id)
+
+    assert finished.sent_count == 25
+    assert finished.finished is True
+    assert finished.end_reason is AttackEndReason.LIMIT_REACHED
+    assert stored is not None
+    assert stored.status is AttackStatus.FINISHED
+    assert stored.claimed_count == 25
+
+
+async def test_text_fallback_releases_the_unused_album_reservation(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    owner_id = clean_slot.persona("twofa").user_id
+    repository = _repo(db_session_factory)
+    agent_id = await _create_agent(db_session_factory, owner_id)
+    media = tuple(f"attacks/{owner_id}/{index}.jpg" for index in range(10))
+    attack = await repository.create(
+        owner_id,
+        _config(limit=MessagesLimit(25), media_paths=media),
+        [agent_id],
+        NOW,
+    )
+    await repository.start(attack.id, NOW)
+    claim = await repository.claim(attack.id, agent_id, NOW, random.Random(1))
+    assert claim is not None
+
+    assert await repository.clear_media(attack.id, claim.participation_id, claim.random_id)
+    settlement = await repository.settle(replace(claim, media=()), SendOutcome.sent(1), NOW, NEXT)
+    stored = await repository.load(attack.id)
+
+    assert settlement.sent_count == 1
+    assert settlement.claimed_count == 1
+    assert stored is not None
+    assert stored.participations[0].sent_count == 1
 
 
 async def test_settle_sent_counts_once_and_a_repeat_is_a_noop(

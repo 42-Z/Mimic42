@@ -302,6 +302,39 @@ async def test_pending_reservation_keeps_random_id_and_text_together(
         agent_id=agent_id,
         pending_random_id=pending_random_id,
         pending_text=pending_text,
+        pending_count=1 if pending_random_id is not None else 0,
+    )
+    if valid:
+        await _insert(db_session_factory, row)
+    else:
+        await _expect_integrity_error(db_session_factory, row)
+
+
+@pytest.mark.parametrize(
+    ("pending_random_id", "pending_count", "valid"),
+    [
+        (None, 0, True),
+        (None, 1, False),
+        (42, 0, False),
+        (42, 1, True),
+    ],
+)
+async def test_pending_reservation_count_matches_the_random_id(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+    pending_random_id: int | None,
+    pending_count: int,
+    valid: bool,
+) -> None:
+    owner_id = clean_slot.persona("twofa").user_id
+    attack_id = await _insert(db_session_factory, _attack_row(owner_id))
+    agent_id = await _create_agent(db_session_factory, owner_id)
+    row = AttackAgentModel(
+        attack_id=attack_id,
+        agent_id=agent_id,
+        pending_random_id=pending_random_id,
+        pending_text="Участвую!" if pending_random_id is not None else None,
+        pending_count=pending_count,
     )
     if valid:
         await _insert(db_session_factory, row)

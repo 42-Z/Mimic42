@@ -39,7 +39,8 @@ pytestmark = pytest.mark.real_tg
 
 CHANNEL_TITLE = "Mimic42 attack"
 IMAGE_COUNT = 12
-MESSAGE_LIMIT = 3
+COMMENT_COUNT = 3
+MESSAGE_LIMIT = COMMENT_COUNT * 10
 ATTACK_TIMEOUT_SECONDS = 180
 
 
@@ -213,7 +214,7 @@ async def test_attack_comments_appear_under_a_real_channel_post(
             grouped_id = getattr(message, "grouped_id", None)
             if isinstance(grouped_id, int):
                 albums.setdefault(grouped_id, []).append(message)
-        assert len(albums) == MESSAGE_LIMIT, [
+        assert len(albums) == COMMENT_COUNT, [
             (message.id, message.sender_id, message.message) for message in messages
         ]
         captions: list[str] = []

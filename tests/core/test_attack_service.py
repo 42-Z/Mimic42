@@ -773,6 +773,37 @@ async def test_a_successful_send_at_the_limit_finishes_the_attack(
     assert repo.targets[0][1:] == (CHANNEL_ID, ROOT_REPLY_ID, None)
 
 
+async def test_the_limit_counts_each_album_image_as_a_message(
+    service_factory: ServiceFactory,
+) -> None:
+    repo = FakeRepo()
+    agent_id = uuid4()
+    runtime = FakeRuntime(agent_id)
+    runtime.script = [711]
+    media = tuple(f"attacks/owner/{index}.jpg" for index in range(10))
+    service, _, _, _ = service_factory(repo, [runtime])
+    attack = await repo.create(
+        uuid4(),
+        _config(limit=MessagesLimit(3), media_paths=media),
+        [agent_id],
+        NOW,
+    )
+
+    await service.start_attack(attack.id)
+    await _wait_for(
+        lambda: (
+            _stored(repo, attack.id).status is AttackStatus.FINISHED
+            and _stored(repo, attack.id).participations[0].note_written_at is not None
+        )
+    )
+
+    stored = _stored(repo, attack.id)
+    assert stored.sent_count == 3
+    assert stored.end_reason is AttackEndReason.LIMIT_REACHED
+    assert stored.participations[0].sent_count == 3
+    assert len(runtime.calls[0]["media"]) == 3
+
+
 async def test_the_deadline_finishes_the_attack_after_the_reservation_settles(
     service_factory: ServiceFactory,
 ) -> None:

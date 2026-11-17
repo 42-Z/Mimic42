@@ -434,6 +434,8 @@ class AttackAgentModel(Base):
     __table_args__ = (
         CheckConstraint("sent_count >= 0"),
         CheckConstraint("pending_attempts >= 0"),
+        CheckConstraint("pending_count >= 0"),
+        CheckConstraint("(pending_random_id is null) = (pending_count = 0)"),
         CheckConstraint("pending_media is null or jsonb_typeof(pending_media) = 'array'"),
         CheckConstraint("(pending_random_id is null) = (pending_text is null)"),
         CheckConstraint(
@@ -458,6 +460,7 @@ class AttackAgentModel(Base):
     pending_random_id: Mapped[int | None] = mapped_column(BigInteger)
     pending_text: Mapped[str | None] = mapped_column(Text)
     pending_media: Mapped[list[str] | None] = mapped_column(JSONB(none_as_null=True))
+    pending_count: Mapped[int] = mapped_column(Integer, default=0)
     pending_attempts: Mapped[int] = mapped_column(Integer, default=0)
     last_comment_message_id: Mapped[int | None] = mapped_column(BigInteger)
     last_error_code: Mapped[str | None] = mapped_column(Text)

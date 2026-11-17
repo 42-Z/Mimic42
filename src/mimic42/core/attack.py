@@ -241,6 +241,7 @@ class SlotClaim:
     random_id: int
     text: str
     media: tuple[str, ...]
+    message_count: int
 
 
 def parse_target_link(link: str) -> TargetRef:
@@ -542,7 +543,7 @@ def note_text(attack: AttackView, participation: ParticipationView) -> str:
         label = "причина не указана"
     return (
         f"Участие в атаке{title}: комментарии под постом {attack.config.target.link}. "
-        f"Отправлено комментариев: {participation.sent_count}. "
+        f"Отправлено сообщений: {participation.sent_count}. "
         f"Причина выхода: {label}."
     )
 

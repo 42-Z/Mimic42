@@ -9,7 +9,7 @@ SQL проверяют интеграционные тесты, а здесь з
 from __future__ import annotations
 
 import random
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
@@ -37,12 +37,16 @@ NOW = datetime(2026, 11, 16, 12, 0, tzinfo=UTC)
 NEXT = NOW + timedelta(seconds=30)
 
 
-def make_config(*, limit: MessagesLimit | MinutesLimit | None = None) -> AttackConfig:
+def make_config(
+    *,
+    limit: MessagesLimit | MinutesLimit | None = None,
+    media_paths: tuple[str, ...] = (),
+) -> AttackConfig:
     return AttackConfig(
         title="Розыгрыш",
         target=TargetRef(link="https://t.me/example/412", channel="example", post_id=412),
         texts=("Участвую!", "Бросаю в зачёт"),
-        media_paths=(),
+        media_paths=media_paths,
         limit=limit if limit is not None else MessagesLimit(2),
     )
 
@@ -58,6 +62,7 @@ class _FakeParticipation:
     pending_random_id: int | None = None
     pending_text: str | None = None
     pending_media: tuple[str, ...] = ()
+    pending_count: int = 0
     pending_attempts: int = 0
     last_error: str | None = None
     exit_reason: ExitReason | None = None
@@ -139,18 +144,26 @@ class FakeAttackGate:
                 random_id=participation.pending_random_id,
                 text=participation.pending_text or "",
                 media=participation.pending_media,
+                message_count=max(1, participation.pending_count),
             )
+        remaining: int | None = None
         if isinstance(attack.config.limit, MinutesLimit):
             if attack.deadline_at is not None and attack.deadline_at <= now:
                 return None
-        elif attack.claimed_count >= attack.config.limit_value:
-            return None
+        else:
+            remaining = attack.config.limit_value - attack.claimed_count
+            if remaining <= 0:
+                return None
         content = compose_comment(attack.config.texts, attack.config.media_paths, rng)
+        if remaining is not None and len(content.media) > remaining:
+            content = replace(content, media=content.media[:remaining])
+        message_count = max(1, len(content.media))
         random_id = rng.getrandbits(63) + 1
-        attack.claimed_count += 1
+        attack.claimed_count += message_count
         participation.pending_random_id = random_id
         participation.pending_text = content.text
         participation.pending_media = content.media
+        participation.pending_count = message_count
         return SlotClaim(
             attack_id=attack.id,
             agent_id=agent_id,
@@ -158,6 +171,7 @@ class FakeAttackGate:
             random_id=random_id,
             text=content.text,
             media=content.media,
+            message_count=message_count,
         )
 
     async def settle(
@@ -174,8 +188,10 @@ class FakeAttackGate:
         if participation is None or participation.pending_random_id != claim.random_id:
             return self._settlement(attack)
         if outcome.kind == "sent":
-            attack.sent_count += 1
-            participation.sent_count += 1
+            sent_messages = max(1, len(claim.media))
+            attack.sent_count += sent_messages
+            participation.sent_count += sent_messages
+            attack.claimed_count -= claim.message_count - sent_messages
             participation.pending_attempts = 0
             participation.last_error = None
             self._clear(participation)
@@ -255,11 +271,12 @@ class FakeAttackGate:
         participation.pending_random_id = None
         participation.pending_text = None
         participation.pending_media = ()
+        participation.pending_count = 0
 
     def _release(self, attack: _FakeAttack, participation: _FakeParticipation) -> None:
         if participation.pending_random_id is None:
             return
-        attack.claimed_count -= 1
+        attack.claimed_count -= max(1, participation.pending_count)
         self._clear(participation)
 
     def _exit(
@@ -369,6 +386,65 @@ async def test_sent_counts_the_comment_and_clears_the_reservation() -> None:
     assert participation.sent_count == 1
     assert participation.next_at == NEXT
     assert participation.last_error is None
+
+
+async def test_an_album_counts_every_image_as_a_telegram_message() -> None:
+    gate = FakeAttackGate()
+    media = tuple(f"attacks/owner/{index}.jpg" for index in range(10))
+    attack = await gate.create(
+        uuid4(), make_config(limit=MessagesLimit(25), media_paths=media), [uuid4()], NOW
+    )
+    await gate.start(attack.id, NOW)
+
+    first = await _claim(gate, attack, seed=1)
+    assert len(first.media) == 10 and first.message_count == 10
+    first_settlement = await gate.settle(first, SendOutcome.sent(1), NOW, NEXT)
+    assert first_settlement.sent_count == 10
+    assert first_settlement.claimed_count == 10
+
+    second = await _claim(gate, attack, seed=2)
+    second_settlement = await gate.settle(second, SendOutcome.sent(2), NOW, NEXT)
+    assert second_settlement.sent_count == 20
+
+    last = await _claim(gate, attack, seed=3)
+    assert len(last.media) == 5 and last.message_count == 5
+    finished = await gate.settle(last, SendOutcome.sent(3), NOW, NEXT)
+    assert finished.sent_count == 25
+    assert finished.finished is True
+    assert finished.end_reason is AttackEndReason.LIMIT_REACHED
+
+
+async def test_a_text_fallback_releases_the_unused_album_reservation() -> None:
+    gate = FakeAttackGate()
+    media = tuple(f"attacks/owner/{index}.jpg" for index in range(10))
+    attack = await gate.create(
+        uuid4(), make_config(limit=MessagesLimit(25), media_paths=media), [uuid4()], NOW
+    )
+    await gate.start(attack.id, NOW)
+    claim = await _claim(gate, attack)
+
+    settlement = await gate.settle(replace(claim, media=()), SendOutcome.sent(1), NOW, NEXT)
+
+    assert settlement.sent_count == 1
+    assert settlement.claimed_count == 1
+    stored = await gate.load(attack.id)
+    assert stored is not None
+    assert stored.participations[0].sent_count == 1
+
+
+async def test_not_sent_releases_the_whole_album_reservation() -> None:
+    gate = FakeAttackGate()
+    media = tuple(f"attacks/owner/{index}.jpg" for index in range(10))
+    attack = await gate.create(
+        uuid4(), make_config(limit=MessagesLimit(25), media_paths=media), [uuid4()], NOW
+    )
+    await gate.start(attack.id, NOW)
+    claim = await _claim(gate, attack)
+
+    settlement = await gate.settle(claim, SendOutcome.not_sent(SendFailure.FLOOD_WAIT), NOW, NEXT)
+
+    assert settlement.sent_count == 0
+    assert settlement.claimed_count == 0
 
 
 async def test_not_sent_releases_the_slot() -> None:

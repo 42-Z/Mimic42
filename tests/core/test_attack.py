@@ -552,7 +552,7 @@ def test_note_names_the_post_the_count_and_the_exit_reason() -> None:
 
     assert "https://t.me/example/412" in note
     assert "3" in note
-    assert "комментариев" in note
+    assert "сообщений" in note
     assert "пауза" in note
 
 

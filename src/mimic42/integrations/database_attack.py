@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import random
 from collections.abc import Sequence
+from dataclasses import replace
 from datetime import datetime, timedelta
 from uuid import UUID
 
@@ -371,18 +372,26 @@ class DatabaseAttackRepository:
                     random_id=participation.pending_random_id,
                     text=participation.pending_text or "",
                     media=tuple(participation.pending_media or ()),
+                    message_count=max(1, participation.pending_count),
                 )
+            remaining: int | None = None
             if AttackLimitType(attack.limit_type) is AttackLimitType.MINUTES:
                 if attack.deadline_at is not None and attack.deadline_at <= now:
                     return None
-            elif attack.claimed_count >= attack.limit_value:
-                return None
+            else:
+                remaining = attack.limit_value - attack.claimed_count
+                if remaining <= 0:
+                    return None
             content = compose_comment(tuple(attack.texts), tuple(attack.media_paths), rng)
+            if remaining is not None and len(content.media) > remaining:
+                content = replace(content, media=content.media[:remaining])
+            message_count = max(1, len(content.media))
             random_id = generate_random_long()
-            attack.claimed_count += 1
+            attack.claimed_count += message_count
             participation.pending_random_id = random_id
             participation.pending_text = content.text
             participation.pending_media = list(content.media)
+            participation.pending_count = message_count
             await db.flush()
             return SlotClaim(
                 attack_id=attack.id,
@@ -391,6 +400,7 @@ class DatabaseAttackRepository:
                 random_id=random_id,
                 text=content.text,
                 media=content.media,
+                message_count=message_count,
             )
 
     async def settle(
@@ -408,12 +418,15 @@ class DatabaseAttackRepository:
             if participation is None or participation.pending_random_id != claim.random_id:
                 return _settlement(attack)
             if outcome.kind == "sent":
-                attack.sent_count += 1
-                participation.sent_count += 1
+                sent_messages = max(1, len(claim.media))
+                attack.sent_count += sent_messages
+                participation.sent_count += sent_messages
+                attack.claimed_count -= claim.message_count - sent_messages
                 participation.pending_attempts = 0
                 participation.pending_random_id = None
                 participation.pending_text = None
                 participation.pending_media = None
+                participation.pending_count = 0
                 participation.last_error_code = None
                 participation.last_error = None
                 if outcome.message_id:
@@ -518,8 +531,10 @@ class DatabaseAttackRepository:
     async def clear_media(self, attack_id: UUID, participation_id: UUID, random_id: int) -> bool:
         """Убрать картинки из резерва, оставив тот же ``random_id`` для текста.
 
-        Fallback на текст не должен менять идентификатор отправки: иначе повтор
-        после сбоя мог бы создать второй комментарий.
+        Резерв остаётся на исходное число сообщений: settle добавит фактически
+        отправленный текст и вернёт разницу. Fallback на текст не должен менять
+        идентификатор отправки: иначе повтор после сбоя мог бы создать второй
+        комментарий.
         """
         async with self._session_factory() as db, db.begin():
             attack = await self._lock_attack(db, attack_id)
@@ -799,10 +814,11 @@ def _agent_state(value: str) -> AgentRuntimeState:
 def _release_pending(participation: AttackAgentModel, attack: AttackModel) -> None:
     if participation.pending_random_id is None:
         return
-    attack.claimed_count -= 1
+    attack.claimed_count -= max(1, participation.pending_count)
     participation.pending_random_id = None
     participation.pending_text = None
     participation.pending_media = None
+    participation.pending_count = 0
 
 
 def _exit_row(
