@@ -23,11 +23,21 @@ from mimic42.core.tool_config import (
 )
 from mimic42.testing.telegram import FakeTelegramAccount, FakeTelegramAuthClientFactory
 
+REMOVED_DEFAULT_TOOLS = (
+    "send_voice_note",
+    "send_video_note",
+    "send_sticker",
+    "send_poll",
+    "pin_message",
+    "unpin_message",
+)
+
 SELECTIONS = (
     ({}, frozenset(DEFAULT_CONVERSATIONAL_TOOLS)),
     ({"enabled_tools": None}, None),
     ({"enabled_tools": []}, frozenset()),
     ({"enabled_tools": ["send_reaction", "unknown"]}, frozenset({"send_reaction", "unknown"})),
+    ({"enabled_tools": list(REMOVED_DEFAULT_TOOLS)}, frozenset(REMOVED_DEFAULT_TOOLS)),
     ({"enabled_tools": "broken"}, None),
     ({"enabled_tools": [42]}, None),
 )
@@ -54,15 +64,29 @@ def test_default_lists_are_independent_and_match_official_preset_migration() -> 
     second = with_default_tools({})
     first["enabled_tools"].clear()
     assert second["enabled_tools"] == list(DEFAULT_CONVERSATIONAL_TOOLS)
-    assert len(DEFAULT_CONVERSATIONAL_TOOLS) == len(set(DEFAULT_CONVERSATIONAL_TOOLS)) == 37
-    migration = next(
-        Path("supabase/migrations").glob("*_conversational_tool_defaults.sql")
+    assert len(DEFAULT_CONVERSATIONAL_TOOLS) == len(set(DEFAULT_CONVERSATIONAL_TOOLS)) == 31
+    migration = max(
+        Path("supabase/migrations").glob("*_conversational_tool_defaults.sql"),
+        key=lambda path: path.name,
     ).read_text()
     payload = migration.split("'[", 1)[1].split("]'::jsonb", 1)[0]
     assert json.loads("[" + payload + "]") == list(DEFAULT_CONVERSATIONAL_TOOLS)
     assert "where owner_id is null" in migration
     assert "jsonb_set(" in migration
     assert "coalesce(settings, '{}'::jsonb)" in migration
+
+
+def test_defaults_preserve_incoming_media_tools_without_removed_actions() -> None:
+    enabled = frozenset(with_default_tools(None)["enabled_tools"])
+    assert enabled.isdisjoint(REMOVED_DEFAULT_TOOLS)
+    assert {
+        "get_messages",
+        "view_image",
+        "transcribe_voice_note",
+        "get_sticker_sets",
+        "get_stickers_in_set",
+        "search_sticker_sets",
+    } <= enabled
 
 
 @pytest.mark.parametrize(("selection", "expected"), SELECTIONS)
