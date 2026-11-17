@@ -32,6 +32,8 @@ export interface AgentStatus {
   agent_id: string;
   owner_id: string;
   state: AgentState;
+  /** Атака, в которой мимик сейчас участвует; null — обычный режим. */
+  attack_id: string | null;
 }
 
 /**
@@ -157,6 +159,99 @@ export interface TriggerMessageResponse {
   input_text: string;
   response_text: string;
   telegram_message_id: string | null;
+}
+
+/** Статус кампании — зеркало `attack_status` в Postgres. */
+export type AttackStatus = 'draft' | 'running' | 'cancelled' | 'finished';
+
+/** Что считает лимит кампании — зеркало `attack_limit_type`. */
+export type AttackLimitKind = 'messages' | 'minutes';
+
+/** Статус участия мимика — зеркало `attack_agent_status`. */
+export type AttackAgentStatus = 'assigned' | 'active' | 'exited';
+
+/** Картинка пула атаки: путь в приватном бакете и имя файла. */
+export interface AttackImage {
+  path: string;
+  name: string;
+}
+
+/** Картинка в карточке атаки: к пути и имени добавляется ссылка на превью. */
+export interface AttackMedia extends AttackImage {
+  url?: string;
+}
+
+/** Участие мимика в атаке — зеркало ParticipationView плюс имя агента. */
+export interface AttackAgent {
+  id: string;
+  attack_id: string;
+  agent_id: string;
+  name: string;
+  status: AttackAgentStatus;
+  sent_count: number;
+  next_at: string | null;
+  last_error: string | null;
+  exit_reason: string | null;
+  note_written_at: string | null;
+}
+
+/** GET /api/v1/attacks — элемент активного списка или архива. */
+export interface AttackSummary {
+  id: string;
+  owner_id: string;
+  title: string | null;
+  target_link: string;
+  status: AttackStatus;
+  limit_kind: AttackLimitKind;
+  limit_value: number;
+  sent_count: number;
+  claimed_count: number;
+  version: number;
+  started_at: string | null;
+  finished_at: string | null;
+  deadline_at: string | null;
+  end_reason: string | null;
+  slowmode_seconds: number | null;
+  agents: AttackAgent[];
+}
+
+/** GET /api/v1/attacks/{id} — карточка с пулом текстов и картинок. */
+export interface AttackDetail extends AttackSummary {
+  texts: string[];
+  media: AttackMedia[];
+}
+
+/** POST /api/v1/attacks — тело создания; мимиков можно добрать до запуска. */
+export interface AttackDraft {
+  title?: string;
+  target_link: string;
+  texts: string[];
+  images: AttackImage[];
+  limit_kind: AttackLimitKind;
+  message_limit?: number;
+  duration_minutes?: number;
+  agent_ids: string[];
+}
+
+/** PATCH /api/v1/attacks/{id} — ссылка неизменяема, правка защищена версией. */
+export interface AttackPatch {
+  version: number;
+  title?: string;
+  texts: string[];
+  images: AttackImage[];
+  limit_kind: AttackLimitKind;
+  message_limit?: number;
+  duration_minutes?: number;
+}
+
+/** GET /api/v1/attacks/agents — мимик и его доступность для пикера. */
+export interface AttackAgentAvailability {
+  agent_id: string;
+  name: string;
+  state: AgentState;
+  telegram_authorized: boolean;
+  warmup_restricted_at: string | null;
+  active_attack_id: string | null;
 }
 
 // ============================================================
@@ -465,7 +560,6 @@ export interface MemoryHistoryItem {
   updated_at?: string | null;
   user_id?: string | null;
 }
-
 
 // ── Prompt presets ────────────────────────────────────────────────────────────
 export interface PromptPresetRow {

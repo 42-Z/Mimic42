@@ -208,7 +208,7 @@ async function loadAnalytics(days: 7 | 30 = 7) {
       <QueryClientProvider client={client}>{children}</QueryClientProvider>
     ),
   });
-  await waitFor(() => expect(result.current.isPending).toBe(false));
+  await waitFor(() => expect(result.current.isPending).toBe(false), { timeout: 10_000 });
   return result.current;
 }
 

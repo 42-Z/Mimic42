@@ -45,6 +45,7 @@ describe('RebindWizard', () => {
       agent_id: AGENT_ID,
       owner_id: AGENT_ID,
       state: 'stopped',
+      attack_id: null,
     });
     const user = userEvent.setup();
     const { onInvalidate } = renderWizard();
@@ -77,7 +78,7 @@ describe('RebindWizard', () => {
     });
     const confirm = spyOn(agentsApi, 'confirmRebind')
       .mockRejectedValueOnce({ message: 'Не удалось пересобрать агента' })
-      .mockResolvedValueOnce({ agent_id: AGENT_ID, owner_id: AGENT_ID, state: 'stopped' });
+      .mockResolvedValueOnce({ agent_id: AGENT_ID, owner_id: AGENT_ID, state: 'stopped', attack_id: null });
     const user = userEvent.setup();
     renderWizard();
 

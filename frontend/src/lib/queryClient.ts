@@ -36,6 +36,13 @@ function privateQueryKeys(userId: string | null) {
       detailsAll: (agentIds: string[]) =>
         [...queryKeys.agents.all, 'details-all', [...agentIds].sort()] as const,
     },
+    attacks: {
+      all: ['account', userId, 'attacks'] as const,
+      list: () => [...queryKeys.attacks.all, 'list'] as const,
+      detail: (id: string) => [...queryKeys.attacks.all, 'detail', id] as const,
+      agents: () => [...queryKeys.attacks.all, 'agents'] as const,
+      media: (path: string) => [...queryKeys.attacks.all, 'media', path] as const,
+    },
     conversation: {
       all: ['account', userId, 'conversation'] as const,
       byAgent: (agentId: string) => [...queryKeys.conversation.all, agentId] as const,

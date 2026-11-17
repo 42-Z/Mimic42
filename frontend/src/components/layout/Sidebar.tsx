@@ -15,6 +15,7 @@ import {
   Zap,
   X,
   ShieldCheck,
+  Swords,
 } from 'lucide-react';
 import { getSupabaseClient } from '@/lib/supabase/client';
 import { useAgents } from '@/hooks/useAgents';
@@ -30,6 +31,7 @@ interface NavItem {
 
 const mainNav: NavItem[] = [
   { href: '/dashboard', label: 'Главная', icon: LayoutDashboard, exact: true },
+  { href: '/attacks', label: 'Атака', icon: Swords },
   { href: '/presets', label: 'Пресеты', icon: Library, exact: true },
 ];
 

@@ -17,6 +17,7 @@ from sqlalchemy import (
     SmallInteger,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -64,6 +65,27 @@ AgentEventStatus = Enum(
     "failed",
     "cancelled",
     name="agent_event_status",
+)
+
+AttackStatus = Enum(
+    "draft",
+    "running",
+    "cancelled",
+    "finished",
+    name="attack_status",
+)
+
+AttackLimitType = Enum(
+    "messages",
+    "minutes",
+    name="attack_limit_type",
+)
+
+AttackAgentStatus = Enum(
+    "assigned",
+    "active",
+    "exited",
+    name="attack_agent_status",
 )
 
 
@@ -353,3 +375,98 @@ class AgentTokenUsageModel(Base):
     input_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
     output_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AttackModel(Base):
+    __tablename__ = "attacks"
+    __table_args__ = (
+        CheckConstraint("btrim(target_link) <> ''"),
+        CheckConstraint("btrim(target_channel_peer) <> ''"),
+        CheckConstraint("jsonb_typeof(texts) = 'array'"),
+        CheckConstraint("jsonb_array_length(texts) > 0"),
+        CheckConstraint("jsonb_typeof(media_paths) = 'array'"),
+        CheckConstraint("limit_value > 0"),
+        CheckConstraint("slowmode_seconds is null or slowmode_seconds >= 0"),
+        CheckConstraint("sent_count >= 0 and claimed_count >= 0"),
+        CheckConstraint("sent_count <= claimed_count"),
+        CheckConstraint("status <> 'running' or started_at is not null"),
+        CheckConstraint(
+            "status not in ('finished', 'cancelled') "
+            "or (finished_at is not null and end_reason is not null)"
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    owner_id: Mapped[UUID] = mapped_column(ForeignKey("profiles.id", ondelete="CASCADE"))
+    title: Mapped[str | None] = mapped_column(Text)
+    target_link: Mapped[str] = mapped_column(Text)
+    target_channel_peer: Mapped[str] = mapped_column(Text)
+    target_message_id: Mapped[int] = mapped_column(BigInteger)
+    target_channel_id: Mapped[int | None] = mapped_column(BigInteger)
+    anchor_message_id: Mapped[int | None] = mapped_column(BigInteger)
+    slowmode_seconds: Mapped[int | None] = mapped_column(Integer)
+    texts: Mapped[list[str]] = mapped_column(JSONB)
+    media_paths: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    limit_type: Mapped[str] = mapped_column(AttackLimitType)
+    limit_value: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(AttackStatus, default="draft")
+    sent_count: Mapped[int] = mapped_column(Integer, default=0)
+    claimed_count: Mapped[int] = mapped_column(Integer, default=0)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    deadline_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    end_reason: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+Index(
+    "attacks_owner_id_status_created_at_idx",
+    AttackModel.owner_id,
+    AttackModel.status,
+    AttackModel.created_at.desc(),
+)
+
+
+class AttackAgentModel(Base):
+    __tablename__ = "attack_agents"
+    __table_args__ = (
+        CheckConstraint("sent_count >= 0"),
+        CheckConstraint("pending_attempts >= 0"),
+        CheckConstraint("pending_count >= 0"),
+        CheckConstraint("(pending_random_id is null) = (pending_count = 0)"),
+        CheckConstraint("pending_media is null or jsonb_typeof(pending_media) = 'array'"),
+        CheckConstraint("(pending_random_id is null) = (pending_text is null)"),
+        CheckConstraint(
+            "status <> 'exited' or (exit_reason is not null and exited_at is not null)"
+        ),
+        Index("attack_agents_agent_id_status_idx", "agent_id", "status"),
+        Index("attack_agents_attack_id_status_idx", "attack_id", "status"),
+        Index(
+            "attack_agents_active_agent_idx",
+            "agent_id",
+            unique=True,
+            postgresql_where=text("status in ('assigned', 'active')"),
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    attack_id: Mapped[UUID] = mapped_column(ForeignKey("attacks.id", ondelete="CASCADE"))
+    agent_id: Mapped[UUID] = mapped_column(ForeignKey("agents.id", ondelete="CASCADE"))
+    status: Mapped[str] = mapped_column(AttackAgentStatus, default="assigned")
+    sent_count: Mapped[int] = mapped_column(Integer, default=0)
+    next_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    pending_random_id: Mapped[int | None] = mapped_column(BigInteger)
+    pending_text: Mapped[str | None] = mapped_column(Text)
+    pending_media: Mapped[list[str] | None] = mapped_column(JSONB(none_as_null=True))
+    pending_count: Mapped[int] = mapped_column(Integer, default=0)
+    pending_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    last_comment_message_id: Mapped[int | None] = mapped_column(BigInteger)
+    last_error_code: Mapped[str | None] = mapped_column(Text)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    exit_reason: Mapped[str | None] = mapped_column(Text)
+    note_written_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    memory_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    joined_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    exited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

@@ -42,6 +42,7 @@ class FakeTelegramClient:
             account.authorized = True
         self.account = account
         self.requests: list[object] = []
+        self.uploads: list[object] = []
         self.connected = False
         self.connect_calls = 0
         self.disconnect_calls = 0
@@ -129,6 +130,15 @@ class FakeTelegramClient:
         message_id = len(self.account.sent)
         media = type("Media", (), {"message_id": message_id})()
         return type("Message", (), {"id": message_id, "media": media})()
+
+    async def upload_file(self, file: Any, **kwargs: Any) -> Any:
+        """Загрузка без сети: поток запоминается, дескриптор получает его имя.
+
+        Имя важно вызывающему: расширение решает, уйдёт файл фото или документом.
+        """
+        self.uploads.append(file)
+        name = getattr(file, "name", "unnamed")
+        return types.InputFile(id=len(self.uploads), parts=1, name=name, md5_checksum="")
 
     def add_event_handler(
         self,

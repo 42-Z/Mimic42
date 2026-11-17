@@ -65,6 +65,7 @@ class StubRuntime:
         self.spambot = spambot
         self.spambot_checks = 0
         self.busy = False
+        self.attack_id: UUID | None = None
 
     async def send_warmup_opener(self, **kwargs: Any) -> OpenerResult:
         self.openers.append(kwargs)
@@ -278,6 +279,17 @@ async def test_agent_starts_dialog_with_another_mimic_at_its_slot() -> None:
     assert opener["partner_agent_id"] == b.config.agent_id
     assert opener["text"]
     assert tracker.is_active(a.config.agent_id, b.config.agent_id, now=due_moment(a))
+
+
+@pytest.mark.asyncio
+async def test_agent_in_attack_does_not_start_a_warmup_dialog() -> None:
+    a, b = StubRuntime(user_id=1), StubRuntime(user_id=2)
+    a.attack_id = uuid4()
+    service, _ = make_service([a, b], MemoryHistory(), due_moment(a))
+
+    await service.tick()
+
+    assert a.openers == []
 
 
 @pytest.mark.asyncio
