@@ -8,6 +8,7 @@ from uuid import UUID
 import asyncpg
 import pytest
 
+from mimic42.core.tool_config import DEFAULT_CONVERSATIONAL_TOOLS
 from mimic42.testing.slots import Slot, plain_dsn
 
 EXPECTED_SLUGS = {"rage_comments", "sasavot_fan", "magnum_normie", "battalion"}
@@ -64,40 +65,19 @@ async def test_authenticated_reads_but_cannot_write(test_dsn: str) -> None:
         await connection.close()
 
 
-async def test_rage_comments_defines_tool_allowlist(test_dsn: str) -> None:
+async def test_official_presets_define_conversational_tool_allowlist(test_dsn: str) -> None:
     connection = await asyncpg.connect(plain_dsn(test_dsn))
     try:
-        settings = json.loads(
-            await connection.fetchval(
-                "select settings from public.prompt_presets where slug = 'rage_comments'"
-            )
+        rows = await connection.fetch(
+            "select slug, settings from public.prompt_presets where owner_id is null"
         )
     finally:
         await connection.close()
 
-    assert isinstance(settings, dict)
-    enabled = settings["enabled_tools"]
-    assert set(enabled) == {
-        "get_dialogs",
-        "get_messages",
-        "search_messages",
-        "get_discussion_messages",
-        "join_channel_discussion",
-        "view_image",
-        "send_text_message",
-        "send_chat_action",
-        "send_reaction",
-        "get_message_reactions",
-        "mark_chat_as_read",
-        "get_chat_info",
-        "check_admin_permissions",
-        "get_message_buttons",
-        "click_inline_button",
-        "start_bot",
-    }
-    # Разрушительное администрирование и приватность комментатору недоступны.
-    assert "delete_channel" not in enabled
-    assert "set_privacy_settings" not in enabled
+    assert {row["slug"] for row in rows} == EXPECTED_SLUGS
+    for row in rows:
+        settings = json.loads(row["settings"])
+        assert settings["enabled_tools"] == list(DEFAULT_CONVERSATIONAL_TOOLS), row["slug"]
 
 
 def _persona(test_slot: Slot, key: str) -> UUID:

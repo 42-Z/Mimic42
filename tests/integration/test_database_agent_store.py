@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
@@ -17,6 +18,7 @@ from mimic42.core.onboarding import (
     TelegramAuthorizationIncompleteError,
     TelegramLoginStatus,
 )
+from mimic42.core.tool_config import DEFAULT_CONVERSATIONAL_TOOLS
 from mimic42.integrations.database_agent_store import DatabaseAgentStore
 from mimic42.integrations.database_models import (
     AgentEventModel,
@@ -601,7 +603,7 @@ async def test_get_runtime_config_parses_enabled_tools(
     assert config.enabled_tools == frozenset({"send_text_message", "view_image"})
 
 
-async def test_get_runtime_config_without_enabled_tools_enables_all(
+async def test_new_agent_gets_conversational_tools(
     db_session_factory: async_sessionmaker[AsyncSession],
     clean_slot: Slot,
 ) -> None:
@@ -612,7 +614,67 @@ async def test_get_runtime_config_without_enabled_tools_enables_all(
 
     config = await store.get_runtime_config(agent_id)
 
+    assert config.enabled_tools == frozenset(DEFAULT_CONVERSATIONAL_TOOLS)
+    async with db_session_factory() as session:
+        settings = await session.scalar(
+            select(AgentModel.settings).where(AgentModel.id == agent_id)
+        )
+    assert settings == {"enabled_tools": list(DEFAULT_CONVERSATIONAL_TOOLS)}
+
+
+async def test_legacy_agent_without_enabled_tools_keeps_all_tools(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    owner_id = clean_slot.persona("full").user_id
+    agent_id = uuid4()
+    store = DatabaseAgentStore(db_session_factory)
+    await seed_agent(store, _make_session(owner_id, agent_id, "Mimic"))
+    async with db_session_factory() as session:
+        await session.execute(
+            update(AgentModel).where(AgentModel.id == agent_id).values(settings={})
+        )
+        await session.commit()
+
+    config = await store.get_runtime_config(agent_id)
+
     assert config.enabled_tools is None
+    async with db_session_factory() as session:
+        settings = await session.scalar(
+            select(AgentModel.settings).where(AgentModel.id == agent_id)
+        )
+    assert settings == {}
+
+
+@pytest.mark.parametrize(
+    ("selection", "expected"),
+    [
+        (None, None),
+        ([], frozenset()),
+        (["send_reaction"], frozenset({"send_reaction"})),
+    ],
+)
+async def test_creation_and_runtime_preserve_explicit_tool_selection(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+    selection: Any,
+    expected: frozenset[str] | None,
+) -> None:
+    owner_id = clean_slot.persona("full").user_id
+    agent_id = uuid4()
+    store = DatabaseAgentStore(db_session_factory)
+    draft = _make_session(owner_id, agent_id, "Mimic")
+    draft.settings = {"enabled_tools": selection, "model": "custom/model", "other": {"key": True}}
+
+    await seed_agent(store, draft)
+    config = await store.get_runtime_config(agent_id)
+
+    assert config.enabled_tools == expected
+    async with db_session_factory() as session:
+        settings = await session.scalar(
+            select(AgentModel.settings).where(AgentModel.id == agent_id)
+        )
+    assert settings == draft.settings
 
 
 async def test_get_runtime_config_parses_disabled_chats(

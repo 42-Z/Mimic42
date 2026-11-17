@@ -268,13 +268,6 @@ class AgentRuntimeConfig(BaseModel):
     warmup: WarmupSettings = Field(default_factory=WarmupSettings)
     warmup_state: WarmupState = Field(default_factory=WarmupState)
 
-    @property
-    def combined_prompt(self) -> str:
-        prompt = self.system_prompt
-        prompt = prompt.replace("{{name}}", self.name)
-        prompt = prompt.replace("{{soul}}", self.soul_prompt)
-        return prompt
-
 
 class AgentStatus(BaseModel):
     agent_id: UUID

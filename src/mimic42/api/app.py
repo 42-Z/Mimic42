@@ -249,6 +249,7 @@ class CreateAgentRequest(BaseModel):
         api_hash: str,
     ) -> AgentRuntimeConfig:
         from mimic42.core.onboarding import load_default_system_prompt
+        from mimic42.core.tool_config import DEFAULT_CONVERSATIONAL_TOOLS
 
         return AgentRuntimeConfig(
             agent_id=self.agent_id,
@@ -258,6 +259,7 @@ class CreateAgentRequest(BaseModel):
             telegram_session_string=self.telegram_session_string,
             system_prompt=load_default_system_prompt(),
             soul_prompt=self.soul_prompt,
+            enabled_tools=frozenset(DEFAULT_CONVERSATIONAL_TOOLS),
         )
 
 

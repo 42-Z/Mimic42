@@ -288,6 +288,8 @@ class InMemoryAgentStore:
         existing = self._agents.get(session.onboarding_id)
         if existing is not None and existing.owner_id != session.owner_id:
             raise AgentOwnershipError(session.onboarding_id)
+        if existing is not None:
+            return existing
         record = AgentRecord(
             agent_id=session.onboarding_id,
             owner_id=session.owner_id,
@@ -296,6 +298,7 @@ class InMemoryAgentStore:
         )
         self._agents[record.agent_id] = record
         from mimic42.core.onboarding import load_default_system_prompt
+        from mimic42.core.tool_config import parse_enabled_tools, with_default_tools
 
         self._configs[record.agent_id] = AgentRuntimeConfig(
             agent_id=session.onboarding_id,
@@ -307,6 +310,9 @@ class InMemoryAgentStore:
             system_prompt=load_default_system_prompt(),
             soul_prompt=session.soul_prompt,
             name=session.name or "AI",
+            enabled_tools=parse_enabled_tools(
+                with_default_tools(session.settings)["enabled_tools"]
+            ),
         )
         self._telegram_accounts[record.agent_id] = (
             session.api_id,

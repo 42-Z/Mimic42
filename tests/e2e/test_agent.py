@@ -10,6 +10,7 @@ import httpx
 import pytest
 from playwright.sync_api import Page, expect
 
+from mimic42.core.tool_config import DEFAULT_CONVERSATIONAL_TOOLS
 from tests.e2e.helpers import (
     create_test_agent,
     deliver_message,
@@ -234,13 +235,16 @@ class TestAgentPage:
     def test_tool_toggle_survives_save_and_reload(
         self, persona_page: Callable[..., Page], api: httpx.Client, users: dict
     ) -> None:
+        default_tool_count = len(DEFAULT_CONVERSATIONAL_TOOLS)
         agent_id = _new_agent(api, users, "Инструменты")
         page = persona_page("full")
         page.goto(f"/agent/{agent_id}?tab=settings")
 
         tools = page.get_by_test_id("tools-settings")
         expect(tools).to_be_visible()
-        expect(tools.get_by_text(re.compile(r"Включено \d+ из \d+"))).to_be_visible()
+        expect(
+            tools.get_by_text(re.compile(rf"Включено {default_tool_count} из \d+"))
+        ).to_be_visible()
 
         # exact=True: иначе подстрочный матч ловит групповой switch
         # «Все инструменты группы „Диалоги и поиск“»
@@ -254,7 +258,9 @@ class TestAgentPage:
 
         page.reload()
         tools = page.get_by_test_id("tools-settings")
-        expect(tools.get_by_text(re.compile(r"Включено 89 из \d+"))).to_be_visible()
+        expect(
+            tools.get_by_text(re.compile(rf"Включено {default_tool_count - 1} из \d+"))
+        ).to_be_visible()
         tools.get_by_label("Поиск", exact=True).fill("Отправка сообщения")
         expect(tools.get_by_role("switch", name="Отправка сообщения")).to_have_attribute(
             "aria-checked", "false"
@@ -263,6 +269,7 @@ class TestAgentPage:
     def test_preset_applies_tool_settings(
         self, persona_page: Callable[..., Page], api: httpx.Client, users: dict
     ) -> None:
+        default_tool_count = len(DEFAULT_CONVERSATIONAL_TOOLS)
         agent_id = _new_agent(api, users, "Инструменты пресета")
         page = persona_page("full")
         page.goto(f"/agent/{agent_id}?tab=settings")
@@ -272,7 +279,9 @@ class TestAgentPage:
 
         page.get_by_test_id("open-presets").click()
         page.get_by_role("option", name=re.compile("Рейджбейт в комментариях")).click()
-        expect(page.get_by_test_id("preset-tools")).to_contain_text(re.compile(r"16 из \d+"))
+        expect(page.get_by_test_id("preset-tools")).to_contain_text(
+            re.compile(rf"{default_tool_count} из \d+")
+        )
         page.get_by_role("button", name="Применить пресет").click()
 
         tools = page.get_by_test_id("tools-settings")
@@ -290,7 +299,9 @@ class TestAgentPage:
 
         page.reload()
         tools = page.get_by_test_id("tools-settings")
-        expect(tools.get_by_text(re.compile(r"Включено 16 из \d+"))).to_be_visible()
+        expect(
+            tools.get_by_text(re.compile(rf"Включено {default_tool_count} из \d+"))
+        ).to_be_visible()
         tools.get_by_label("Поиск", exact=True).fill("Удаление канала")
         expect(tools.get_by_role("switch", name="Удаление канала")).to_have_attribute(
             "aria-checked", "false"
