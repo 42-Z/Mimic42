@@ -153,7 +153,6 @@ function AttackDetailContent({ attackId }: { attackId: string }) {
             mode="edit"
             targetLink={attack.target_link}
             editInitial={editInitialFromAttack(attack)}
-            slowmodeSeconds={attack.slowmode_seconds}
             sentCount={attack.sent_count}
             submitting={update.isPending ? 'save' : null}
             onUpdate={handleUpdate}

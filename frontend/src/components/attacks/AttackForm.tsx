@@ -6,7 +6,6 @@ import type { ZodIssue } from 'zod';
 import {
   AlertTriangle,
   Clock,
-  Gauge,
   ImagePlus,
   MessageSquare,
   Play,
@@ -17,8 +16,9 @@ import {
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
-import { Card } from '@/components/ui/card';
+import { FieldGroup } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
+import { Separator } from '@/components/ui/separator';
 import {
   ATTACK_CAPTION_MAX,
   ATTACK_TEXT_MAX,
@@ -27,7 +27,6 @@ import {
   type AttackFormState,
 } from '@/lib/attacks/types';
 import { attackCreateSchema, attackEditSchema } from '@/lib/attacks/validators';
-import { attackPace } from '@/lib/attacks/display';
 import { AttackImageUploader } from './AttackImageUploader';
 import { AttackLimitFields } from './AttackLimitFields';
 import { AttackMimicPicker } from './AttackMimicPicker';
@@ -57,7 +56,6 @@ export interface AttackFormProps {
   targetLink?: string;
   initial?: AttackFormState;
   editInitial?: AttackEditFormState;
-  slowmodeSeconds?: number | null;
   sentCount?: number;
   submitting?: 'draft' | 'start' | 'save' | null;
   onCreate?: (draft: AttackDraft, intent: 'draft' | 'start') => void;
@@ -128,7 +126,6 @@ export function AttackForm({
   targetLink,
   initial,
   editInitial,
-  slowmodeSeconds,
   sentCount = 0,
   submitting = null,
   onCreate,
@@ -141,7 +138,6 @@ export function AttackForm({
   const [errors, setErrors] = useState<Record<string, string>>({});
 
   const textMax = state.images.length > 0 ? ATTACK_CAPTION_MAX : ATTACK_TEXT_MAX;
-  const pace = attackPace(slowmodeSeconds);
   const limitValue =
     state.limit_kind === 'messages' ? state.message_limit : state.duration_minutes;
   const limitError =
@@ -266,7 +262,7 @@ export function AttackForm({
 
   return (
     <form
-      className="flex flex-col gap-4"
+      className="flex flex-col gap-5"
       onSubmit={(event) => event.preventDefault()}
       noValidate
     >
@@ -278,7 +274,7 @@ export function AttackForm({
         </Alert>
       )}
 
-      <Card variant="glass" padding="md" className="flex flex-col gap-5">
+      <FieldGroup className="gap-5">
         <SectionHeader
           icon={Target}
           title="Цель"
@@ -316,9 +312,11 @@ export function AttackForm({
           error={displayErrors['title']}
           hint="Необязательно. Без названия карточка покажет канал из ссылки."
         />
-      </Card>
+      </FieldGroup>
 
-      <Card variant="glass" padding="md" className="flex flex-col gap-4">
+      <Separator />
+
+      <FieldGroup className="gap-4">
         <SectionHeader
           icon={MessageSquare}
           title="Тексты"
@@ -332,9 +330,11 @@ export function AttackForm({
           onAdd={addText}
           onRemove={removeText}
         />
-      </Card>
+      </FieldGroup>
 
-      <Card variant="glass" padding="md" className="flex flex-col gap-4">
+      <Separator />
+
+      <FieldGroup className="gap-4">
         <SectionHeader
           icon={ImagePlus}
           title="Картинки"
@@ -355,9 +355,11 @@ export function AttackForm({
           }}
           error={displayErrors['images']}
         />
-      </Card>
+      </FieldGroup>
 
-      <Card variant="glass" padding="md" className="flex flex-col gap-4">
+      <Separator />
+
+      <FieldGroup className="gap-4">
         <SectionHeader
           icon={Clock}
           title="Лимит"
@@ -371,15 +373,6 @@ export function AttackForm({
           onValueChange={setLimitValue}
         />
 
-        <div className="flex items-start gap-2 rounded-sm border border-border/70 bg-muted/30 p-3">
-          <Gauge className="mt-0.5 size-4 shrink-0 text-primary" aria-hidden="true" />
-          <p className="font-mono text-[11px] leading-relaxed text-muted-foreground">
-            <span className="text-foreground">Темп: {pace.label}.</span>{' '}
-            Частота не настраивается: мимики сами держат паузу не меньше базы и ждут FloodWait.
-            Если у обсуждения есть медленный режим, пауза подстроится под него.
-          </p>
-        </div>
-
         {limitBelowSent && (
           <Alert variant="warning">
             <AlertTriangle aria-hidden="true" />
@@ -390,26 +383,32 @@ export function AttackForm({
             </AlertDescription>
           </Alert>
         )}
-      </Card>
+      </FieldGroup>
+
+      <Separator />
 
       {mode === 'create' && (
-        <Card variant="glass" padding="md" className="flex flex-col gap-4">
-          <SectionHeader
-            icon={Users}
-            title="Мимики"
-            description="Кто будет писать комментарии. Добавление сразу переносит мимика из другой атаки."
-          />
-          <AttackMimicPicker
-            agents={agents}
-            value={state.agent_ids}
-            onChange={(agentIds) => {
-              patchState({ agent_ids: agentIds });
-              clearError('agent_ids');
-            }}
-            isLoading={agentsLoading}
-            error={displayErrors['agent_ids']}
-          />
-        </Card>
+        <>
+          <FieldGroup className="gap-4">
+            <SectionHeader
+              icon={Users}
+              title="Мимики"
+              description="Кто будет писать комментарии. Добавление сразу переносит мимика из другой атаки."
+            />
+            <AttackMimicPicker
+              agents={agents}
+              value={state.agent_ids}
+              onChange={(agentIds) => {
+                patchState({ agent_ids: agentIds });
+                clearError('agent_ids');
+              }}
+              isLoading={agentsLoading}
+              error={displayErrors['agent_ids']}
+            />
+          </FieldGroup>
+
+          <Separator />
+        </>
       )}
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
