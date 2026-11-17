@@ -12,7 +12,11 @@ import pytest
 from telethon import errors, functions, types, utils
 
 from mimic42.core.off_limits import is_off_limits_entity
-from mimic42.integrations.telegram_tools import TelegramToolbox, build_telegram_langchain_tools
+from mimic42.integrations.telegram_tools import (
+    TelegramToolbox,
+    TelethonRequestClient,
+    build_telegram_langchain_tools,
+)
 from tests.integrations.test_telegram_tools import FakeTelethonClient
 
 
@@ -63,8 +67,9 @@ async def test_send_failure_carries_a_hint_for_the_model(error: Exception, expec
 async def test_restricted_sender_keeps_error_evidence_without_unavailable_recommendations(
     error: Exception,
 ) -> None:
+    client = MagicMock(spec=TelethonRequestClient, wraps=FailingSendClient(error))
     [sender] = build_telegram_langchain_tools(
-        FailingSendClient(error), enabled_tools=frozenset({"send_text_message"})
+        client, enabled_tools=frozenset({"send_text_message"})
     )
     result = await sender.ainvoke({"peer": "12345", "message": "привет", "comment_to_msg_id": 5})
     assert result["error"] == str(error)
