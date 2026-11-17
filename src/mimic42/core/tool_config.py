@@ -8,9 +8,58 @@ allowlist. Нечитаемое значение не должно ни роня
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from typing import Any
 
 logger = logging.getLogger("mimic42.tool_config")
+
+DEFAULT_CONVERSATIONAL_TOOLS = (
+    "get_dialogs",
+    "get_chat_info",
+    "get_profile",
+    "get_messages",
+    "search_messages",
+    "get_discussion_messages",
+    "send_text_message",
+    "edit_text_message",
+    "delete_messages",
+    "forward_messages",
+    "pin_message",
+    "unpin_message",
+    "send_reaction",
+    "get_message_reactions",
+    "mark_chat_as_read",
+    "send_chat_action",
+    "join_channel",
+    "join_channel_discussion",
+    "check_admin_permissions",
+    "get_message_buttons",
+    "click_inline_button",
+    "click_reply_keyboard_button",
+    "start_bot",
+    "view_image",
+    "send_file",
+    "send_voice_note",
+    "send_video_note",
+    "transcribe_voice_note",
+    "read_document_file",
+    "get_sticker_sets",
+    "get_stickers_in_set",
+    "search_sticker_sets",
+    "send_sticker",
+    "send_poll",
+    "query_inline_bot",
+    "send_inline_bot_result",
+    "set_wakeup_timer",
+)
+
+
+def with_default_tools(settings: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Materialize the default only when creating an agent without a selection."""
+    result = dict(settings or {})
+    if "enabled_tools" not in result:
+        result["enabled_tools"] = list(DEFAULT_CONVERSATIONAL_TOOLS)
+    return result
 
 
 def parse_enabled_tools(raw: Any) -> frozenset[str] | None:

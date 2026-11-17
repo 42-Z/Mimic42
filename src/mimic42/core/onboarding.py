@@ -25,6 +25,7 @@ from mimic42.core.telegram_proxy import (
     TelegramProxyStore,
     TelegramProxyUnavailableError,
 )
+from mimic42.core.tool_config import parse_enabled_tools, with_default_tools
 
 logger = logging.getLogger("mimic42.onboarding")
 
@@ -863,6 +864,9 @@ class AgentOnboardingService:
             telegram_session_token=session.session_secret,
             telegram_proxy=proxy,
             llm_model=self._llm_model,
+            enabled_tools=parse_enabled_tools(
+                with_default_tools(session.settings)["enabled_tools"]
+            ),
             system_prompt=load_default_system_prompt(),
             soul_prompt=session.soul_prompt,
             name=session.name or "AI",

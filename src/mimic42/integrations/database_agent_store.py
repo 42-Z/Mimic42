@@ -33,7 +33,7 @@ from mimic42.core.onboarding import (
     TelegramAuthorizationRef,
     TelegramLoginStaleError,
 )
-from mimic42.core.tool_config import parse_enabled_tools
+from mimic42.core.tool_config import parse_enabled_tools, with_default_tools
 from mimic42.core.warmup import parse_warmup
 from mimic42.integrations.database_conversation import load_conversation, stored_structured_text
 from mimic42.integrations.database_models import (
@@ -194,7 +194,7 @@ class DatabaseAgentStore:
                     name=profile.name,
                     soul_prompt=profile.soul_prompt,
                     status=AgentRuntimeState.STOPPED.value,
-                    settings=dict(model.settings or {}),
+                    settings=with_default_tools(model.settings),
                 )
                 db_session.add(agent)
                 await db_session.flush()
