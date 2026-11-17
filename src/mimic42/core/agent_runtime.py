@@ -2839,7 +2839,7 @@ class MimicAgentRuntime:
     async def _check_and_trigger_timers(self) -> None:
         """Брать по одному; повтор безопасен только до допуска к ходу агента."""
         # Таймеры не отменяются атакой: остаются pending и сработают после неё.
-        if not self.accepts_normal_traffic:
+        if self._attack_id is not None:
             return
         session_factory = self._session_factory
         if session_factory is None:
