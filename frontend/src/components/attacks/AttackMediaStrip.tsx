@@ -38,6 +38,7 @@ export function AttackMediaThumb({
             src={link.url}
             alt={media.name}
             loading="lazy"
+            decoding="async"
             className="size-full object-cover transition-transform duration-200 group-hover:scale-105"
           />
         </a>

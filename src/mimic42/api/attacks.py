@@ -346,10 +346,22 @@ async def _signed_url(request: Request, path: str) -> str | None:
         return None
 
 
-async def _detail_media(request: Request, paths: Sequence[str]) -> list[AttackMedia]:
+async def _detail_media(
+    request: Request, paths: Sequence[str], *, sign_limit: int
+) -> list[AttackMedia]:
+    """Подписать только видимые обложки.
+
+    Пул может содержать тысячи картинок; подпись каждой — отдельный запрос
+    в Storage. Остальные пути отдаются без ``url`` и подписываются по мере
+    раскрытия списка в интерфейсе.
+    """
     return [
-        AttackMedia(path=path, name=_media_name(path), url=await _signed_url(request, path))
-        for path in paths
+        AttackMedia(
+            path=path,
+            name=_media_name(path),
+            url=await _signed_url(request, path) if index < sign_limit else None,
+        )
+        for index, path in enumerate(paths)
     ]
 
 
@@ -393,8 +405,10 @@ async def _detail(
     request: Request,
     view: AttackView,
     names: Mapping[UUID, str],
+    *,
+    media_sign_limit: int = 12,
 ) -> AttackDetail:
-    media = await _detail_media(request, view.config.media_paths)
+    media = await _detail_media(request, view.config.media_paths, sign_limit=media_sign_limit)
     base = _summary(view, names)
     return AttackDetail(
         **base.model_dump(),
@@ -469,12 +483,12 @@ async def list_attacks(
     views = await service.list(current_user.user_id)
     names = await _agent_names(service, current_user.user_id)
     active = [
-        await _detail(request, view, names)
+        await _detail(request, view, names, media_sign_limit=6)
         for view in views
         if view.status in (AttackStatus.DRAFT, AttackStatus.RUNNING)
     ]
     archive = [
-        await _detail(request, view, names)
+        await _detail(request, view, names, media_sign_limit=6)
         for view in views
         if view.status in (AttackStatus.CANCELLED, AttackStatus.FINISHED)
     ]

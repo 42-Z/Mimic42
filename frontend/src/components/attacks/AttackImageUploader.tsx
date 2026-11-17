@@ -13,6 +13,42 @@ import type { ApiError, AttackImage } from '@/types';
 
 const ACCEPTED_IMAGE_TYPES = ['image/jpeg', 'image/png'];
 const MAX_IMAGE_MB = FIRST_COMMENT_MAX_IMAGE_BYTES / (1024 * 1024);
+const INITIAL_VISIBLE = 12;
+const LOAD_MORE = 24;
+const MAX_UPLOAD_SIDE = 1280;
+const MAX_UPLOAD_BYTES = 1_500_000;
+
+async function prepareImage(file: File): Promise<File> {
+  if (!file.type.startsWith('image/')) return file;
+  try {
+    const bitmap = await createImageBitmap(file);
+    const scale = Math.min(1, MAX_UPLOAD_SIDE / Math.max(bitmap.width, bitmap.height));
+    if (scale === 1 && file.size <= MAX_UPLOAD_BYTES) {
+      bitmap.close();
+      return file;
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+    canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+    const context = canvas.getContext('2d');
+    if (!context) {
+      bitmap.close();
+      return file;
+    }
+    context.fillStyle = '#ffffff';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    bitmap.close();
+    const blob = await new Promise<Blob | null>((resolve) =>
+      canvas.toBlob(resolve, 'image/jpeg', 0.84),
+    );
+    if (!blob) return file;
+    const name = file.name.replace(/\.[^.]+$/, '') || 'image';
+    return new File([blob], `${name}.jpg`, { type: 'image/jpeg' });
+  } catch {
+    return file;
+  }
+}
 
 export function AttackImageUploader({
   images,
@@ -28,6 +64,7 @@ export function AttackImageUploader({
   const fileInput = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [visibleCount, setVisibleCount] = useState(INITIAL_VISIBLE);
 
   const handleFiles = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
@@ -45,7 +82,7 @@ export function AttackImageUploader({
           continue;
         }
         try {
-          const result = await attacksApi.uploadMedia(file);
+          const result = await attacksApi.uploadMedia(await prepareImage(file));
           uploaded.push({ path: result.storage_path, name: result.name });
         } catch (cause: unknown) {
           problem ??= (cause as ApiError).message ?? 'Не удалось загрузить картинку';
@@ -74,7 +111,7 @@ export function AttackImageUploader({
 
       {images.length > 0 && (
         <div className="flex flex-wrap gap-2">
-          {images.map((image) => (
+          {images.slice(Math.max(0, images.length - visibleCount)).map((image) => (
             <AttackMediaThumb
               key={image.path}
               media={image}
@@ -88,6 +125,18 @@ export function AttackImageUploader({
             </div>
           )}
         </div>
+      )}
+
+      {images.length > visibleCount && (
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="w-fit"
+          onClick={() => setVisibleCount((count) => count + LOAD_MORE)}
+        >
+          Показать ещё {Math.min(LOAD_MORE, images.length - visibleCount)}
+        </Button>
       )}
 
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">

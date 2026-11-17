@@ -262,7 +262,7 @@ export function AttackForm({
 
   return (
     <form
-      className="flex flex-col gap-5"
+      className="flex min-w-0 flex-col gap-5"
       onSubmit={(event) => event.preventDefault()}
       noValidate
     >
