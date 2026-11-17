@@ -16,6 +16,7 @@ from mimic42.config import Settings
 from mimic42.core.activity import ActivityRecorder
 from mimic42.core.agent_runtime import AgentRuntimeConfig, LangChainAgentLike, TurnContext
 from mimic42.core.model_catalog import ignored_providers, resolve_model_chain
+from mimic42.core.system_prompt import render_system_prompt
 from mimic42.core.token_usage import TokenUsageRecorder
 from mimic42.integrations.activity_middleware import ActivityMiddleware
 from mimic42.integrations.agent_response_schema import AgentResponse
@@ -146,7 +147,12 @@ def build_langchain_agent(
         create_agent(
             model=model,
             tools=tools or [],
-            system_prompt=config.combined_prompt,
+            system_prompt=render_system_prompt(
+                config.system_prompt,
+                available_names=frozenset(tool.name for tool in tools or []),
+                name=config.name,
+                soul=config.soul_prompt,
+            ),
             response_format=AgentResponse,
             context_schema=TurnContext,
             middleware=middleware,

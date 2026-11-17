@@ -12,7 +12,7 @@ import pytest
 from telethon import errors, functions, types, utils
 
 from mimic42.core.off_limits import is_off_limits_entity
-from mimic42.integrations.telegram_tools import TelegramToolbox
+from mimic42.integrations.telegram_tools import TelegramToolbox, build_telegram_langchain_tools
 from tests.integrations.test_telegram_tools import FakeTelethonClient
 
 
@@ -32,9 +32,9 @@ class FailingSendClient(FakeTelethonClient):
     ("error", "expected"),
     [
         (errors.UserBannedInChannelError(request=None), "USER_BANNED_IN_CHANNEL"),
-        (errors.ChatGuestSendForbiddenError(request=None), "join_channel_discussion"),
-        (errors.ChatWriteForbiddenError(request=None), "get_messages"),
-        (errors.UserNotParticipantError(request=None), "join_channel"),
+        (errors.ChatGuestSendForbiddenError(request=None), "после вступления"),
+        (errors.ChatWriteForbiddenError(request=None), "капча бота-верификатора"),
+        (errors.UserNotParticipantError(request=None), "отдельная группа"),
         (errors.PeerFloodError(request=None), "PEER_FLOOD"),
         (errors.MsgIdInvalidError(request=None), "comment_to_msg_id"),
     ],
@@ -48,6 +48,30 @@ async def test_send_failure_carries_a_hint_for_the_model(error: Exception, expec
     assert result["success"] is False
     assert result["error_code"] == type(error).__name__
     assert expected in result["hint"]
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        errors.ChatGuestSendForbiddenError(request=None),
+        errors.ChatWriteForbiddenError(request=None),
+        errors.UserNotParticipantError(request=None),
+        errors.MsgIdInvalidError(request=None),
+        RuntimeError("Telegram evidence mentions get_messages and join_channel"),
+    ],
+)
+async def test_restricted_sender_keeps_error_evidence_without_unavailable_recommendations(
+    error: Exception,
+) -> None:
+    [sender] = build_telegram_langchain_tools(
+        FailingSendClient(error), enabled_tools=frozenset({"send_text_message"})
+    )
+    result = await sender.ainvoke({"peer": "12345", "message": "привет", "comment_to_msg_id": 5})
+    assert result["error"] == str(error)
+    assert result["error_code"] == type(error).__name__
+    hint = result.get("hint", "")
+    for unavailable in ("get_messages", "join_channel", "join_channel_discussion"):
+        assert unavailable not in hint
 
 
 @pytest.mark.asyncio
@@ -202,7 +226,7 @@ async def test_join_shows_the_captcha_that_greets_newcomers() -> None:
     assert "Captcha: 33+26" in greeting["text"]
     answers = {button["text"]: button.get("data") for button in greeting["buttons"]}
     assert answers["59"] == "right"
-    assert "click_inline_button" in result["hint"]
+    assert "пройти проверку с верным ответом" in result["hint"]
     assert f"peer={result['linked_chat_id']}" in result["hint"]
     assert "писать туда нельзя" in result["hint"]
 
@@ -283,7 +307,7 @@ async def test_failed_look_around_is_not_reported_as_no_check() -> None:
     # Подсказка «в группе нет сообщений с кнопками» здесь была бы ложью.
     assert "В группе нет сообщений с кнопками" not in result["hint"]
     assert "не потому, что её нет" in result["hint"]
-    assert "get_messages" in result["hint"]
+    assert "Пока их состояние неизвестно, писать в группу нельзя" in result["hint"]
     assert f"peer={result['linked_chat_id']}" in result["hint"]
 
 
@@ -314,7 +338,7 @@ async def test_joining_a_public_group_shows_its_captcha_too() -> None:
 
     assert result["success"] is True
     assert result["verification_messages"][0]["message_id"] == 2557938
-    assert "click_inline_button" in result["hint"]
+    assert "пройти проверку с верным ответом" in result["hint"]
     # Группа названа ID с пометкой типа, а не голым номером канала.
     assert result["chat_id"] == utils.get_peer_id(group)
     assert f"peer={result['chat_id']}" in result["hint"]

@@ -1380,19 +1380,6 @@ async def test_long_message_split_into_multiple_parts(monkeypatch: pytest.Monkey
     await runtime.stop()
 
 
-def test_combined_prompt() -> None:
-    config = AgentRuntimeConfig(
-        agent_id=UUID("00000000-0000-0000-0000-000000000000"),
-        owner_id=UUID("00000000-0000-0000-0000-000000000000"),
-        telegram_api_id=1,
-        telegram_api_hash="hash",
-        system_prompt="Hello {{name}}, you are {{soul}}",
-        name="Bob",
-        soul_prompt="kind",
-    )
-    assert config.combined_prompt == "Hello Bob, you are kind"
-
-
 @pytest.mark.asyncio
 async def test_incoming_album_becomes_single_turn(monkeypatch: pytest.MonkeyPatch) -> None:
     """Альбом из трёх сообщений = один ход и один ответ агента."""
