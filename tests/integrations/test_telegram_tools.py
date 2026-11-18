@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+from copy import copy
 from datetime import UTC, datetime, timedelta
 from io import BytesIO
 from types import SimpleNamespace
@@ -11,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from langchain_core.messages import ToolMessage
-from telethon import errors, functions, types
+from telethon import TelegramClient, errors, functions, types, utils
 
 from mimic42.core.agent_runtime import TelegramClientLike, _extract_incoming_text
 from mimic42.core.media_download import MediaRef, MediaRefCache
@@ -221,15 +222,16 @@ class FakeTelethonClient(FakeTelegramClient):
         elif isinstance(request, functions.account.SetPrivacyRequest):
             return True
         elif isinstance(request, functions.account.GetGlobalPrivacySettingsRequest):
-            settings = MagicMock(spec=types.GlobalPrivacySettings)
-            settings.archive_and_mute_new_noncontact_peers = True
-            settings.keep_archived_unmuted = True
-            settings.keep_archived_folders = True
-            settings.hide_read_marks = False
-            settings.new_noncontact_peers_require_premium = False
-            settings.display_gifts_button = True
-            settings.noncontact_peers_paid_stars = None
-            return settings
+            return types.GlobalPrivacySettings(
+                archive_and_mute_new_noncontact_peers=True,
+                keep_archived_unmuted=True,
+                keep_archived_folders=True,
+                hide_read_marks=False,
+                new_noncontact_peers_require_premium=False,
+                display_gifts_button=True,
+                noncontact_peers_paid_stars=42,
+                disallowed_gifts=types.DisallowedGiftsSettings(disallow_unique_stargifts=True),
+            )
         elif isinstance(request, functions.account.SetGlobalPrivacySettingsRequest):
             return True
         elif isinstance(request, functions.account.GetContentSettingsRequest):
@@ -491,9 +493,13 @@ class FakeTelethonClient(FakeTelegramClient):
             user.username = None
             user.bot = False
 
-            participant = MagicMock(spec=types.ChannelParticipantAdmin)
-            participant.title = "AdminTag"
-            user.participant = participant
+            user.participant = types.ChannelParticipantAdmin(
+                user_id=user.id,
+                promoted_by=456,
+                date=None,
+                admin_rights=types.ChatAdminRights(delete_messages=True),
+                rank="AdminTag",
+            )
             yield user
 
         return gen()
@@ -2303,6 +2309,96 @@ async def test_remaining_profile_and_contact_tools() -> None:
     assert res[0]["username"] == "ivan_petrov"
 
 
+@pytest.mark.parametrize("last_name", [None, ""], ids=["omitted", "clear"])
+async def test_update_profile_info_preserves_omitted_last_name(last_name: str | None) -> None:
+    client = FakeTelethonClient()
+    toolbox = TelegramToolbox(client)
+
+    kwargs = {} if last_name is None else {"last_name": last_name}
+    assert await toolbox.update_profile_info(first_name="NewName", **kwargs) == {"success": True}
+
+    (request,) = client.requests
+    assert isinstance(request, functions.account.UpdateProfileRequest)
+    assert request.first_name == "NewName"
+    assert request.last_name == last_name
+
+
+async def test_promote_chat_member_sends_admin_rank(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = FakeTelethonClient()
+    toolbox = TelegramToolbox(client)
+    peers = {"group": types.InputPeerChannel(123, 456), "username": types.InputPeerUser(789, 1)}
+    monkeypatch.setattr(FakeTelethonClient, "edit_admin", TelegramClient.edit_admin)
+    monkeypatch.setattr(client, "get_input_entity", AsyncMock(side_effect=peers.__getitem__))
+
+    result = await toolbox.promote_chat_member(
+        "group", "username", delete_messages=True, title="Mod"
+    )
+
+    assert result == {"success": True}
+    (request,) = client.requests
+    assert isinstance(request, functions.channels.EditAdminRequest)
+    assert request.rank == "Mod"
+    assert isinstance(request.admin_rights, types.ChatAdminRights)
+    assert request.admin_rights.delete_messages is True
+
+
+@pytest.mark.parametrize(
+    "entity", [types.InputPeerChat(123), types.InputPeerChannel(123, 456)], ids=["group", "channel"]
+)
+async def test_edit_chat_title_sends_request_for_chat_type(
+    entity: types.InputPeerChat | types.InputPeerChannel,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = FakeTelethonClient()
+    toolbox = TelegramToolbox(client)
+    monkeypatch.setattr(client, "get_input_entity", AsyncMock(return_value=entity))
+
+    assert await toolbox.edit_chat_title(str(utils.get_peer_id(entity)), "NewTitle") == {
+        "success": True
+    }
+
+    (request,) = client.requests
+    if isinstance(entity, types.InputPeerChat):
+        assert isinstance(request, functions.messages.EditChatTitleRequest)
+        assert request.chat_id == entity.chat_id
+    else:
+        assert isinstance(request, functions.channels.EditTitleRequest)
+        await request.resolve(client, utils)
+        assert request.channel == types.InputChannel(entity.channel_id, entity.access_hash)
+    assert request.title == "NewTitle"
+
+
+@pytest.mark.parametrize(
+    "entity", [types.InputPeerChat(123), types.InputPeerChannel(123, 456)], ids=["group", "channel"]
+)
+async def test_edit_chat_photo_sends_uploaded_photo_for_chat_type(
+    entity: types.InputPeerChat | types.InputPeerChannel,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = FakeTelethonClient()
+    toolbox = TelegramToolbox(client)
+    uploaded = types.InputFile(id=1, parts=1, name="photo.jpg", md5_checksum="checksum")
+    monkeypatch.setattr(client, "get_input_entity", AsyncMock(return_value=entity))
+    monkeypatch.setattr(client, "upload_file", AsyncMock(return_value=uploaded))
+
+    assert await toolbox.edit_chat_photo(str(utils.get_peer_id(entity)), "photo.jpg") == {
+        "success": True
+    }
+
+    (request,) = client.requests
+    if isinstance(entity, types.InputPeerChat):
+        assert isinstance(request, functions.messages.EditChatPhotoRequest)
+        assert request.chat_id == entity.chat_id
+        await request.resolve(client, utils)
+    else:
+        assert isinstance(request, functions.channels.EditPhotoRequest)
+        await request.resolve(client, utils)
+        assert request.channel == types.InputChannel(entity.channel_id, entity.access_hash)
+    assert isinstance(request.photo, types.InputChatUploadedPhoto)
+    assert request.photo.file == uploaded
+    assert bytes(request)
+
+
 @pytest.mark.asyncio
 async def test_remaining_group_and_channel_tools() -> None:
     client = FakeTelethonClient()
@@ -2697,6 +2793,14 @@ async def test_privacy_and_account_settings_tools() -> None:
     assert len(global_reqs) == 1
     assert global_reqs[0].settings.hide_read_marks is True
     assert global_reqs[0].settings.archive_and_mute_new_noncontact_peers is False
+    assert global_reqs[0].settings.keep_archived_unmuted is True
+    assert global_reqs[0].settings.keep_archived_folders is True
+    assert global_reqs[0].settings.new_noncontact_peers_require_premium is False
+    assert global_reqs[0].settings.display_gifts_button is True
+    assert global_reqs[0].settings.noncontact_peers_paid_stars == 42
+    assert global_reqs[0].settings.disallowed_gifts == types.DisallowedGiftsSettings(
+        disallow_unique_stargifts=True
+    )
 
     # get_content_settings
     res_content = await toolbox.get_content_settings()
@@ -2711,6 +2815,42 @@ async def test_privacy_and_account_settings_tools() -> None:
     ]
     assert len(content_reqs) == 1
     assert content_reqs[0].sensitive_enabled is True
+
+
+async def test_set_global_settings_preserves_concurrent_changes() -> None:
+    class PrivacyClient(FakeTelethonClient):
+        settings = types.GlobalPrivacySettings()
+
+        async def __call__(self, request: object) -> Any:
+            if isinstance(request, functions.account.GetGlobalPrivacySettingsRequest):
+                snapshot = copy(self.settings)
+                await asyncio.sleep(0)
+                return snapshot
+            if isinstance(request, functions.account.SetGlobalPrivacySettingsRequest):
+                self.settings = request.settings
+                return self.settings
+            return await super().__call__(request)
+
+    toolbox = TelegramToolbox(PrivacyClient())
+    results = await asyncio.gather(
+        toolbox.set_global_settings(hide_read_marks=True),
+        toolbox.set_global_settings(keep_archived_folders=True),
+    )
+
+    assert results == [{"success": True}, {"success": True}]
+    settings = await toolbox.get_global_settings()
+    assert settings["hide_read_marks"] is True
+    assert settings["keep_archived_folders"] is True
+
+
+async def test_set_global_settings_without_changes_does_not_write() -> None:
+    client = FakeTelethonClient()
+
+    assert await TelegramToolbox(client).set_global_settings() == {"success": True}
+    assert not any(
+        isinstance(request, functions.account.SetGlobalPrivacySettingsRequest)
+        for request in client.requests
+    )
 
 
 @pytest.mark.asyncio
