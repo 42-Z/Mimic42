@@ -56,6 +56,7 @@ from mimic42.core.attack_target import (
     AttackTarget,
     AttackTargetError,
     TargetNotWritableError,
+    refresh_slow_mode,
     resolve_target,
 )
 from mimic42.core.memory import settle_persistence
@@ -936,6 +937,12 @@ class _Sender:
         if participation.next_at is not None and participation.next_at > now:
             await self._service._sleep((participation.next_at - now).total_seconds())
             return True
+        target = self._service._targets.get(self._agent_id)
+        if target is not None and target.slowmode_next_send_at is not None:
+            open_at = target.slowmode_next_send_at
+            if open_at > now:
+                await self._service._sleep((open_at - now).total_seconds())
+                return True
 
         try:
             runtime = await self._service._ensure_runtime(self._agent_id, self._attack_id)
@@ -987,6 +994,11 @@ class _Sender:
                     if exit_reason is not None:
                         return await self._abort(exit_reason)
                     await self._service._sleep(self._backoff())
+                    return True
+
+                open_at = target.slowmode_next_send_at
+                if open_at is not None and open_at > self._service._now():
+                    # Ждать снаружи аренды: она держит жизненный цикл агента.
                     return True
 
                 try:
@@ -1056,9 +1068,9 @@ class _Sender:
                 except asyncio.CancelledError:
                     raise
                 except Exception as fallback_exc:
-                    return await self._settle_failure(claim, fallback_exc, target)
+                    return await self._settle_failure(claim, fallback_exc, target, client)
             else:
-                return await self._settle_failure(claim, exc, target)
+                return await self._settle_failure(claim, exc, target, client)
 
         message_id = _sent_message_id(message)
         settlement = await self._settle(
@@ -1080,11 +1092,24 @@ class _Sender:
         return True
 
     async def _settle_failure(
-        self, claim: SlotClaim, exc: BaseException, target: AttackTarget
+        self,
+        claim: SlotClaim,
+        exc: BaseException,
+        target: AttackTarget,
+        client: Any,
     ) -> bool:
         failure = classify_send_error(exc)
         outcome = classify_outcome(exc)
         now = self._service._now()
+        retry_after = _retry_after(exc)
+        if failure is SendFailure.SLOW_MODE:
+            target = await self._current_target(client, target)
+            if retry_after is not None:
+                target = replace(
+                    target,
+                    slowmode_seconds=max(retry_after, target.slowmode_seconds or 0),
+                )
+            self._service._targets[self._agent_id] = target
         if outcome.kind == "unknown":
             next_at = now + timedelta(
                 seconds=(
@@ -1097,7 +1122,7 @@ class _Sender:
                 target.slowmode_seconds,
                 self._service._rng,
                 failure,
-                retry_after=_retry_after(exc),
+                retry_after=retry_after,
             )
         await self._settle(claim, outcome, next_at)
         await self._service._record(
@@ -1123,13 +1148,6 @@ class _Sender:
         self._unknown_rid = None
         self._unknown_attempts = 0
         if failure in (SendFailure.FLOOD_WAIT, SendFailure.SLOW_MODE):
-            if failure is SendFailure.SLOW_MODE:
-                seconds = _retry_after(exc)
-                if seconds is not None:
-                    self._service._targets[self._agent_id] = replace(
-                        target,
-                        slowmode_seconds=max(seconds, target.slowmode_seconds or 0),
-                    )
             return True
 
         exit_reason = _TERMINAL_EXITS.get(failure)
@@ -1138,6 +1156,20 @@ class _Sender:
         if exit_reason is ExitReason.TARGET_UNAVAILABLE:
             return await self._abort_target()
         return await self._abort(exit_reason)
+
+    async def _current_target(self, client: Any, target: AttackTarget) -> AttackTarget:
+        """Текущее окно из Telegram: кэш мог отстать от смены slow mode."""
+        try:
+            return await refresh_slow_mode(client, target)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning(
+                "Атака %s: не удалось перечитать slow mode",
+                self._attack_id,
+                exc_info=True,
+            )
+            return target
 
     async def _settle_interrupted(self, claim: SlotClaim) -> None:
         await self._service._gate.settle(claim, SendOutcome.interrupted(), self._service._now())

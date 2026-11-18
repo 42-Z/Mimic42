@@ -773,6 +773,57 @@ async def test_a_successful_send_at_the_limit_finishes_the_attack(
     assert repo.targets[0][1:] == (CHANNEL_ID, ROOT_REPLY_ID, None)
 
 
+async def test_the_first_comment_waits_for_the_accounts_slow_mode_window(
+    service_factory: ServiceFactory,
+    resolver: Resolver,
+) -> None:
+    repo = FakeRepo()
+    agent_id = uuid4()
+    runtime = FakeRuntime(agent_id)
+    runtime.script = [706]
+    service, _, _, clock = service_factory(repo, [runtime])
+    open_at = NOW + timedelta(minutes=4)
+    resolver.target = replace(
+        resolver.target,
+        slowmode_seconds=300,
+        slowmode_next_send_at=open_at,
+    )
+    attack = await repo.create(uuid4(), _config(limit=MessagesLimit(1)), [agent_id], NOW)
+
+    await service.start_attack(attack.id)
+    await _wait_for(lambda: bool(repo.settlements))
+
+    sent_at = repo.settlements[0][2]
+    assert sent_at >= open_at
+    assert clock.now >= open_at
+
+
+async def test_a_slow_mode_error_uses_the_current_interval_from_telegram(
+    service_factory: ServiceFactory,
+    resolver: Resolver,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = FakeRepo()
+    agent_id = uuid4()
+    runtime = FakeRuntime(agent_id)
+    runtime.script = [errors.SlowModeWaitError(None, 30), 707]
+    service, _, _, _ = service_factory(repo, [runtime])
+    resolver.target = replace(resolver.target, slowmode_seconds=300)
+
+    async def refresh(client: Any, current: AttackTarget) -> AttackTarget:
+        return replace(current, slowmode_seconds=600)
+
+    monkeypatch.setattr(attack_service_module, "refresh_slow_mode", refresh)
+    attack = await repo.create(uuid4(), _config(limit=MessagesLimit(1)), [agent_id], NOW)
+
+    await service.start_attack(attack.id)
+    await _wait_for(lambda: bool(repo.settlements))
+
+    _, outcome, failed_at, retry_at = repo.settlements[0]
+    assert outcome.failure is SendFailure.SLOW_MODE
+    assert (retry_at - failed_at).total_seconds() >= 600 * 1.15
+
+
 async def test_the_limit_counts_each_album_image_as_a_message(
     service_factory: ServiceFactory,
 ) -> None:

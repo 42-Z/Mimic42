@@ -49,6 +49,7 @@ class AttackTarget:
     root_reply_id: int
     slowmode_seconds: int | None
     channel_id: int | None = None
+    slowmode_next_send_at: datetime | None = None
 
 
 async def resolve_target(client: Any, ref: TargetRef) -> AttackTarget:
@@ -71,19 +72,25 @@ async def resolve_target(client: Any, ref: TargetRef) -> AttackTarget:
         functions.messages.GetDiscussionMessageRequest(peer=channel, msg_id=anchor)
     )
     root, group = _discussion_root(discussion, ref)
-    slowmode = await _slowmode(client, group)
+    slowmode_seconds, slowmode_next_send_at = await _slowmode(client, group)
     _ensure_writable(group)
     return AttackTarget(
         group=group,
         root_reply_id=root.id,
-        slowmode_seconds=slowmode,
+        slowmode_seconds=slowmode_seconds,
         channel_id=channel.id,
+        slowmode_next_send_at=slowmode_next_send_at,
     )
 
 
 async def refresh_slow_mode(client: Any, target: AttackTarget) -> AttackTarget:
     """Перечитать slow mode: пока мимик ждал, настройку могли изменить."""
-    return replace(target, slowmode_seconds=await _slowmode(client, target.group))
+    seconds, next_send = await _slowmode(client, target.group)
+    return replace(
+        target,
+        slowmode_seconds=seconds,
+        slowmode_next_send_at=next_send,
+    )
 
 
 def _peer_argument(peer: str) -> str | int:
@@ -125,10 +132,20 @@ def _discussion_root(discussion: Any, ref: TargetRef) -> tuple[Any, Any]:
     return root, group
 
 
-async def _slowmode(client: Any, group: Any) -> int | None:
+async def _slowmode(client: Any, group: Any) -> tuple[int | None, datetime | None]:
+    """Длительность slow mode и момент, когда аккаунту снова можно писать.
+
+    Второе значение считает сам Telegram от последнего сообщения аккаунта в
+    группе, в том числе до старта атаки. Без него первый комментарий уходит
+    в уже открытое окно и получает SlowModeWaitError.
+    """
     full = await client(functions.channels.GetFullChannelRequest(channel=group))
-    seconds = getattr(getattr(full, "full_chat", None), "slowmode_seconds", None)
-    return seconds if isinstance(seconds, int) and seconds > 0 else None
+    full_chat = getattr(full, "full_chat", None)
+    seconds = getattr(full_chat, "slowmode_seconds", None)
+    if not isinstance(seconds, int) or seconds <= 0:
+        return None, None
+    next_send = getattr(full_chat, "slowmode_next_send_date", None)
+    return seconds, next_send
 
 
 def _ensure_writable(group: Any) -> None:
