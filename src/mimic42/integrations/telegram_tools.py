@@ -581,6 +581,7 @@ class TelegramToolbox:
         self._send_window = send_window
         self._media_refs = media_refs if media_refs is not None else MediaRefCache()
         self._chat_access = chat_access
+        self._global_privacy_lock = asyncio.Lock()
 
     async def _resolve_media_ref(self, media_id: str) -> MediaRef | None:
         """Restore durable metadata first, then merge the current process cache."""
@@ -2025,7 +2026,7 @@ class TelegramToolbox:
                 await self._client(
                     functions.account.UpdateProfileRequest(
                         first_name=first_name,
-                        last_name=last_name or "",
+                        last_name=last_name,
                     )
                 )
             if bio is not None:
@@ -2432,7 +2433,7 @@ class TelegramToolbox:
             async for u in self._client.iter_participants(entity, limit=limit, filter=filter_obj):
                 title = None
                 if hasattr(u, "participant") and u.participant:
-                    title = getattr(u.participant, "title", None)
+                    title = getattr(u.participant, "rank", None)
 
                 participants.append(
                     {
@@ -2470,7 +2471,13 @@ class TelegramToolbox:
         """Change the title of a channel, group or supergroup."""
         try:
             entity = await self._resolve_chat(peer)
-            await self._client(functions.channels.EditTitleRequest(channel=entity, title=title))
+            if isinstance(entity, types.InputPeerChat):
+                request = functions.messages.EditChatTitleRequest(
+                    chat_id=entity.chat_id, title=title
+                )
+            else:
+                request = functions.channels.EditTitleRequest(channel=entity, title=title)
+            await self._client(request)
             return {"success": True}
         except Exception as e:
             return _tool_failure(e)
@@ -2508,7 +2515,14 @@ class TelegramToolbox:
                             photo_path = f.name
 
             uploaded = await self._client.upload_file(photo_path)
-            await self._client(functions.channels.EditPhotoRequest(channel=entity, photo=uploaded))
+            uploaded_photo = types.InputChatUploadedPhoto(file=uploaded)
+            if isinstance(entity, types.InputPeerChat):
+                request = functions.messages.EditChatPhotoRequest(
+                    chat_id=entity.chat_id, photo=uploaded_photo
+                )
+            else:
+                request = functions.channels.EditPhotoRequest(channel=entity, photo=uploaded_photo)
+            await self._client(request)
             return {"success": True}
         except Exception as e:
             return _tool_failure(e)
@@ -3512,15 +3526,28 @@ class TelegramToolbox:
     ) -> dict[str, Any]:
         """Set global privacy settings."""
         try:
-            settings = types.GlobalPrivacySettings(
-                archive_and_mute_new_noncontact_peers=archive_and_mute_new_noncontact_peers,
-                keep_archived_unmuted=keep_archived_unmuted,
-                keep_archived_folders=keep_archived_folders,
-                hide_read_marks=hide_read_marks,
-                new_noncontact_peers_require_premium=new_noncontact_peers_require_premium,
-                display_gifts_button=display_gifts_button,
-            )
-            await self._client(functions.account.SetGlobalPrivacySettingsRequest(settings=settings))
+            changes = {
+                name: value
+                for name, value in {
+                    "archive_and_mute_new_noncontact_peers": archive_and_mute_new_noncontact_peers,
+                    "keep_archived_unmuted": keep_archived_unmuted,
+                    "keep_archived_folders": keep_archived_folders,
+                    "hide_read_marks": hide_read_marks,
+                    "new_noncontact_peers_require_premium": new_noncontact_peers_require_premium,
+                    "display_gifts_button": display_gifts_button,
+                }.items()
+                if value is not None
+            }
+            if not changes:
+                return {"success": True}
+
+            async with self._global_privacy_lock:
+                settings = await self._client(functions.account.GetGlobalPrivacySettingsRequest())
+                for name, value in changes.items():
+                    setattr(settings, name, value)
+                await self._client(
+                    functions.account.SetGlobalPrivacySettingsRequest(settings=settings)
+                )
             return {"success": True}
         except Exception as e:
             return _tool_failure(e)
