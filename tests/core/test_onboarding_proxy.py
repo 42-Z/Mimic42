@@ -304,6 +304,75 @@ async def test_failed_proxy_without_a_replacement_fails_instead_of_going_direct(
 
 
 @pytest.mark.asyncio
+async def test_failed_proxy_without_a_replacement_goes_direct_when_fallback_enabled() -> None:
+    proxy_id = uuid4()
+    config = _proxy_config("dead.test")
+    store = FakeTelegramProxyStore(
+        allocations=[TelegramProxyAssignment(proxy_id=proxy_id, config=config)],
+        configs={proxy_id: config},
+    )
+
+    async def reject(_config: TelegramProxyConfig) -> TelegramProxyCheckResult:
+        return TelegramProxyCheckResult(ok=False, error="authentication failed")
+
+    factory = FakeTelegramAuthClientFactory(
+        FakeTelegramAccount(), broken_proxies={(config.host, config.port)}
+    )
+    repository = InMemoryOnboardingRepository()
+    service = AgentOnboardingService(
+        repository=repository,
+        telegram_factory=factory,
+        proxy_store=store,
+        proxy_checker=reject,
+        proxy_direct_fallback=True,
+    )
+
+    started = await service.request_telegram_code(_credentials(uuid4()))
+
+    saved = await repository.get(started.onboarding_id)
+    assert saved.proxy_id is None
+    assert saved.authorization_status is TelegramLoginStatus.CODE_REQUESTED
+    assert store.unavailable == [proxy_id]
+    assert factory.proxies == [config, None]
+
+
+@pytest.mark.asyncio
+async def test_unusable_proxy_record_goes_direct_when_fallback_enabled() -> None:
+    owner_id, onboarding_id = uuid4(), uuid4()
+    repository = InMemoryOnboardingRepository()
+    await repository.save(
+        OnboardingSession(
+            onboarding_id=onboarding_id,
+            owner_id=owner_id,
+            api_id=12345,
+            api_hash_secret="hash",
+            phone_number="+79990000000",
+            authorization_status=TelegramLoginStatus.NOT_STARTED,
+            proxy_id=uuid4(),
+        )
+    )
+    factory = FakeTelegramAuthClientFactory(FakeTelegramAccount())
+    store = FakeTelegramProxyStore()
+    service = AgentOnboardingService(
+        repository=repository,
+        telegram_factory=factory,
+        proxy_store=store,
+        proxy_direct_fallback=True,
+    )
+
+    started = await service.request_telegram_code(
+        _credentials(owner_id),
+        onboarding_id=onboarding_id,
+    )
+
+    saved = await repository.get(started.onboarding_id)
+    assert saved.proxy_id is None
+    assert saved.authorization_status is TelegramLoginStatus.CODE_REQUESTED
+    assert store.allocate_calls == 1
+    assert factory.proxies == [None]
+
+
+@pytest.mark.asyncio
 async def test_transient_connect_failure_retries_the_same_proxy() -> None:
     proxy_id = uuid4()
     config = _proxy_config()

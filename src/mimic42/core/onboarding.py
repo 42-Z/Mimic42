@@ -480,6 +480,7 @@ class AgentOnboardingService:
         proxy_store: TelegramProxyStore | None = None,
         proxy_checker: Callable[[TelegramProxyConfig], Awaitable[TelegramProxyCheckResult]]
         | None = None,
+        proxy_direct_fallback: bool = False,
     ) -> None:
         self._repository = repository or InMemoryOnboardingRepository(
             proxy_store=proxy_store, agent_store=agent_store
@@ -496,6 +497,7 @@ class AgentOnboardingService:
         self._agent_store = agent_store
         self._proxy_store = proxy_store
         self._proxy_checker = proxy_checker
+        self._proxy_direct_fallback = proxy_direct_fallback
         self._llm_model = DEFAULT_LLM_MODEL
 
     async def request_telegram_code(
@@ -687,8 +689,19 @@ class AgentOnboardingService:
         )
         assignment = await self._proxy_store.allocate()
         if assignment is None:
+            if self._proxy_direct_fallback:
+                return await self._fall_back_to_direct(ref)
             raise TelegramProxyUnavailableError("Больше нет рабочих прокси в пуле")
         await self._repository.assign_proxy(ref.onboarding_id, assignment.proxy_id)
+        return await self._repository.load_attempt(ref)
+
+    async def _fall_back_to_direct(self, ref: TelegramAuthorizationRef) -> TelegramLoginAttempt:
+        """Снять прокси с черновика и продолжить вход напрямую."""
+        logger.warning(
+            "Рабочих прокси нет; onboarding=%s переходит на прямое подключение",
+            ref.onboarding_id,
+        )
+        await self._repository.assign_proxy(ref.onboarding_id, None)
         return await self._repository.load_attempt(ref)
 
     async def _replace_failed_proxy(
@@ -730,6 +743,8 @@ class AgentOnboardingService:
             return None
         replacement = await self._proxy_store.allocate(exclude=assignment.proxy_id)
         if replacement is None:
+            if self._proxy_direct_fallback:
+                return await self._fall_back_to_direct(attempt.session.authorization_ref())
             raise TelegramProxyUnavailableError("Больше нет рабочих прокси в пуле")
         await self._repository.assign_proxy(
             attempt.session.onboarding_id,

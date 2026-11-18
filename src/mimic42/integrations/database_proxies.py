@@ -104,10 +104,12 @@ class DatabaseTelegramProxyStore:
         *,
         cipher: SecretCipher | None = None,
         checker: Callable[[TelegramProxyConfig], Awaitable[TelegramProxyCheckResult]],
+        direct_fallback: bool = False,
     ) -> None:
         self._session_factory = session_factory
         self._cipher = cipher
         self._checker = checker
+        self._direct_fallback = direct_fallback
 
     async def allocate(self, *, exclude: UUID | None = None) -> TelegramProxyAssignment | None:
         """Выдать прокси, проверив его через Telegram до назначения.
@@ -115,6 +117,10 @@ class DatabaseTelegramProxyStore:
         Прокси на паузе не проверяются повторно: если доступных нет, выдача
         сразу сообщает, когда ближайший освободится. Не прошедший проверку
         прокси не выключается — он получает новую паузу.
+
+        При ``direct_fallback`` недоступность пула не блокирует работу:
+        выдача возвращает ``None``, и вызывающая сторона подключается напрямую.
+        Ошибки хранилища по-прежнему пробрасываются.
         """
         try:
             async with self._session_factory() as session:
@@ -147,7 +153,7 @@ class DatabaseTelegramProxyStore:
         except SQLAlchemyError:
             raise TelegramProxyUnavailableError("Хранилище прокси временно недоступно") from None
         if not proxy_ids:
-            if empty_pool:
+            if empty_pool or self._direct_fallback:
                 return None
             if retry_at is not None:
                 retry = retry_at.astimezone(UTC).strftime("%H:%M")
@@ -181,9 +187,14 @@ class DatabaseTelegramProxyStore:
                     )
                     await self.mark_unavailable(model.id)
         except TimeoutError:
+            if self._direct_fallback:
+                return None
             raise TelegramProxyUnavailableError("Прокси не ответили вовремя") from None
-        # Доступные были, но ни один не прошёл проверку: уходить напрямую
-        # нельзя, политика приложения — без прокси в Telegram не ходить.
+        # Доступные были, но ни один не прошёл проверку. Без разрешённого
+        # fallback уходить напрямую нельзя: IP машины не должен попадать
+        # в Telegram без согласия администратора.
+        if self._direct_fallback:
+            return None
         raise TelegramProxyUnavailableError("Ни один прокси из пула не пропускает Telegram")
 
     async def load(self, proxy_id: UUID) -> TelegramProxyConfig:
