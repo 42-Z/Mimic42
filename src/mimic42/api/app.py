@@ -486,6 +486,7 @@ def create_app(
                     session_factory,
                     cipher=cipher,
                     checker=app_proxy_checker,
+                    direct_fallback=app_settings.telegram_proxy_direct_fallback,
                 )
                 app.state.proxy_store = database_proxy_store
             if build_agent_services:
@@ -508,6 +509,7 @@ def create_app(
                         agent_store=database_agent_store,
                         proxy_store=database_proxy_store,
                         proxy_checker=app_proxy_checker,
+                        proxy_direct_fallback=app_settings.telegram_proxy_direct_fallback,
                     )
                 if manager is None:
                     agent_memory = long_term_memory or build_mem0_memory(app_settings.mem0_api_key)

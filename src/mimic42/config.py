@@ -34,8 +34,9 @@ class Settings(BaseSettings):
     warmup_partners: Literal["all", "own"] = Field(
         default="all", validation_alias="WARMUP_PARTNERS"
     )
-    # Общая политика приложения: если прокси отклонил соединение, агент
-    # подключается напрямую. Пользователь прокси не настраивает.
+    # Общая политика приложения: если прокси недоступен или отклонил
+    # соединение, агент подключается напрямую — в том числе при онбординге.
+    # Пользователь прокси не настраивает.
     telegram_proxy_direct_fallback: bool = Field(
         default=False, validation_alias="TELEGRAM_PROXY_DIRECT_FALLBACK"
     )

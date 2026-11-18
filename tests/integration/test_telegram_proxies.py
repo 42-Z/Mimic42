@@ -467,6 +467,69 @@ async def test_allocation_does_not_go_direct_when_every_active_proxy_is_dead(
 
 
 @pytest.mark.asyncio
+async def test_allocation_goes_direct_when_every_active_proxy_is_dead_and_fallback_enabled(
+    admin_db_factory: async_sessionmaker[Any],
+) -> None:
+    await _clear_proxies(admin_db_factory)
+    dead = TelegramProxyModel(
+        label="Мёртвый",
+        protocol="socks5",
+        host="dead.example.test",
+        port=1080,
+        is_active=True,
+    )
+    async with admin_db_factory() as session, session.begin():
+        session.add(dead)
+
+    async def reject(_config: TelegramProxyConfig) -> TelegramProxyCheckResult:
+        return TelegramProxyCheckResult(ok=False, error="authentication failed")
+
+    store = DatabaseTelegramProxyStore(
+        admin_db_factory,
+        cipher=_cipher(),
+        checker=reject,
+        direct_fallback=True,
+    )
+
+    assert await store.allocate() is None
+    async with admin_db_factory() as session:
+        stored = await session.get(TelegramProxyModel, dead.id)
+    assert stored is not None
+    assert stored.is_active is True
+    assert stored.unavailable_until is not None
+
+
+@pytest.mark.asyncio
+async def test_allocation_goes_direct_when_all_active_proxies_are_paused_and_fallback_enabled(
+    admin_db_factory: async_sessionmaker[Any],
+) -> None:
+    await _clear_proxies(admin_db_factory)
+    paused = TelegramProxyModel(
+        label="На паузе",
+        protocol="socks5",
+        host="paused.example.test",
+        port=1080,
+        is_active=True,
+    )
+    async with admin_db_factory() as session, session.begin():
+        session.add(paused)
+        await session.flush()
+        paused.unavailable_until = datetime.now(UTC) + timedelta(minutes=5)
+
+    async def check(_config: TelegramProxyConfig) -> TelegramProxyCheckResult:
+        raise AssertionError("paused proxy must not be checked")
+
+    store = DatabaseTelegramProxyStore(
+        admin_db_factory,
+        cipher=_cipher(),
+        checker=check,
+        direct_fallback=True,
+    )
+
+    assert await store.allocate() is None
+
+
+@pytest.mark.asyncio
 async def test_cooling_proxy_is_skipped_and_draft_moves_to_a_working_one(
     admin_db_factory: async_sessionmaker[Any],
     test_slot: Slot,
