@@ -101,6 +101,20 @@ async def test_long_wait_is_not_hidden(clock: Clock, error_class: Any, seconds: 
     assert clock.sleeps == []
 
 
+async def test_a_server_error_is_not_retried_inside_the_client(clock: Clock) -> None:
+    """Повтор альбома решает атака: скрытый повтор меняет исход отправки."""
+    request = functions.help.GetConfigRequest()
+    error = errors.WorkerBusyTooLongRetryError(request=request)
+    sender = ScriptedSender(error)
+
+    with pytest.raises(errors.WorkerBusyTooLongRetryError) as caught:
+        await client_for(sender)(request)
+
+    assert caught.value is error
+    assert sender.requests == [request]
+    assert clock.sleeps == [2]
+
+
 async def test_repeated_wait_is_not_retried_forever(clock: Clock) -> None:
     request = functions.help.GetConfigRequest()
     first = errors.FloodWaitError(request=request, capture=4)

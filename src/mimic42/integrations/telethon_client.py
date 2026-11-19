@@ -163,12 +163,17 @@ def build_telegram_client(config: AgentRuntimeConfig) -> TelegramClient:
         )
     proxy_argument = build_proxy_argument(config.telegram_proxy)
     session = StringSession(config.telegram_session_string)
+    # Повторы клиента Telethon не должны прятать исход отправки. Альбом мог
+    # частично уйти, а повтор с теми же random_id получает SlowModeWait; решение
+    # о повторе принимает атака после чтения фактически доставленных сообщений.
     if proxy_argument is None:
         client = MimicTelegramClient(
             session,
             config.telegram_api_id,
             config.telegram_api_hash,
             flood_sleep_threshold=0,
+            request_retries=0,
+            raise_last_call_error=True,
         )
     else:
         client = MimicTelegramClient(
@@ -176,6 +181,8 @@ def build_telegram_client(config: AgentRuntimeConfig) -> TelegramClient:
             config.telegram_api_id,
             config.telegram_api_hash,
             flood_sleep_threshold=0,
+            request_retries=0,
+            raise_last_call_error=True,
             proxy=proxy_argument,
         )
 

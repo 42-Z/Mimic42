@@ -144,9 +144,11 @@ def test_client_passes_proxy_argument_to_telethon(monkeypatch: pytest.MonkeyPatc
 
 
 def test_flood_waits_are_not_slept_through_by_telethon() -> None:
-    """Длинные ожидания не должны скрываться внутри trigger_lock силами Telethon."""
+    """Длинные ожидания и повторы не должны скрываться внутри trigger_lock."""
     client = build_telegram_client(_config(_valid_session_string()))
     assert client.flood_sleep_threshold == 0
+    assert client._request_retries == 0
+    assert client._raise_last_call_error is True
 
 
 @pytest.mark.asyncio
