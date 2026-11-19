@@ -340,25 +340,19 @@ def _text_length(text: str) -> int:
 
 
 def compose_comment(
-    texts: Sequence[str],
-    media_paths: Sequence[str],
-    rng: random.Random,
-    *,
-    max_media: int = MAX_ATTACHMENTS,
+    texts: Sequence[str], media_paths: Sequence[str], rng: random.Random
 ) -> CommentContent:
     """Собрать комментарий по правилам R34-R39.
 
     Текст берётся случайно с повторами. Пул до 10 картинок входит целиком в
     случайном порядке (перестановка); больший пул даёт 10 разных картинок
     (размещение). Повтор между комментариями возможен, внутри одного — нет.
-
-    ``max_media=1`` нужен для slow mode: Telegram режет альбом на несколько
-    сообщений, а между ними действует пауза, поэтому часть картинок приходит,
-    а запрос падает с SlowModeWaitError. Одно сообщение — одна картинка.
     """
     text = rng.choice(texts)
-    count = min(len(media_paths), max_media, MAX_ATTACHMENTS)
-    media = tuple(rng.sample(media_paths, count))
+    if len(media_paths) <= MAX_ATTACHMENTS:
+        media = tuple(rng.sample(media_paths, len(media_paths)))
+    else:
+        media = tuple(rng.sample(media_paths, MAX_ATTACHMENTS))
     return CommentContent(text=text, media=media)
 
 

@@ -1103,7 +1103,6 @@ class _Sender:
         now = self._service._now()
         retry_after = _retry_after(exc)
         if failure is SendFailure.SLOW_MODE:
-            previous = target
             target = await self._current_target(client, target)
             if retry_after is not None:
                 target = replace(
@@ -1111,8 +1110,6 @@ class _Sender:
                     slowmode_seconds=max(retry_after, target.slowmode_seconds or 0),
                 )
             self._service._targets[self._agent_id] = target
-            if target.slowmode_seconds != previous.slowmode_seconds:
-                await self._persist_slow_mode(target, now)
         if outcome.kind == "unknown":
             next_at = now + timedelta(
                 seconds=(
@@ -1173,25 +1170,6 @@ class _Sender:
                 exc_info=True,
             )
             return target
-
-    async def _persist_slow_mode(self, target: AttackTarget, now: datetime) -> None:
-        """Сохранить интервал: по нему claim решает, сколько картинок брать."""
-        try:
-            await self._service._repo.set_target(
-                self._attack_id,
-                target.channel_id,
-                target.root_reply_id,
-                target.slowmode_seconds,
-                now,
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.warning(
-                "Атака %s: не удалось сохранить slow mode",
-                self._attack_id,
-                exc_info=True,
-            )
 
     async def _settle_interrupted(self, claim: SlotClaim) -> None:
         await self._service._gate.settle(claim, SendOutcome.interrupted(), self._service._now())

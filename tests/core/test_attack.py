@@ -290,16 +290,6 @@ def test_media_order_changes_between_comments() -> None:
     assert len(orders) > 1
 
 
-def test_slow_mode_takes_one_image_per_comment() -> None:
-    rng = random.Random(6)
-    paths = tuple(f"attacks/owner/{i}.jpg" for i in range(25))
-
-    media = compose_comment(("текст",), paths, rng, max_media=1).media
-
-    assert len(media) == 1
-    assert media[0] in paths
-
-
 def test_comment_without_media_has_an_empty_tuple() -> None:
     assert compose_comment(("текст",), (), random.Random(6)).media == ()
 

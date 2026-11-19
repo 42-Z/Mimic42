@@ -20,7 +20,6 @@ from telethon.helpers import generate_random_long
 
 from mimic42.core.agent_runtime import AgentRuntimeState
 from mimic42.core.attack import (
-    MAX_ATTACHMENTS,
     AttackAgentStatus,
     AttackConfig,
     AttackEndReason,
@@ -383,12 +382,7 @@ class DatabaseAttackRepository:
                 remaining = attack.limit_value - attack.claimed_count
                 if remaining <= 0:
                     return None
-            content = compose_comment(
-                tuple(attack.texts),
-                tuple(attack.media_paths),
-                rng,
-                max_media=1 if attack.slowmode_seconds else MAX_ATTACHMENTS,
-            )
+            content = compose_comment(tuple(attack.texts), tuple(attack.media_paths), rng)
             if remaining is not None and len(content.media) > remaining:
                 content = replace(content, media=content.media[:remaining])
             message_count = max(1, len(content.media))

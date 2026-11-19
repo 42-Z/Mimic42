@@ -308,33 +308,6 @@ async def test_an_album_reserves_and_counts_every_telegram_message(
     assert stored.claimed_count == 25
 
 
-async def test_slow_mode_claims_one_image_per_comment(
-    db_session_factory: async_sessionmaker[AsyncSession],
-    clean_slot: Slot,
-) -> None:
-    owner_id = clean_slot.persona("twofa").user_id
-    repository = _repo(db_session_factory)
-    agent_id = await _create_agent(db_session_factory, owner_id)
-    media = tuple(f"attacks/{owner_id}/{index}.jpg" for index in range(10))
-    attack = await repository.create(
-        owner_id,
-        _config(limit=MessagesLimit(25), media_paths=media),
-        [agent_id],
-        NOW,
-    )
-    await repository.start(attack.id, NOW)
-    await repository.set_target(attack.id, None, None, 300, NOW)
-
-    claim = await repository.claim(attack.id, agent_id, NOW, random.Random(1))
-    stored = await repository.load(attack.id)
-
-    assert claim is not None
-    assert claim.message_count == 1
-    assert len(claim.media) == 1
-    assert stored is not None
-    assert stored.claimed_count == 1
-
-
 async def test_text_fallback_releases_the_unused_album_reservation(
     db_session_factory: async_sessionmaker[AsyncSession],
     clean_slot: Slot,

@@ -22,7 +22,6 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from PIL import Image
 from telethon import events, functions
-from telethon.errors import ChatNotModifiedError
 
 from mimic42.api.app import create_app
 from mimic42.testing.real_tg.checker import Checker
@@ -43,8 +42,6 @@ IMAGE_COUNT = 12
 COMMENT_COUNT = 3
 MESSAGE_LIMIT = COMMENT_COUNT * 10
 ATTACK_TIMEOUT_SECONDS = 180
-SLOW_MODE_SECONDS = 30
-SLOW_COMMENTS = 2
 
 
 def png(color: tuple[int, int, int]) -> bytes:
@@ -260,77 +257,3 @@ async def test_attack_comments_appear_under_a_real_channel_post(
         checker.client.remove_event_handler(on_typing, user_update)
         ids = [attack_id] + ([repeat_id] if repeat_id else [])
         await cleanup_attacks(ids, client, token)
-
-
-async def test_a_slow_mode_attack_sends_one_image_per_comment(
-    attack_app: tuple[FastAPI, AsyncClient],
-    checker: Checker,
-    attack_mimics: list[tuple[str, str]],
-) -> None:
-    """Альбом из 10 картинок Telegram режет на несколько сообщений с паузой.
-
-    Часть картинок при этом доходит, а запрос падает с SlowModeWaitError.
-    Поэтому в медленном режиме комментарий несёт ровно одну картинку, и
-    каждое сообщение считается отправленным.
-    """
-    _, client = attack_app
-    token = await jwt()
-    agent_id, phone = attack_mimics[0]
-    mimic_id = await checker.resolve_id(phone)
-    channel_id, group_id = await checker.ensure_channel("Mimic42 attack slow mode", discussion=True)
-    assert group_id is not None, "у канала нет группы обсуждения"
-    try:
-        await checker.set_slow_mode(group_id, SLOW_MODE_SECONDS)
-    except ChatNotModifiedError:
-        pass
-    post_id = await checker.post(channel_id, f"mimic42 slow {uuid4()}")
-    await checker.subscribe(channel_id, phone)
-
-    media: list[dict[str, str]] = []
-    for index in range(IMAGE_COUNT):
-        data = png((20 + index * 15, 80, 160))
-        response = await client.post(
-            "/api/v1/attack-media",
-            headers=auth(token),
-            files={"file": (f"slow{index}.png", data, "image/png")},
-        )
-        assert response.status_code == 201, response.text
-        body = cast(dict[str, Any], response.json())
-        media.append({"path": body["storage_path"], "name": body["name"]})
-
-    created = await client.post(
-        "/api/v1/attacks",
-        headers=auth(token),
-        json={
-            "title": f"Медленная атака {uuid4()}",
-            "target_link": private_link(channel_id, post_id),
-            "texts": ["Медленный текст атаки"],
-            "images": media,
-            "limit_kind": "messages",
-            "message_limit": SLOW_COMMENTS,
-            "agent_ids": [agent_id],
-        },
-    )
-    assert created.status_code == 201, created.text
-    attack_id = str(cast(dict[str, Any], created.json())["id"])
-
-    try:
-        started = await client.post(f"/api/v1/attacks/{attack_id}/start", headers=auth(token))
-        assert started.status_code == 200, started.text
-        detail = await wait_finished(client, attack_id, token)
-
-        assert detail["status"] == "finished"
-        assert detail["sent_count"] == SLOW_COMMENTS
-        assert detail["claimed_count"] == SLOW_COMMENTS
-        assert detail["agents"][0]["last_error"] is None
-
-        _, messages = await thread_messages(checker, channel_id, group_id, post_id)
-        own = [message for message in messages if message.sender_id == mimic_id]
-        assert len(own) == SLOW_COMMENTS, [
-            (message.id, message.sender_id, message.message) for message in messages
-        ]
-        assert all(getattr(message, "grouped_id", None) is None for message in own)
-        assert all(message.photo is not None for message in own)
-        assert all(message.message for message in own)
-    finally:
-        await cleanup_attacks([attack_id], client, token)
