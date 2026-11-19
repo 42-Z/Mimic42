@@ -98,7 +98,11 @@ def make_discussion(
     )
 
 
-def make_full_channel(group: types.Channel, slowmode: int | None) -> types.messages.ChatFull:
+def make_full_channel(
+    group: types.Channel,
+    slowmode: int | None,
+    next_send: datetime | None = None,
+) -> types.messages.ChatFull:
     return types.messages.ChatFull(
         full_chat=types.ChannelFull(
             id=group.id,
@@ -111,6 +115,7 @@ def make_full_channel(group: types.Channel, slowmode: int | None) -> types.messa
             bot_info=[],
             pts=0,
             slowmode_seconds=slowmode,
+            slowmode_next_send_date=next_send,
         ),
         chats=[group],
         users=[],
@@ -130,6 +135,7 @@ class FakeTelegram:
         posts: dict[int, Any] | None = None,
         discussion: types.messages.DiscussionMessage | None = None,
         slowmode: int | None = None,
+        next_send: datetime | None = None,
         recent: list[Any] | None = None,
         join_error: Exception | None = None,
         inspection_error: Exception | None = None,
@@ -139,6 +145,7 @@ class FakeTelegram:
         self.posts = posts or {}
         self.discussion = discussion
         self.slowmode = slowmode
+        self.next_send = next_send
         self.recent = recent or []
         self.join_error = join_error
         self.inspection_error = inspection_error
@@ -166,7 +173,7 @@ class FakeTelegram:
             return self.discussion
         if isinstance(request, functions.channels.GetFullChannelRequest):
             assert self.group is not None
-            return make_full_channel(self.group, self.slowmode)
+            return make_full_channel(self.group, self.slowmode, self.next_send)
         if isinstance(request, functions.channels.JoinChannelRequest):
             if self.join_error is not None:
                 raise self.join_error
@@ -324,6 +331,26 @@ async def test_a_group_without_slow_mode_reports_none() -> None:
     target = await resolve_target(fake, parse_target_link("https://t.me/example/412"))
 
     assert target.slowmode_seconds is None
+    assert target.slowmode_next_send_at is None
+
+
+async def test_the_accounts_open_slow_mode_window_is_kept() -> None:
+    source = make_channel(channel_id=SOURCE_ID, megagroup=False, has_link=False)
+    group = make_channel(slowmode_enabled=True)
+    open_at = datetime(2026, 11, 19, 12, 0, tzinfo=UTC)
+    fake = FakeTelegram(
+        entity=source,
+        group=group,
+        posts={412: make_message(412, peer=types.PeerChannel(SOURCE_ID), post=True)},
+        discussion=make_discussion(group),
+        slowmode=300,
+        next_send=open_at,
+    )
+
+    target = await resolve_target(fake, parse_target_link("https://t.me/example/412"))
+
+    assert target.slowmode_seconds == 300
+    assert target.slowmode_next_send_at == open_at
 
 
 async def test_a_forever_banned_group_cannot_be_attacked() -> None:
@@ -373,13 +400,19 @@ async def test_a_group_that_requires_joining_is_still_a_valid_target() -> None:
 
 async def test_refresh_slow_mode_keeps_the_group_and_the_root() -> None:
     group = make_channel()
-    fake = FakeTelegram(entity=group, group=group, slowmode=60)
+    open_at = datetime(2026, 11, 19, 12, 0, tzinfo=UTC)
+    fake = FakeTelegram(entity=group, group=group, slowmode=60, next_send=open_at)
 
     refreshed = await refresh_slow_mode(
         fake, AttackTarget(group=group, root_reply_id=ROOT_ID, slowmode_seconds=30)
     )
 
-    assert refreshed == AttackTarget(group=group, root_reply_id=ROOT_ID, slowmode_seconds=60)
+    assert refreshed == AttackTarget(
+        group=group,
+        root_reply_id=ROOT_ID,
+        slowmode_seconds=60,
+        slowmode_next_send_at=open_at,
+    )
     assert refreshed.group is group
 
 

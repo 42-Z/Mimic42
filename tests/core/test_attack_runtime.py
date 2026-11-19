@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any, cast
 from uuid import UUID, uuid4
@@ -9,6 +10,7 @@ import pytest
 from telethon import errors, functions, types
 
 from mimic42.core.agent_runtime import (
+    ALBUM_SCHEDULE_LEAD_SECONDS,
     AgentRuntimeState,
     AgentTrigger,
     AttackModeActiveError,
@@ -16,6 +18,7 @@ from mimic42.core.agent_runtime import (
     MimicAgentRuntime,
     OpenerResult,
     TelegramEventLike,
+    album_item_random_id,
 )
 from mimic42.core.first_comment import FirstCommentSettings, FirstCommentVariant
 from mimic42.core.media import MediaFile
@@ -266,7 +269,9 @@ async def test_single_image_is_uploaded_and_sent_as_a_photo(fast_typing: None) -
     assert request.reply_to.reply_to_msg_id == 77
 
 
-async def test_album_uploads_every_image_and_numbers_random_ids(fast_typing: None) -> None:
+async def test_album_is_sent_as_one_multimedia_request_with_stable_ids(
+    fast_typing: None,
+) -> None:
     runtime, telegram, _, _ = make_runtime(
         uploader=FakeMediaUploader(
             {
@@ -276,7 +281,6 @@ async def test_album_uploads_every_image_and_numbers_random_ids(fast_typing: Non
             }
         )
     )
-    random_id = 9000
     media = ("attacks/owner/a.jpg", "attacks/owner/b.jpg", "attacks/owner/c.jpg")
 
     await runtime.send_humanized_comment(
@@ -285,21 +289,47 @@ async def test_album_uploads_every_image_and_numbers_random_ids(fast_typing: Non
         text="Подпись",
         media=media,
         reply_to=77,
-        random_id=random_id,
+        random_id=9000,
     )
 
-    assert [cast(io.BytesIO, stream).name for stream in telegram.uploads] == [
-        "a.jpg",
-        "b.jpg",
-        "c.jpg",
-    ]
     uploads = [
         request
         for request in telegram.requests
         if isinstance(request, functions.messages.UploadMediaRequest)
     ]
     assert len(uploads) == 3
-    assert all(isinstance(request.media, types.InputMediaUploadedPhoto) for request in uploads)
+    albums = [
+        request
+        for request in telegram.requests
+        if isinstance(request, functions.messages.SendMultiMediaRequest)
+    ]
+    assert len(albums) == 1
+    request = albums[0]
+    assert [item.message for item in request.multi_media] == ["Подпись", "", ""]
+    assert [item.random_id for item in request.multi_media] == [
+        album_item_random_id(9000, index) for index in range(3)
+    ]
+    assert all(isinstance(item.media, types.InputMediaPhoto) for item in request.multi_media)
+    assert isinstance(request.reply_to, types.InputReplyToMessage)
+    assert request.reply_to.reply_to_msg_id == 77
+    assert request.schedule_date is None
+
+
+async def test_an_album_of_more_than_five_goes_through_the_scheduled_queue(
+    fast_typing: None,
+) -> None:
+    paths = {f"attacks/owner/{index}.jpg": bytes([index]) for index in range(10)}
+    runtime, telegram, _, _ = make_runtime(uploader=FakeMediaUploader(paths))
+    before = datetime.now(UTC)
+
+    await runtime.send_humanized_comment(
+        telegram,
+        entity="group",
+        text="Подпись",
+        media=tuple(paths),
+        reply_to=77,
+        random_id=9000,
+    )
 
     albums = [
         request
@@ -307,17 +337,15 @@ async def test_album_uploads_every_image_and_numbers_random_ids(fast_typing: Non
         if isinstance(request, functions.messages.SendMultiMediaRequest)
     ]
     assert len(albums) == 1
-    items = albums[0].multi_media
-    assert [item.message for item in items] == ["Подпись", "", ""]
-    assert [item.random_id for item in items] == [random_id, random_id + 1, random_id + 2]
-    assert all(isinstance(item.media, types.InputMediaPhoto) for item in items)
-    assert isinstance(albums[0].reply_to, types.InputReplyToMessage)
-    assert albums[0].reply_to.reply_to_msg_id == 77
-    assert not [
-        request
-        for request in telegram.requests
-        if isinstance(request, functions.messages.SendMediaRequest)
+    request = albums[0]
+    assert len(request.multi_media) == 10
+    assert [item.random_id for item in request.multi_media] == [
+        album_item_random_id(9000, index) for index in range(10)
     ]
+    scheduled_for = request.schedule_date
+    assert scheduled_for is not None
+    assert before + timedelta(seconds=ALBUM_SCHEDULE_LEAD_SECONDS) <= scheduled_for
+    assert scheduled_for <= datetime.now(UTC) + timedelta(seconds=ALBUM_SCHEDULE_LEAD_SECONDS)
 
 
 async def test_the_same_image_is_uploaded_once_and_then_comes_from_the_cache(
@@ -401,46 +429,6 @@ async def test_an_expired_file_reference_is_evicted_and_the_send_retried(
     assert [request.random_id for request in sends] == [1, 2, 2]
     assert isinstance(sends[-1].media, types.InputMediaPhoto)
     assert cast(types.InputPhoto, sends[-1].media.id).id == 2
-
-
-async def test_an_album_uploads_only_the_image_missing_from_the_cache(
-    fast_typing: None,
-) -> None:
-    runtime, telegram, _, _ = make_runtime(
-        uploader=FakeMediaUploader({"attacks/owner/a.jpg": b"a", "attacks/owner/b.jpg": b"b"})
-    )
-
-    await runtime.send_humanized_comment(
-        telegram,
-        entity="group",
-        text="Подпись",
-        media=("attacks/owner/a.jpg",),
-        reply_to=77,
-        random_id=1,
-    )
-    await runtime.send_humanized_comment(
-        telegram,
-        entity="group",
-        text="Подпись",
-        media=("attacks/owner/a.jpg", "attacks/owner/b.jpg"),
-        reply_to=77,
-        random_id=2,
-    )
-
-    assert [cast(io.BytesIO, stream).name for stream in telegram.uploads] == ["a.jpg", "b.jpg"]
-    albums = [
-        request
-        for request in telegram.requests
-        if isinstance(request, functions.messages.SendMultiMediaRequest)
-    ]
-    assert len(albums) == 1
-    items = albums[0].multi_media
-    photo_ids: list[int] = []
-    for item in items:
-        assert isinstance(item.media, types.InputMediaPhoto)
-        photo_ids.append(cast(types.InputPhoto, item.media.id).id)
-    # Первая картинка уже была залита первым комментарием, вторая залита сейчас.
-    assert photo_ids == [1, 2]
 
 
 async def test_comment_holds_typing_and_cancels_it(fast_typing: None) -> None:

@@ -18,10 +18,14 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
-from telethon import errors
+from telethon import errors, functions, types
 
 import mimic42.core.attack_service as attack_service_module
-from mimic42.core.agent_runtime import AgentRuntimeState, CommentMediaUnavailable
+from mimic42.core.agent_runtime import (
+    ALBUM_SCHEDULE_LEAD_SECONDS,
+    AgentRuntimeState,
+    CommentMediaUnavailable,
+)
 from mimic42.core.attack import (
     AttackAgentStatus,
     AttackConfig,
@@ -132,6 +136,7 @@ class FakeRuntime:
         self.lease_error: BaseException | None = None
         self.lease_count = 0
         self.message_id = 500
+        self.client: Any = SimpleNamespace(name="client")
 
     def enter_attack(self, attack_id: UUID) -> None:
         self.attack_id = attack_id
@@ -145,7 +150,7 @@ class FakeRuntime:
         if self.lease_error is not None:
             raise self.lease_error
         self.lease_count += 1
-        yield SimpleNamespace(name="client")
+        yield self.client
 
     async def send_humanized_comment(
         self,
@@ -172,7 +177,9 @@ class FakeRuntime:
             item = self.script.pop(0)
             if isinstance(item, BaseException):
                 raise item
-            return SimpleNamespace(id=item)
+            if isinstance(item, int):
+                return SimpleNamespace(id=item)
+            return item
         self.message_id += 1
         return SimpleNamespace(id=self.message_id)
 
@@ -494,6 +501,47 @@ async def _wait_for(predicate: Callable[[], bool], *, timeout: float = 2.0) -> N
         await asyncio.sleep(0.001)
 
 
+def _scheduled_album_update(delivery: datetime, count: int = 10) -> types.Updates:
+    return types.Updates(
+        updates=[
+            types.UpdateNewScheduledMessage(
+                message=types.Message(
+                    id=index,
+                    peer_id=types.PeerChannel(CHANNEL_ID),
+                    date=delivery,
+                    message="Подпись" if index == 1 else "",
+                )
+            )
+            for index in range(1, count + 1)
+        ],
+        users=[],
+        chats=[],
+        date=delivery,
+        seq=0,
+    )
+
+
+class RecordingClient:
+    def __init__(self) -> None:
+        self.requests: list[Any] = []
+
+    async def __call__(self, request: Any) -> Any:
+        self.requests.append(request)
+        return {}
+
+
+class BlockingClock(Clock):
+    """Сон, который висит до отмены: ловит отмену в ожидании отложенного альбома."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.entered = asyncio.Event()
+
+    async def sleep(self, seconds: float) -> None:
+        self.entered.set()
+        await asyncio.Event().wait()
+
+
 def _stored(repo: FakeRepo, attack_id: UUID) -> _FakeAttack:
     return repo.attacks[attack_id]
 
@@ -771,6 +819,207 @@ async def test_a_successful_send_at_the_limit_finishes_the_attack(
     assert runtime.notes
     assert "attack.comment_sent" in _events(activity)
     assert repo.targets[0][1:] == (CHANNEL_ID, ROOT_REPLY_ID, None)
+
+
+async def test_the_first_comment_waits_for_the_accounts_slow_mode_window(
+    service_factory: ServiceFactory,
+    resolver: Resolver,
+) -> None:
+    repo = FakeRepo()
+    agent_id = uuid4()
+    runtime = FakeRuntime(agent_id)
+    runtime.script = [706]
+    service, _, _, clock = service_factory(repo, [runtime])
+    open_at = NOW + timedelta(minutes=4)
+    resolver.target = replace(
+        resolver.target,
+        slowmode_seconds=300,
+        slowmode_next_send_at=open_at,
+    )
+    attack = await repo.create(uuid4(), _config(limit=MessagesLimit(1)), [agent_id], NOW)
+
+    await service.start_attack(attack.id)
+    await _wait_for(lambda: bool(repo.settlements))
+
+    sent_at = repo.settlements[0][2]
+    assert sent_at >= open_at
+    assert clock.now >= open_at
+
+
+async def test_the_next_window_counts_from_when_the_scheduled_album_arrives(
+    service_factory: ServiceFactory,
+    resolver: Resolver,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = FakeRepo()
+    agent_id = uuid4()
+    runtime = FakeRuntime(agent_id)
+    delivery = NOW + timedelta(seconds=ALBUM_SCHEDULE_LEAD_SECONDS)
+    runtime.script = [_scheduled_album_update(delivery)]
+    service, _, _, _ = service_factory(repo, [runtime])
+    resolver.target = replace(resolver.target, slowmode_seconds=300)
+    media = tuple(f"attacks/owner/{index}.jpg" for index in range(10))
+
+    async def recent(
+        client: Any, target: AttackTarget, since: datetime, *, albums_only: bool = False
+    ) -> list[int]:
+        return list(range(1001, 1011))
+
+    monkeypatch.setattr(attack_service_module, "recent_comment_messages", recent)
+    attack = await repo.create(
+        uuid4(), _config(limit=MessagesLimit(10), media_paths=media), [agent_id], NOW
+    )
+
+    await service.start_attack(attack.id)
+    await _wait_for(lambda: bool(repo.settlements))
+
+    _, outcome, _, next_at = repo.settlements[0]
+    assert outcome.kind == "sent"
+    assert outcome.message_id == 1001
+    assert (next_at - delivery).total_seconds() >= 300 * 1.15
+
+
+async def test_an_unconfirmed_scheduled_album_is_not_counted_as_sent(
+    service_factory: ServiceFactory,
+    resolver: Resolver,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = FakeRepo()
+    agent_id = uuid4()
+    runtime = FakeRuntime(agent_id)
+    delivery = NOW + timedelta(seconds=ALBUM_SCHEDULE_LEAD_SECONDS)
+    runtime.script = [_scheduled_album_update(delivery) for _ in range(6)]
+    service, _, activity, _ = service_factory(repo, [runtime])
+    resolver.target = replace(resolver.target, slowmode_seconds=300)
+    media = tuple(f"attacks/owner/{index}.jpg" for index in range(10))
+
+    async def recent(
+        client: Any, target: AttackTarget, since: datetime, *, albums_only: bool = False
+    ) -> list[int]:
+        return []
+
+    monkeypatch.setattr(attack_service_module, "recent_comment_messages", recent)
+    attack = await repo.create(
+        uuid4(), _config(limit=MessagesLimit(10), media_paths=media), [agent_id], NOW
+    )
+
+    await service.start_attack(attack.id)
+    await _wait_for(lambda: _stored(repo, attack.id).status in CLOSED)
+
+    assert repo.settlements
+    assert all(outcome.kind != "sent" for _, outcome, _, _ in repo.settlements)
+    assert "attack.comment_sent" not in _events(activity)
+
+
+async def test_pausing_an_attack_discards_the_scheduled_album(
+    service_factory: ServiceFactory,
+    resolver: Resolver,
+) -> None:
+    repo = FakeRepo()
+    agent_id = uuid4()
+    runtime = FakeRuntime(agent_id)
+    client = RecordingClient()
+    runtime.client = client
+    delivery = NOW + timedelta(seconds=ALBUM_SCHEDULE_LEAD_SECONDS)
+    runtime.script = [_scheduled_album_update(delivery)]
+    clock = BlockingClock()
+    service, _, _, _ = service_factory(repo, [runtime], clock=clock)
+    resolver.target = replace(resolver.target, slowmode_seconds=300)
+    media = tuple(f"attacks/owner/{index}.jpg" for index in range(10))
+    attack = await repo.create(
+        uuid4(), _config(limit=MessagesLimit(10), media_paths=media), [agent_id], NOW
+    )
+
+    await service.start_attack(attack.id)
+    await asyncio.wait_for(clock.entered.wait(), timeout=2.0)
+    await service.pause_agent(attack.id, agent_id)
+
+    deletes = [
+        request
+        for request in client.requests
+        if isinstance(request, functions.messages.DeleteScheduledMessagesRequest)
+    ]
+    assert len(deletes) == 1
+    assert deletes[0].id == list(range(1, 11))
+    assert repo.settlements[0][1].kind == "interrupted"
+
+
+async def test_a_slow_mode_error_uses_the_current_interval_from_telegram(
+    service_factory: ServiceFactory,
+    resolver: Resolver,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = FakeRepo()
+    agent_id = uuid4()
+    runtime = FakeRuntime(agent_id)
+    runtime.script = [errors.SlowModeWaitError(None, 30), 707]
+    service, _, _, _ = service_factory(repo, [runtime])
+    resolver.target = replace(resolver.target, slowmode_seconds=300)
+
+    async def refresh(client: Any, current: AttackTarget) -> AttackTarget:
+        return replace(current, slowmode_seconds=600)
+
+    monkeypatch.setattr(attack_service_module, "refresh_slow_mode", refresh)
+    attack = await repo.create(uuid4(), _config(limit=MessagesLimit(1)), [agent_id], NOW)
+
+    await service.start_attack(attack.id)
+    await _wait_for(lambda: bool(repo.settlements))
+
+    _, outcome, failed_at, retry_at = repo.settlements[0]
+    assert outcome.failure is SendFailure.SLOW_MODE
+    assert (retry_at - failed_at).total_seconds() >= 600 * 1.15
+
+
+async def test_a_partially_delivered_album_sends_the_rest_in_the_next_chunk(
+    service_factory: ServiceFactory,
+    resolver: Resolver,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = FakeRepo()
+    agent_id = uuid4()
+    runtime = FakeRuntime(agent_id)
+    runtime.script = [errors.SlowModeWaitError(None, 300)]
+    service, _, activity, _ = service_factory(repo, [runtime])
+    resolver.target = replace(resolver.target, slowmode_seconds=300)
+    media = tuple(f"attacks/owner/{index}.jpg" for index in range(10))
+
+    async def recent(
+        client: Any, target: AttackTarget, since: datetime, *, albums_only: bool = False
+    ) -> list[int]:
+        return list(range(101, 109))
+
+    monkeypatch.setattr(attack_service_module, "recent_comment_messages", recent)
+    attack = await repo.create(
+        uuid4(),
+        _config(limit=MinutesLimit(1), media_paths=media),
+        [agent_id],
+        NOW,
+    )
+
+    await service.start_attack(attack.id)
+    await _wait_for(lambda: _stored(repo, attack.id).status is AttackStatus.FINISHED)
+
+    first_claim, first_outcome, failed_at, retry_at = repo.settlements[0]
+    second_claim, second_outcome, _, _ = repo.settlements[1]
+    assert first_claim.message_count == 10
+    assert first_outcome.kind == "sent"
+    assert first_outcome.delivered == 8
+    assert retry_at > failed_at
+    rest = first_claim.media[8:]
+    assert second_claim.message_count == 2
+    assert second_claim.media == rest
+    assert second_claim.text == ""
+    assert second_claim.random_id == first_claim.random_id + 8
+    assert second_outcome.kind == "sent"
+    assert len(runtime.calls) == 2
+    assert runtime.calls[1]["media"] == rest
+    assert runtime.calls[1]["random_id"] == first_claim.random_id + 8
+    stored = _stored(repo, attack.id)
+    assert stored.sent_count == 10
+    assert stored.claimed_count == 10
+    assert stored.participations[0].last_error is None
+    assert "attack.comment_failed" not in _events(activity)
+    assert _events(activity).count("attack.comment_sent") == 2
 
 
 async def test_the_limit_counts_each_album_image_as_a_message(

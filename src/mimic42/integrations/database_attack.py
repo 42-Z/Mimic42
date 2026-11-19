@@ -418,19 +418,34 @@ class DatabaseAttackRepository:
             if participation is None or participation.pending_random_id != claim.random_id:
                 return _settlement(attack)
             if outcome.kind == "sent":
-                sent_messages = max(1, len(claim.media))
+                sent_messages = (
+                    outcome.delivered if outcome.delivered is not None else max(1, len(claim.media))
+                )
+                sent_messages = min(max(sent_messages, 1), claim.message_count)
+                partial = (
+                    outcome.delivered is not None
+                    and bool(claim.media)
+                    and sent_messages < claim.message_count
+                )
                 attack.sent_count += sent_messages
                 participation.sent_count += sent_messages
-                attack.claimed_count -= claim.message_count - sent_messages
                 participation.pending_attempts = 0
-                participation.pending_random_id = None
-                participation.pending_text = None
-                participation.pending_media = None
-                participation.pending_count = 0
                 participation.last_error_code = None
                 participation.last_error = None
                 if outcome.message_id:
                     participation.last_comment_message_id = outcome.message_id
+                if partial:
+                    remaining = claim.message_count - sent_messages
+                    participation.pending_random_id = claim.random_id + sent_messages
+                    participation.pending_text = ""
+                    participation.pending_media = list(claim.media[sent_messages:])
+                    participation.pending_count = remaining
+                else:
+                    attack.claimed_count -= claim.message_count - sent_messages
+                    participation.pending_random_id = None
+                    participation.pending_text = None
+                    participation.pending_media = None
+                    participation.pending_count = 0
             elif outcome.kind == "not_sent":
                 _release_pending(participation, attack)
                 participation.pending_attempts = 0

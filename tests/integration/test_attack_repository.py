@@ -308,6 +308,54 @@ async def test_an_album_reserves_and_counts_every_telegram_message(
     assert stored.claimed_count == 25
 
 
+async def test_a_partial_album_counts_only_the_delivered_messages(
+    db_session_factory: async_sessionmaker[AsyncSession],
+    clean_slot: Slot,
+) -> None:
+    owner_id = clean_slot.persona("twofa").user_id
+    repository = _repo(db_session_factory)
+    agent_id = await _create_agent(db_session_factory, owner_id)
+    media = tuple(f"attacks/{owner_id}/{index}.jpg" for index in range(10))
+    attack = await repository.create(
+        owner_id,
+        _config(limit=MessagesLimit(25), media_paths=media),
+        [agent_id],
+        NOW,
+    )
+    await repository.start(attack.id, NOW)
+    claim = await repository.claim(attack.id, agent_id, NOW, random.Random(1))
+    assert claim is not None and claim.message_count == 10
+
+    first = await repository.settle(
+        claim,
+        SendOutcome.sent(101, delivered=8),
+        NOW,
+        NEXT,
+    )
+    stored = await repository.load(attack.id)
+    assert stored is not None
+    participation = stored.participations[0]
+    assert first.sent_count == 8
+    assert first.claimed_count == 10
+    assert participation.sent_count == 8
+    assert participation.last_error is None
+
+    rest = await repository.claim(attack.id, agent_id, NEXT, random.Random(2))
+    assert rest is not None
+    assert rest.message_count == 2
+    assert rest.media == claim.media[8:]
+    assert rest.text == ""
+    assert rest.random_id == claim.random_id + 8
+
+    second = await repository.settle(rest, SendOutcome.sent(109), NEXT, NEXT)
+    final = await repository.load(attack.id)
+    assert final is not None
+    assert second.sent_count == 10
+    assert second.claimed_count == 10
+    assert final.participations[0].sent_count == 10
+    assert final.participations[0].last_error is None
+
+
 async def test_text_fallback_releases_the_unused_album_reservation(
     db_session_factory: async_sessionmaker[AsyncSession],
     clean_slot: Slot,

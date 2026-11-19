@@ -7,7 +7,7 @@ import random
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Any, Literal, Protocol, cast
 from uuid import UUID, uuid4
@@ -76,6 +76,24 @@ FIRST_COMMENT_FLOOD_WAIT_LIMIT = 10
 # Дольше минуты ход не держит: такой флуд — уже не гонка окна, а ограничение
 # аккаунта, и о нём надо сообщить, а не молча висеть под замком хода.
 SEND_FLOOD_RETRY_LIMIT_SECONDS = 60
+# Альбом больше пяти картинок Telegram не успевает принять в самом запросе:
+# сервер отвечает WORKER_BUSY_TOO_LONG_RETRY, успев создать только первые пять.
+# Отложенная отправка проходит целиком и приходит одним альбомом, поэтому такой
+# альбом ставится в очередь на минуту вперёд, а следующее окно считается от даты
+# доставки. До пяти картинок сервер принимает сразу, и они уходят без задержки.
+ALBUM_SCHEDULE_LEAD_SECONDS = 60
+ALBUM_SCHEDULE_MIN_ITEMS = 6
+
+
+def album_item_random_id(base: int, index: int) -> int:
+    """Стабильный ``random_id`` элемента альбома.
+
+    Telegram схлопывает повтор с тем же id в тот же элемент, поэтому повтор
+    резерва после таймаута или рестарта не создаёт второй альбом.
+    """
+    return ((base + index + (1 << 63)) % (1 << 64)) - (1 << 63)
+
+
 # Столько close() ждёт ходы по альбомам и отложенным сообщениям, а оставшиеся
 # отменяет: следом закрываются клиент модели и пул базы, и ход-сирота открыл бы
 # соединение, которое уже никто не закроет. Менеджер закрывает агентов разом,
@@ -1301,11 +1319,15 @@ class MimicAgentRuntime:
     ) -> Any:
         """Один комментарий в обсуждение: текст, одна картинка или альбом.
 
-        Отправка идёт сырыми запросами, потому что только они принимают
-        ``random_id``: повтор с тем же id Telegram схлопывает в то же сообщение.
-        Текст уходит ровно как есть — без разметки и разбиения.
+        Все три пути идут сырыми запросами с ``random_id``: повтор с тем же id
+        Telegram схлопывает в то же сообщение, а не создаёт второе. Альбом до
+        ``ALBUM_SCHEDULE_MIN_ITEMS`` картинок уходит сразу; больший ставится в
+        очередь на ``ALBUM_SCHEDULE_LEAD_SECONDS`` вперёд: интерактивный запрос
+        с десятью картинками сервер обрывает на пятой с
+        ``WORKER_BUSY_TOO_LONG_RETRY``, а отложенный проходит целиком и приходит
+        одним альбомом. Текст уходит ровно как есть — без разметки.
         """
-        from telethon import functions, types
+        from telethon import functions, types, utils
 
         attachments = tuple(media)
         if len(attachments) > MAX_ATTACHMENTS:
@@ -1325,27 +1347,50 @@ class MimicAgentRuntime:
                         no_webpage=True,
                     )
                 )
-            photos = [await self._comment_media(client, entity, path) for path in attachments]
+            if len(attachments) > 1:
+                multi_media = []
+                for index, path in enumerate(attachments):
+                    photo = await self._comment_media(client, entity, path)
+                    multi_media.append(
+                        types.InputSingleMedia(
+                            media=utils.get_input_media(photo.photo),
+                            message=text if index == 0 else "",
+                            random_id=album_item_random_id(random_id, index),
+                        )
+                    )
+                schedule = (
+                    datetime.now(UTC) + timedelta(seconds=ALBUM_SCHEDULE_LEAD_SECONDS)
+                    if len(attachments) >= ALBUM_SCHEDULE_MIN_ITEMS
+                    else None
+                )
+                return await client(
+                    functions.messages.SendMultiMediaRequest(
+                        peer=entity,
+                        multi_media=multi_media,
+                        reply_to=reply,
+                        schedule_date=schedule,
+                    )
+                )
+            photo = await self._comment_media(client, entity, attachments[0])
             try:
                 return await client(
                     self._comment_media_request(
                         entity=entity,
                         text=text,
-                        photos=photos,
+                        photo=photo,
                         reply_to=reply,
                         random_id=random_id,
                     )
                 )
             except MEDIA_REFERENCE_ERRORS:
                 logger.info("Ссылка на картинку комментария устарела, заливаем заново")
-                for path in attachments:
-                    self._first_comment_media.pop(path, None)
-                photos = [await self._comment_media(client, entity, path) for path in attachments]
+                self._first_comment_media.pop(attachments[0], None)
+                photo = await self._comment_media(client, entity, attachments[0])
                 return await client(
                     self._comment_media_request(
                         entity=entity,
                         text=text,
-                        photos=photos,
+                        photo=photo,
                         reply_to=reply,
                         random_id=random_id,
                     )
@@ -1356,31 +1401,18 @@ class MimicAgentRuntime:
         *,
         entity: Any,
         text: str,
-        photos: Sequence[Any],
+        photo: Any,
         reply_to: Any,
         random_id: int,
     ) -> Any:
-        """Запрос фото или альбома: подпись только у первого элемента."""
-        from telethon import functions, types, utils
+        """Запрос одной картинки: подпись и ``random_id`` для дедупликации."""
+        from telethon import functions, utils
 
-        if len(photos) == 1:
-            return functions.messages.SendMediaRequest(
-                peer=entity,
-                media=utils.get_input_media(photos[0].photo),
-                message=text,
-                random_id=random_id,
-                reply_to=reply_to,
-            )
-        return functions.messages.SendMultiMediaRequest(
+        return functions.messages.SendMediaRequest(
             peer=entity,
-            multi_media=[
-                types.InputSingleMedia(
-                    media=utils.get_input_media(photo.photo),
-                    message=text if index == 0 else "",
-                    random_id=random_id + index,
-                )
-                for index, photo in enumerate(photos)
-            ],
+            media=utils.get_input_media(photo.photo),
+            message=text,
+            random_id=random_id,
             reply_to=reply_to,
         )
 

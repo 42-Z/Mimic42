@@ -22,6 +22,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from PIL import Image
 from telethon import events, functions
+from telethon.errors import ChatNotModifiedError
 
 from mimic42.api.app import create_app
 from mimic42.testing.real_tg.checker import Checker
@@ -42,6 +43,7 @@ IMAGE_COUNT = 12
 COMMENT_COUNT = 3
 MESSAGE_LIMIT = COMMENT_COUNT * 10
 ATTACK_TIMEOUT_SECONDS = 180
+SLOW_MODE_SECONDS = 300
 
 
 def png(color: tuple[int, int, int]) -> bytes:
@@ -90,9 +92,15 @@ async def attack_mimics(checker: Checker) -> list[tuple[str, str]]:
     return agents
 
 
-async def wait_finished(client: AsyncClient, attack_id: str, token: str) -> dict[str, Any]:
+async def wait_finished(
+    client: AsyncClient,
+    attack_id: str,
+    token: str,
+    *,
+    timeout: float = ATTACK_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
     loop = asyncio.get_running_loop()
-    deadline = loop.time() + ATTACK_TIMEOUT_SECONDS
+    deadline = loop.time() + timeout
     while loop.time() < deadline:
         response = await client.get(f"/api/v1/attacks/{attack_id}", headers=auth(token))
         assert response.status_code == 200, response.text
@@ -100,7 +108,7 @@ async def wait_finished(client: AsyncClient, attack_id: str, token: str) -> dict
         if detail["status"] in ("finished", "cancelled"):
             return detail
         await asyncio.sleep(2)
-    raise AssertionError(f"атака не завершилась за {ATTACK_TIMEOUT_SECONDS} секунд")
+    raise AssertionError(f"атака не завершилась за {timeout} секунд")
 
 
 async def thread_messages(
@@ -257,3 +265,76 @@ async def test_attack_comments_appear_under_a_real_channel_post(
         checker.client.remove_event_handler(on_typing, user_update)
         ids = [attack_id] + ([repeat_id] if repeat_id else [])
         await cleanup_attacks(ids, client, token)
+
+
+async def test_a_slow_mode_attack_keeps_a_ten_image_album(
+    attack_app: tuple[FastAPI, AsyncClient],
+    checker: Checker,
+    attack_mimics: list[tuple[str, str]],
+) -> None:
+    """Slow mode ограничивает частоту сообщений, а не вложения в альбоме."""
+    album_size = 10
+    _, client = attack_app
+    token = await jwt()
+    agent_id, phone = attack_mimics[0]
+    mimic_id = await checker.resolve_id(phone)
+    channel_id, group_id = await checker.ensure_channel("Mimic42 slow 300", discussion=True)
+    assert group_id is not None, "у канала нет группы обсуждения"
+    try:
+        await checker.set_slow_mode(group_id, SLOW_MODE_SECONDS)
+    except ChatNotModifiedError:
+        pass
+    post_id = await checker.post(channel_id, f"mimic42 slow album {uuid4()}")
+    await checker.subscribe(channel_id, phone)
+
+    media: list[dict[str, str]] = []
+    for index in range(album_size):
+        data = png((20 + index * 15, 80, 160))
+        response = await client.post(
+            "/api/v1/attack-media",
+            headers=auth(token),
+            files={"file": (f"slow{index}.png", data, "image/png")},
+        )
+        assert response.status_code == 201, response.text
+        body = cast(dict[str, Any], response.json())
+        media.append({"path": body["storage_path"], "name": body["name"]})
+
+    created = await client.post(
+        "/api/v1/attacks",
+        headers=auth(token),
+        json={
+            "title": f"Медленный альбом {uuid4()}",
+            "target_link": private_link(channel_id, post_id),
+            "texts": ["Медленный текст атаки"],
+            "images": media,
+            "limit_kind": "messages",
+            "message_limit": album_size,
+            "agent_ids": [agent_id],
+        },
+    )
+    assert created.status_code == 201, created.text
+    attack_id = str(cast(dict[str, Any], created.json())["id"])
+
+    try:
+        started = await client.post(f"/api/v1/attacks/{attack_id}/start", headers=auth(token))
+        assert started.status_code == 200, started.text
+        detail = await wait_finished(
+            client, attack_id, token, timeout=SLOW_MODE_SECONDS + ATTACK_TIMEOUT_SECONDS
+        )
+
+        assert detail["status"] == "finished"
+        assert detail["sent_count"] == album_size
+        assert detail["claimed_count"] == album_size
+        assert detail["agents"][0]["last_error"] is None
+
+        _, messages = await thread_messages(checker, channel_id, group_id, post_id)
+        own = [message for message in messages if message.sender_id == mimic_id]
+        assert len(own) == album_size, [
+            (message.id, message.sender_id, message.message) for message in messages
+        ]
+        grouped = {getattr(message, "grouped_id", None) for message in own}
+        assert len(grouped) == 1 and None not in grouped
+        assert all(message.photo is not None for message in own)
+        assert any(message.message for message in own)
+    finally:
+        await cleanup_attacks([attack_id], client, token)
