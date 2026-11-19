@@ -279,7 +279,6 @@ async def test_album_is_sent_through_send_file(fast_typing: None) -> None:
         )
     )
     media = ("attacks/owner/a.jpg", "attacks/owner/b.jpg", "attacks/owner/c.jpg")
-    before = datetime.now(UTC)
 
     await runtime.send_humanized_comment(
         telegram,
@@ -297,9 +296,7 @@ async def test_album_is_sent_through_send_file(fast_typing: None) -> None:
     assert [stream.getvalue() for stream in files] == [b"a", b"b", b"c"]
     assert sent.kwargs["reply_to"] == 77
     assert sent.kwargs["parse_mode"] is None
-    scheduled_for = sent.kwargs["schedule"]
-    assert before + timedelta(seconds=ALBUM_SCHEDULE_LEAD_SECONDS) <= scheduled_for
-    assert scheduled_for <= datetime.now(UTC) + timedelta(seconds=ALBUM_SCHEDULE_LEAD_SECONDS)
+    assert "schedule" not in sent.kwargs
     assert not [
         request
         for request in telegram.requests
@@ -307,6 +304,29 @@ async def test_album_is_sent_through_send_file(fast_typing: None) -> None:
             request, (functions.messages.SendMediaRequest, functions.messages.SendMultiMediaRequest)
         )
     ]
+
+
+async def test_an_album_of_more_than_five_goes_through_the_scheduled_queue(
+    fast_typing: None,
+) -> None:
+    paths = {f"attacks/owner/{index}.jpg": bytes([index]) for index in range(10)}
+    runtime, telegram, _, _ = make_runtime(uploader=FakeMediaUploader(paths))
+    before = datetime.now(UTC)
+
+    await runtime.send_humanized_comment(
+        telegram,
+        entity="group",
+        text="Подпись",
+        media=tuple(paths),
+        reply_to=77,
+        random_id=9000,
+    )
+
+    sent = telegram.account.sent[-1]
+    assert [stream.getvalue() for stream in sent.kwargs["file"]] == list(paths.values())
+    scheduled_for = sent.kwargs["schedule"]
+    assert before + timedelta(seconds=ALBUM_SCHEDULE_LEAD_SECONDS) <= scheduled_for
+    assert scheduled_for <= datetime.now(UTC) + timedelta(seconds=ALBUM_SCHEDULE_LEAD_SECONDS)
 
 
 async def test_the_same_image_is_uploaded_once_and_then_comes_from_the_cache(

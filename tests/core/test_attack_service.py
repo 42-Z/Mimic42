@@ -815,7 +815,7 @@ async def test_the_next_window_counts_from_when_the_scheduled_album_arrives(
     runtime.script = [SimpleNamespace(id=712, date=delivery)]
     service, _, _, _ = service_factory(repo, [runtime])
     resolver.target = replace(resolver.target, slowmode_seconds=300)
-    media = tuple(f"attacks/owner/{index}.jpg" for index in range(3))
+    media = tuple(f"attacks/owner/{index}.jpg" for index in range(10))
     attack = await repo.create(
         uuid4(), _config(limit=MessagesLimit(10), media_paths=media), [agent_id], NOW
     )

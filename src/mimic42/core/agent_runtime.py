@@ -78,9 +78,11 @@ FIRST_COMMENT_FLOOD_WAIT_LIMIT = 10
 SEND_FLOOD_RETRY_LIMIT_SECONDS = 60
 # Альбом больше пяти картинок Telegram не успевает принять в самом запросе:
 # сервер отвечает WORKER_BUSY_TOO_LONG_RETRY, успев создать только первые пять.
-# Отложенная отправка проходит целиком и приходит одним альбомом, поэтому альбом
-# ставится в очередь на минуту вперёд, а следующее окно считается от даты доставки.
+# Отложенная отправка проходит целиком и приходит одним альбомом, поэтому такой
+# альбом ставится в очередь на минуту вперёд, а следующее окно считается от даты
+# доставки. До пяти картинок сервер принимает сразу, и они уходят без задержки.
 ALBUM_SCHEDULE_LEAD_SECONDS = 60
+ALBUM_SCHEDULE_MIN_ITEMS = 6
 # Столько close() ждёт ходы по альбомам и отложенным сообщениям, а оставшиеся
 # отменяет: следом закрываются клиент модели и пул базы, и ход-сирота открыл бы
 # соединение, которое уже никто не закроет. Менеджер закрывает агентов разом,
@@ -1308,10 +1310,11 @@ class MimicAgentRuntime:
 
         Одиночные сообщения идут сырыми запросами, потому что только они
         принимают ``random_id``: повтор с тем же id Telegram схлопывает в то же
-        сообщение. Альбом ставится в очередь на ``ALBUM_SCHEDULE_LEAD_SECONDS``
-        вперёд: интерактивный запрос с десятью картинками сервер обрывает на
-        пятой с ``WORKER_BUSY_TOO_LONG_RETRY``, а отложенный проходит целиком и
-        приходит одним альбомом. Текст уходит ровно как есть — без разметки.
+        сообщение. Альбом до ``ALBUM_SCHEDULE_MIN_ITEMS`` картинок уходит сразу;
+        больший ставится в очередь на ``ALBUM_SCHEDULE_LEAD_SECONDS`` вперёд:
+        интерактивный запрос с десятью картинками сервер обрывает на пятой с
+        ``WORKER_BUSY_TOO_LONG_RETRY``, а отложенный проходит целиком и приходит
+        одним альбомом. Текст уходит ровно как есть — без разметки.
         """
         from telethon import functions, types
 
@@ -1334,13 +1337,19 @@ class MimicAgentRuntime:
                     )
                 )
             if len(attachments) > 1:
+                options: dict[str, Any] = {
+                    "caption": text,
+                    "reply_to": reply_to,
+                    "parse_mode": None,
+                }
+                if len(attachments) >= ALBUM_SCHEDULE_MIN_ITEMS:
+                    options["schedule"] = datetime.now(UTC) + timedelta(
+                        seconds=ALBUM_SCHEDULE_LEAD_SECONDS
+                    )
                 return await client.send_file(
                     entity,
                     await self._comment_files(attachments),
-                    caption=text,
-                    reply_to=reply_to,
-                    parse_mode=None,
-                    schedule=datetime.now(UTC) + timedelta(seconds=ALBUM_SCHEDULE_LEAD_SECONDS),
+                    **options,
                 )
             photo = await self._comment_media(client, entity, attachments[0])
             try:
