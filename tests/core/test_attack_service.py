@@ -824,7 +824,7 @@ async def test_a_slow_mode_error_uses_the_current_interval_from_telegram(
     assert (retry_at - failed_at).total_seconds() >= 600 * 1.15
 
 
-async def test_a_partially_delivered_album_is_counted_without_a_retry(
+async def test_a_partially_delivered_album_sends_the_rest_in_the_next_chunk(
     service_factory: ServiceFactory,
     resolver: Resolver,
     monkeypatch: pytest.MonkeyPatch,
@@ -851,17 +851,27 @@ async def test_a_partially_delivered_album_is_counted_without_a_retry(
     await service.start_attack(attack.id)
     await _wait_for(lambda: _stored(repo, attack.id).status is AttackStatus.FINISHED)
 
-    claim, outcome, failed_at, retry_at = repo.settlements[0]
-    assert claim.message_count == 10
-    assert outcome.kind == "sent"
-    assert outcome.delivered == 8
+    first_claim, first_outcome, failed_at, retry_at = repo.settlements[0]
+    second_claim, second_outcome, _, _ = repo.settlements[1]
+    assert first_claim.message_count == 10
+    assert first_outcome.kind == "sent"
+    assert first_outcome.delivered == 8
     assert retry_at > failed_at
+    rest = first_claim.media[8:]
+    assert second_claim.message_count == 2
+    assert second_claim.media == rest
+    assert second_claim.text == ""
+    assert second_claim.random_id == first_claim.random_id + 8
+    assert second_outcome.kind == "sent"
+    assert len(runtime.calls) == 2
+    assert runtime.calls[1]["media"] == rest
+    assert runtime.calls[1]["random_id"] == first_claim.random_id + 8
     stored = _stored(repo, attack.id)
-    assert stored.sent_count == 8
-    assert stored.claimed_count == 8
+    assert stored.sent_count == 10
+    assert stored.claimed_count == 10
     assert stored.participations[0].last_error is None
     assert "attack.comment_failed" not in _events(activity)
-    assert "attack.comment_sent" in _events(activity)
+    assert _events(activity).count("attack.comment_sent") == 2
 
 
 async def test_the_limit_counts_each_album_image_as_a_message(
