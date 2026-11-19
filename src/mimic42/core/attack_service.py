@@ -1316,6 +1316,8 @@ def _retry_after(exc: BaseException) -> int | None:
 
 
 def _sent_message_id(message: Any) -> int:
+    if isinstance(message, (list, tuple)) and message:
+        return _sent_message_id(message[0])
     direct = getattr(message, "id", None)
     if isinstance(direct, int):
         return direct

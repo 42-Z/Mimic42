@@ -43,7 +43,7 @@ IMAGE_COUNT = 12
 COMMENT_COUNT = 3
 MESSAGE_LIMIT = COMMENT_COUNT * 10
 ATTACK_TIMEOUT_SECONDS = 180
-SLOW_MODE_SECONDS = 30
+SLOW_MODE_SECONDS = 300
 
 
 def png(color: tuple[int, int, int]) -> bytes:
@@ -271,7 +271,7 @@ async def test_a_slow_mode_attack_keeps_a_ten_image_album(
     token = await jwt()
     agent_id, phone = attack_mimics[0]
     mimic_id = await checker.resolve_id(phone)
-    channel_id, group_id = await checker.ensure_channel("Mimic42 attack slow mode", discussion=True)
+    channel_id, group_id = await checker.ensure_channel("Mimic42 slow 300", discussion=True)
     assert group_id is not None, "у канала нет группы обсуждения"
     try:
         await checker.set_slow_mode(group_id, SLOW_MODE_SECONDS)
@@ -324,7 +324,7 @@ async def test_a_slow_mode_attack_keeps_a_ten_image_album(
             (message.id, message.sender_id, message.message) for message in messages
         ]
         grouped = {getattr(message, "grouped_id", None) for message in own}
-        assert None not in grouped
+        assert len(grouped) == 1 and None not in grouped
         assert all(message.photo is not None for message in own)
         assert any(message.message for message in own)
     finally:

@@ -1301,9 +1301,11 @@ class MimicAgentRuntime:
     ) -> Any:
         """Один комментарий в обсуждение: текст, одна картинка или альбом.
 
-        Отправка идёт сырыми запросами, потому что только они принимают
-        ``random_id``: повтор с тем же id Telegram схлопывает в то же сообщение.
-        Текст уходит ровно как есть — без разметки и разбиения.
+        Одиночные сообщения идут сырыми запросами, потому что только они
+        принимают ``random_id``: повтор с тем же id Telegram схлопывает в то же
+        сообщение. Альбом идёт через ``send_file``: сырой ``SendMultiMediaRequest``
+        сервер режет на группы по 5, а альбомный отправитель Telethon собирает
+        его одним запросом. Текст уходит ровно как есть — без разметки.
         """
         from telethon import functions, types
 
@@ -1325,62 +1327,68 @@ class MimicAgentRuntime:
                         no_webpage=True,
                     )
                 )
-            photos = [await self._comment_media(client, entity, path) for path in attachments]
+            if len(attachments) > 1:
+                return await client.send_file(
+                    entity,
+                    await self._comment_files(attachments),
+                    caption=text,
+                    reply_to=reply_to,
+                    parse_mode=None,
+                )
+            photo = await self._comment_media(client, entity, attachments[0])
             try:
                 return await client(
                     self._comment_media_request(
                         entity=entity,
                         text=text,
-                        photos=photos,
+                        photo=photo,
                         reply_to=reply,
                         random_id=random_id,
                     )
                 )
             except MEDIA_REFERENCE_ERRORS:
                 logger.info("Ссылка на картинку комментария устарела, заливаем заново")
-                for path in attachments:
-                    self._first_comment_media.pop(path, None)
-                photos = [await self._comment_media(client, entity, path) for path in attachments]
+                self._first_comment_media.pop(attachments[0], None)
+                photo = await self._comment_media(client, entity, attachments[0])
                 return await client(
                     self._comment_media_request(
                         entity=entity,
                         text=text,
-                        photos=photos,
+                        photo=photo,
                         reply_to=reply,
                         random_id=random_id,
                     )
                 )
+
+    async def _comment_files(self, paths: Sequence[str]) -> list[io.BytesIO]:
+        """Потоки картинок для альбомного ``send_file``."""
+        files: list[io.BytesIO] = []
+        for path in paths:
+            data = await self._media_uploader.open(path) if self._media_uploader else None
+            if not data:
+                raise CommentMediaUnavailable(path)
+            stream = io.BytesIO(data)
+            stream.name = path.rsplit("/", 1)[-1] or "image.jpg"
+            files.append(stream)
+        return files
 
     def _comment_media_request(
         self,
         *,
         entity: Any,
         text: str,
-        photos: Sequence[Any],
+        photo: Any,
         reply_to: Any,
         random_id: int,
     ) -> Any:
-        """Запрос фото или альбома: подпись только у первого элемента."""
-        from telethon import functions, types, utils
+        """Запрос одной картинки: подпись и ``random_id`` для дедупликации."""
+        from telethon import functions, utils
 
-        if len(photos) == 1:
-            return functions.messages.SendMediaRequest(
-                peer=entity,
-                media=utils.get_input_media(photos[0].photo),
-                message=text,
-                random_id=random_id,
-                reply_to=reply_to,
-            )
-        return functions.messages.SendMultiMediaRequest(
+        return functions.messages.SendMediaRequest(
             peer=entity,
-            multi_media=[
-                types.InputSingleMedia(
-                    media=utils.get_input_media(photo.photo),
-                    message=text if index == 0 else "",
-                    random_id=random_id + index,
-                )
-                for index, photo in enumerate(photos)
-            ],
+            media=utils.get_input_media(photo.photo),
+            message=text,
+            random_id=random_id,
             reply_to=reply_to,
         )
 
