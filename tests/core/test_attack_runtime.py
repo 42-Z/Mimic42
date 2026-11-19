@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any, cast
 from uuid import UUID, uuid4
@@ -9,6 +10,7 @@ import pytest
 from telethon import errors, functions, types
 
 from mimic42.core.agent_runtime import (
+    ALBUM_SCHEDULE_LEAD_SECONDS,
     AgentRuntimeState,
     AgentTrigger,
     AttackModeActiveError,
@@ -277,6 +279,7 @@ async def test_album_is_sent_through_send_file(fast_typing: None) -> None:
         )
     )
     media = ("attacks/owner/a.jpg", "attacks/owner/b.jpg", "attacks/owner/c.jpg")
+    before = datetime.now(UTC)
 
     await runtime.send_humanized_comment(
         telegram,
@@ -294,6 +297,9 @@ async def test_album_is_sent_through_send_file(fast_typing: None) -> None:
     assert [stream.getvalue() for stream in files] == [b"a", b"b", b"c"]
     assert sent.kwargs["reply_to"] == 77
     assert sent.kwargs["parse_mode"] is None
+    scheduled_for = sent.kwargs["schedule"]
+    assert before + timedelta(seconds=ALBUM_SCHEDULE_LEAD_SECONDS) <= scheduled_for
+    assert scheduled_for <= datetime.now(UTC) + timedelta(seconds=ALBUM_SCHEDULE_LEAD_SECONDS)
     assert not [
         request
         for request in telegram.requests

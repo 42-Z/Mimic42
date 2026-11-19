@@ -7,7 +7,7 @@ import random
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Any, Literal, Protocol, cast
 from uuid import UUID, uuid4
@@ -76,6 +76,11 @@ FIRST_COMMENT_FLOOD_WAIT_LIMIT = 10
 # Дольше минуты ход не держит: такой флуд — уже не гонка окна, а ограничение
 # аккаунта, и о нём надо сообщить, а не молча висеть под замком хода.
 SEND_FLOOD_RETRY_LIMIT_SECONDS = 60
+# Альбом больше пяти картинок Telegram не успевает принять в самом запросе:
+# сервер отвечает WORKER_BUSY_TOO_LONG_RETRY, успев создать только первые пять.
+# Отложенная отправка проходит целиком и приходит одним альбомом, поэтому альбом
+# ставится в очередь на минуту вперёд, а следующее окно считается от даты доставки.
+ALBUM_SCHEDULE_LEAD_SECONDS = 60
 # Столько close() ждёт ходы по альбомам и отложенным сообщениям, а оставшиеся
 # отменяет: следом закрываются клиент модели и пул базы, и ход-сирота открыл бы
 # соединение, которое уже никто не закроет. Менеджер закрывает агентов разом,
@@ -1303,9 +1308,10 @@ class MimicAgentRuntime:
 
         Одиночные сообщения идут сырыми запросами, потому что только они
         принимают ``random_id``: повтор с тем же id Telegram схлопывает в то же
-        сообщение. Альбом идёт через ``send_file``: сырой ``SendMultiMediaRequest``
-        сервер режет на группы по 5, а альбомный отправитель Telethon собирает
-        его одним запросом. Текст уходит ровно как есть — без разметки.
+        сообщение. Альбом ставится в очередь на ``ALBUM_SCHEDULE_LEAD_SECONDS``
+        вперёд: интерактивный запрос с десятью картинками сервер обрывает на
+        пятой с ``WORKER_BUSY_TOO_LONG_RETRY``, а отложенный проходит целиком и
+        приходит одним альбомом. Текст уходит ровно как есть — без разметки.
         """
         from telethon import functions, types
 
@@ -1334,6 +1340,7 @@ class MimicAgentRuntime:
                     caption=text,
                     reply_to=reply_to,
                     parse_mode=None,
+                    schedule=datetime.now(UTC) + timedelta(seconds=ALBUM_SCHEDULE_LEAD_SECONDS),
                 )
             photo = await self._comment_media(client, entity, attachments[0])
             try:

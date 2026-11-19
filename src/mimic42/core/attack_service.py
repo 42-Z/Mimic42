@@ -1081,7 +1081,7 @@ class _Sender:
         settlement = await self._settle(
             claim,
             SendOutcome.sent(message_id),
-            self._next_success_at(target),
+            self._next_success_at(target, at=_delivery_time(message)),
         )
         self._unknown_rid = None
         self._unknown_attempts = 0
@@ -1254,9 +1254,9 @@ class _Sender:
             self._settled_claim = False
             raise
 
-    def _next_success_at(self, target: AttackTarget) -> datetime:
+    def _next_success_at(self, target: AttackTarget, *, at: datetime | None = None) -> datetime:
         return next_send_at(
-            self._service._now(),
+            at or self._service._now(),
             target.slowmode_seconds,
             self._service._rng,
         )
@@ -1326,3 +1326,14 @@ def _sent_message_id(message: Any) -> int:
         if isinstance(candidate, int) and hasattr(update, "random_id"):
             return candidate
     return 0
+
+
+def _delivery_time(message: Any) -> datetime | None:
+    """Когда альбом действительно появится: у отложенного это его дата.
+
+    Интерактивная отправка даёт дату сразу, отложенная — будущую. Окно slow mode
+    отсчитывается от появления сообщения, а не от постановки в очередь.
+    """
+    items = message if isinstance(message, (list, tuple)) else [message]
+    dates = [date for item in items if isinstance(date := getattr(item, "date", None), datetime)]
+    return max(dates) if dates else None

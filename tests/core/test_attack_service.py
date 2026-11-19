@@ -21,7 +21,11 @@ import pytest
 from telethon import errors
 
 import mimic42.core.attack_service as attack_service_module
-from mimic42.core.agent_runtime import AgentRuntimeState, CommentMediaUnavailable
+from mimic42.core.agent_runtime import (
+    ALBUM_SCHEDULE_LEAD_SECONDS,
+    AgentRuntimeState,
+    CommentMediaUnavailable,
+)
 from mimic42.core.attack import (
     AttackAgentStatus,
     AttackConfig,
@@ -172,6 +176,8 @@ class FakeRuntime:
             item = self.script.pop(0)
             if isinstance(item, BaseException):
                 raise item
+            if isinstance(item, SimpleNamespace):
+                return item
             return SimpleNamespace(id=item)
         self.message_id += 1
         return SimpleNamespace(id=self.message_id)
@@ -796,6 +802,31 @@ async def test_the_first_comment_waits_for_the_accounts_slow_mode_window(
     sent_at = repo.settlements[0][2]
     assert sent_at >= open_at
     assert clock.now >= open_at
+
+
+async def test_the_next_window_counts_from_when_the_scheduled_album_arrives(
+    service_factory: ServiceFactory,
+    resolver: Resolver,
+) -> None:
+    repo = FakeRepo()
+    agent_id = uuid4()
+    runtime = FakeRuntime(agent_id)
+    delivery = NOW + timedelta(seconds=ALBUM_SCHEDULE_LEAD_SECONDS)
+    runtime.script = [SimpleNamespace(id=712, date=delivery)]
+    service, _, _, _ = service_factory(repo, [runtime])
+    resolver.target = replace(resolver.target, slowmode_seconds=300)
+    media = tuple(f"attacks/owner/{index}.jpg" for index in range(3))
+    attack = await repo.create(
+        uuid4(), _config(limit=MessagesLimit(10), media_paths=media), [agent_id], NOW
+    )
+
+    await service.start_attack(attack.id)
+    await _wait_for(lambda: bool(repo.settlements))
+
+    _, outcome, _, next_at = repo.settlements[0]
+    assert outcome.kind == "sent"
+    assert outcome.delivered is None
+    assert (next_at - delivery).total_seconds() >= 300 * 1.15
 
 
 async def test_a_slow_mode_error_uses_the_current_interval_from_telegram(
