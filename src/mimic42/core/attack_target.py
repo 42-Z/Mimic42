@@ -93,12 +93,14 @@ async def refresh_slow_mode(client: Any, target: AttackTarget) -> AttackTarget:
     )
 
 
-async def recent_comment_messages(client: Any, target: AttackTarget, since: datetime) -> list[int]:
+async def recent_comment_messages(
+    client: Any, target: AttackTarget, since: datetime, *, albums_only: bool = False
+) -> list[int]:
     """id сообщений аккаунта в обсуждении после ``since``.
 
-    Нужен после ошибки отправки альбома: Telegram принимает часть картинок, а
-    запрос завершает SlowModeWaitError. История показывает, сколько сообщений
-    реально дошло, чтобы засчитать их и не повторять альбом целиком.
+    Нужен после ошибки отправки альбома и при подтверждении отложенного: история
+    показывает, что реально дошло, чтобы засчитать это и не повторять альбом.
+    ``albums_only`` отсекает обычные ответы аккаунта, которые к альбому не относятся.
     """
     me = await client.get_me()
     my_id = getattr(me, "id", None)
@@ -113,6 +115,7 @@ async def recent_comment_messages(client: Any, target: AttackTarget, since: date
         == target.root_reply_id
         and getattr(message, "date", None) is not None
         and message.date >= since
+        and (not albums_only or getattr(message, "grouped_id", None) is not None)
     )
 
 

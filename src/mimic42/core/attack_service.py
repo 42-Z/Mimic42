@@ -22,7 +22,7 @@ from functools import partial
 from typing import Any, Protocol
 from uuid import UUID
 
-from telethon import errors
+from telethon import errors, functions, types
 
 from mimic42.core.agent_runtime import (
     AgentLifecycleChangedError,
@@ -71,6 +71,12 @@ DUPLICATE_RETRY_SECONDS = 2.0
 NO_SLOT_RETRY_SECONDS = 5.0
 RECONCILE_INTERVAL_SECONDS = 12.0
 SWEEP_TASK_NAME = "attack:reconcile"
+# Сколько ждать появления отложенного альбома после назначенного времени и как
+# часто проверять ветку. Альбом доставляется за несколько секунд, но под нагрузкой
+# сервер может задержаться; зачёт идёт только по фактически увиденным сообщениям.
+SCHEDULED_DELIVERY_GRACE_SECONDS = 8.0
+SCHEDULED_CONFIRM_ATTEMPTS = 4
+SCHEDULED_CONFIRM_INTERVAL_SECONDS = 4.0
 
 
 class AttackRuntimePort(Protocol):
@@ -1077,12 +1083,30 @@ class _Sender:
                     return await self._settle_partial(claim, target, delivered)
                 return await self._settle_failure(claim, exc, target, client)
 
-        message_id = _sent_message_id(message)
-        settlement = await self._settle(
-            claim,
-            SendOutcome.sent(message_id),
-            self._next_success_at(target, at=_delivery_time(message)),
-        )
+        scheduled = _scheduled_album(message)
+        if scheduled is not None:
+            try:
+                confirmed = await self._await_album_delivery(client, target, claim, scheduled)
+            except asyncio.CancelledError:
+                await self._discard_scheduled(client, target, scheduled.queue_ids)
+                raise
+            if confirmed is None:
+                return await self._settle_unconfirmed_album(claim)
+            message_id = confirmed
+            settlement = await self._settle(
+                claim,
+                SendOutcome.sent(message_id),
+                self._next_success_at(target, at=scheduled.delivery_at),
+            )
+            delivered = claim.message_count
+        else:
+            message_id = _sent_message_id(message)
+            settlement = await self._settle(
+                claim,
+                SendOutcome.sent(message_id),
+                self._next_success_at(target, at=_delivery_time(message)),
+            )
+            delivered = None
         self._unknown_rid = None
         self._unknown_attempts = 0
         await self._service._record(
@@ -1091,9 +1115,97 @@ class _Sender:
             attack_id=self._attack_id,
             random_id=claim.random_id,
             message_id=message_id,
+            **({"delivered": delivered} if delivered is not None else {}),
         )
         if settlement.finished:
             await self._service._refresh_attack(self._attack_id)
+        return True
+
+    async def _await_album_delivery(
+        self,
+        client: Any,
+        target: AttackTarget,
+        claim: SlotClaim,
+        scheduled: _ScheduledAlbum,
+    ) -> int | None:
+        """Дождаться появления отложенного альбома и вернуть id первого сообщения.
+
+        ``None`` — за назначенное время и несколько проверок альбом не появился:
+        резерв не засчитывается, повтор с теми же ``random_id`` вернёт ту же
+        очередь, а не создаст вторую.
+        """
+        wait = (scheduled.delivery_at - self._service._now()).total_seconds()
+        if wait > 0:
+            await self._service._sleep(wait + SCHEDULED_DELIVERY_GRACE_SECONDS)
+        for attempt in range(SCHEDULED_CONFIRM_ATTEMPTS):
+            try:
+                ids = await recent_comment_messages(
+                    client,
+                    target,
+                    scheduled.delivery_at - timedelta(seconds=2),
+                    albums_only=True,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning(
+                    "Атака %s: не удалось подтвердить доставку альбома",
+                    self._attack_id,
+                    exc_info=True,
+                )
+                ids = []
+            if len(ids) >= claim.message_count:
+                return min(ids[-claim.message_count :])
+            if attempt + 1 < SCHEDULED_CONFIRM_ATTEMPTS:
+                await self._service._sleep(SCHEDULED_CONFIRM_INTERVAL_SECONDS)
+        return None
+
+    async def _discard_scheduled(
+        self, client: Any, target: AttackTarget, queue_ids: tuple[int, ...]
+    ) -> None:
+        """Снять ещё не доставленный альбом с серверной очереди при отмене."""
+        if not queue_ids:
+            return
+        try:
+            await client(
+                functions.messages.DeleteScheduledMessagesRequest(
+                    peer=target.group, id=list(queue_ids)
+                )
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning(
+                "Атака %s: не удалось снять альбом из очереди",
+                self._attack_id,
+                exc_info=True,
+            )
+
+    async def _settle_unconfirmed_album(self, claim: SlotClaim) -> bool:
+        """Очередь приняла альбом, но доставку не подтвердили: исход неизвестен."""
+        now = self._service._now()
+        failure = SendFailure.SEND_FAILED
+        await self._settle(
+            claim,
+            SendOutcome.unknown(failure),
+            now + timedelta(seconds=self._backoff()),
+        )
+        await self._service._record(
+            self._agent_id,
+            "attack.comment_failed",
+            attack_id=self._attack_id,
+            random_id=claim.random_id,
+            failure=failure.value,
+            error=failure_text(failure),
+        )
+        self._bump_unknown(claim.random_id)
+        if self._unknown_attempts >= UNKNOWN_ATTEMPTS:
+            await self._settle(
+                claim,
+                SendOutcome.not_sent(failure),
+                now + timedelta(seconds=self._backoff()),
+            )
+            return await self._abort(ExitReason.SEND_FAILED)
         return True
 
     async def _partial_delivery(
@@ -1112,7 +1224,12 @@ class _Sender:
         if not claim.media:
             return None
         try:
-            ids = await recent_comment_messages(client, target, started_at - timedelta(seconds=5))
+            ids = await recent_comment_messages(
+                client,
+                target,
+                started_at - timedelta(seconds=2),
+                albums_only=len(claim.media) > 1,
+            )
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -1337,3 +1454,29 @@ def _delivery_time(message: Any) -> datetime | None:
     items = message if isinstance(message, (list, tuple)) else [message]
     dates = [date for item in items if isinstance(date := getattr(item, "date", None), datetime)]
     return max(dates) if dates else None
+
+
+@dataclass(frozen=True)
+class _ScheduledAlbum:
+    """Ответ Telegram на отложенный альбом: id записей очереди и время доставки."""
+
+    queue_ids: tuple[int, ...]
+    delivery_at: datetime
+
+
+def _scheduled_album(message: Any) -> _ScheduledAlbum | None:
+    updates = getattr(message, "updates", None)
+    if not isinstance(updates, (list, tuple)):
+        return None
+    items = [
+        update.message for update in updates if isinstance(update, types.UpdateNewScheduledMessage)
+    ]
+    if not items:
+        return None
+    dates = [item.date for item in items if isinstance(item.date, datetime)]
+    if not dates:
+        return None
+    return _ScheduledAlbum(
+        queue_ids=tuple(item.id for item in items if isinstance(item.id, int)),
+        delivery_at=max(dates),
+    )

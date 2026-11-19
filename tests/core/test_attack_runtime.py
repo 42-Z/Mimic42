@@ -18,6 +18,7 @@ from mimic42.core.agent_runtime import (
     MimicAgentRuntime,
     OpenerResult,
     TelegramEventLike,
+    album_item_random_id,
 )
 from mimic42.core.first_comment import FirstCommentSettings, FirstCommentVariant
 from mimic42.core.media import MediaFile
@@ -268,7 +269,9 @@ async def test_single_image_is_uploaded_and_sent_as_a_photo(fast_typing: None) -
     assert request.reply_to.reply_to_msg_id == 77
 
 
-async def test_album_is_sent_through_send_file(fast_typing: None) -> None:
+async def test_album_is_sent_as_one_multimedia_request_with_stable_ids(
+    fast_typing: None,
+) -> None:
     runtime, telegram, _, _ = make_runtime(
         uploader=FakeMediaUploader(
             {
@@ -289,21 +292,27 @@ async def test_album_is_sent_through_send_file(fast_typing: None) -> None:
         random_id=9000,
     )
 
-    sent = telegram.account.sent[-1]
-    assert sent.text == "Подпись"
-    files = cast(list[io.BytesIO], sent.kwargs["file"])
-    assert [stream.name for stream in files] == ["a.jpg", "b.jpg", "c.jpg"]
-    assert [stream.getvalue() for stream in files] == [b"a", b"b", b"c"]
-    assert sent.kwargs["reply_to"] == 77
-    assert sent.kwargs["parse_mode"] is None
-    assert "schedule" not in sent.kwargs
-    assert not [
+    uploads = [
         request
         for request in telegram.requests
-        if isinstance(
-            request, (functions.messages.SendMediaRequest, functions.messages.SendMultiMediaRequest)
-        )
+        if isinstance(request, functions.messages.UploadMediaRequest)
     ]
+    assert len(uploads) == 3
+    albums = [
+        request
+        for request in telegram.requests
+        if isinstance(request, functions.messages.SendMultiMediaRequest)
+    ]
+    assert len(albums) == 1
+    request = albums[0]
+    assert [item.message for item in request.multi_media] == ["Подпись", "", ""]
+    assert [item.random_id for item in request.multi_media] == [
+        album_item_random_id(9000, index) for index in range(3)
+    ]
+    assert all(isinstance(item.media, types.InputMediaPhoto) for item in request.multi_media)
+    assert isinstance(request.reply_to, types.InputReplyToMessage)
+    assert request.reply_to.reply_to_msg_id == 77
+    assert request.schedule_date is None
 
 
 async def test_an_album_of_more_than_five_goes_through_the_scheduled_queue(
@@ -322,9 +331,19 @@ async def test_an_album_of_more_than_five_goes_through_the_scheduled_queue(
         random_id=9000,
     )
 
-    sent = telegram.account.sent[-1]
-    assert [stream.getvalue() for stream in sent.kwargs["file"]] == list(paths.values())
-    scheduled_for = sent.kwargs["schedule"]
+    albums = [
+        request
+        for request in telegram.requests
+        if isinstance(request, functions.messages.SendMultiMediaRequest)
+    ]
+    assert len(albums) == 1
+    request = albums[0]
+    assert len(request.multi_media) == 10
+    assert [item.random_id for item in request.multi_media] == [
+        album_item_random_id(9000, index) for index in range(10)
+    ]
+    scheduled_for = request.schedule_date
+    assert scheduled_for is not None
     assert before + timedelta(seconds=ALBUM_SCHEDULE_LEAD_SECONDS) <= scheduled_for
     assert scheduled_for <= datetime.now(UTC) + timedelta(seconds=ALBUM_SCHEDULE_LEAD_SECONDS)
 

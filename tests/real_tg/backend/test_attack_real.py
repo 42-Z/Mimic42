@@ -92,9 +92,15 @@ async def attack_mimics(checker: Checker) -> list[tuple[str, str]]:
     return agents
 
 
-async def wait_finished(client: AsyncClient, attack_id: str, token: str) -> dict[str, Any]:
+async def wait_finished(
+    client: AsyncClient,
+    attack_id: str,
+    token: str,
+    *,
+    timeout: float = ATTACK_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
     loop = asyncio.get_running_loop()
-    deadline = loop.time() + ATTACK_TIMEOUT_SECONDS
+    deadline = loop.time() + timeout
     while loop.time() < deadline:
         response = await client.get(f"/api/v1/attacks/{attack_id}", headers=auth(token))
         assert response.status_code == 200, response.text
@@ -102,7 +108,7 @@ async def wait_finished(client: AsyncClient, attack_id: str, token: str) -> dict
         if detail["status"] in ("finished", "cancelled"):
             return detail
         await asyncio.sleep(2)
-    raise AssertionError(f"атака не завершилась за {ATTACK_TIMEOUT_SECONDS} секунд")
+    raise AssertionError(f"атака не завершилась за {timeout} секунд")
 
 
 async def thread_messages(
@@ -267,6 +273,7 @@ async def test_a_slow_mode_attack_keeps_a_ten_image_album(
     attack_mimics: list[tuple[str, str]],
 ) -> None:
     """Slow mode ограничивает частоту сообщений, а не вложения в альбоме."""
+    album_size = 10
     _, client = attack_app
     token = await jwt()
     agent_id, phone = attack_mimics[0]
@@ -281,7 +288,7 @@ async def test_a_slow_mode_attack_keeps_a_ten_image_album(
     await checker.subscribe(channel_id, phone)
 
     media: list[dict[str, str]] = []
-    for index in range(IMAGE_COUNT):
+    for index in range(album_size):
         data = png((20 + index * 15, 80, 160))
         response = await client.post(
             "/api/v1/attack-media",
@@ -301,7 +308,7 @@ async def test_a_slow_mode_attack_keeps_a_ten_image_album(
             "texts": ["Медленный текст атаки"],
             "images": media,
             "limit_kind": "messages",
-            "message_limit": IMAGE_COUNT,
+            "message_limit": album_size,
             "agent_ids": [agent_id],
         },
     )
@@ -311,16 +318,18 @@ async def test_a_slow_mode_attack_keeps_a_ten_image_album(
     try:
         started = await client.post(f"/api/v1/attacks/{attack_id}/start", headers=auth(token))
         assert started.status_code == 200, started.text
-        detail = await wait_finished(client, attack_id, token)
+        detail = await wait_finished(
+            client, attack_id, token, timeout=SLOW_MODE_SECONDS + ATTACK_TIMEOUT_SECONDS
+        )
 
         assert detail["status"] == "finished"
-        assert detail["sent_count"] == IMAGE_COUNT
-        assert detail["claimed_count"] == IMAGE_COUNT
+        assert detail["sent_count"] == album_size
+        assert detail["claimed_count"] == album_size
         assert detail["agents"][0]["last_error"] is None
 
         _, messages = await thread_messages(checker, channel_id, group_id, post_id)
         own = [message for message in messages if message.sender_id == mimic_id]
-        assert len(own) == IMAGE_COUNT, [
+        assert len(own) == album_size, [
             (message.id, message.sender_id, message.message) for message in messages
         ]
         grouped = {getattr(message, "grouped_id", None) for message in own}
