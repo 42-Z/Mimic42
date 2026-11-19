@@ -822,6 +822,7 @@ async def test_a_slow_mode_error_uses_the_current_interval_from_telegram(
     _, outcome, failed_at, retry_at = repo.settlements[0]
     assert outcome.failure is SendFailure.SLOW_MODE
     assert (retry_at - failed_at).total_seconds() >= 600 * 1.15
+    assert repo.targets[-1][-1] == 600
 
 
 async def test_the_limit_counts_each_album_image_as_a_message(
