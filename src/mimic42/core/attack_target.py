@@ -93,6 +93,29 @@ async def refresh_slow_mode(client: Any, target: AttackTarget) -> AttackTarget:
     )
 
 
+async def recent_comment_messages(client: Any, target: AttackTarget, since: datetime) -> list[int]:
+    """id сообщений аккаунта в обсуждении после ``since``.
+
+    Нужен после ошибки отправки альбома: Telegram принимает часть картинок, а
+    запрос завершает SlowModeWaitError. История показывает, сколько сообщений
+    реально дошло, чтобы засчитать их и не повторять альбом целиком.
+    """
+    me = await client.get_me()
+    my_id = getattr(me, "id", None)
+    if not isinstance(my_id, int):
+        return []
+    messages = await client.get_messages(target.group, limit=100)
+    return sorted(
+        message.id
+        for message in messages
+        if getattr(message, "sender_id", None) == my_id
+        and getattr(getattr(message, "reply_to", None), "reply_to_msg_id", None)
+        == target.root_reply_id
+        and getattr(message, "date", None) is not None
+        and message.date >= since
+    )
+
+
 def _peer_argument(peer: str) -> str | int:
     """Числовой peer Telethon ждёт числом, иначе резолв идёт как по юзернейму."""
     stripped = peer.strip()

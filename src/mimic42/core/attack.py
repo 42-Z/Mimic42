@@ -175,10 +175,12 @@ class SendOutcome:
     kind: Literal["sent", "not_sent", "unknown", "interrupted"]
     message_id: int | None = None
     failure: SendFailure | None = None
+    delivered: int | None = None
+    """Сколько сообщений реально дошло. None — весь заявленный набор."""
 
     @classmethod
-    def sent(cls, message_id: int) -> SendOutcome:
-        return cls(kind="sent", message_id=message_id)
+    def sent(cls, message_id: int, delivered: int | None = None) -> SendOutcome:
+        return cls(kind="sent", message_id=message_id, delivered=delivered)
 
     @classmethod
     def not_sent(cls, failure: SendFailure) -> SendOutcome:

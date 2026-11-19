@@ -188,7 +188,10 @@ class FakeAttackGate:
         if participation is None or participation.pending_random_id != claim.random_id:
             return self._settlement(attack)
         if outcome.kind == "sent":
-            sent_messages = max(1, len(claim.media))
+            sent_messages = (
+                outcome.delivered if outcome.delivered is not None else max(1, len(claim.media))
+            )
+            sent_messages = min(max(sent_messages, 1), claim.message_count)
             attack.sent_count += sent_messages
             participation.sent_count += sent_messages
             attack.claimed_count -= claim.message_count - sent_messages

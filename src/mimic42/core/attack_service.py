@@ -56,6 +56,7 @@ from mimic42.core.attack_target import (
     AttackTarget,
     AttackTargetError,
     TargetNotWritableError,
+    recent_comment_messages,
     refresh_slow_mode,
     resolve_target,
 )
@@ -1038,6 +1039,7 @@ class _Sender:
     ) -> bool:
         message: Any = None
         media = claim.media
+        started_at = self._service._now()
         try:
             message = await runtime.send_humanized_comment(
                 client,
@@ -1070,6 +1072,9 @@ class _Sender:
                 except Exception as fallback_exc:
                     return await self._settle_failure(claim, fallback_exc, target, client)
             else:
+                delivered = await self._partial_delivery(client, target, claim, started_at)
+                if delivered is not None:
+                    return await self._settle_partial(claim, target, delivered)
                 return await self._settle_failure(claim, exc, target, client)
 
         message_id = _sent_message_id(message)
@@ -1086,6 +1091,71 @@ class _Sender:
             attack_id=self._attack_id,
             random_id=claim.random_id,
             message_id=message_id,
+        )
+        if settlement.finished:
+            await self._service._refresh_attack(self._attack_id)
+        return True
+
+    async def _partial_delivery(
+        self,
+        client: Any,
+        target: AttackTarget,
+        claim: SlotClaim,
+        started_at: datetime,
+    ) -> list[int] | None:
+        """Сколько сообщений альбома успело дойти до ошибки отправки.
+
+        Telegram принимает префикс альбома, а остаток отклоняет по slow mode.
+        Без этой проверки отправленные сообщения не считались, а повтор с новым
+        random_id дублировал уже доставленные картинки.
+        """
+        if not claim.media:
+            return None
+        try:
+            ids = await recent_comment_messages(client, target, started_at - timedelta(seconds=5))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning(
+                "Атака %s: не удалось проверить доставленные сообщения",
+                self._attack_id,
+                exc_info=True,
+            )
+            return None
+        if not ids:
+            return None
+        return ids[-claim.message_count :]
+
+    async def _settle_partial(
+        self,
+        claim: SlotClaim,
+        target: AttackTarget,
+        delivered_ids: list[int],
+    ) -> bool:
+        delivered = min(len(delivered_ids), claim.message_count)
+        message_id = min(delivered_ids)
+        settlement = await self._settle(
+            claim,
+            SendOutcome.sent(message_id, delivered=delivered),
+            self._next_success_at(target),
+        )
+        self._unknown_rid = None
+        self._unknown_attempts = 0
+        await self._service._record(
+            self._agent_id,
+            "attack.comment_sent",
+            attack_id=self._attack_id,
+            random_id=claim.random_id,
+            message_id=message_id,
+            delivered=delivered,
+            expected=claim.message_count,
+        )
+        logger.warning(
+            "Атака %s: мимик %s доставил %s из %s сообщений комментария",
+            self._attack_id,
+            self._agent_id,
+            delivered,
+            claim.message_count,
         )
         if settlement.finished:
             await self._service._refresh_attack(self._attack_id)

@@ -824,6 +824,46 @@ async def test_a_slow_mode_error_uses_the_current_interval_from_telegram(
     assert (retry_at - failed_at).total_seconds() >= 600 * 1.15
 
 
+async def test_a_partially_delivered_album_is_counted_without_a_retry(
+    service_factory: ServiceFactory,
+    resolver: Resolver,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = FakeRepo()
+    agent_id = uuid4()
+    runtime = FakeRuntime(agent_id)
+    runtime.script = [errors.SlowModeWaitError(None, 300)]
+    service, _, activity, _ = service_factory(repo, [runtime])
+    resolver.target = replace(resolver.target, slowmode_seconds=300)
+    media = tuple(f"attacks/owner/{index}.jpg" for index in range(10))
+
+    async def recent(client: Any, target: AttackTarget, since: datetime) -> list[int]:
+        return list(range(101, 109))
+
+    monkeypatch.setattr(attack_service_module, "recent_comment_messages", recent)
+    attack = await repo.create(
+        uuid4(),
+        _config(limit=MinutesLimit(1), media_paths=media),
+        [agent_id],
+        NOW,
+    )
+
+    await service.start_attack(attack.id)
+    await _wait_for(lambda: _stored(repo, attack.id).status is AttackStatus.FINISHED)
+
+    claim, outcome, failed_at, retry_at = repo.settlements[0]
+    assert claim.message_count == 10
+    assert outcome.kind == "sent"
+    assert outcome.delivered == 8
+    assert retry_at > failed_at
+    stored = _stored(repo, attack.id)
+    assert stored.sent_count == 8
+    assert stored.claimed_count == 8
+    assert stored.participations[0].last_error is None
+    assert "attack.comment_failed" not in _events(activity)
+    assert "attack.comment_sent" in _events(activity)
+
+
 async def test_the_limit_counts_each_album_image_as_a_message(
     service_factory: ServiceFactory,
 ) -> None:
